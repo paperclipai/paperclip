@@ -255,6 +255,7 @@ export interface HireApprovedPayload {
   agentId: string;
   agentName: string;
   adapterType: string;
+  costClass: "free" | "metered" | "critical";
   /** "join_request" | "approval" */
   source: "join_request" | "approval";
   sourceId: string;

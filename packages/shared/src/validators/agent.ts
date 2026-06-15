@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  AGENT_COST_CLASSES,
   AGENT_ICON_NAMES,
   AGENT_ROLES,
   AGENT_STATUSES,
@@ -77,6 +78,7 @@ export const createAgentSchema = z.object({
   runtimeConfig: agentRuntimeConfigSchema.optional().default({}),
   defaultEnvironmentId: z.string().uuid().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
+  costClass: z.enum(AGENT_COST_CLASSES).optional().default("metered"),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 });

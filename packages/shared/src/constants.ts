@@ -16,6 +16,15 @@ export type BindMode = (typeof BIND_MODES)[number];
 export const AUTH_BASE_URL_MODES = ["auto", "explicit"] as const;
 export type AuthBaseUrlMode = (typeof AUTH_BASE_URL_MODES)[number];
 
+export const AGENT_COST_CLASSES = ["free", "metered", "critical"] as const;
+export type AgentCostClass = (typeof AGENT_COST_CLASSES)[number];
+
+export const AGENT_COST_CLASS_LABELS: Record<AgentCostClass, string> = {
+  free: "Free",
+  metered: "Metered",
+  critical: "Critical",
+};
+
 export const AGENT_STATUSES = [
   "active",
   "paused",
@@ -543,13 +552,13 @@ export const FINANCE_UNITS = [
 ] as const;
 export type FinanceUnit = (typeof FINANCE_UNITS)[number];
 
-export const BUDGET_SCOPE_TYPES = ["company", "agent", "project"] as const;
+export const BUDGET_SCOPE_TYPES = ["company", "agent", "project", "adapter"] as const;
 export type BudgetScopeType = (typeof BUDGET_SCOPE_TYPES)[number];
 
 export const BUDGET_METRICS = ["billed_cents"] as const;
 export type BudgetMetric = (typeof BUDGET_METRICS)[number];
 
-export const BUDGET_WINDOW_KINDS = ["calendar_month_utc", "lifetime"] as const;
+export const BUDGET_WINDOW_KINDS = ["calendar_month_utc", "calendar_day_utc", "lifetime"] as const;
 export type BudgetWindowKind = (typeof BUDGET_WINDOW_KINDS)[number];
 
 export const BUDGET_THRESHOLD_TYPES = ["soft", "hard"] as const;
@@ -563,6 +572,17 @@ export const BUDGET_INCIDENT_RESOLUTION_ACTIONS = [
   "raise_budget_and_resume",
 ] as const;
 export type BudgetIncidentResolutionAction = (typeof BUDGET_INCIDENT_RESOLUTION_ACTIONS)[number];
+
+export const GUARDRAIL_STAGES = { OK: 0, WARN: 1, HIGH: 2, HARD_STOP: 3 } as const;
+export type GuardrailStage = (typeof GUARDRAIL_STAGES)[keyof typeof GUARDRAIL_STAGES];
+
+export const GUARDRAIL_THRESHOLDS = {
+  WARN: 60,
+  HIGH: 85,
+  HARD_STOP: 100,
+  WARN_RECOVERY: 55,
+  HIGH_RECOVERY: 75,
+} as const;
 
 export const HEARTBEAT_INVOCATION_SOURCES = [
   "timer",

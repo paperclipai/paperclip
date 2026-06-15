@@ -1,5 +1,6 @@
 import type {
   AgentAdapterType,
+  AgentCostClass,
   ModelProfileKey,
   PauseReason,
   AgentRole,
@@ -22,6 +23,8 @@ export interface AgentModelProfileConfig {
 
 export interface AgentRuntimeConfig extends Record<string, unknown> {
   modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
+  /** Disable silence-monitor alerts for long-lived process agents (e.g. voice control services). */
+  silenceMonitorDisabled?: boolean;
 }
 
 export type AgentInstructionsBundleMode = "managed" | "external";
@@ -87,6 +90,7 @@ export interface Agent {
   defaultEnvironmentId?: string | null;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
+  costClass: AgentCostClass;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   permissions: AgentPermissions;

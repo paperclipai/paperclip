@@ -3623,7 +3623,7 @@ export function issueService(db: Db) {
 
     if (dependentIssueRows.length === 0) return;
 
-    const dependentIssueIds = dependentIssueRows.map((row) => row.dependentId);
+    const dependentIssueIds = dependentIssueRows.map((row: { dependentId: string }) => row.dependentId);
 
     // For each dependent issue, check if it still has unresolved blockers
     const dependencyMap = await listIssueDependencyReadinessMap(dbOrTx, companyId, dependentIssueIds);

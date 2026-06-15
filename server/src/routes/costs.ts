@@ -19,6 +19,7 @@ import {
   heartbeatService,
   logActivity,
 } from "../services/index.js";
+import type { BudgetAlertPayload } from "../services/budgets.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
@@ -52,15 +53,45 @@ export function costRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  const agentSvc = agentService(db);
+  const issueSvc = issueService(db);
+
+  async function onBudgetAlert(alert: BudgetAlertPayload) {
+    try {
+      const allAgents = await agentSvc.list(alert.companyId);
+      const ceoAgent = allAgents.find((a) => (a as any).role === "ceo") ?? null;
+      if (!ceoAgent) return;
+
+      const adapterLabel = alert.adapterName ? `Adapter \`${alert.adapterName}\`` : alert.scopeName;
+      const thresholdLabel = alert.thresholdType === "hard" ? "Hard-Stop (100%)" : `Warnschwelle (${alert.utilizationPercent.toFixed(0)}%)`;
+      const costStr = `${(alert.observedCents / 100).toFixed(2)} USD / ${(alert.limitCents / 100).toFixed(2)} USD`;
+      const windowLabel = alert.windowKind === "calendar_day_utc" ? "Tageslimit" : alert.windowKind === "calendar_month_utc" ? "Monatslimit" : "Gesamtlimit";
+
+      await issueSvc.create(alert.companyId, {
+        title: `Budget-Alert: ${adapterLabel} - ${thresholdLabel}`,
+        description: `**Automatischer Budget-Alert**\n\n- Scope: ${alert.scopeName}\n- ${windowLabel}: ${costStr}\n- Auslastung: ${alert.utilizationPercent.toFixed(1)}%\n- Status: ${alert.thresholdType === "hard" ? "Hard-Stop ausgeloest - keine neuen Runs bis UTC-Mitternacht" : "Warnschwelle ueberschritten"}`,
+        assigneeAgentId: ceoAgent.id,
+        priority: alert.thresholdType === "hard" ? "urgent" : "high",
+        status: "todo",
+        createdByAgentId: null,
+        createdByUserId: null,
+        originKind: "system",
+      });
+    } catch {
+      // Alert failures must not break cost recording
+    }
+  }
+
   const budgetHooks = {
     cancelWorkForScope: heartbeat.cancelBudgetScopeWork,
+    onBudgetAlert,
   };
   const costs = costService(db, budgetHooks);
   const finance = financeService(db);
   const budgets = budgetService(db, budgetHooks);
   const companies = companyService(db);
-  const agents = agentService(db);
-  const issues = issueService(db);
+  const agents = agentSvc;
+  const issues = issueSvc;
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);

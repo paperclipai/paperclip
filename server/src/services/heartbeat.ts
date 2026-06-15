@@ -64,6 +64,7 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { mailerService } from "./mailer.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -2527,11 +2528,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  const mailer = mailerService();
+  const NOTIFY_EMAIL = process.env.GUARDRAIL_NOTIFY_EMAIL ?? "";
+  const NOTIFY_ISSUE_ID = process.env.GUARDRAIL_NOTIFY_ISSUE_ID ?? "";
+
+  const GUARDRAIL_LEVEL_LABELS: Record<number, string> = {
+    1: "WARN — metered-Agenten pausiert",
+    2: "HIGH — nur critical-Agenten aktiv",
+    3: "HARD STOP — alle Agenten pausiert",
+  };
+
+  async function onGuardrailAlert(alert: import("./budgets.js").BudgetAlertPayload): Promise<void> {
+    const levelNum = alert.thresholdType === "hard" ? 3 : alert.utilizationPercent >= 85 ? 2 : 1;
+    const levelLabel = GUARDRAIL_LEVEL_LABELS[levelNum] ?? `Stufe ${levelNum}`;
+    const subject = `Guardrail ${levelLabel} (${alert.utilizationPercent.toFixed(1)} %)`;
+    const body = [
+      `Guardrail-Stufe ${levelNum}: ${levelLabel}`,
+      `Nutzung: ${alert.utilizationPercent.toFixed(1)} % (${alert.observedCents} / ${alert.limitCents} Cent)`,
+      `Scope: ${alert.scopeType} "${alert.scopeName}"`,
+    ].join("\n");
+
+    if (mailer.isConfigured() && NOTIFY_EMAIL) {
+      await mailer.sendMail({ to: NOTIFY_EMAIL, subject, text: body }).catch(() => { /* ignore send errors */ });
+    }
+
+    if (NOTIFY_ISSUE_ID) {
+      await db
+        .insert(issueComments)
+        .values({
+          companyId: alert.companyId,
+          issueId: NOTIFY_ISSUE_ID,
+          authorType: "agent",
+          body: `**Guardrail Stufe ${levelNum}**: ${levelLabel}\n\n- Nutzung: ${alert.utilizationPercent.toFixed(1)} %\n- Scope: ${alert.scopeType} "${alert.scopeName}"`,
+        })
+        .catch(() => { /* ignore if issue not found */ });
+    }
+  }
+
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
+    onBudgetAlert: onGuardrailAlert,
   };
   const budgets = budgetService(db, budgetHooks);
-  const recovery = recoveryService(db, { enqueueWakeup });
+  const recovery = recoveryService(db, { enqueueWakeup, cancelRun: cancelRunInternal });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
@@ -8406,6 +8445,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
+      // RENA-9904: Delete immediately so the orphan-reaper isn't blocked if any
+      // subsequent cleanup call (e.g. refreshContinuationSummaryForRun) hangs
+      // indefinitely and prevents the outer finally from running.
+      activeRunExecutions.delete(run.id);
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),

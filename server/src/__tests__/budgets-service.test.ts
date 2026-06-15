@@ -357,6 +357,113 @@ describe("budgetService", () => {
     );
   });
 
+  describe("3-Stufen-Guardrail: costClass × Stage Matrix + Hysterese", () => {
+    const agentPolicy = {
+      id: "policy-guardrail",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-guardrail",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 1000,
+      warnPercent: 60,
+      warnHighPercent: 85,
+      warnRecoveryPercent: 55,
+      warnHighRecoveryPercent: 75,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
+    function makeBlockStub(costClass: "free" | "metered" | "critical", observed: number, hasSoftIncident = false) {
+      return createDbStub([
+        [{ status: "active", pauseReason: null, companyId: "company-1", name: "Test Agent", adapterType: null, costClass }],
+        [{ status: "active", pauseReason: null, name: "Paperclip" }],
+        [],
+        [agentPolicy],
+        [{ total: observed }],
+        hasSoftIncident ? [{ id: "soft-incident-1" }] : [],
+      ]);
+    }
+
+    // Stage 1 (62 % utilization, warnPct=60)
+    it("Stage 1 (62%): metered-Agent wird blockiert", async () => {
+      const service = budgetService(makeBlockStub("metered", 620).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).not.toBeNull();
+      expect(block?.scopeType).toBe("agent");
+    });
+
+    it("Stage 1 (62%): free-Agent passiert", async () => {
+      const service = budgetService(makeBlockStub("free", 620).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).toBeNull();
+    });
+
+    it("Stage 1 (62%): critical-Agent passiert", async () => {
+      const service = budgetService(makeBlockStub("critical", 620).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).toBeNull();
+    });
+
+    // Stage 2 (90 % utilization, warnHighPct=85)
+    it("Stage 2 (90%): metered-Agent wird blockiert", async () => {
+      const service = budgetService(makeBlockStub("metered", 900).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).not.toBeNull();
+    });
+
+    it("Stage 2 (90%): free-Agent wird blockiert", async () => {
+      const service = budgetService(makeBlockStub("free", 900).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).not.toBeNull();
+    });
+
+    it("Stage 2 (90%): critical-Agent passiert", async () => {
+      const service = budgetService(makeBlockStub("critical", 900).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).toBeNull();
+    });
+
+    // Stage 3 (100 % utilization, hardStop)
+    it("Stage 3 (100%): metered-Agent wird blockiert", async () => {
+      const service = budgetService(makeBlockStub("metered", 1000).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).not.toBeNull();
+    });
+
+    it("Stage 3 (100%): free-Agent wird blockiert", async () => {
+      const service = budgetService(makeBlockStub("free", 1000).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).not.toBeNull();
+    });
+
+    it("Stage 3 (100%): critical-Agent wird blockiert", async () => {
+      const service = budgetService(makeBlockStub("critical", 1000).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).not.toBeNull();
+    });
+
+    // Hysterese: Recovery-Thresholds
+    it("Hysterese: 58 % mit aktiver Soft-Incident → Stage 1 bleibt (warnRecovery=55 %)", async () => {
+      const service = budgetService(makeBlockStub("metered", 580, true).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).not.toBeNull();
+    });
+
+    it("Hysterese: 53 % mit aktiver Soft-Incident → Stage 0, kein Block (< warnRecovery 55 %)", async () => {
+      const service = budgetService(makeBlockStub("metered", 530, true).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).toBeNull();
+    });
+
+    it("Hysterese: 58 % ohne Soft-Incident → Stage 0, kein Block (< warnPct 60 %)", async () => {
+      const service = budgetService(makeBlockStub("metered", 580, false).db as any);
+      const block = await service.getInvocationBlock("company-1", "agent-guardrail");
+      expect(block).toBeNull();
+    });
+  });
+
   it("fires onBudgetAlert for soft threshold when adapter spend exceeds 75%", async () => {
     const adapterPolicy = {
       id: "policy-adapter-soft",

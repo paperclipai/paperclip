@@ -20,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Shield } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -291,6 +291,12 @@ export function Dashboard() {
             />
           </div>
 
+          {/* Guardrail status + cost-by-class widgets */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <GuardrailWidget level={data.guardrail.level} utilizationPercent={data.guardrail.utilizationPercent} />
+            <CostByClassWidget rows={data.costByClass} />
+          </div>
+
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart activity={data.runActivity} />
@@ -391,6 +397,76 @@ export function Dashboard() {
 
         </>
       )}
+    </div>
+  );
+}
+
+const GUARDRAIL_CONFIG = [
+  { level: 0 as const, label: "OK", color: "text-green-600 dark:text-green-400", bg: "bg-green-50 dark:bg-green-950/40 border-green-200 dark:border-green-800" },
+  { level: 1 as const, label: "WARN", color: "text-yellow-600 dark:text-yellow-400", bg: "bg-yellow-50 dark:bg-yellow-950/40 border-yellow-200 dark:border-yellow-800" },
+  { level: 2 as const, label: "HIGH", color: "text-orange-600 dark:text-orange-400", bg: "bg-orange-50 dark:bg-orange-950/40 border-orange-200 dark:border-orange-800" },
+  { level: 3 as const, label: "HARD STOP", color: "text-red-600 dark:text-red-400", bg: "bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800" },
+];
+
+function GuardrailWidget({ level, utilizationPercent }: { level: 0 | 1 | 2 | 3; utilizationPercent: number }) {
+  const cfg = GUARDRAIL_CONFIG[level];
+  return (
+    <div className={cn("rounded-xl border p-4 flex flex-col gap-2", cfg.bg)}>
+      <div className="flex items-center gap-2">
+        <Shield className={cn("h-4 w-4 shrink-0", cfg.color)} />
+        <span className="text-sm font-medium text-foreground">Guardrail</span>
+        <span className={cn("ml-auto text-xs font-semibold px-2 py-0.5 rounded-full border", cfg.color, cfg.bg)}>
+          Stufe {level} — {cfg.label}
+        </span>
+      </div>
+      <div className="flex items-end gap-1">
+        <span className={cn("text-2xl font-bold tabular-nums", cfg.color)}>{utilizationPercent.toFixed(1)} %</span>
+        <span className="text-xs text-muted-foreground mb-1">Budget-Auslastung (aktueller Monat)</span>
+      </div>
+      <div className="h-1.5 w-full rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+        <div
+          className={cn("h-full rounded-full transition-all", level === 0 ? "bg-green-500" : level === 1 ? "bg-yellow-500" : level === 2 ? "bg-orange-500" : "bg-red-500")}
+          style={{ width: `${Math.min(utilizationPercent, 100)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+const COST_CLASS_LABELS: Record<string, string> = {
+  free: "Free",
+  metered: "Metered",
+  critical: "Critical",
+};
+
+function CostByClassWidget({ rows }: { rows: { costClass: string; spentCents: number }[] }) {
+  const sorted = [...rows].sort((a, b) => b.spentCents - a.spentCents);
+  const total = rows.reduce((s, r) => s + r.spentCents, 0);
+  const allClasses = ["free", "metered", "critical"];
+  const byClass = Object.fromEntries(rows.map((r) => [r.costClass, r.spentCents]));
+
+  return (
+    <div className="rounded-xl border bg-card p-4 flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <DollarSign className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="text-sm font-medium text-foreground">Verbrauch nach Cost-Class</span>
+        <span className="ml-auto text-xs text-muted-foreground">aktueller Monat</span>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {allClasses.map((cls) => {
+          const spent = byClass[cls] ?? 0;
+          const pct = total > 0 ? (spent / total) * 100 : 0;
+          return (
+            <div key={cls} className="flex items-center gap-2 text-sm">
+              <span className="w-16 shrink-0 text-muted-foreground">{COST_CLASS_LABELS[cls] ?? cls}</span>
+              <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                <div className="h-full rounded-full bg-primary/60 transition-all" style={{ width: `${pct}%` }} />
+              </div>
+              <span className="w-20 text-right tabular-nums text-xs font-medium">{formatCents(spent)}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

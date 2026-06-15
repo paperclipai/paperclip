@@ -40,8 +40,22 @@ export type BudgetEnforcementScope = {
   scopeId: string;
 };
 
+export type BudgetAlertPayload = {
+  companyId: string;
+  scopeType: BudgetScopeType;
+  scopeId: string;
+  scopeName: string;
+  adapterName: string | null;
+  thresholdType: "soft" | "hard";
+  observedCents: number;
+  limitCents: number;
+  utilizationPercent: number;
+  windowKind: BudgetWindowKind;
+};
+
 export type BudgetServiceHooks = {
   cancelWorkForScope?: (scope: BudgetEnforcementScope) => Promise<void>;
+  onBudgetAlert?: (alert: BudgetAlertPayload) => Promise<void>;
 };
 
 function currentUtcMonthWindow(now = new Date()) {
@@ -52,12 +66,24 @@ function currentUtcMonthWindow(now = new Date()) {
   return { start, end };
 }
 
+function currentUtcDayWindow(now = new Date()) {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const day = now.getUTCDate();
+  const start = new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, month, day + 1, 0, 0, 0, 0));
+  return { start, end };
+}
+
 function resolveWindow(windowKind: BudgetWindowKind, now = new Date()) {
   if (windowKind === "lifetime") {
     return {
       start: new Date(Date.UTC(1970, 0, 1, 0, 0, 0, 0)),
       end: new Date(Date.UTC(9999, 0, 1, 0, 0, 0, 0)),
     };
+  }
+  if (windowKind === "calendar_day_utc") {
+    return currentUtcDayWindow(now);
   }
   return currentUtcMonthWindow(now);
 }
@@ -78,7 +104,28 @@ function normalizeScopeName(scopeType: BudgetScopeType, name: string) {
   return name.trim().length > 0 ? name : scopeType;
 }
 
-async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: string): Promise<ScopeRecord> {
+async function resolveScopeRecord(
+  db: Db,
+  scopeType: BudgetScopeType,
+  scopeId: string,
+  adapterName?: string | null,
+): Promise<ScopeRecord> {
+  // Adapter scope: synthetic record — adapters cannot be paused as entities
+  if (scopeType === "adapter") {
+    const row = await db
+      .select({ companyId: companies.id, name: companies.name })
+      .from(companies)
+      .where(eq(companies.id, scopeId))
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Company not found");
+    return {
+      companyId: row.companyId,
+      name: adapterName ? `adapter:${adapterName}` : "adapter",
+      paused: false,
+      pauseReason: null,
+    };
+  }
+
   if (scopeType === "company") {
     const row = await db
       .select({
@@ -141,18 +188,34 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
 
 async function computeObservedAmount(
   db: Db,
-  policy: Pick<PolicyRow, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">,
+  policy: Pick<PolicyRow, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric" | "adapterName">,
 ) {
   if (policy.metric !== "billed_cents") return 0;
 
-  const conditions = [eq(costEvents.companyId, policy.companyId)];
+  const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
+  const windowConditions = policy.windowKind !== "lifetime"
+    ? [gte(costEvents.occurredAt, start), lt(costEvents.occurredAt, end)]
+    : [];
+
+  // Adapter scope: aggregate cost across all agents with matching adapterType
+  if (policy.scopeType === "adapter" && policy.adapterName) {
+    const [row] = await db
+      .select({
+        total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+      })
+      .from(costEvents)
+      .innerJoin(agents, eq(costEvents.agentId, agents.id))
+      .where(and(
+        eq(costEvents.companyId, policy.companyId),
+        eq(agents.adapterType, policy.adapterName),
+        ...windowConditions,
+      ));
+    return Number(row?.total ?? 0);
+  }
+
+  const conditions = [eq(costEvents.companyId, policy.companyId), ...windowConditions];
   if (policy.scopeType === "agent") conditions.push(eq(costEvents.agentId, policy.scopeId));
   if (policy.scopeType === "project") conditions.push(eq(costEvents.projectId, policy.scopeId));
-  const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
-  if (policy.windowKind === "calendar_month_utc") {
-    conditions.push(gte(costEvents.occurredAt, start));
-    conditions.push(lt(costEvents.occurredAt, end));
-  }
 
   const [row] = await db
     .select({
@@ -314,7 +377,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
   }
 
   async function buildPolicySummary(policy: PolicyRow): Promise<BudgetPolicySummary> {
-    const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+    const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId, policy.adapterName);
     const observedAmount = await computeObservedAmount(db, policy);
     const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
     const amount = policy.isActive ? policy.amount : 0;
@@ -325,6 +388,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       companyId: policy.companyId,
       scopeType: policy.scopeType as BudgetScopeType,
       scopeId: policy.scopeId,
+      adapterName: policy.adapterName ?? null,
       scopeName: normalizeScopeName(policy.scopeType as BudgetScopeType, scope.name),
       metric: policy.metric as BudgetMetric,
       windowKind: policy.windowKind as BudgetWindowKind,
@@ -333,6 +397,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       remainingAmount: amount > 0 ? Math.max(0, amount - observedAmount) : 0,
       utilizationPercent,
       warnPercent: policy.warnPercent,
+      warnHighPercent: policy.warnHighPercent ?? 85,
+      warnRecoveryPercent: policy.warnRecoveryPercent ?? 55,
+      warnHighRecoveryPercent: policy.warnHighRecoveryPercent ?? 75,
       hardStopEnabled: policy.hardStopEnabled,
       notifyEnabled: policy.notifyEnabled,
       isActive: policy.isActive,
@@ -350,7 +417,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     policy: PolicyRow,
     thresholdType: BudgetThresholdType,
     amountObserved: number,
-  ) {
+  ): Promise<{ incident: IncidentRow; isNew: boolean } | null> {
     const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
     const existing = await db
       .select()
@@ -364,7 +431,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         ),
       )
       .then((rows) => rows[0] ?? null);
-    if (existing) return existing;
+    if (existing) return { incident: existing, isNew: false };
 
     const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
     const payload = buildApprovalPayload({
@@ -391,7 +458,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .then((rows) => rows[0] ?? null)
       : null;
 
-    return db
+    const incident = await db
       .insert(budgetIncidents)
       .values({
         companyId: policy.companyId,
@@ -410,6 +477,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       })
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    return incident ? { incident, isNew: true } : null;
   }
 
   async function resolveOpenSoftIncidents(policyId: string) {
@@ -492,12 +561,42 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     );
   }
 
+  async function checkAdapterCapBlock(companyId: string, adapterType: string) {
+    const adapterPolicies = await db
+      .select()
+      .from(budgetPolicies)
+      .where(
+        and(
+          eq(budgetPolicies.companyId, companyId),
+          eq(budgetPolicies.scopeType, "adapter"),
+          eq(budgetPolicies.adapterName, adapterType),
+          eq(budgetPolicies.isActive, true),
+          eq(budgetPolicies.metric, "billed_cents"),
+        ),
+      );
+
+    for (const policy of adapterPolicies) {
+      if (!policy.hardStopEnabled || policy.amount <= 0) continue;
+      const observed = await computeObservedAmount(db, policy);
+      if (observed >= policy.amount) {
+        return {
+          scopeType: "adapter" as BudgetScopeType,
+          scopeId: policy.scopeId,
+          scopeName: `adapter:${adapterType}`,
+          reason: `Adapter '${adapterType}' daily budget cap reached (${observed}/${policy.amount} cents). Resets at UTC midnight.`,
+        };
+      }
+    }
+    return null;
+  }
+
   return {
     listPolicies: async (companyId: string): Promise<BudgetPolicy[]> => {
       const rows = await listPolicyRows(companyId);
       return rows.map((row) => ({
         ...row,
         scopeType: row.scopeType as BudgetScopeType,
+        adapterName: row.adapterName ?? null,
         metric: row.metric as BudgetMetric,
         windowKind: row.windowKind as BudgetWindowKind,
       }));
@@ -508,27 +607,43 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       input: BudgetPolicyUpsertInput,
       actorUserId: string | null,
     ): Promise<BudgetPolicySummary> => {
-      const scope = await resolveScopeRecord(db, input.scopeType, input.scopeId);
+      const scope = await resolveScopeRecord(db, input.scopeType, input.scopeId, input.adapterName);
       if (scope.companyId !== companyId) {
         throw unprocessable("Budget scope does not belong to company");
       }
 
       const metric = input.metric ?? "billed_cents";
-      const windowKind = input.windowKind ?? (input.scopeType === "project" ? "lifetime" : "calendar_month_utc");
+      const defaultWindow = input.scopeType === "project"
+        ? "lifetime"
+        : input.scopeType === "adapter"
+          ? "calendar_day_utc"
+          : "calendar_month_utc";
+      const windowKind = input.windowKind ?? defaultWindow;
+      const adapterName = input.scopeType === "adapter" ? (input.adapterName ?? null) : null;
       const amount = Math.max(0, Math.floor(input.amount));
       const nextIsActive = amount > 0 && (input.isActive ?? true);
+
+      // Lookup by adapterName for adapter scope (adapterName is the unique identifier)
+      const existingConditions = adapterName
+        ? [
+          eq(budgetPolicies.companyId, companyId),
+          eq(budgetPolicies.scopeType, input.scopeType),
+          eq(budgetPolicies.adapterName, adapterName),
+          eq(budgetPolicies.metric, metric),
+          eq(budgetPolicies.windowKind, windowKind),
+        ]
+        : [
+          eq(budgetPolicies.companyId, companyId),
+          eq(budgetPolicies.scopeType, input.scopeType),
+          eq(budgetPolicies.scopeId, input.scopeId),
+          eq(budgetPolicies.metric, metric),
+          eq(budgetPolicies.windowKind, windowKind),
+        ];
+
       const existing = await db
         .select()
         .from(budgetPolicies)
-        .where(
-          and(
-            eq(budgetPolicies.companyId, companyId),
-            eq(budgetPolicies.scopeType, input.scopeType),
-            eq(budgetPolicies.scopeId, input.scopeId),
-            eq(budgetPolicies.metric, metric),
-            eq(budgetPolicies.windowKind, windowKind),
-          ),
-        )
+        .where(and(...existingConditions))
         .then((rows) => rows[0] ?? null);
 
       const now = new Date();
@@ -538,6 +653,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           .set({
             amount,
             warnPercent: input.warnPercent ?? existing.warnPercent,
+            warnHighPercent: input.warnHighPercent ?? existing.warnHighPercent,
+            warnRecoveryPercent: input.warnRecoveryPercent ?? existing.warnRecoveryPercent,
+            warnHighRecoveryPercent: input.warnHighRecoveryPercent ?? existing.warnHighRecoveryPercent,
             hardStopEnabled: input.hardStopEnabled ?? existing.hardStopEnabled,
             notifyEnabled: input.notifyEnabled ?? existing.notifyEnabled,
             isActive: nextIsActive,
@@ -553,10 +671,11 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             companyId,
             scopeType: input.scopeType,
             scopeId: input.scopeId,
+            adapterName,
             metric,
             windowKind,
             amount,
-            warnPercent: input.warnPercent ?? 80,
+            warnPercent: input.warnPercent ?? (input.scopeType === "adapter" ? 75 : 80),
             hardStopEnabled: input.hardStopEnabled ?? true,
             notifyEnabled: input.notifyEnabled ?? true,
             isActive: nextIsActive,
@@ -589,7 +708,10 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       if (amount > 0) {
         const observedAmount = await computeObservedAmount(db, row);
         if (observedAmount < amount) {
-          await resumeScopeFromBudget(row);
+          // Adapter scopes have no entity to resume; only non-adapter scopes need this
+          if (input.scopeType !== "adapter") {
+            await resumeScopeFromBudget(row);
+          }
           await resolveOpenIncidentsForPolicy(row.id, actorUserId ? "approved" : null, actorUserId);
         } else {
           const softThreshold = Math.ceil((row.amount * row.warnPercent) / 100);
@@ -599,11 +721,15 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           if (row.hardStopEnabled && observedAmount >= row.amount) {
             await resolveOpenSoftIncidents(row.id);
             await createIncidentIfNeeded(row, "hard", observedAmount);
-            await pauseAndCancelScopeForBudget(row);
+            if (input.scopeType !== "adapter") {
+              await pauseAndCancelScopeForBudget(row);
+            }
           }
         }
       } else {
-        await resumeScopeFromBudget(row);
+        if (input.scopeType !== "adapter") {
+          await resumeScopeFromBudget(row);
+        }
         await resolveOpenIncidentsForPolicy(row.id, actorUserId ? "approved" : null, actorUserId);
       }
 
@@ -645,6 +771,14 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     },
 
     evaluateCostEvent: async (event: typeof costEvents.$inferSelect) => {
+      // Fetch agent's adapterType so adapter-scope policies can be matched
+      const agentRow = await db
+        .select({ adapterType: agents.adapterType })
+        .from(agents)
+        .where(eq(agents.id, event.agentId))
+        .then((rows) => rows[0] ?? null);
+      const agentAdapterType = agentRow?.adapterType ?? null;
+
       const candidatePolicies = await db
         .select()
         .from(budgetPolicies)
@@ -652,7 +786,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           and(
             eq(budgetPolicies.companyId, event.companyId),
             eq(budgetPolicies.isActive, true),
-            inArray(budgetPolicies.scopeType, ["company", "agent", "project"]),
+            inArray(budgetPolicies.scopeType, ["company", "agent", "project", "adapter"]),
           ),
         );
 
@@ -660,6 +794,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         if (policy.scopeType === "company") return policy.scopeId === event.companyId;
         if (policy.scopeType === "agent") return policy.scopeId === event.agentId;
         if (policy.scopeType === "project") return Boolean(event.projectId) && policy.scopeId === event.projectId;
+        if (policy.scopeType === "adapter") return agentAdapterType !== null && policy.adapterName === agentAdapterType;
         return false;
       });
 
@@ -667,10 +802,12 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         if (policy.metric !== "billed_cents" || policy.amount <= 0) continue;
         const observedAmount = await computeObservedAmount(db, policy);
         const softThreshold = Math.ceil((policy.amount * policy.warnPercent) / 100);
+        const utilizationPercent = Number(((observedAmount / policy.amount) * 100).toFixed(2));
 
         if (policy.notifyEnabled && observedAmount >= softThreshold) {
-          const softIncident = await createIncidentIfNeeded(policy, "soft", observedAmount);
-          if (softIncident) {
+          const result = await createIncidentIfNeeded(policy, "soft", observedAmount);
+          if (result) {
+            const { incident: softIncident, isNew } = result;
             await logActivity(db, {
               companyId: policy.companyId,
               actorType: "system",
@@ -681,18 +818,39 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
               details: {
                 scopeType: policy.scopeType,
                 scopeId: policy.scopeId,
+                adapterName: policy.adapterName ?? null,
                 amountObserved: observedAmount,
                 amountLimit: policy.amount,
               },
             });
+            // Notify CEO only when the incident is newly created (avoid spam)
+            if (isNew && hooks.onBudgetAlert) {
+              const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId, policy.adapterName);
+              await hooks.onBudgetAlert({
+                companyId: policy.companyId,
+                scopeType: policy.scopeType as BudgetScopeType,
+                scopeId: policy.scopeId,
+                scopeName: normalizeScopeName(policy.scopeType as BudgetScopeType, scope.name),
+                adapterName: policy.adapterName ?? null,
+                thresholdType: "soft",
+                observedCents: observedAmount,
+                limitCents: policy.amount,
+                utilizationPercent,
+                windowKind: policy.windowKind as BudgetWindowKind,
+              });
+            }
           }
         }
 
         if (policy.hardStopEnabled && observedAmount >= policy.amount) {
           await resolveOpenSoftIncidents(policy.id);
-          const hardIncident = await createIncidentIfNeeded(policy, "hard", observedAmount);
-          await pauseAndCancelScopeForBudget(policy);
-          if (hardIncident) {
+          const result = await createIncidentIfNeeded(policy, "hard", observedAmount);
+          // Adapter policies cannot be entity-paused; hard-stop is enforced in getInvocationBlock
+          if (policy.scopeType !== "adapter") {
+            await pauseAndCancelScopeForBudget(policy);
+          }
+          if (result) {
+            const { incident: hardIncident, isNew } = result;
             await logActivity(db, {
               companyId: policy.companyId,
               actorType: "system",
@@ -703,11 +861,27 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
               details: {
                 scopeType: policy.scopeType,
                 scopeId: policy.scopeId,
+                adapterName: policy.adapterName ?? null,
                 amountObserved: observedAmount,
                 amountLimit: policy.amount,
                 approvalId: hardIncident.approvalId ?? null,
               },
             });
+            if (isNew && hooks.onBudgetAlert) {
+              const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId, policy.adapterName);
+              await hooks.onBudgetAlert({
+                companyId: policy.companyId,
+                scopeType: policy.scopeType as BudgetScopeType,
+                scopeId: policy.scopeId,
+                scopeName: normalizeScopeName(policy.scopeType as BudgetScopeType, scope.name),
+                adapterName: policy.adapterName ?? null,
+                thresholdType: "hard",
+                observedCents: observedAmount,
+                limitCents: policy.amount,
+                utilizationPercent,
+                windowKind: policy.windowKind as BudgetWindowKind,
+              });
+            }
           }
         }
       }
@@ -724,11 +898,14 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pauseReason: agents.pauseReason,
           companyId: agents.companyId,
           name: agents.name,
+          adapterType: agents.adapterType,
+          costClass: agents.costClass,
         })
         .from(agents)
         .where(eq(agents.id, agentId))
         .then((rows) => rows[0] ?? null);
       if (!agent || agent.companyId !== companyId) throw notFound("Agent not found");
+      const agentCostClass = (agent.costClass ?? "metered") as "free" | "metered" | "critical";
 
       const company = await db
         .select({
@@ -799,16 +976,56 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           ),
         )
         .then((rows) => rows[0] ?? null);
-      if (agentPolicy && agentPolicy.hardStopEnabled && agentPolicy.amount > 0) {
+      if (agentPolicy && agentPolicy.amount > 0) {
         const observed = await computeObservedAmount(db, agentPolicy);
-        if (observed >= agentPolicy.amount) {
-          return {
+        const utilizationPct = (observed / agentPolicy.amount) * 100;
+
+        // Hysteresis: if there is an open soft incident, use recovery thresholds
+        // to avoid flapping between stages when utilization sits in the grey zone.
+        const openSoftIncident = await db
+          .select({ id: budgetIncidents.id })
+          .from(budgetIncidents)
+          .where(
+            and(
+              eq(budgetIncidents.policyId, agentPolicy.id),
+              eq(budgetIncidents.thresholdType, "soft"),
+              eq(budgetIncidents.status, "open"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        const inActiveStage = openSoftIncident !== null;
+        const warnPct = inActiveStage
+          ? (agentPolicy.warnRecoveryPercent ?? 55)
+          : (agentPolicy.warnPercent ?? 60);
+        const warnHighPct = inActiveStage
+          ? (agentPolicy.warnHighRecoveryPercent ?? 75)
+          : (agentPolicy.warnHighPercent ?? 85);
+
+        const stage = utilizationPct >= 100 ? 3
+          : utilizationPct >= warnHighPct ? 2
+          : utilizationPct >= warnPct ? 1
+          : 0;
+
+        if (stage > 0) {
+          const agentBlock = {
             scopeType: "agent" as const,
             scopeId: agentId,
             scopeName: agent.name,
-            reason: "Agent cannot start because its budget hard-stop is still exceeded.",
+            reason: stage === 3
+              ? "Agent cannot start because its budget hard-stop is still exceeded."
+              : `Agent budget at stage ${stage} (${utilizationPct.toFixed(1)}% utilization).`,
           };
+          if (stage === 3 && agentPolicy.hardStopEnabled) return agentBlock;
+          if (stage === 2 && agentCostClass !== "critical") return agentBlock;
+          if (stage === 1 && agentCostClass === "metered") return agentBlock;
         }
+      }
+
+      // Check adapter-level daily cap for the agent's adapter type
+      if (agent.adapterType) {
+        const adapterBlock = await checkAdapterCapBlock(companyId, agent.adapterType);
+        if (adapterBlock) return adapterBlock;
       }
 
       const candidateProjectId = context?.projectId ?? null;
@@ -860,6 +1077,41 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         reason: "Project is paused because its budget hard-stop was reached.",
       };
     },
+
+    getCompanyGuardrailLevel: async (companyId: string): Promise<{ level: 0 | 1 | 2 | 3; utilizationPercent: number }> => {
+      const policy = await db
+        .select()
+        .from(budgetPolicies)
+        .where(
+          and(
+            eq(budgetPolicies.companyId, companyId),
+            eq(budgetPolicies.scopeType, "company"),
+            eq(budgetPolicies.scopeId, companyId),
+            eq(budgetPolicies.isActive, true),
+            eq(budgetPolicies.metric, "billed_cents"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      if (!policy || policy.amount <= 0) {
+        return { level: 0, utilizationPercent: 0 };
+      }
+
+      const observed = await computeObservedAmount(db, policy);
+      const utilizationPercent = Number(((observed / policy.amount) * 100).toFixed(2));
+      const warnPct = policy.warnPercent ?? 60;
+      const warnHighPct = policy.warnHighPercent ?? 85;
+
+      const level: 0 | 1 | 2 | 3 =
+        utilizationPercent >= 100 ? 3
+        : utilizationPercent >= warnHighPct ? 2
+        : utilizationPercent >= warnPct ? 1
+        : 0;
+
+      return { level, utilizationPercent };
+    },
+
+    getAdapterInvocationBlock: checkAdapterCapBlock,
 
     resolveIncident: async (
       companyId: string,

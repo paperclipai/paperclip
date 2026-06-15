@@ -7,7 +7,7 @@ import type {
   EnvBinding,
   Environment,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
+import { AGENT_COST_CLASSES, AGENT_COST_CLASS_LABELS, AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { environmentsApi } from "../api/environments";
@@ -740,6 +740,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 excludeAgentIds={[props.agent.id]}
                 chooseLabel="Choose manager…"
               />
+            </Field>
+            <Field label="Cost Class" hint="Determines guardrail treatment: free agents are never budget-paused, critical agents are last to be paused.">
+              <select
+                className={inputClass}
+                value={eff("identity", "costClass", props.agent.costClass)}
+                onChange={(e) => mark("identity", "costClass", e.target.value)}
+              >
+                {AGENT_COST_CLASSES.map((c) => (
+                  <option key={c} value={c}>{AGENT_COST_CLASS_LABELS[c]}</option>
+                ))}
+              </select>
             </Field>
             <Field label="Capabilities" hint={help.capabilities}>
               <MarkdownEditor

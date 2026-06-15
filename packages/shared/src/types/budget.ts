@@ -13,10 +13,14 @@ export interface BudgetPolicy {
   companyId: string;
   scopeType: BudgetScopeType;
   scopeId: string;
+  adapterName: string | null;
   metric: BudgetMetric;
   windowKind: BudgetWindowKind;
   amount: number;
   warnPercent: number;
+  warnHighPercent: number;
+  warnRecoveryPercent: number;
+  warnHighRecoveryPercent: number;
   hardStopEnabled: boolean;
   notifyEnabled: boolean;
   isActive: boolean;
@@ -31,6 +35,7 @@ export interface BudgetPolicySummary {
   companyId: string;
   scopeType: BudgetScopeType;
   scopeId: string;
+  adapterName: string | null;
   scopeName: string;
   metric: BudgetMetric;
   windowKind: BudgetWindowKind;
@@ -39,6 +44,9 @@ export interface BudgetPolicySummary {
   remainingAmount: number;
   utilizationPercent: number;
   warnPercent: number;
+  warnHighPercent: number;
+  warnRecoveryPercent: number;
+  warnHighRecoveryPercent: number;
   hardStopEnabled: boolean;
   notifyEnabled: boolean;
   isActive: boolean;
@@ -83,10 +91,14 @@ export interface BudgetOverview {
 export interface BudgetPolicyUpsertInput {
   scopeType: BudgetScopeType;
   scopeId: string;
+  adapterName?: string | null;
   metric?: BudgetMetric;
   windowKind?: BudgetWindowKind;
   amount: number;
   warnPercent?: number;
+  warnHighPercent?: number;
+  warnRecoveryPercent?: number;
+  warnHighRecoveryPercent?: number;
   hardStopEnabled?: boolean;
   notifyEnabled?: boolean;
   isActive?: boolean;

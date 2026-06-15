@@ -451,6 +451,25 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .orderBy(costEvents.provider, costEvents.biller, costEvents.billingType, costEvents.model);
     },
 
+    byCostClass: async (companyId: string) => {
+      const { start, end } = currentUtcMonthWindow();
+      return db
+        .select({
+          costClass: agents.costClass,
+          spentCents: sumAsNumber(costEvents.costCents),
+        })
+        .from(costEvents)
+        .innerJoin(agents, eq(costEvents.agentId, agents.id))
+        .where(
+          and(
+            eq(costEvents.companyId, companyId),
+            gte(costEvents.occurredAt, start),
+            lt(costEvents.occurredAt, end),
+          ),
+        )
+        .groupBy(agents.costClass);
+    },
+
     byProject: async (companyId: string, range?: CostDateRange) => {
       const issueIdAsText = sql<string>`${issues.id}::text`;
       const runProjectLinks = db

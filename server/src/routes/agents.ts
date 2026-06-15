@@ -2049,6 +2049,7 @@ export function agentRoutes(
             typeof normalizedHireInput.budgetMonthlyCents === "number"
               ? normalizedHireInput.budgetMonthlyCents
               : agent.budgetMonthlyCents,
+          costClass: normalizedHireInput.costClass ?? agent.costClass,
           desiredSkills: desiredSkillAssignment.desiredSkills,
           metadata: requestedMetadata,
           agentId: agent.id,

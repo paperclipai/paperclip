@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
+import { AGENT_COST_CLASS_LABELS, AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -53,6 +53,9 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
         )}
         <PropertyRow label="Adapter">
           <span className="text-sm font-mono">{getAdapterLabel(agent.adapterType)}</span>
+        </PropertyRow>
+        <PropertyRow label="Cost Class">
+          <span className="text-sm">{AGENT_COST_CLASS_LABELS[agent.costClass] ?? agent.costClass}</span>
         </PropertyRow>
       </div>
 

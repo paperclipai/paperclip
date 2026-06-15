@@ -3933,6 +3933,8 @@ export function issueRoutes(
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
+    const shouldCancelActiveRunForBlockedStatus =
+      existing.status !== "blocked" && updateFields.status === "blocked";
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
@@ -4041,6 +4043,9 @@ export function issueRoutes(
     }
 
     const runToCancelForCancelledStatus = shouldCancelActiveRunForCancelledStatus
+      ? await resolveActiveIssueRun(existing)
+      : null;
+    const runToCancelForBlockedStatus = shouldCancelActiveRunForBlockedStatus
       ? await resolveActiveIssueRun(existing)
       : null;
 
@@ -4268,6 +4273,38 @@ export function issueRoutes(
           entityType: "heartbeat_run",
           entityId: runToCancelForCancelledStatus.id,
           details: { source: "issue_status_cancelled", issueId: existing.id },
+        });
+      }
+    }
+
+    if (runToCancelForBlockedStatus) {
+      try {
+        const cancelled = await heartbeat.cancelRun(runToCancelForBlockedStatus.id);
+        if (cancelled) {
+          await logActivity(db, {
+            companyId: cancelled.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "heartbeat.cancelled",
+            entityType: "heartbeat_run",
+            entityId: cancelled.id,
+            details: { agentId: cancelled.agentId, source: "issue_status_blocked", issueId: existing.id },
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, issueId: existing.id, runId: runToCancelForBlockedStatus.id }, "failed to cancel run for blocked issue");
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "heartbeat.cancel_failed",
+          entityType: "heartbeat_run",
+          entityId: runToCancelForBlockedStatus.id,
+          details: { source: "issue_status_blocked", issueId: existing.id },
         });
       }
     }
