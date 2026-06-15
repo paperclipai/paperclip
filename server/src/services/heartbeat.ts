@@ -7598,6 +7598,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileStrandedAssignedIssues();
   }
 
+  async function reconcileMergedPullRequestThreadAutoClose() {
+    return recovery.reconcileMergedPullRequestThreadAutoClose();
+  }
+
   async function sweepStaleIssueLocks() {
     return recovery.sweepStaleIssueLocks();
   }
@@ -11562,6 +11566,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    reconcileMergedPullRequestThreadAutoClose,
 
     sweepStaleIssueLocks,
 

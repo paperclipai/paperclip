@@ -39,7 +39,12 @@ import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
-import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
+import {
+  TERMINAL_HEARTBEAT_RUN_STATUSES,
+  buildMergedPullRequestAutoCloseComment,
+  issueService,
+  resolveMergedPullRequestDetailsForThreadAutoClose,
+} from "../issues.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
@@ -4086,6 +4091,74 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
+  // EDG-6246 AC#1: periodic sweep that auto-closes open repo-backed issues whose
+  // ONLY evidence of completion is a merged PR referenced as a threaded
+  // comment/body URL (no work-product). The transition is routed through the
+  // gated issueService.update() with NO actorUserId, so the repo-backed
+  // terminal-state gate re-runs and re-verifies the merged PR before allowing
+  // `done` (AC#2). Idempotent: only `todo|in_progress|in_review` candidates are
+  // considered, the resolver returns null on non-merged/closed PRs and on
+  // unanswered [DAN]/[NEEDS-FIX] questions, and already-terminal issues are
+  // never queried — so a closed issue is never re-opened (AC#4).
+  async function reconcileMergedPullRequestThreadAutoClose() {
+    const candidates = await db
+      .select()
+      .from(issues)
+      .where(
+        inArray(issues.status, ["todo", "in_progress", "in_review"]),
+      );
+
+    const result = {
+      closed: 0,
+      skipped: 0,
+      gateRejected: 0,
+      issueIds: [] as string[],
+    };
+
+    for (const issue of candidates) {
+      let mergedPull: Awaited<ReturnType<typeof resolveMergedPullRequestDetailsForThreadAutoClose>>;
+      try {
+        mergedPull = await resolveMergedPullRequestDetailsForThreadAutoClose(db, issue);
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "thread-only merged-PR auto-close resolution failed");
+        result.skipped += 1;
+        continue;
+      }
+      if (!mergedPull) {
+        result.skipped += 1;
+        continue;
+      }
+
+      try {
+        // No actorUserId — keeps the repo-backed terminal-state gate armed so it
+        // re-verifies the merged PR before the `done` transition lands.
+        const updated = await issuesSvc.update(issue.id, { status: "done" });
+        if (!updated) {
+          result.skipped += 1;
+          continue;
+        }
+        await issuesSvc.addComment(
+          issue.id,
+          buildMergedPullRequestAutoCloseComment({
+            issue: { id: issue.id, identifier: issue.identifier },
+            pullRequest: mergedPull,
+          }),
+          {},
+          { authorType: "system" },
+        );
+        result.closed += 1;
+        result.issueIds.push(issue.id);
+      } catch (err) {
+        // The gate (or any other validation) refused the transition; leave the
+        // issue open rather than forcing it.
+        logger.warn({ err, issueId: issue.id }, "thread-only merged-PR auto-close transition rejected");
+        result.gateRejected += 1;
+      }
+    }
+
+    return result;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -4093,6 +4166,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    reconcileMergedPullRequestThreadAutoClose,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,

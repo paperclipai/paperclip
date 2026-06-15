@@ -802,6 +802,14 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
 
+      const threadAutoClosed = await heartbeat.reconcileMergedPullRequestThreadAutoClose();
+      if (threadAutoClosed.closed > 0 || threadAutoClosed.gateRejected > 0) {
+        logger.warn(
+          { ...threadAutoClosed },
+          "startup merged-PR thread auto-close transitioned repo-backed issues",
+        );
+      }
+
       const scanned = await heartbeat.scanSilentActiveRuns();
       if (scanned.created > 0 || scanned.escalated > 0) {
         logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
@@ -869,6 +877,12 @@ export async function startServer(): Promise<StartedServer> {
           const reconciled = await heartbeat.reconcileIssueGraphLiveness();
           if (reconciled.escalationsCreated > 0) {
             logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
+          }
+        })
+        .then(async () => {
+          const threadAutoClosed = await heartbeat.reconcileMergedPullRequestThreadAutoClose();
+          if (threadAutoClosed.closed > 0 || threadAutoClosed.gateRejected > 0) {
+            logger.warn({ ...threadAutoClosed }, "periodic merged-PR thread auto-close transitioned repo-backed issues");
           }
         })
         .then(async () => {

@@ -223,6 +223,135 @@ function repoLabel(repo: RepoCoordinates) {
   return `${repo.owner}/${repo.repo}`;
 }
 
+// EDG-6246: thread-only merged-PR auto-close needs to resolve a PR's repo from
+// the in-thread URL itself (multi-repo, AC#3), not just the workspace binding.
+// These reference/detail helpers complement the gate's single-repo
+// `extractMatchingPullRequestNumbers` without disturbing it.
+type PullRequestReference = {
+  repo: RepoCoordinates;
+  pullNumber: number;
+  url: string | null;
+};
+
+type PullRequestDetails = {
+  repo: RepoCoordinates;
+  pullNumber: number;
+  url: string | null;
+  merged: boolean;
+  mergedAt: string | null;
+  mergeCommitSha: string | null;
+};
+
+function parsePullRequestReferenceFromUrl(rawUrl: string | null | undefined): PullRequestReference | null {
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    const host = normalizeRepoHost(parsed.hostname);
+    const parts = parsed.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+    if (parts.length < 4 || parts[2] !== "pull") return null;
+    const pullNumber = Number.parseInt(parts[3] ?? "", 10);
+    if (!Number.isFinite(pullNumber) || pullNumber <= 0) return null;
+    const repo = parts[1]!.replace(/\.git$/i, "");
+    return {
+      repo: { host, owner: parts[0]!, repo },
+      pullNumber,
+      url: `https://${host}/${parts[0]}/${repo}/pull/${pullNumber}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function serializePullRequestReference(ref: PullRequestReference) {
+  return `${ref.repo.host}/${ref.repo.owner}/${ref.repo.repo}#${ref.pullNumber}`;
+}
+
+// Scans free text for PR references. Fully-qualified PR URLs resolve their own
+// repo coordinates (multi-repo); bare `#NNN` / `PR #NNN` mentions fall back to
+// the supplied repo binding.
+function extractReferencedPullRequests(
+  text: string | null | undefined,
+  fallbackRepo: RepoCoordinates,
+): PullRequestReference[] {
+  if (!text) return [];
+  const matches = new Map<string, PullRequestReference>();
+  const urlPattern = /https?:\/\/github(?:\.com|\.com-[^\s/]+)\/[^\s)]+\/pull\/\d+/gi;
+  for (const match of text.matchAll(urlPattern)) {
+    const parsed = parsePullRequestReferenceFromUrl(match[0]);
+    if (!parsed) continue;
+    matches.set(serializePullRequestReference(parsed), parsed);
+  }
+  for (const match of text.matchAll(/\bPR\s*#(\d+)\b|(^|[^\w/])#(\d+)\b/gim)) {
+    const rawValue = match[1] ?? match[3] ?? "";
+    const pullNumber = Number.parseInt(rawValue, 10);
+    if (!Number.isFinite(pullNumber) || pullNumber <= 0) continue;
+    const ref: PullRequestReference = {
+      repo: fallbackRepo,
+      pullNumber,
+      url: null,
+    };
+    matches.set(serializePullRequestReference(ref), ref);
+  }
+  return Array.from(matches.values());
+}
+
+// Full-detail variant of the gate's `verifyMergedPullRequestForRepo` boolean
+// check — returns mergedAt + merge commit so the auto-close evidence comment can
+// cite them (AC#1).
+async function fetchPullRequestDetails(input: {
+  repo: RepoCoordinates;
+  pullNumber: number;
+}): Promise<PullRequestDetails> {
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+  };
+  const token =
+    process.env.GITHUB_TOKEN?.trim()
+    || process.env.GITHUB_TOKEN_PERSONAL?.trim()
+    || process.env.GH_TOKEN?.trim()
+    || "";
+  if (token) headers.authorization = `Bearer ${token}`;
+  const response = await ghFetch(
+    `${gitHubApiBase(input.repo.host)}/repos/${input.repo.owner}/${input.repo.repo}/pulls/${input.pullNumber}`,
+    { headers },
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub returned ${response.status} while fetching pull #${input.pullNumber}.`);
+  }
+  const payload = await response.json() as {
+    merged?: boolean;
+    merged_at?: string | null;
+    merge_commit_sha?: string | null;
+    html_url?: string | null;
+  };
+  return {
+    repo: input.repo,
+    pullNumber: input.pullNumber,
+    url: payload.html_url ?? null,
+    merged: payload.merged === true,
+    mergedAt: payload.merged_at ?? null,
+    mergeCommitSha: payload.merge_commit_sha ?? null,
+  };
+}
+
+// Auto-close is suppressed when the most-recent unresolved blocking question is
+// still open: a trailing `[DAN]` or `[NEEDS-FIX]` comment that no later comment
+// answers (AC#4). Comments are expected newest-last (ascending createdAt).
+function hasUnansweredCloseBlockingThreadComment(
+  comments: Array<{ body: string | null }>,
+): boolean {
+  const blockingPattern = /\[(?:DAN|NEEDS-FIX)\]/i;
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const body = comments[i]?.body ?? "";
+    if (blockingPattern.test(body)) return true;
+    // Any non-blocking comment after the question counts as an answer; stop at
+    // the first such trailing comment.
+    if (body.trim().length > 0) return false;
+  }
+  return false;
+}
+
 function extractMatchingPullRequestNumbers(text: string | null | undefined, repo: RepoCoordinates): number[] {
   if (!text) return [];
   const escapedHost = repo.host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -295,6 +424,26 @@ function mergeTerminalGateSignals(
     subjectRepo: latestCommentSignals.subjectRepo ?? descriptionSignals.subjectRepo ?? null,
     terminalEvidence: latestCommentSignals.terminalEvidence ?? descriptionSignals.terminalEvidence ?? null,
   };
+}
+
+// EDG-6246: a repo-backed issue carrying an attached deliverable document is a
+// non-code-deliverable signal — the thread-only PR auto-close skips it (those
+// close on terminalEvidence, not a merged PR).
+async function issueHasAttachedDocuments(input: {
+  dbOrTx: any;
+  companyId: string;
+  issueId: string;
+}) {
+  const row = await input.dbOrTx
+    .select({ documentId: issueDocuments.documentId })
+    .from(issueDocuments)
+    .where(and(
+      eq(issueDocuments.companyId, input.companyId),
+      eq(issueDocuments.issueId, input.issueId),
+    ))
+    .limit(1)
+    .then((rows: Array<{ documentId: string }>) => rows[0] ?? null);
+  return Boolean(row);
 }
 
 function readTerminalStateExemption(value: unknown) {
@@ -440,6 +589,114 @@ async function issueDocumentRevisionExists(input: {
     ))
     .then((rows: Array<{ documentId: string }>) => rows[0] ?? null);
   return Boolean(row);
+}
+
+// EDG-6246 AC#1: resolve a verified-merged PR referenced ONLY as a threaded
+// comment/body URL on an open repo-backed issue (no work-product). Returns the
+// merged PR's details (for the evidence comment) or null when the issue must
+// not auto-close. Ported from the live lineage, adapted to this base:
+//  - gated to todo/in_progress/in_review and requires a repo binding;
+//  - skips non-code-deliverable issues (those close on terminalEvidence, and
+//    the close-time gate at update() applies the same TERMINAL_GATE_NON_CODE
+//    short-circuit) and issues carrying an attached deliverable document;
+//  - skips while an unanswered [DAN]/[NEEDS-FIX] question is the trailing
+//    blocking comment (AC#4);
+//  - scans BOTH description AND every comment body, resolving each PR's repo
+//    from its own URL so cross-repo references verify against the right repo
+//    (AC#3);
+//  - verifies via the GitHub API and only resolves on a MERGED PR (a
+//    CLOSED-unmerged PR yields null — never closes the issue, AC#4).
+export async function resolveMergedPullRequestDetailsForThreadAutoClose(
+  db: Db,
+  issue: typeof issues.$inferSelect,
+): Promise<PullRequestDetails | null> {
+  if (!["todo", "in_progress", "in_review"].includes(issue.status)) return null;
+
+  const repoBinding = await resolveIssueRepoBinding({
+    dbOrTx: db,
+    companyId: issue.companyId,
+    projectId: issue.projectId,
+    projectWorkspaceId: issue.projectWorkspaceId,
+    executionWorkspaceId: issue.executionWorkspaceId,
+  });
+  if (!repoBinding) return null;
+
+  const latestAgentComment = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(and(
+      eq(issueComments.issueId, issue.id),
+      sql`${issueComments.authorAgentId} is not null`,
+    ))
+    .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+    .limit(1)
+    .then((rows: Array<{ body: string }>) => rows[0]?.body ?? null);
+
+  const gateSignals = mergeTerminalGateSignals(issue.description, latestAgentComment);
+  // Non-code deliverables are closed by document-backed terminalEvidence, not a
+  // merged PR — skip them here so we never compete with that gate path.
+  if (gateSignals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(gateSignals.deliverable)) {
+    return null;
+  }
+  const hasAttachedIssueDocument = await issueHasAttachedDocuments({
+    dbOrTx: db,
+    companyId: issue.companyId,
+    issueId: issue.id,
+  });
+  if (hasAttachedIssueDocument) return null;
+
+  const verificationRepo = gateSignals.subjectRepo ?? repoBinding;
+  const commentRows = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(eq(issueComments.issueId, issue.id))
+    .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+  if (hasUnansweredCloseBlockingThreadComment(commentRows)) {
+    return null;
+  }
+
+  const pullReferences = new Map<string, PullRequestReference>();
+  for (const ref of extractReferencedPullRequests(issue.description, verificationRepo)) {
+    pullReferences.set(serializePullRequestReference(ref), ref);
+  }
+  for (const row of commentRows) {
+    for (const ref of extractReferencedPullRequests(row.body, verificationRepo)) {
+      pullReferences.set(serializePullRequestReference(ref), ref);
+    }
+  }
+
+  let firstVerificationError: unknown = null;
+  for (const ref of pullReferences.values()) {
+    try {
+      const details = await fetchPullRequestDetails({ repo: ref.repo, pullNumber: ref.pullNumber });
+      if (details.merged) {
+        return { ...details, url: details.url ?? ref.url };
+      }
+    } catch (error) {
+      firstVerificationError ??= error;
+    }
+  }
+
+  if (firstVerificationError) {
+    logger.warn(
+      { issueId: issue.id, error: firstVerificationError },
+      "Thread-only auto-close skipped: merged PR details could not be verified.",
+    );
+  }
+  return null;
+}
+
+export function buildMergedPullRequestAutoCloseComment(input: {
+  issue: { id: string; identifier: string | null };
+  pullRequest: PullRequestDetails;
+  fallbackUrl?: string | null;
+}) {
+  return [
+    `Paperclip auto-closed ${input.issue.identifier ?? input.issue.id} after verifying merged PR ${input.pullRequest.url ?? input.fallbackUrl ?? `#${input.pullRequest.pullNumber}`}.`,
+    `PR: ${repoLabel(input.pullRequest.repo)} #${input.pullRequest.pullNumber}`,
+    `mergedAt: ${input.pullRequest.mergedAt ?? "unknown"}`,
+    `commit: ${input.pullRequest.mergeCommitSha ?? "unknown"}`,
+  ].join("\n");
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
