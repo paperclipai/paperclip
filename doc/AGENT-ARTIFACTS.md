@@ -1,9 +1,9 @@
 # Agent Artifact Upload Workflow
 
-Generated files that a board user or reviewer should inspect must be attached to
-the Paperclip issue before the agent chooses a final disposition. A local
-workspace path is not enough, because cloud users and reviewers often cannot
-access the agent's disk.
+Generated files that a board user or reviewer should inspect as deliverables
+must be attached to the Paperclip issue before the agent chooses a final
+disposition. A local workspace path is not enough, because cloud users and
+reviewers often cannot access the agent's disk.
 
 Use the helper bundled with the Paperclip skill from the repo root:
 
@@ -27,9 +27,50 @@ It uploads the file to
 artifact work product on `POST /api/issues/{issueId}/work-products` by default.
 The command prints issue-safe markdown links for the final task comment.
 
+## Uploaded Artifacts vs Workspace Files
+
+Use uploaded artifacts for deliverables: videos, PDFs, screenshots, archives,
+reports, rendered HTML, or any file the board should inspect without needing the
+agent's checkout. Attachment-backed artifact work products set `type` to
+`artifact` and `provider` to `paperclip`, with metadata canonicalized from the
+uploaded `attachmentId`.
+
+Use `workspace_file` metadata only for important files that intentionally remain
+in a project or execution workspace, such as source files, committed markdown
+plans, or generated files whose meaning depends on the checkout. Workspace-only
+references are useful signposts, but they are not durable uploads.
+
+Expected work product metadata shape:
+
+```json
+{
+  "resourceRef": {
+    "kind": "workspace_file",
+    "issueId": "<issue-id>",
+    "workspaceKind": "execution_workspace",
+    "workspaceId": "<execution-workspace-id>",
+    "relativePath": "doc/plans/example.md",
+    "line": 1,
+    "column": 1,
+    "displayPath": "doc/plans/example.md:1:1"
+  }
+}
+```
+
+`workspaceKind` is `execution_workspace` or `project_workspace`. `line` and
+`column` are optional. `relativePath` must be relative to that workspace root;
+do not store host-local absolute paths as workspace references.
+
+Workspace file links resolve only inside registered Paperclip workspaces. The
+default target is the current issue's execution workspace first, then its
+project workspace. A link may target another same-company project workspace only
+when it carries both that `projectId` and `workspaceId`. Paperclip does not
+resolve arbitrary machine-wide filesystem paths, absolute host paths, home
+paths, or relative paths that escape the selected workspace.
+
 ## Completion Pattern
 
-When a task produces a user-inspectable file:
+When a task produces a user-inspectable deliverable file:
 
 1. Generate and verify the file locally.
 2. Upload it with `skills/paperclip/scripts/paperclip-upload-artifact.sh`.
@@ -38,9 +79,12 @@ When a task produces a user-inspectable file:
 4. Link the printed attachment URL in the final issue comment.
 5. Then set the final issue status.
 
-Final comments should name the uploaded artifact, not just the local filesystem
-path. Local paths can be included as diagnostic context, but they cannot be the
-only access path.
+Final comments should name and link the uploaded artifact or work product, not
+just the local filesystem path. For workspace-only files, include the work
+product title and recorded relative path. Local paths can be included as
+diagnostic context, but they cannot be the only access path. Browse/search is a
+fallback for recovering workspace files when the issue link or chip is not
+available, not the preferred way to deliver files to users.
 
 ## Video Examples
 

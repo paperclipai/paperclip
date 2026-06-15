@@ -193,6 +193,8 @@ export type AdapterSkillOrigin =
 export interface AdapterSkillEntry {
   key: string;
   runtimeName: string | null;
+  versionId?: string | null;
+  currentVersionId?: string | null;
   desired: boolean;
   managed: boolean;
   required?: boolean;
@@ -212,6 +214,7 @@ export interface AdapterSkillSnapshot {
   supported: boolean;
   mode: AdapterSkillSyncMode;
   desiredSkills: string[];
+  desiredSkillEntries?: Array<{ key: string; versionId: string | null }>;
   entries: AdapterSkillEntry[];
   warnings: string[];
 }
@@ -502,4 +505,19 @@ export interface CreateConfigValues {
   intervalSec: number;
   /** Arbitrary key-value pairs populated by schema-driven config fields. */
   adapterSchemaValues?: Record<string, unknown>;
+  // openclaw_gateway adapter fields
+  authToken?: string;
+  agentId?: string;
+  sessionKeyStrategy?: string;
+  sessionKey?: string;
+  timeoutSec?: number;
+  waitTimeoutMs?: number;
+  disableDeviceAuth?: boolean;
+  autoPairOnFirstConnect?: boolean;
+  devicePrivateKeyPem?: string;
+  role?: string;
+  scopes?: string;
+  paperclipApiUrl?: string;
+  headersJson?: string;
+  password?: string;
 }

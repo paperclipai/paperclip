@@ -1,7 +1,7 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-05-23
+Date: 2026-06-10
 Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
@@ -121,6 +121,17 @@ These are related but not identical:
 
 Paperclip already clears stale execution locks and can adopt some stale checkout locks when the original run is gone.
 
+The active-lock lifecycle is part of the checkout contract:
+
+- a run owns `checkoutRunId` only while that run is non-terminal
+- when a run reaches `succeeded`, `failed`, `cancelled`, or `timed_out`, finalization must compare-and-clear lock columns that still point at that run
+- finalization must not clear a lock already reacquired by a successor run
+- process-loss retry handoff must not leave `checkoutRunId` pinned to the failed run when `executionRunId` moves to the retry run
+- checkout and checkout-owner checks may self-heal lock columns that point at terminal or missing runs before evaluating conflicts
+- the recovery sweeper may clear rows whose checkout and execution locks all point at terminal or missing runs
+
+Stale-lock recovery is crash recovery, not a retry loop. Paperclip must not clear or adopt locks held by non-terminal runs. After stale cleanup, a checkout `409` should mean a real live owner, status/assignee mismatch, unresolved blocker, or active gate still prevents checkout. Agents must treat that `409` as an ownership conflict and stop rather than retrying the same checkout.
+
 ## 6. Parent/Sub-Issue vs Blockers
 
 Paperclip uses two different relationships for different jobs.
@@ -236,6 +247,59 @@ The valid action-path primitives are:
 - a human owner via `assigneeUserId`
 - a first-class blocker chain whose unresolved leaf issues are themselves healthy
 - an open explicit recovery action that names the owner and action needed to restore liveness
+
+### Comment and document activity wake sources
+
+Issue-thread comments and document-scoped comments have different wake semantics.
+
+A top-level issue comment created by a board user or other user on an agent-assigned, non-terminal issue may wake that issue's assignee. This is the normal "the owner should see new issue-thread feedback" path, and the wake payload should identify the issue comment that caused the wake when possible.
+
+Issue document comments, document annotation comments, and document review comments do not wake the issue assignee by default. They remain visible as document activity and should be discoverable from the issue's document/review surfaces, but document activity is not itself an issue execution path. A document comment can provide evidence or context for the next run, but it must not be treated as a queued wake, monitor, approval, interaction response, blocker, or terminal disposition.
+
+Document-scoped activity may still route work when it is converted into an explicit action-path primitive. Valid routing exceptions include:
+
+- an issue mention or structured agent mention that intentionally wakes or assigns a named participant
+- a document-review assignment that names a reviewer or assignee for the review state
+- a response to an issue-thread interaction, such as `request_confirmation`, `ask_user_questions`, or `suggest_tasks`
+- intentional board routing that assigns or reassigns the issue, opens a first-class blocker, creates delegated follow-up work, or queues a typed wake
+
+Freeform document approval text is not auto-acceptance. Plan approval, implementation approval, or review acceptance must flow through the explicit interaction, approval, execution-policy, assignment, or blocker primitives that define who owns the next move.
+
+### Comment interrupts and ownership handoffs
+
+A board comment can be an interrupt, an ownership change, both, or neither. Paperclip must keep those concepts separate in the product contract.
+
+An interrupt stops the current live execution path for the issue. It does not, by itself, select the next owner. If an active run is interrupted by the board, the run may still terminate with the underlying `cancelled` status, but the issue activity and wake context should make the operator intent visible as an interruption rather than an unexplained runtime failure.
+
+An ownership change selects who owns the issue after the comment is committed:
+
+- setting `assigneeAgentId` makes the named agent the owner
+- setting `assigneeUserId`, or clearing `assigneeAgentId`, makes the issue human-owned or unassigned
+- leaving assignee fields unchanged preserves the current owner
+
+A wake is the delivery path for a selected agent owner. If an interrupting update also assigns a non-terminal, non-backlog issue to an agent, Paperclip should enqueue one wake for the new assignee and include the interrupting comment and interrupted run id in the wake payload/context when available. Stale scheduled retries for the previous owner must not run after ownership changes away from that owner.
+
+If the committed update assigns the issue to a user, clears the agent assignee, or leaves the issue without an agent owner, Paperclip must not imply that an agent handoff happened. The issue is then waiting on the human owner or on a future explicit assignment, blocker, approval, interaction, monitor, or recovery action.
+
+Plain text is not assignment. Writing an agent's name, role, or team label in a comment does not change ownership and does not create an agent wake. Agent routing from comment text requires a structured agent mention that resolves inside the company, an explicit `assigneeAgentId` mutation, or an existing current agent assignee receiving normal issue-thread feedback.
+
+Pause and tree-control previews should make the same distinction visible. They should report whether the affected subtree contains live running work, queued wakes, agent-owned work, or only human-owned/static issues, so a pause after a handoff does not look like it interrupted agent execution when no agent execution path existed.
+
+### Adapter-backed workspace coherence
+
+For adapter-backed execution, an active run or queued wake counts as a live path only when Paperclip can also prove that the selected workspace is coherent for that adapter invocation. A wake that cannot start in the intended workspace is only a failed delivery attempt, not a healthy liveness path.
+
+A workspace-coherent adapter path means:
+
+- the selected `executionWorkspaceId`, `projectWorkspaceId`, `projectId`, source issue, and company all refer to the same company-scoped work context
+- any `projectWorkspaceId` is accompanied by the owning `projectId`, and that project relationship is unambiguous
+- the adapter will receive the same effective workspace/cwd that Paperclip resolved for the run, including the same workspace ids and `PAPERCLIP_WORKSPACE_*` environment values
+- the effective cwd exists or is provider-reachable, according to the workspace provider
+- when the adapter or workspace strategy relies on git state, the cwd is git-valid for the selected workspace: it resolves to the expected repository root, required base refs or branch metadata can be resolved, and runtime-created worktrees are still registered or explicitly recoverable
+
+The state `projectWorkspaceId` plus `executionWorkspaceId` without `projectId` is invalid for project-scoped execution. Paperclip may treat it as recoverable only when it can derive exactly one owning project from the execution workspace, project workspace, or source issue in the same company and then repair the persisted state before delivery. If the owning project is missing, ambiguous, or cross-company, the queued adapter run must not be counted as a live path.
+
+Workspace incoherence feeds into the same non-terminal liveness and stranded assigned-work model as a disappeared run. The recovery path should first fail or reject the incoherent wake, then either repair and requeue one bounded continuation for the same assignee or surface an explicit recovery action. It must not leave an agent-owned `in_progress` issue healthy solely because a wake record exists that would invoke the adapter in the wrong cwd, a non-git directory where git is required, an unrelated project workspace, or an unrecoverable missing worktree.
 
 ### Explicit recovery actions
 

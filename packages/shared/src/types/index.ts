@@ -24,6 +24,7 @@ export type {
   FeedbackTraceBundle,
 } from "./feedback.js";
 export type {
+  InstanceExecutionMode,
   InstanceExperimentalSettings,
   InstanceGeneralSettings,
   InstanceSettings,
@@ -40,16 +41,43 @@ export {
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
 } from "./instance.js";
+export {
+  TRUST_PRESETS,
+  DEFAULT_TRUST_PRESET,
+  LOW_TRUST_REVIEW_PRESET,
+  LOW_TRUST_REVIEW_PRESET_VERSION,
+  LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
+  LOW_TRUST_TOOL_CLASSES,
+  type TrustPreset,
+  type LowTrustToolClass,
+  type LowTrustOutputPromotionTarget,
+  type LowTrustBoundary,
+  type LowTrustReviewPresetPolicy,
+  type TrustAuthorizationPolicy,
+} from "../trust-policy.js";
 export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
   CompanySkillCompatibility,
   CompanySkillSourceBadge,
+  CompanySkillSharingScope,
+  CompanySkillListSort,
   CompanySkillFileInventoryEntry,
+  CompanySkillVersionFileInventoryEntry,
   CompanySkill,
   CompanySkillListItem,
   CompanySkillUsageAgent,
   CompanySkillDetail,
+  CompanySkillListQuery,
+  CompanySkillCategoryCount,
+  CompanySkillVersion,
+  CompanySkillVersionCreateRequest,
+  CompanySkillStarResult,
+  CompanySkillComment,
+  CompanySkillCommentCreateRequest,
+  CompanySkillCommentUpdateRequest,
+  CompanySkillForkRequest,
+  CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillAuditSeverity,
   CompanySkillAuditVerdict,
@@ -70,6 +98,8 @@ export type {
   CatalogSkillKind,
   CatalogSkillFileKind,
   CatalogSkillFile,
+  CatalogSkillGitHubSource,
+  CatalogSkillSource,
   CatalogSkill,
   CatalogSkillListQuery,
   CatalogSkillFileDetail,
@@ -77,9 +107,33 @@ export type {
   CompanySkillInstallCatalogResult,
 } from "./company-skill.js";
 export type {
+  CatalogTeamKind,
+  CatalogTeamTrustLevel,
+  CatalogTeamCompatibility,
+  CatalogTeamFileKind,
+  CatalogTeamSkillRequirementType,
+  CatalogTeamSkillRequirement,
+  CatalogTeamEnvInputSummary,
+  CatalogTeamSourceRef,
+  CatalogTeamFile,
+  CatalogTeam,
+  CatalogManifest,
+  CatalogTeamListQuery,
+  CatalogTeamFileDetail,
+  CatalogTeamSourcePolicy,
+  CatalogTeamImportOptions,
+  CatalogTeamInstallOptions,
+  CatalogTeamSkillPreparationAction,
+  CatalogTeamSkillPreparation,
+  CatalogTeamImportPreviewResult,
+  CatalogTeamInstallResult,
+  InstalledCatalogTeam,
+} from "./teams-catalog.js";
+export type {
   AgentSkillSyncMode,
   AgentSkillState,
   AgentSkillOrigin,
+  AgentDesiredSkillEntry,
   AgentSkillEntry,
   AgentSkillSnapshot,
   AgentSkillSyncRequest,
@@ -89,6 +143,7 @@ export type {
   AgentAccessState,
   AgentChainOfCommandEntry,
   AgentDetail,
+  ClearAgentErrorResponse,
   AgentModelProfileConfig,
   AgentPermissions,
   AgentRuntimeConfig,
@@ -103,6 +158,15 @@ export type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
 } from "./agent.js";
+export type {
+  AgentEligibilityAgent,
+  AgentEligibilityLifecycleReason,
+  AgentInvalidOrgChainAncestor,
+  AgentOrgChainEntry,
+  AgentOrgChainHealth,
+  AgentOrgChainInvalidReason,
+  AgentWorkEligibility,
+} from "../agent-eligibility.js";
 export type { AssetImage } from "./asset.js";
 export type {
   CreateDocumentAnnotationCommentRequest,
@@ -120,9 +184,10 @@ export type {
   DocumentTextRange,
   UpdateDocumentAnnotationThreadRequest,
 } from "./document-annotation.js";
-export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
+export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
   CompanySearchHighlight,
+  CompanySearchArtifactSummary,
   CompanySearchIssueSummary,
   CompanySearchResponse,
   CompanySearchResult,
@@ -167,6 +232,21 @@ export type {
   WorkspaceOperationStatus,
 } from "./workspace-operation.js";
 export type {
+  WorkspaceFileContent,
+  WorkspaceFileContentEncoding,
+  WorkspaceFileListDirectoryItem,
+  WorkspaceFileListFileItem,
+  WorkspaceFileListItem,
+  WorkspaceFileListMode,
+  WorkspaceFileListResponse,
+  WorkspaceFilePreviewKind,
+  WorkspaceFileRef,
+  WorkspaceFileResourceKind,
+  WorkspaceFileSelector,
+  WorkspaceFileWorkspaceKind,
+  ResolvedWorkspaceResource,
+} from "./workspace-file-resource.js";
+export type {
   IssueWorkProduct,
   IssueWorkProductType,
   IssueWorkProductProvider,
@@ -174,6 +254,17 @@ export type {
   IssueWorkProductReviewState,
   AttachmentArtifactWorkProductMetadata,
 } from "./work-product.js";
+export type {
+  CompanyArtifact,
+  CompanyArtifactAgentSummary,
+  CompanyArtifactGroup,
+  CompanyArtifactGroupBy,
+  CompanyArtifactIssueSummary,
+  CompanyArtifactMediaKind,
+  CompanyArtifactProjectSummary,
+  CompanyArtifactSource,
+  CompanyArtifactsResponse,
+} from "./artifact.js";
 export type {
   Issue,
   IssueWorkMode,
@@ -239,6 +330,9 @@ export type {
   RequestConfirmationTarget,
   RequestConfirmationPayload,
   RequestConfirmationResult,
+  RequestCheckboxConfirmationOption,
+  RequestCheckboxConfirmationPayload,
+  RequestCheckboxConfirmationResult,
   AcceptedPlanDecompositionStatus,
   AcceptedPlanDecompositionChild,
   AcceptedPlanDecomposition,
@@ -249,6 +343,7 @@ export type {
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
+  RequestCheckboxConfirmationInteraction,
   IssueThreadInteraction,
   IssueThreadInteractionPayload,
   IssueThreadInteractionResult,

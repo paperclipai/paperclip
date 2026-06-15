@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -6,8 +7,10 @@ import type {
   CatalogSkill,
   CatalogSkillFileDetail,
   CatalogSkillListQuery,
+  CatalogSkillSource,
 } from "@paperclipai/shared";
-import { HttpError, conflict, notFound } from "../errors.js";
+import { HttpError, conflict, notFound, unprocessable } from "../errors.js";
+import { ghFetch, resolveRawGitHubUrl } from "./github-fetch.js";
 import { normalizePortablePath } from "./portable-path.js";
 
 interface CatalogManifestFile {
@@ -93,6 +96,60 @@ function resolveCatalogPackageRoot() {
   return catalogPackageRoot;
 }
 
+function sourceRootPath(source: CatalogSkillSource) {
+  return source.path ? normalizePortablePath(source.path) : "";
+}
+
+function resolveCatalogSourcePath(source: CatalogSkillSource, relativePath: string) {
+  const sourceRoot = sourceRootPath(source);
+  return sourceRoot ? `${sourceRoot}/${relativePath}` : relativePath;
+}
+
+async function fetchCatalogSourceFile(
+  skill: CatalogSkill,
+  relativePath: string,
+): Promise<Buffer> {
+  const source = skill.source;
+  if (!source) {
+    const packageRoot = resolveCatalogPackageRoot();
+    const absolutePath = path.resolve(packageRoot, skill.path, relativePath);
+    const skillRoot = path.resolve(packageRoot, skill.path);
+    if (absolutePath !== skillRoot && !absolutePath.startsWith(`${skillRoot}${path.sep}`)) {
+      throw notFound("Catalog skill file not found");
+    }
+    return fs.readFile(absolutePath);
+  }
+
+  if (source.type !== "github") {
+    throw unprocessable(`Unsupported catalog source type: ${(source as { type: string }).type}`);
+  }
+
+  const sourcePath = resolveCatalogSourcePath(source, relativePath);
+  const url = resolveRawGitHubUrl(source.hostname, source.owner, source.repo, source.commit, sourcePath);
+  const response = await ghFetch(url);
+  if (!response.ok) {
+    throw unprocessable(`Failed to fetch pinned catalog file ${sourcePath} from ${source.owner}/${source.repo}@${source.commit}: HTTP ${response.status}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+async function readCatalogFileBytes(
+  skill: CatalogSkill,
+  relativePath: string,
+): Promise<Buffer> {
+  const fileEntry = skill.files.find((entry) => entry.path === relativePath);
+  if (!fileEntry) {
+    throw notFound("Catalog skill file not found");
+  }
+
+  const bytes = await fetchCatalogSourceFile(skill, relativePath);
+  const actualSha = createHash("sha256").update(bytes).digest("hex");
+  if (actualSha !== fileEntry.sha256) {
+    throw unprocessable(`Pinned catalog file hash mismatch for ${skill.id}:${relativePath}.`);
+  }
+  return bytes;
+}
+
 function searchText(skill: CatalogSkill) {
   return [
     skill.id,
@@ -152,18 +209,11 @@ export async function readCatalogSkillFile(
     throw notFound("Catalog skill file not found");
   }
 
-  const packageRoot = resolveCatalogPackageRoot();
-  const absolutePath = path.resolve(packageRoot, skill.path, normalizedPath);
-  const skillRoot = path.resolve(packageRoot, skill.path);
-  if (absolutePath !== skillRoot && !absolutePath.startsWith(`${skillRoot}${path.sep}`)) {
-    throw notFound("Catalog skill file not found");
-  }
-
   if (fileEntry.kind === "asset") {
     throw new HttpError(415, "Catalog asset previews are not supported.");
   }
 
-  const content = await fs.readFile(absolutePath, "utf8");
+  const content = (await readCatalogFileBytes(skill, normalizedPath)).toString("utf8");
   return {
     catalogSkillId: skill.id,
     path: normalizedPath,
@@ -182,14 +232,7 @@ export async function copyCatalogSkillFile(reference: string, relativePath: stri
     throw notFound("Catalog skill file not found");
   }
 
-  const packageRoot = resolveCatalogPackageRoot();
-  const absolutePath = path.resolve(packageRoot, skill.path, normalizedPath);
-  const skillRoot = path.resolve(packageRoot, skill.path);
-  if (absolutePath !== skillRoot && !absolutePath.startsWith(`${skillRoot}${path.sep}`)) {
-    throw notFound("Catalog skill file not found");
-  }
-
-  await fs.copyFile(absolutePath, targetPath);
+  await fs.writeFile(targetPath, await readCatalogFileBytes(skill, normalizedPath));
 }
 
 export function getCatalogPackageMetadata() {
