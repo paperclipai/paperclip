@@ -3366,6 +3366,77 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
+  it("does not block stranded work while a newer active checkout run owns the issue", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+    });
+    const activeRunId = randomUUID();
+    const activeWakeupId = randomUUID();
+    const now = new Date("2026-03-19T00:10:00.000Z");
+    await db.insert(agentWakeupRequests).values({
+      id: activeWakeupId,
+      companyId,
+      agentId,
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      payload: {},
+      status: "claimed",
+      runId: activeRunId,
+      claimedAt: now,
+      updatedAt: now,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: activeWakeupId,
+      contextSnapshot: {
+        wakeReason: "heartbeat_timer",
+      },
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: activeRunId,
+        executionRunId: activeRunId,
+        updatedAt: now,
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      status: "in_progress",
+      checkoutRunId: activeRunId,
+      executionRunId: activeRunId,
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
+  });
+
   it("allows one productive-terminal recovery after regular continuation recovery made progress", async () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
