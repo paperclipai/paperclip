@@ -125,6 +125,142 @@ function applyStatusSideEffects(
   return patch;
 }
 
+// artifact_required: machine-readable close-gate declaration.
+// Authors mark a line `artifact_required: <key>` in the issue description; the
+// platform refuses status→done unless a comment supplies `<key>: <value>` with
+// a non-empty value. See doc/ARTIFACT_REQUIRED.md.
+const ARTIFACT_REQUIRED_KEY_RE = /^[\s>*\-]*artifact_required\s*:\s*([a-z][a-z0-9_]*)\s*$/gim;
+
+export function parseArtifactRequiredKeys(description: string | null | undefined): string[] {
+  if (!description) return [];
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  ARTIFACT_REQUIRED_KEY_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ARTIFACT_REQUIRED_KEY_RE.exec(description)) !== null) {
+    const key = match[1].toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  return keys;
+}
+
+function buildArtifactSatisfactionRegex(key: string): RegExp {
+  // Match `<key>: <non-empty value>` anywhere in the comment body. Treat the
+  // surrounding text as freeform — a line, a sentence, or a code fence are all
+  // acceptable carriers. Value must contain at least one non-whitespace char.
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}\\s*:\\s*\\S+`, "i");
+}
+
+export function findUnsatisfiedArtifactKeys(
+  description: string | null | undefined,
+  commentBodies: ReadonlyArray<string | null | undefined>,
+): string[] {
+  const required = parseArtifactRequiredKeys(description);
+  if (required.length === 0) return [];
+  const bodies = commentBodies.filter((body): body is string => typeof body === "string" && body.length > 0);
+  const missing: string[] = [];
+  for (const key of required) {
+    const re = buildArtifactSatisfactionRegex(key);
+    // Skip the declaration itself: an `artifact_required: <key>` line in a
+    // comment body must not satisfy the gate. Only `<key>: <value>` satisfies.
+    const satisfied = bodies.some((body) => {
+      // Strip lines that are themselves artifact_required declarations for this
+      // key — they describe the requirement, they do not deliver the artifact.
+      const stripped = body.replace(
+        new RegExp(`^[\\s>*\\-]*artifact_required\\s*:\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\s*$`, "gim"),
+        "",
+      );
+      return re.test(stripped);
+    });
+    if (!satisfied) {
+      missing.push(key);
+    }
+  }
+  return missing;
+}
+
+interface MissingArtifactReport {
+  issueId: string;
+  issueIdentifier: string;
+  missingKeys: string[];
+}
+
+async function loadIssueCommentBodies(dbOrTx: any, companyId: string, issueId: string): Promise<string[]> {
+  const rows = await dbOrTx
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, companyId),
+        eq(issueComments.issueId, issueId),
+        isNull(issueComments.deletedAt),
+      ),
+    );
+  return rows.map((row: { body: string | null }) => row.body ?? "");
+}
+
+async function findUnsatisfiedArtifactsForIssue(
+  dbOrTx: any,
+  issue: { id: string; identifier: string; companyId: string; description: string | null },
+): Promise<MissingArtifactReport | null> {
+  const required = parseArtifactRequiredKeys(issue.description);
+  if (required.length === 0) return null;
+  const bodies = await loadIssueCommentBodies(dbOrTx, issue.companyId, issue.id);
+  const missing = findUnsatisfiedArtifactKeys(issue.description, bodies);
+  if (missing.length === 0) return null;
+  return { issueId: issue.id, issueIdentifier: issue.identifier, missingKeys: missing };
+}
+
+async function assertArtifactRequiredSatisfiedOnDone(
+  dbOrTx: any,
+  existing: { id: string; identifier: string; companyId: string; description: string | null; parentId: string | null },
+): Promise<void> {
+  const reports: MissingArtifactReport[] = [];
+
+  const selfReport = await findUnsatisfiedArtifactsForIssue(dbOrTx, existing);
+  if (selfReport) reports.push(selfReport);
+
+  // Cascade-close guard: when a parent transitions to done, any still-open
+  // child carrying an unmet artifact_required would be silently swept by the
+  // wakeable-parent / agent-driven cascade. Refuse the parent transition until
+  // each child either satisfies its gate, is explicitly cancelled, or has its
+  // artifact_required declaration removed. Children already done/cancelled are
+  // not re-validated — their close was already gated when it happened.
+  const openChildren: Array<{ id: string; identifier: string; companyId: string; description: string | null }> = await dbOrTx
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      companyId: issues.companyId,
+      description: issues.description,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, existing.companyId),
+        eq(issues.parentId, existing.id),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ),
+    );
+
+  for (const child of openChildren) {
+    const childReport = await findUnsatisfiedArtifactsForIssue(dbOrTx, child);
+    if (childReport) reports.push(childReport);
+  }
+
+  if (reports.length === 0) return;
+
+  const summary = reports
+    .map((r) => `${r.issueIdentifier} requires [${r.missingKeys.join(", ")}]`)
+    .join("; ");
+  throw unprocessable(
+    `Cannot transition issue to done: artifact_required gate failed — ${summary}`,
+    { missingArtifacts: reports, code: "ARTIFACT_REQUIRED_MISSING" },
+  );
+}
+
 function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
@@ -5126,6 +5262,10 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+      }
+
+      if (issueData.status === "done" && existing.status !== "done") {
+        await assertArtifactRequiredSatisfiedOnDone(dbOrTx, existing);
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
