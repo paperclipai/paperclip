@@ -224,7 +224,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       id: parentIssueId,
       companyId,
       projectId,
-      identifier: "PAP-11248",
+      identifier: `PAP-${randomUUID().slice(0, 8)}`,
       title: "Routine report target",
       status: "in_progress",
       priority: "high",
