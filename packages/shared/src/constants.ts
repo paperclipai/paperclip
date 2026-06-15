@@ -151,6 +151,8 @@ export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 export const ISSUE_WORK_MODES = ["standard", "planning"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
+export const ISSUE_WORK_ITEM_TYPES = ["initiative", "human_task", "ai_task", "approval", "routine"] as const;
+export type IssueWorkItemType = (typeof ISSUE_WORK_ITEM_TYPES)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;

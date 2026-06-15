@@ -512,7 +512,8 @@ export function NewIssueDialog() {
   const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
   const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
 
-  const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType ?? null;
+  const selectedAssigneeAgent = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId) ?? null;
+  const assigneeAdapterType = selectedAssigneeAgent?.adapterType ?? null;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
@@ -521,7 +522,9 @@ export function NewIssueDialog() {
     ? getAdapterCapabilities(assigneeAdapterType)
     : null;
   const assigneeSupportsCheapLane = Boolean(
-    supportsAssigneeOverrides && assigneeAdapterCapabilities?.supportsModelProfiles,
+    supportsAssigneeOverrides &&
+      (assigneeAdapterCapabilities?.supportsModelProfiles ||
+        ((selectedAssigneeAgent?.runtimeConfig as Record<string, unknown> | undefined)?.routes as Record<string, unknown> | undefined)?.cheap),
   );
 
   const { data: assigneeCheapProfiles } = useQuery({
@@ -670,6 +673,7 @@ export function NewIssueDialog() {
     approverValue,
     projectId,
     projectWorkspaceId,
+    assigneeModelLane,
     assigneeModelOverride,
     assigneeThinkingEffort,
     assigneeChrome,
@@ -770,6 +774,7 @@ export function NewIssueDialog() {
       setApproverValue("");
       setShowReviewerRow(false);
       setShowApproverRow(false);
+      setAssigneeModelLane("primary");
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -840,6 +845,7 @@ export function NewIssueDialog() {
       setApproverValue("");
       setShowReviewerRow(false);
       setShowApproverRow(false);
+      setAssigneeModelLane("primary");
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);

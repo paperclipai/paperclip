@@ -146,6 +146,7 @@ export {
   type IssueStatus,
   type IssuePriority,
   type IssueWorkMode,
+  type IssueWorkItemType,
   type IssueCommentAuthorType,
   type IssueCommentMetadataRowType,
   type IssueCommentPresentationKind,
@@ -632,6 +633,8 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  ProviderCredential,
+  ProviderCredentialQuota,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
 export {

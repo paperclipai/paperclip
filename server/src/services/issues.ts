@@ -226,6 +226,7 @@ export interface IssueFilters {
   originKind?: string;
   originKindPrefix?: string;
   originId?: string;
+  workItemType?: string;
   includeRoutineExecutions?: boolean;
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
@@ -799,6 +800,24 @@ function latestIssueActivityAt(...values: Array<Date | string | null | undefined
     .filter((value): value is Date => value instanceof Date)
     .sort((a, b) => b.getTime() - a.getTime());
   return normalized[0] ?? null;
+}
+
+function rowsFromDbExecuteResult<T>(result: unknown): T[] {
+  if (!result) return [];
+  if (Array.isArray(result)) return result as T[];
+
+  if (typeof result === "object" && "rows" in result) {
+    const rowsValue = (result as { rows?: unknown }).rows;
+    if (Array.isArray(rowsValue)) return rowsValue as T[];
+  }
+
+  if (
+    typeof result === "object" &&
+    typeof (result as Iterable<T>)[Symbol.iterator] === "function"
+  ) {
+    return Array.from(result as Iterable<T>);
+  }
+  return [];
 }
 
 async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<string, IssueLabelRow[]>> {
@@ -1578,6 +1597,7 @@ const issueListSelect = {
   `,
   status: issues.status,
   workMode: issues.workMode,
+  workItemType: issues.workItemType,
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
@@ -1617,6 +1637,7 @@ const issueListSelect = {
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
+const { workItemType: _workItemType, ...issueListSelectWithoutWorkItemType } = issueListSelect;
 
 function withActiveRuns(
   issueRows: IssueWithLabels[],
@@ -2471,6 +2492,27 @@ export function issueService(db: Db) {
     });
   }
 
+  let workItemTypeColumnSupported: boolean | null = null;
+  async function hasWorkItemTypeColumnInIssuesTable() {
+    if (workItemTypeColumnSupported !== null) return workItemTypeColumnSupported;
+
+    try {
+      const rows = rowsFromDbExecuteResult<unknown>(await db.execute(sql`
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'issues'
+          AND column_name = 'work_item_type'
+        LIMIT 1
+      `));
+      const resolved = rows.length > 0;
+      workItemTypeColumnSupported = resolved;
+      return resolved;
+    } catch {
+      workItemTypeColumnSupported = false;
+      return false;
+    }
+  }
+
   return {
     clearExecutionRunIfTerminal,
 
@@ -2642,8 +2684,11 @@ export function issueService(db: Db) {
         END
       `;
       const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
+      const issueListSelectForList = supportsWorkItemTypeColumn
+        ? issueListSelect
+        : issueListSelectWithoutWorkItemType;
       const baseQuery = db
-        .select(issueListSelect)
+        .select(issueListSelectForList)
         .from(issues)
         .where(and(...conditions))
         .orderBy(
@@ -2658,9 +2703,10 @@ export function issueService(db: Db) {
         : (limit === undefined ? baseQuery : baseQuery.limit(limit));
       const rows = (await pageQuery).map((row) => ({
         ...row,
+        ...(supportsWorkItemTypeColumn ? {} : { workItemType: "ai_task" as const }),
         description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
       }));
-      const withLabels = await withIssueLabels(db, rows);
+      const withLabels = await withIssueLabels(db, rows as IssueRow[]);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
       if (withRuns.length === 0) {
