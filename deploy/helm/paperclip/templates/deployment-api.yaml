@@ -129,6 +129,33 @@ spec:
                 secretKeyRef:
                   name: {{ include "paperclip.secretName" . }}
                   key: agentJwtSecret
+            {{- if ((.Values.githubApp).enabled) }}
+            # GitHub App creds for server-side installation-token minting, used to
+            # authoritatively verify a posted PR review before flagging a run
+            # pr_review_output_missing (BLO-10448). Reuses the existing
+            # paperclip-github-app-creds secret (keys: app_id, installation_id,
+            # private_key.pem). When githubApp.enabled is false the server's
+            # verification is inert and runs fall back to the text heuristic.
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ ((.Values.githubApp).secretName) | default "paperclip-github-app-creds" | quote }}
+                  key: {{ ((.Values.githubApp).appIdKey) | default "app_id" | quote }}
+            - name: GITHUB_APP_INSTALLATION_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ ((.Values.githubApp).secretName) | default "paperclip-github-app-creds" | quote }}
+                  key: {{ ((.Values.githubApp).installationIdKey) | default "installation_id" | quote }}
+            - name: GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ ((.Values.githubApp).secretName) | default "paperclip-github-app-creds" | quote }}
+                  key: {{ ((.Values.githubApp).privateKeyKey) | default "private_key.pem" | quote }}
+            {{- with ((.Values.githubApp).reviewerBotLogin) }}
+            - name: PAPERCLIP_PR_REVIEWER_BOT_LOGIN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.env.extra }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -128,6 +128,23 @@ secret:
   # -- Base64-encoded master key to seed `/paperclip/instances/<instanceId>/secrets/master.key` on first boot. Ignored if the file already exists on the PVC. Only used when `existingSecret` is empty. Leave empty to let Paperclip generate its own on first run.
   masterKey: ""
 
+# -- GitHub App creds for server-side installation-token minting. Lets the API
+# authoritatively verify (via the GitHub API) that a PR-review run actually left
+# a review/comment before flagging it `pr_review_output_missing` (BLO-10448).
+# Disabled by default — the verification is inert without it and runs fall back
+# to the text heuristic. Enable on deployments where the referenced secret exists.
+githubApp:
+  # -- Mount the GitHub App creds into the API env and enable GitHub-verified PR-review evidence.
+  enabled: false
+  # -- Name of the pre-existing Secret holding the App creds.
+  secretName: paperclip-github-app-creds
+  # -- Secret keys (override only if your secret uses different key names).
+  appIdKey: app_id
+  installationIdKey: installation_id
+  privateKeyKey: private_key.pem
+  # -- GitHub login of the reviewer bot used to filter reviews/comments. Empty -> server default ("allyblockcast[bot]").
+  reviewerBotLogin: ""
+
 # -- Pod spec knobs.
 pod:
   # -- Share the process namespace so tini (pid 1) reaps orphaned child processes spawned by Claude agents.

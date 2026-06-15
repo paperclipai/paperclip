@@ -109,6 +109,7 @@ import {
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
+import { githubHasReviewerEvidenceForPr } from "./github-app-auth.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -11628,12 +11629,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else if (outcome === "failed" && looksRateLimited) {
         rateLimitExhaustedOverride = true;
       }
-      const prReviewCompletionEvidence = outcome === "succeeded"
+      let prReviewCompletionEvidence = outcome === "succeeded"
         ? evaluatePrReviewCompletionEvidence(context, {
           resultJson: adapterResult.resultJson ?? null,
           summary: adapterResult.summary ?? null,
         })
         : { status: "not_applicable" as const };
+      // BLO-10448: the evidence guard above is a text heuristic over the agent's
+      // free-text summary and misfires on legitimate runs (idempotency skips,
+      // comment-mode reviews) — the PR WAS reviewed but the phrasing wasn't
+      // matched, flagging a false pr_review_output_missing. Before keeping that
+      // verdict, authoritatively check GitHub for a reviewer-bot review/comment at
+      // THIS head. Only rescues a false `missing`; any error / unconfigured creds /
+      // not-found leaves the heuristic verdict intact (safe, additive fallback).
+      if (prReviewCompletionEvidence.status === "missing") {
+        try {
+          const prReview = derivePaperclipPrReview(context);
+          if (prReview && prReview.repoFullName && prReview.prNumber !== null) {
+            const verified = await githubHasReviewerEvidenceForPr({
+              repoFullName: prReview.repoFullName,
+              prNumber: prReview.prNumber,
+              headSha: prReview.headSha,
+            });
+            if ("found" in verified && verified.found) {
+              await appendRunEvent(run, await nextRunEventSeq(run.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "info",
+                message: `GitHub-verified ${verified.via} by the reviewer bot on ${prReview.repoFullName}#${prReview.prNumber}; suppressing false pr_review_output_missing`,
+                payload: {
+                  repoFullName: prReview.repoFullName,
+                  prNumber: prReview.prNumber,
+                  headSha: prReview.headSha,
+                  via: verified.via,
+                },
+              });
+              prReviewCompletionEvidence = { status: "posted_review" as const };
+            }
+          }
+        } catch {
+          // Verification is best-effort; on any unexpected fault we keep the
+          // heuristic `missing` verdict (unchanged pre-BLO-10448 behavior).
+        }
+      }
       const prReviewIncompleteOverride =
         prReviewCompletionEvidence.status === "missing" ||
         prReviewCompletionEvidence.status === "auth_expired"

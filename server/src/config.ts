@@ -148,6 +148,17 @@ export interface Config {
   githubPrReviewerAgentId: string;
   githubDependabotAgentId: string;
   githubDependabotMinSeverity: string;
+  // GitHub App creds (from the `paperclip-github-app-creds` secret) used to mint
+  // short-lived installation tokens so the server can authoritatively verify, via
+  // the GitHub API, that a PR-review run actually left a review/comment before
+  // flagging it `pr_review_output_missing`. All empty when unmounted -> the
+  // verification is inert and the run falls back to the text-heuristic result.
+  githubAppId: string;
+  githubAppInstallationId: string;
+  githubAppPrivateKey: string;
+  // GitHub login of the PR-reviewer bot (the GitHub App's bot user, e.g.
+  // "allyblockcast[bot]") used to filter reviews/comments during verification.
+  prReviewerBotLogin: string;
   telemetryEnabled: boolean;
 }
 
@@ -452,6 +463,13 @@ export function loadConfig(): Config {
     githubPrReviewerAgentId: process.env.PAPERCLIP_PR_REVIEWER_AGENT_ID ?? "",
     githubDependabotAgentId: process.env.PAPERCLIP_DEPENDABOT_AGENT_ID ?? "",
     githubDependabotMinSeverity: process.env.PAPERCLIP_DEPENDABOT_MIN_SEVERITY ?? "high",
+    // GitHub App creds for server-side installation-token minting (PR-review
+    // evidence verification). `private_key.pem` may arrive with escaped "\n"
+    // depending on how it is injected, so normalize them to real newlines.
+    githubAppId: process.env.GITHUB_APP_ID ?? "",
+    githubAppInstallationId: process.env.GITHUB_APP_INSTALLATION_ID ?? "",
+    githubAppPrivateKey: (process.env.GITHUB_APP_PRIVATE_KEY ?? "").replace(/\\n/g, "\n"),
+    prReviewerBotLogin: process.env.PAPERCLIP_PR_REVIEWER_BOT_LOGIN ?? "allyblockcast[bot]",
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
 }
