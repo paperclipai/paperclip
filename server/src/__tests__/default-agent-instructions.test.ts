@@ -33,6 +33,14 @@ describe("resolveDefaultAgentInstructionsBundleRole — identity-aware seed sele
     expect(resolveDefaultAgentInstructionsBundleRole("engineer", "ceo")).toBe("default");
   });
 
+  it("routes cto role to cto bundle regardless of urlKey", () => {
+    expect(resolveDefaultAgentInstructionsBundleRole("cto")).toBe("cto");
+    expect(resolveDefaultAgentInstructionsBundleRole("cto", "cto")).toBe("cto");
+    expect(resolveDefaultAgentInstructionsBundleRole("cto", null)).toBe("cto");
+    // An engineer named "CTO" must NOT get the cto bundle — role check wins.
+    expect(resolveDefaultAgentInstructionsBundleRole("engineer", "cto")).toBe("default");
+  });
+
   it("falls back to default for ordinary identities and missing urlKey", () => {
     expect(resolveDefaultAgentInstructionsBundleRole("engineer")).toBe("default");
     expect(resolveDefaultAgentInstructionsBundleRole("engineer", undefined)).toBe("default");
@@ -44,7 +52,7 @@ describe("resolveDefaultAgentInstructionsBundleRole — identity-aware seed sele
 });
 
 describe("loadDefaultAgentInstructionsBundle — gate-role seed bundles exist and are W1-safe", () => {
-  it.each(["architect", "code-reviewer", "wiring-expert"] as const)(
+  it.each(["cto", "architect", "code-reviewer", "wiring-expert"] as const)(
     "ships a non-empty AGENTS.md for %s",
     async (role) => {
       const bundle = await loadDefaultAgentInstructionsBundle(role);

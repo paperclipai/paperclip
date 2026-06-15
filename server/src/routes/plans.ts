@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { planService, type PlanTier } from "../services/plans.js";
-import { heartbeatService, issueService, logActivity } from "../services/index.js";
+import { agentService, heartbeatService, issueService, logActivity } from "../services/index.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { cancelIssueSubtree } from "../services/issue-subtree-cancel.js";
 import { publishLiveEvent } from "../services/live-events.js";
@@ -54,6 +54,7 @@ export function planRoutes(
   const router = Router();
   const plans = planService(db);
   const issues = issueService(db);
+  const agentsSvc = agentService(db);
   const heartbeat = heartbeatService(db, { pluginWorkerManager: opts.pluginWorkerManager });
 
   // Create a plan (manual authoring, or assign-to-agent so a CTO agent drafts it).
@@ -189,6 +190,38 @@ export function planRoutes(
         requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
         requestedByActorId: actor.actorId,
       });
+    }
+
+    // B3: if tier-1 children materialized without assignees (operator-authored plan),
+    // wake the plan's own CTO so it can immediately assign them. Without this wake,
+    // the unassigned children sit idle until the global heartbeat cadence (~1h).
+    const unassignedChildIds = createdChildren
+      .filter((c) => c.assigneeAgentId == null)
+      .map((c) => c.id);
+    const planAssigneeAgentId = existing.assigneeAgentId;
+    if (unassignedChildIds.length > 0 && planAssigneeAgentId) {
+      void (async () => {
+        const agentList = await agentsSvc.list(existing.companyId);
+        const assignableAgents = agentList
+          .filter((a) => a.reportsTo === planAssigneeAgentId && a.status !== "terminated")
+          .map((a) => ({ id: a.id, name: a.name, role: a.role, status: a.status }));
+        void heartbeat
+          .wakeup(planAssigneeAgentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: "plan_needs_assignment",
+            payload: {
+              issueId: planIssueId,
+              mutation: "plan_activated",
+              unassignedChildIds,
+              assignableAgents,
+            },
+            requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+            requestedByActorId: actor.actorId,
+            contextSnapshot: { issueId: planIssueId, source: "plan.activated.needs_assignment" },
+          })
+          .catch((err) => logger.warn({ err, planIssueId }, "failed to wake CTO for plan assignment"));
+      })();
     }
 
     // W5a: wake the plan-approval gate agent(s) (the architect) directly so plan

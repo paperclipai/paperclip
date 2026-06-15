@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 const DEFAULT_AGENT_BUNDLE_FILES = {
   default: ["AGENTS.md"],
   ceo: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  cto: ["AGENTS.md"],
   architect: ["AGENTS.md"],
   "code-reviewer": ["AGENTS.md"],
   "wiring-expert": ["AGENTS.md"],
@@ -50,5 +51,8 @@ export function resolveDefaultAgentInstructionsBundleRole(
   if (typeof urlKey === "string" && isIdentityRoutableBundleRole(urlKey)) {
     return urlKey;
   }
+  // CTO and CEO are routed by role — their roles are unambiguous and urlKey
+  // routing would let any agent named "CTO" hijack the bundle.
+  if (role === "cto") return "cto";
   return role === "ceo" ? "ceo" : "default";
 }

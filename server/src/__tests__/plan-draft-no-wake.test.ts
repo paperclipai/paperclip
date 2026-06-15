@@ -23,13 +23,17 @@ import { planRoutes } from "../routes/plans.js";
 // ---------------------------------------------------------------------------
 
 const mockCreatePlan = vi.hoisted(() => vi.fn());
+const mockActivatePlan = vi.hoisted(() => vi.fn());
+const mockIssueGetById = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockQueueWakeup = vi.hoisted(() => vi.fn());
+const mockHeartbeatWakeup = vi.hoisted(() => vi.fn());
+const mockAgentList = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/plans.js", () => ({
   planService: () => ({
     createPlan: mockCreatePlan,
-    activate: vi.fn(),
+    activate: mockActivatePlan,
     stop: vi.fn(),
     getPlan: vi.fn(),
     updateTiers: vi.fn(),
@@ -39,8 +43,9 @@ vi.mock("../services/plans.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
-  issueService: () => ({ getById: vi.fn() }),
-  heartbeatService: () => ({ wakeup: vi.fn(), addWakeup: vi.fn() }),
+  issueService: () => ({ getById: mockIssueGetById }),
+  agentService: () => ({ list: mockAgentList }),
+  heartbeatService: () => ({ wakeup: mockHeartbeatWakeup, addWakeup: vi.fn() }),
   logActivity: mockLogActivity,
 }));
 
@@ -175,5 +180,120 @@ describe("POST /api/plans — draft-plan-wake guard", () => {
       issue: expect.objectContaining({ id: expect.any(String) }),
       planDetails: expect.objectContaining({ state: "draft" }),
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B3: activate with unassigned children → CTO gets a wake with unassignedChildIds
+// ---------------------------------------------------------------------------
+
+const PLAN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const CHILD_ID_1 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const CHILD_ID_2 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const IMPL_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+
+describe("POST /api/plans/:id/activate — B3 CTO assignment wake", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLogActivity.mockResolvedValue(undefined);
+
+    // Plan issue with CTO as assignee
+    mockIssueGetById.mockResolvedValue({
+      id: PLAN_ID,
+      companyId: COMPANY_ID,
+      title: "Pilot plan",
+      status: "todo",
+      assigneeAgentId: AGENT_ID,
+    });
+
+    // activate() returns children — both unassigned
+    mockActivatePlan.mockResolvedValue({
+      planDetails: { state: "active", gateProfile: "dev_team" },
+      createdChildren: [
+        { id: CHILD_ID_1, assigneeAgentId: null, status: "todo" },
+        { id: CHILD_ID_2, assigneeAgentId: null, status: "todo" },
+      ],
+      gateApprovalIds: [],
+      planApprovalWakeAgentIds: [],
+    });
+
+    // Agents: one implementor reports to CTO, one other does not
+    mockAgentList.mockResolvedValue([
+      { id: IMPL_ID, name: "Implementor 1", role: "engineer", status: "idle", reportsTo: AGENT_ID },
+      { id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", name: "Other", role: "engineer", status: "idle", reportsTo: "other" },
+    ]);
+
+    mockHeartbeatWakeup.mockResolvedValue(undefined);
+  });
+
+  it("wakes the CTO with unassignedChildIds when activation produces unassigned tier-1 children", async () => {
+    const app = buildApp();
+
+    const res = await request(app)
+      .post(`/api/plans/${PLAN_ID}/activate`)
+      .send({});
+
+    expect(res.status).toBe(200);
+
+    // Allow the async void block to settle
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(mockHeartbeatWakeup).toHaveBeenCalledWith(
+      AGENT_ID,
+      expect.objectContaining({
+        reason: "plan_needs_assignment",
+        payload: expect.objectContaining({
+          unassignedChildIds: expect.arrayContaining([CHILD_ID_1, CHILD_ID_2]),
+          assignableAgents: [expect.objectContaining({ id: IMPL_ID })],
+        }),
+      }),
+    );
+  });
+
+  it("does NOT wake CTO when all children are already assigned", async () => {
+    mockActivatePlan.mockResolvedValue({
+      planDetails: { state: "active", gateProfile: "dev_team" },
+      createdChildren: [
+        { id: CHILD_ID_1, assigneeAgentId: IMPL_ID, status: "todo" },
+      ],
+      gateApprovalIds: [],
+      planApprovalWakeAgentIds: [],
+    });
+
+    const app = buildApp();
+    const res = await request(app)
+      .post(`/api/plans/${PLAN_ID}/activate`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const assignmentWakes = (mockHeartbeatWakeup.mock.calls as any[]).filter(
+      ([, opts]: [string, { reason?: string }]) => opts?.reason === "plan_needs_assignment",
+    );
+    expect(assignmentWakes).toHaveLength(0);
+  });
+
+  it("does NOT wake CTO when plan has no CTO assignee", async () => {
+    mockIssueGetById.mockResolvedValue({
+      id: PLAN_ID,
+      companyId: COMPANY_ID,
+      title: "Unassigned plan",
+      status: "todo",
+      assigneeAgentId: null,
+    });
+
+    const app = buildApp();
+    const res = await request(app)
+      .post(`/api/plans/${PLAN_ID}/activate`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const assignmentWakes = (mockHeartbeatWakeup.mock.calls as any[]).filter(
+      ([, opts]: [string, { reason?: string }]) => opts?.reason === "plan_needs_assignment",
+    );
+    expect(assignmentWakes).toHaveLength(0);
   });
 });

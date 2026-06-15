@@ -44,6 +44,7 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockFeedbackService = vi.hoisted(() => ({
@@ -387,5 +388,54 @@ describe.sequential("issue goal context routes", () => {
         }),
       ],
     }));
+  });
+
+  it("B2: includes directReports for root-manager assignee in heartbeat-context", async () => {
+    const ctoId = "33333333-3333-4333-8333-333333333333";
+    const implId = "66666666-6666-4666-8666-666666666666";
+    // assignee is a root manager (reportsTo: null)
+    mockAgentService.getById.mockResolvedValue({ id: ctoId, reportsTo: null });
+    mockAgentService.list.mockResolvedValue([
+      { id: implId, name: "Implementor 1", role: "engineer", status: "idle", reportsTo: ctoId },
+      { id: "77777777-7777-4777-8777-777777777777", name: "Other Agent", role: "engineer", status: "idle", reportsTo: "other-manager" },
+    ]);
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.directReports).toEqual([
+      { id: implId, name: "Implementor 1", role: "engineer", status: "idle" },
+    ]);
+  });
+
+  it("B2: directReports is empty for non-root-manager assignee", async () => {
+    // assignee has reportsTo set (not a root manager)
+    mockAgentService.getById.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      reportsTo: "some-manager-id",
+    });
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.directReports).toEqual([]);
+  });
+
+  it("B2: directReports is empty when issue has no assignee", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      assigneeAgentId: null,
+    });
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.directReports).toEqual([]);
   });
 });

@@ -2643,6 +2643,7 @@ export function issueRoutes(
       continuationSummary,
       currentExecutionWorkspace,
       activeRecoveryAction,
+      assigneeAgent,
     ] =
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
@@ -2657,7 +2658,16 @@ export function issueRoutes(
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+        issue.assigneeAgentId ? agentsSvc.getById(issue.assigneeAgentId) : Promise.resolve(null),
       ]);
+    // For root-manager agents (reportsTo===null, e.g. CTO), include their direct
+    // reports so the agent can assign work without an extra paperclipListAgents call.
+    const directReports =
+      assigneeAgent?.reportsTo === null
+        ? (await agentsSvc.list(issue.companyId)).filter(
+            (a) => a.reportsTo === assigneeAgent.id,
+          ).map((a) => ({ id: a.id, name: a.name, role: a.role, status: a.status }))
+        : [];
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
       issue.companyId,
@@ -2755,6 +2765,7 @@ export function issueRoutes(
           }
         : null,
       currentExecutionWorkspace,
+      directReports,
     });
   });
 
