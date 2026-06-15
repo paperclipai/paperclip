@@ -149,11 +149,22 @@ its Architect immediately:
 - Coordinator moves on. Cargo runtime is the Architect's problem.
 
 If multiple `needs-build` tasks queue up at once, dispatch all their
-Architects in the same fire. Architects serialize on the shared
-`CARGO_TARGET_DIR` at the OS level (cargo holds its own build lock) —
-that's their concurrency to manage, not yours. The 30s–8min cargo
-cost belongs to whichever Architect owns that lock at the time, not
-to the orchestration layer.
+Architects in the same fire. Each Architect builds in its **own
+per-worktree `target/`** (the runtime no longer exports a shared
+`CARGO_TARGET_DIR` — fixed via AA-1554, 2026-06-12), so concurrent
+cargos run in parallel without an OS-level build lock. Concurrency is
+now bounded by CPU/RAM headroom, not a shared lock; the cargo cost
+belongs to each Architect's own worktree, not to the orchestration
+layer.
+
+> History: until 2026-06-12 all Architects shared one
+> `CARGO_TARGET_DIR`, so cargo's single build lock serialized them.
+> Under heavy queue depth the tail runs blocked past their wall-clock
+> budget, got killed mid-write, and corrupted the shared target — a
+> multi-day death-spiral (AA-1553/AA-1554). The fix: unset the stale
+> `CARGO_TARGET_DIR` from the systemd `--user` environment so each
+> worktree gets an isolated `target/`. Do not re-introduce a shared
+> target dir.
 
 ### Architect retries
 
