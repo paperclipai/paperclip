@@ -72,7 +72,6 @@ export function isAbnormalRunTermination(
     run.status === "failed" &&
     (error.includes("sigterm") ||
       error.includes("supervisor_sigterm") ||
-      error.includes("detach") ||
       error.includes("process_detached"))
   ) {
     return true;

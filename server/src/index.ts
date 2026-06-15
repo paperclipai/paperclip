@@ -758,6 +758,7 @@ export async function startServer(): Promise<StartedServer> {
       runReconciler: {
         enabled: config.runReconcilerEnabled,
         outputStagnantTtlMs: config.runReconcilerOutputStagnantTtlMs,
+        sweepIntervalMs: config.runReconcilerSweepIntervalMs,
         pidFileDir: config.runReconcilerPidFileDir,
       },
     });

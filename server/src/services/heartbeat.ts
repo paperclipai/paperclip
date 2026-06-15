@@ -3108,6 +3108,7 @@ export interface HeartbeatServiceOptions {
   runReconciler?: {
     enabled: boolean;
     outputStagnantTtlMs: number;
+    sweepIntervalMs?: number;
     pidFileDir: string;
   };
 }
@@ -3116,8 +3117,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const runReconcilerConfig = {
     enabled: options.runReconciler?.enabled ?? false,
     outputStagnantTtlMs: options.runReconciler?.outputStagnantTtlMs ?? 30 * 60 * 1000,
+    sweepIntervalMs: options.runReconciler?.sweepIntervalMs ?? 60_000,
     pidFileDir: options.runReconciler?.pidFileDir ?? "/var/run/paperclip",
   };
+  let lastReconcileAt = 0;
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -7766,8 +7769,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!runReconcilerConfig.enabled) {
       return { finalized: 0, runIds: [] as string[], metricsSamples: 0 };
     }
-
     const now = opts?.now ?? new Date();
+    if (opts?.signal !== "sigterm") {
+      const elapsed = now.getTime() - lastReconcileAt;
+      if (elapsed < runReconcilerConfig.sweepIntervalMs) {
+        return { finalized: 0, runIds: [] as string[], metricsSamples: 0 };
+      }
+      lastReconcileAt = now.getTime();
+    }
     const signal = opts?.signal ?? "reconciler";
     const activeRuns = await db
       .select({
