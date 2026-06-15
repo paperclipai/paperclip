@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, notInArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -504,9 +504,9 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(event?.message).toContain("Source-resolved watchdog fold");
   });
 
-  it("still escalates terminal source issues without same-run terminal evidence", async () => {
+  it("folds terminal source issues using synthetic evidence when no same-run activity exists (PHO-734)", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
-    const { companyId, runId } = await seedRunningRun({
+    const { companyId, issueId, runId } = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
       sourceStatus: "done",
@@ -515,18 +515,30 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
-    expect(result).toMatchObject({ created: 1, folded: 0 });
+    expect(result).toMatchObject({ created: 0, folded: 1 });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
-    const [evaluation] = await db
+    expect(run?.status).toBe("succeeded");
+    expect(run?.resultJson).toMatchObject({
+      sourceResolvedWatchdogFold: {
+        sourceIssueId: issueId,
+        sourceIssueStatus: "done",
+        sameRunEvidenceKind: "status_terminal",
+        evaluationIssueId: null,
+      },
+    });
+    const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
-    expect(evaluation?.originId).toBe(runId);
-    expect(evaluation?.parentId).toBeNull();
+    expect(evaluations).toHaveLength(0);
+    const [decision] = await db
+      .select()
+      .from(heartbeatRunWatchdogDecisions)
+      .where(eq(heartbeatRunWatchdogDecisions.runId, runId));
+    expect(decision?.decision).toBe("dismissed_false_positive");
   });
 
-  it("still escalates when a same-run comment is followed by another actor marking the source done", async () => {
+  it("folds when a same-run comment is followed by another actor marking the source done (PHO-734)", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, issueId, runId, issuePrefix } = await seedRunningRun({
       now,
@@ -559,15 +571,21 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
-    expect(result).toMatchObject({ created: 1, folded: 0 });
+    expect(result).toMatchObject({ created: 0, folded: 1 });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
-    const [evaluation] = await db
+    expect(run?.status).toBe("succeeded");
+    expect(run?.resultJson).toMatchObject({
+      sourceResolvedWatchdogFold: {
+        sourceIssueId: issueId,
+        sourceIssueStatus: "done",
+        sameRunEvidenceKind: "status_terminal",
+      },
+    });
+    const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
-    expect(evaluation?.originId).toBe(runId);
-    expect(evaluation?.parentId).toBeNull();
+    expect(evaluations).toHaveLength(0);
   });
 
   it("folds existing evaluation and active watchdog recovery action idempotently", async () => {
@@ -638,6 +656,48 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .from(heartbeatRunWatchdogDecisions)
       .where(eq(heartbeatRunWatchdogDecisions.runId, runId));
     expect(decisions).toHaveLength(1);
+  });
+
+  it("suppresses repeated evaluation issue creation once any prior evaluation is done (fingerprint dedup hardening, PHO-734 part 2)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Simulate a prior evaluation issue that was already closed (e.g. by the board)
+    const priorEvaluationId = randomUUID();
+    await db.insert(issues).values({
+      id: priorEvaluationId,
+      companyId,
+      title: "Prior stale evaluation (already closed)",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: managerId,
+      issueNumber: 99,
+      identifier: `${issuePrefix}-99`,
+      originKind: "stale_active_run_evaluation",
+      originId: runId,
+      originRunId: runId,
+      originFingerprint: `stale_active_run:${companyId}:${runId}`,
+    });
+
+    // Next scan should be suppressed by the dedup guard
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ created: 0, skipped: 1 });
+    const openEvaluations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "stale_active_run_evaluation"),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      );
+    expect(openEvaluations).toHaveLength(0);
   });
 
   it("refuses recovery-on-recovery stale-run recursion", async () => {
