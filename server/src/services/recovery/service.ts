@@ -63,6 +63,7 @@ import {
 } from "./origins.js";
 import {
   classifyIssueGraphLiveness,
+  hasScheduledMonitor,
   type IssueLivenessFinding,
 } from "./issue-graph-liveness.js";
 import {
@@ -2820,9 +2821,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulRunHandoffEscalated: 0,
       escalated: 0,
       recentProgressExempted: 0,
+      monitorParkedSkipped: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
+
+    const nowMs = Date.now();
 
     for (const issue of candidates) {
       const agentId = issue.assigneeAgentId;
@@ -2980,6 +2984,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       if (isSuccessfulInProgressContinuationRun(latestRun)) {
         const successfulRun = latestRun;
+
+        // EDG-7700: a future-scheduled native monitor IS the live continuation
+        // path. For a deliberately monitor-parked standing-record (e.g. an
+        // [EAB-WATCH] issue parked on a September monitor), each productive
+        // "nothing to do yet" verification run would otherwise fall through to
+        // the continuation requeue below — or, once a productive retry has been
+        // used, to the blocked-flip — re-arming the next wake every cycle, a
+        // self-perpetuating loop. Skip both paths while the monitor is live.
+        // Shares hasScheduledMonitor with EDG-7047/EDG-7692 (objective monitor
+        // metadata, no description/title text parsing). Genuine failure runs
+        // (the unsuccessful-terminal branch below) still escalate normally.
+        if (hasScheduledMonitor(issue, nowMs)) {
+          result.monitorParkedSkipped += 1;
+          result.skipped += 1;
+          continue;
+        }
 
         if (!isProductiveContinuationRun(successfulRun)) {
           result.successfulContinuationObserved += 1;

@@ -3696,6 +3696,75 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
+  it("treats a future-scheduled monitor as the live continuation path and skips the continuation requeue (EDG-7700)", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    // Park the issue on a far-future native monitor (EDG-7004-style [EAB-WATCH]
+    // standing record). Without the guard this productive in-progress run falls
+    // through to the continuation requeue, re-arming the wake every cycle.
+    await db
+      .update(issues)
+      .set({
+        monitorNextCheckAt: new Date("2030-01-01T00:00:00.000Z"),
+        executionState: { monitor: { status: "scheduled", nextCheckAt: "2030-01-01T00:00:00.000Z" } },
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.monitorParkedSkipped).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    // No retry wake enqueued — the scheduled monitor is the live path.
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("does not flip a monitor-parked issue to blocked even after a productive continuation retry was used (EDG-7700)", async () => {
+    const { agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+    });
+    // Same parked-monitor record, but a productive terminal recovery was already
+    // used — the baseline path flips this to `blocked`. The live monitor must
+    // suppress that blocked-flip too.
+    await db
+      .update(issues)
+      .set({
+        monitorNextCheckAt: new Date("2030-01-01T00:00:00.000Z"),
+        executionState: { monitor: { status: "scheduled", nextCheckAt: "2030-01-01T00:00:00.000Z" } },
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.monitorParkedSkipped).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    // No blocked-flip comment was posted.
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
   it("allows one productive-terminal recovery after regular continuation recovery made progress", async () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
