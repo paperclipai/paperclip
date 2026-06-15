@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
 import {
@@ -3092,6 +3092,17 @@ export function heartbeatService(db: Db) {
             // assign time; if one is missed (server restart, concurrent-run
             // cap, transient failure) the task sits forever because
             // Worker/Reviewer/Architect have no timer wake to fall back on.
+            //
+            // CRITICAL — exclude the task this run just processed (`issueId`).
+            // A no-skill Architect that commits-but-doesn't-land leaves its
+            // task at `in_review` (above); since `in_review` sorts ahead of
+            // `todo`, the *same* task would otherwise be re-selected here and
+            // chain-woken back onto the agent in a reused session, which
+            // repeats its last "waiter re-armed / redundant, stopping" stance
+            // and loops every ~30s without ever landing — the AA-1582
+            // livelock (~$196 burned). Chain-wake only advances the queue to a
+            // *different* task; re-running the same one is the next external
+            // trigger's job, not this immediate re-fire's.
             const nextTask = await db
               .select()
               .from(issues)
@@ -3099,6 +3110,7 @@ export function heartbeatService(db: Db) {
                 and(
                   eq(issues.companyId, agent.companyId),
                   eq(issues.assigneeAgentId, agent.id),
+                  ne(issues.id, issueId),
                   inArray(issues.status, ["in_progress", "in_review", "todo"]),
                 ),
               )
