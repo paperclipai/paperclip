@@ -35,6 +35,10 @@ const createPlanSchema = z.object({
   projectId: z.string().uuid().nullish(),
 });
 
+const listPlansQuerySchema = z.object({
+  state: z.string().min(1).optional(),
+});
+
 const updateTiersSchema = z.object({
   tiers: z.array(planTierSchema),
 });
@@ -103,6 +107,21 @@ export function planRoutes(
     });
 
     res.status(201).json({ issue, planDetails });
+  });
+
+  // List the plan roots for a company (board/agent dashboard). Joins root
+  // issues with their plan_details sidecar; optional ?state= filter; newest
+  // first. 403 when the actor cannot access the company; 200 [] when none.
+  router.get("/companies/:companyId/plans", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const parsed = listPlansQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid query", details: parsed.error.flatten() });
+      return;
+    }
+    const rows = await plans.listPlans(companyId, { state: parsed.data.state ?? null });
+    res.json(rows);
   });
 
   router.get("/plans/:issueId", async (req, res) => {

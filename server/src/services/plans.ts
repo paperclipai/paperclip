@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   approvals,
@@ -236,6 +236,33 @@ export function planService(db: Db) {
         })
         .returning();
       return { issue, planDetails: details };
+    },
+
+    // List a company's plan roots (issues with a plan_details sidecar and no
+    // parent) joined to their plan lifecycle. Optional state filter; newest
+    // first. Returns [] when the company has no plans. Company scoping is the
+    // caller's responsibility (route enforces 403 cross-company via authz).
+    listPlans: async (
+      companyId: string,
+      opts: { state?: string | null } = {},
+    ) => {
+      const conditions = [eq(planDetails.companyId, companyId), isNull(issues.parentId)];
+      if (opts.state) {
+        conditions.push(eq(planDetails.state, opts.state));
+      }
+      return db
+        .select({
+          issueId: issues.id,
+          title: issues.title,
+          state: planDetails.state,
+          gateProfile: planDetails.gateProfile,
+          assigneeAgentId: issues.assigneeAgentId,
+          createdAt: issues.createdAt,
+        })
+        .from(planDetails)
+        .innerJoin(issues, eq(planDetails.issueId, issues.id))
+        .where(and(...conditions))
+        .orderBy(desc(issues.createdAt));
     },
 
     getPlan: async (issueId: string) => {
