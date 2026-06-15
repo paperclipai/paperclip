@@ -11,7 +11,11 @@ Uploads a generated file from the current workspace to the current Paperclip
 issue, then creates an attachment-backed artifact work product by default.
 
 Required environment for live uploads:
-  PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID, PAPERCLIP_TASK_ID, PAPERCLIP_RUN_ID
+  PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID, PAPERCLIP_TASK_ID, PAPERCLIP_RUN_ID
+
+API URL resolution:
+  Uses PAPERCLIP_API_URL when reachable, then runtime candidates and the local
+  listener fallback from PAPERCLIP_LISTEN_HOST/PAPERCLIP_LISTEN_PORT.
 
 Options:
   --issue-id ID          Issue id to attach to (default: PAPERCLIP_TASK_ID)
@@ -85,71 +89,165 @@ detect_content_type() {
 
 request_json() {
   local method="$1"
-  local url="$2"
+  local path_suffix="$2"
   local body="${3:-}"
-  local response_file
-  local status_code
-
+  local response_file error_file status_code curl_status url saw_failure
   response_file="$(mktemp)"
-  if [[ -n "$body" ]]; then
-    status_code="$(
-      curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
-        "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-        -H 'Content-Type: application/json' \
-        --data-binary "$body"
-    )"
-  else
-    status_code="$(
-      curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
-        "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
-    )"
-  fi
+  error_file="$(mktemp)"
+  saw_failure=0
 
-  if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
-    printf 'Request failed (%s): %s\n' "$status_code" "$url" >&2
-    cat "$response_file" >&2
-    printf '\n' >&2
-    rm -f "$response_file"
-    exit 1
-  fi
+  while IFS= read -r url; do
+    : >"$response_file"
+    : >"$error_file"
+    set +e
+    if [[ -n "$body" ]]; then
+      status_code="$(
+        curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
+          "$url" \
+          -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+          -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+          -H 'Content-Type: application/json' \
+          --data-binary "$body" \
+          2>"$error_file"
+      )"
+    else
+      status_code="$(
+        curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
+          "$url" \
+          -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+          -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+          2>"$error_file"
+      )"
+    fi
+    curl_status=$?
+    set -e
 
-  cat "$response_file"
-  rm -f "$response_file"
+    if [[ "$curl_status" -ne 0 ]]; then
+      saw_failure=1
+      continue
+    fi
+
+    if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
+      printf 'Request failed (%s): %s\n' "$status_code" "$url" >&2
+      cat "$response_file" >&2
+      printf '\n' >&2
+      rm -f "$response_file" "$error_file"
+      exit 1
+    fi
+
+    if [[ "$saw_failure" == "1" ]]; then
+      printf 'Paperclip API primary URL was unavailable; used fallback %s.\n' "${url%/api/*}" >&2
+    fi
+    cat "$response_file"
+    rm -f "$response_file" "$error_file"
+    return 0
+  done < <(api_path_candidates "$path_suffix")
+
+  printf 'Could not reach the Paperclip API using configured or local runtime URLs.\n' >&2
+  if [[ -s "$error_file" ]]; then
+    cat "$error_file" >&2
+  fi
+  rm -f "$response_file" "$error_file"
+  exit 1
+}
+
+resolve_local_api_url() {
+  local host="${PAPERCLIP_LISTEN_HOST:-${HOST:-127.0.0.1}}"
+  local port="${PAPERCLIP_LISTEN_PORT:-${PORT:-3100}}"
+  case "$host" in
+    ""|"0.0.0.0"|"::") host="127.0.0.1" ;;
+  esac
+  if [[ "$host" == *:* && "$host" != \[* ]]; then
+    host="[$host]"
+  fi
+  printf 'http://%s:%s' "$host" "$port"
+}
+
+api_base_candidates() {
+  local seen=""
+  add_candidate() {
+    local candidate="${1:-}"
+    candidate="${candidate%/}"
+    if [[ -z "$candidate" || "$seen" == *"|$candidate|"* ]]; then
+      return
+    fi
+    seen="${seen}|${candidate}|"
+    printf '%s\n' "$candidate"
+  }
+
+  add_candidate "${PAPERCLIP_API_URL:-}"
+  add_candidate "${PAPERCLIP_RUNTIME_API_URL:-}"
+  if [[ -n "${PAPERCLIP_RUNTIME_API_CANDIDATES_JSON:-}" ]]; then
+    while IFS= read -r candidate; do
+      add_candidate "$candidate"
+    done < <(jq -r '.[]? | select(type == "string" and length > 0)' <<<"$PAPERCLIP_RUNTIME_API_CANDIDATES_JSON" 2>/dev/null || true)
+  fi
+  add_candidate "$(resolve_local_api_url)"
+}
+
+api_path_candidates() {
+  local path="$1"
+  local api_base
+  while IFS= read -r api_base; do
+    printf '%s/api/%s\n' "${api_base%/}" "${path#/}"
+  done < <(api_base_candidates)
 }
 
 upload_file() {
-  local url="$1"
+  local path_suffix="$1"
   local path="$2"
   local content_type="$3"
   local escaped_path
-  local response_file
-  local status_code
+  local response_file error_file status_code curl_status url saw_failure
 
   escaped_path="${path//\\/\\\\}"
   escaped_path="${escaped_path//\"/\\\"}"
   response_file="$(mktemp)"
-  status_code="$(
-    curl -sS -X POST -w '%{http_code}' -o "$response_file" \
-      "$url" \
-      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-      -F "file=@\"${escaped_path}\";type=${content_type}"
-  )"
+  error_file="$(mktemp)"
+  saw_failure=0
 
-  if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
-    printf 'Upload failed (%s): %s\n' "$status_code" "$url" >&2
-    cat "$response_file" >&2
-    printf '\n' >&2
-    rm -f "$response_file"
-    exit 1
+  while IFS= read -r url; do
+    : >"$response_file"
+    : >"$error_file"
+    set +e
+    status_code="$(
+      curl -sS -X POST -w '%{http_code}' -o "$response_file" \
+        "$url" \
+        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+        -F "file=@\"${escaped_path}\";type=${content_type}" \
+        2>"$error_file"
+    )"
+    curl_status=$?
+    set -e
+
+    if [[ "$curl_status" -ne 0 ]]; then
+      saw_failure=1
+      continue
+    fi
+
+    if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
+      printf 'Upload failed (%s): %s\n' "$status_code" "$url" >&2
+      cat "$response_file" >&2
+      printf '\n' >&2
+      rm -f "$response_file" "$error_file"
+      exit 1
+    fi
+
+    if [[ "$saw_failure" == "1" ]]; then
+      printf 'Paperclip API primary URL was unavailable; used fallback %s.\n' "${url%/api/*}" >&2
+    fi
+    cat "$response_file"
+    rm -f "$response_file" "$error_file"
+    return 0
+  done < <(api_path_candidates "$path_suffix")
+
+  printf 'Could not reach the Paperclip API using configured or local runtime URLs.\n' >&2
+  if [[ -s "$error_file" ]]; then
+    cat "$error_file" >&2
   fi
-
-  cat "$response_file"
-  rm -f "$response_file"
+  rm -f "$response_file" "$error_file"
+  exit 1
 }
 
 file_path=""
@@ -271,8 +369,8 @@ if [[ "$dry_run" == "1" ]]; then
   exit 0
 fi
 
-if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERCLIP_RUN_ID:-}" ]]; then
-  printf 'Missing PAPERCLIP_API_URL, PAPERCLIP_API_KEY, or PAPERCLIP_RUN_ID.\n' >&2
+if [[ -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERCLIP_RUN_ID:-}" ]]; then
+  printf 'Missing PAPERCLIP_API_KEY or PAPERCLIP_RUN_ID.\n' >&2
   exit 1
 fi
 
@@ -281,10 +379,9 @@ if [[ -z "$issue_id" || -z "$company_id" ]]; then
   exit 1
 fi
 
-api_base="${PAPERCLIP_API_URL%/}/api"
 attachment="$(
   upload_file \
-    "$api_base/companies/$company_id/issues/$issue_id/attachments" \
+    "companies/$company_id/issues/$issue_id/attachments" \
     "$file_path" \
     "$content_type"
 )"
@@ -344,7 +441,7 @@ if [[ "$create_work_product" == "1" ]]; then
   work_product="$(
     request_json \
       POST \
-      "$api_base/issues/$issue_id/work-products" \
+      "issues/$issue_id/work-products" \
       "$work_product_payload"
   )"
 fi

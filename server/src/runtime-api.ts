@@ -51,7 +51,16 @@ export function choosePrimaryRuntimeApiUrl(input: {
   allowedHostnames: string[];
   bindHost: string;
   port: number;
+  preferLocalListener?: boolean;
 }): string {
+  const bindHost = normalizeHost(input.bindHost);
+  if (input.preferLocalListener) {
+    if (bindHost && !isWildcardHost(bindHost)) {
+      return formatOrigin("http:", bindHost, input.port);
+    }
+    return formatOrigin("http:", "localhost", input.port);
+  }
+
   const explicitPublicBaseUrl = input.authPublicBaseUrl?.trim();
   if (explicitPublicBaseUrl) {
     try {
@@ -68,7 +77,6 @@ export function choosePrimaryRuntimeApiUrl(input: {
     return formatOrigin("http:", allowedHostname, input.port);
   }
 
-  const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost)) {
     return formatOrigin("http:", bindHost, input.port);
   }

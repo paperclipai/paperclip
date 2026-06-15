@@ -935,26 +935,36 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+function buildLocalPaperclipApiUrl(): string {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
     if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]")) return `[${host}]`;
     return host;
   };
-  const vars: Record<string, string> = {
-    PAPERCLIP_AGENT_ID: agent.id,
-    PAPERCLIP_COMPANY_ID: agent.companyId,
-  };
   const runtimeHost = resolveHostForUrl(
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+  return `http://${runtimeHost}:${runtimePort}`;
+}
+
+export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+  const vars: Record<string, string> = {
+    PAPERCLIP_AGENT_ID: agent.id,
+    PAPERCLIP_COMPANY_ID: agent.companyId,
+  };
   const apiUrl =
     process.env.PAPERCLIP_RUNTIME_API_URL ??
     process.env.PAPERCLIP_API_URL ??
-    `http://${runtimeHost}:${runtimePort}`;
+    buildLocalPaperclipApiUrl();
   vars.PAPERCLIP_API_URL = apiUrl;
+  if (process.env.PAPERCLIP_RUNTIME_API_URL) {
+    vars.PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
+  }
+  vars.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON =
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ??
+    JSON.stringify([apiUrl, buildLocalPaperclipApiUrl()]);
   return vars;
 }
 
@@ -1169,6 +1179,7 @@ export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   for (const key of Object.keys(env)) {
     if (!key.startsWith("PAPERCLIP_")) continue;
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
+    if (key === "PAPERCLIP_RUNTIME_API_CANDIDATES_JSON") continue;
     if (key === "PAPERCLIP_LISTEN_HOST") continue;
     if (key === "PAPERCLIP_LISTEN_PORT") continue;
     delete env[key];
