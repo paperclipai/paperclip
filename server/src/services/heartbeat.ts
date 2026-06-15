@@ -7995,7 +7995,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      const hasInMemoryHandle = runningProcesses.has(run.id) || activeRunExecutions.has(run.id);
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
@@ -8006,6 +8006,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+
+      if (hasInMemoryHandle) {
+        // The reaper used to treat the *presence* of an in-memory handle (runningProcesses /
+        // activeRunExecutions) as proof of liveness and skip the run outright. That left runs
+        // stuck `running` forever when the child pid was dead but a descendant (e.g. an
+        // ssh/docker child) held the child's stdout pipe open, so the reader's `'close'` never
+        // fired, the execute() promise hung, and the handle was never released. Only the silence
+        // monitor saw such runs, and it just stormed the board with "Review silent active run"
+        // issues (TWB-904..914 from one orphan). Root cause of TWB-934 (durable fix for TWB-915).
+        //
+        // Keep trusting the handle only when we cannot disprove liveness:
+        //  - non-local-child adapters expose no probeable pid, so the handle is our only signal;
+        //  - a run with neither pid nor process group recorded has nothing to probe;
+        //  - a confirmed-alive pid or process group means the handle is legitimate.
+        const canProbeLiveness = tracksLocalChild && (!!run.processPid || !!run.processGroupId);
+        if (!canProbeLiveness || processPidAlive || processGroupAlive) continue;
+
+        // Stale handle + pid AND process group both confirmed dead → the run is orphaned.
+        // Drop the dead handle so the reap path below finalizes it as `process_lost`
+        // (and abort any pending executor entry) instead of skipping it indefinitely.
+        runningProcesses.delete(run.id);
+        activeRunExecutions.delete(run.id);
+        logger.warn(
+          { runId: run.id, processPid: run.processPid, processGroupId: run.processGroupId },
+          "dropping stale in-memory handle for dead-pid running run before reap",
+        );
+      }
+
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
