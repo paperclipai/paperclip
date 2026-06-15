@@ -1,14 +1,21 @@
 import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { asc, eq } from "drizzle-orm";
+import { type Db, heartbeatRunLogChunks } from "@valadrien-os/db";
 import { notFound } from "../errors.js";
 import { resolveValadrienOsInstanceRoot } from "../home-paths.js";
 
-export type RunLogStoreType = "local_file";
+export type RunLogStoreType = "local_file" | "postgres";
 
 export interface RunLogHandle {
   store: RunLogStoreType;
   logRef: string;
+  /**
+   * Runtime-only (not persisted): set by begin() so the postgres store's appends are
+   * company-scoped. The read path reconstructs by runId and does not need it.
+   */
+  companyId?: string;
 }
 
 export interface RunLogReadOptions {
@@ -147,11 +154,77 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
   };
 }
 
-let cachedStore: RunLogStore | null = null;
+// Postgres-backed store. The Railway worker writes chunks here as the run streams; the Vercel
+// control plane reads them back for the transcript. Both planes share the DB, so this works
+// across the filesystem split that broke the old local-file logs ("Run log not found").
+function createPostgresRunLogStore(db: Db): RunLogStore {
+  async function readAll(runId: string): Promise<string> {
+    const rows = await db
+      .select({ content: heartbeatRunLogChunks.content })
+      .from(heartbeatRunLogChunks)
+      .where(eq(heartbeatRunLogChunks.runId, runId))
+      .orderBy(asc(heartbeatRunLogChunks.seq));
+    return rows.map((r) => r.content).join("");
+  }
+  return {
+    async begin(input) {
+      // No row written until the first append; a run with no output reads back as empty
+      // content (not a 404), which is the desired transcript behaviour.
+      return { store: "postgres", logRef: input.runId, companyId: input.companyId };
+    },
+    async append(handle, event) {
+      if (handle.store !== "postgres") return 0;
+      const persisted = `${JSON.stringify({ ts: event.ts, stream: event.stream, chunk: event.chunk })}\n`;
+      await db.insert(heartbeatRunLogChunks).values({
+        companyId: handle.companyId ?? "",
+        runId: handle.logRef,
+        stream: event.stream,
+        ts: new Date(event.ts),
+        content: persisted,
+      });
+      return Buffer.byteLength(persisted, "utf8");
+    },
+    async finalize(handle) {
+      if (handle.store !== "postgres") return { bytes: 0, compressed: false };
+      const buf = Buffer.from(await readAll(handle.logRef), "utf8");
+      return { bytes: buf.length, sha256: createHash("sha256").update(buf).digest("hex"), compressed: false };
+    },
+    async read(handle, opts) {
+      if (handle.store !== "postgres") throw notFound("Run log not found");
+      const buf = Buffer.from(await readAll(handle.logRef), "utf8");
+      const offset = Math.max(0, opts?.offset ?? 0);
+      const limitBytes = opts?.limitBytes ?? 256_000;
+      if (offset >= buf.length) return { content: "", nextOffset: buf.length };
+      const end = Math.min(offset + limitBytes, buf.length);
+      return { content: buf.subarray(offset, end).toString("utf8"), nextOffset: end < buf.length ? end : undefined };
+    },
+  };
+}
 
-export function getRunLogStore() {
-  if (cachedStore) return cachedStore;
+let cachedLocalStore: RunLogStore | null = null;
+function getLocalFileRunLogStore(): RunLogStore {
+  if (cachedLocalStore) return cachedLocalStore;
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolveValadrienOsInstanceRoot(), "data", "run-logs");
-  cachedStore = createLocalFileRunLogStore(basePath);
-  return cachedStore;
+  cachedLocalStore = createLocalFileRunLogStore(basePath);
+  return cachedLocalStore;
+}
+
+// Dispatcher: new runs use the postgres store (readable on both planes) when a db is available;
+// existing/legacy runs (logStore="local_file") keep reading from disk. Begin/append/finalize/read
+// all dispatch on the handle's store, so a mixed fleet of old + new runs both work.
+export function getRunLogStore(db?: Db): RunLogStore {
+  const local = getLocalFileRunLogStore();
+  const pg = db ? createPostgresRunLogStore(db) : null;
+  return {
+    begin: (input) => (pg ? pg.begin(input) : local.begin(input)),
+    append: (handle, event) => (handle.store === "postgres" && pg ? pg.append(handle, event) : local.append(handle, event)),
+    finalize: (handle) => (handle.store === "postgres" && pg ? pg.finalize(handle) : local.finalize(handle)),
+    read: (handle, opts) => {
+      if (handle.store === "postgres") {
+        if (!pg) throw notFound("Run log not found");
+        return pg.read(handle, opts);
+      }
+      return local.read(handle, opts);
+    },
+  };
 }

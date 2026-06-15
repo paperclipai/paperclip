@@ -66,7 +66,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
-import { getRunLogStore } from "./run-log-store.js";
+import { getRunLogStore, type RunLogStoreType } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
@@ -2863,11 +2863,11 @@ export function issueService(db: Db) {
     logRef: string | null;
     logBytes: number | null;
   }) {
-    if (run.logStore !== "local_file" || !run.logRef) return "";
+    if ((run.logStore !== "local_file" && run.logStore !== "postgres") || !run.logRef) return "";
     const logBytes = Number(run.logBytes ?? 0);
     if (!Number.isFinite(logBytes) || logBytes <= 0) return "";
 
-    const store = getRunLogStore();
+    const store = getRunLogStore(db);
     let offset = 0;
     let content = "";
     let nextOffset: number | undefined = 0;
@@ -2877,7 +2877,7 @@ export function issueService(db: Db) {
         const remainingBytes = ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES - Buffer.byteLength(content, "utf8");
         if (remainingBytes <= 0) break;
         const chunk = await store.read(
-          { store: "local_file", logRef: run.logRef },
+          { store: run.logStore as RunLogStoreType, logRef: run.logRef },
           {
             offset,
             limitBytes: Math.min(ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES, remainingBytes),
