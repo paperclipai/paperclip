@@ -19,6 +19,7 @@ import type {
   IssueRecoveryActionOutcome,
   IssueRecoveryActionOwnerType,
   IssueRecoveryActionStatus,
+  IssueWorkItemType,
   IssueWorkMode,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
@@ -31,7 +32,7 @@ import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
 
-export type { IssueWorkMode };
+export type { IssueWorkItemType, IssueWorkMode };
 
 export interface IssueAncestorProject {
   id: string;
@@ -368,6 +369,7 @@ export interface Issue {
   description: string | null;
   status: IssueStatus;
   workMode: IssueWorkMode;
+  workItemType: IssueWorkItemType;
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;

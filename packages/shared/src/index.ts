@@ -146,6 +146,7 @@ export {
   type IssueStatus,
   type IssuePriority,
   type IssueWorkMode,
+  type IssueWorkItemType,
   type IssueCommentAuthorType,
   type IssueCommentMetadataRowType,
   type IssueCommentPresentationKind,
