@@ -79,6 +79,7 @@ import {
   issueThreadInteractionService,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
+  ISSUE_EXPORT_MAX_LIMIT,
   issueReferenceService,
   issueService,
   clampIssueListLimit,
@@ -2515,8 +2516,8 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
-    const rawResult = await svc.list(companyId, {
-      attention: attention === "blocked" ? "blocked" : undefined,
+    const listFilters = {
+      attention: attention === "blocked" ? "blocked" as const : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
       participantAgentId: req.query.participantAgentId as string | undefined,
@@ -2546,12 +2547,25 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
       offset,
-      sortField: sortField === "updated" ? "updated" : undefined,
-      sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
-    });
-    const result = await actorCanReadCompanyScope(req, companyId)
+      sortField: sortField === "updated" ? "updated" as const : undefined,
+      sortDir: sortDir === "asc" ? "asc" as const : sortDir === "desc" ? "desc" as const : undefined,
+    };
+    const canReadCompanyScope = await actorCanReadCompanyScope(req, companyId);
+    // EDG-7566 AC2: expose the true filtered total alongside the page so consumers don't
+    // have to walk every page to learn the count (the "default caps silently truncate →
+    // misdiagnosis" hazard). Only surfaced for company-scope readers, where the returned
+    // page is not actor-filtered and the count therefore matches the visible filter exactly.
+    const [rawResult, totalCount] = await Promise.all([
+      svc.list(companyId, listFilters),
+      canReadCompanyScope ? svc.count(companyId, listFilters) : Promise.resolve<number | null>(null),
+    ]);
+    const result = canReadCompanyScope
       ? rawResult
       : await filterIssuesForActor(req, rawResult);
+    if (totalCount !== null) {
+      res.setHeader("X-Total-Count", String(totalCount));
+      res.setHeader("Access-Control-Expose-Headers", "X-Total-Count");
+    }
     const issueIds = result.map((issue) => issue.id);
     const [handoffStates, recoveryActionByIssue] = await Promise.all([
       listSuccessfulRunHandoffStates(db, companyId, issueIds),
@@ -2659,6 +2673,49 @@ export function issueRoutes(
 
     const count = await svc.count(companyId, blockedCountFilters);
     res.json({ count });
+  });
+
+  // EDG-7566 AC3: cursor bulk-export. Keyset on (created_at, id) — deep-offset-safe, so
+  // full sweeps stream page-by-page via the returned `nextCursor` instead of offset-walking
+  // (which degrades on large tables and re-pressures the API). Full-table reach is limited
+  // to company-scope readers (board / EAB collectors); scoped agents use the regular list.
+  router.get("/companies/:companyId/issues/export", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await actorCanReadCompanyScope(req, companyId))) {
+      res.status(403).json({ error: "issues/export requires company-scope read access" });
+      return;
+    }
+    const rawLimit = req.query.limit as string | undefined;
+    const parsedLimit = rawLimit !== undefined && /^\d+$/.test(rawLimit)
+      ? Number.parseInt(rawLimit, 10)
+      : null;
+    if (rawLimit !== undefined && (parsedLimit === null || !Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
+      res.status(400).json({ error: `limit must be a positive integer up to ${ISSUE_EXPORT_MAX_LIMIT}` });
+      return;
+    }
+    const cursor = typeof req.query.cursor === "string" && req.query.cursor.length > 0
+      ? req.query.cursor
+      : undefined;
+    const page = await svc.exportPage(companyId, {
+      cursor,
+      limit: parsedLimit ?? undefined,
+      filters: {
+        status: req.query.status as string | string[] | undefined,
+        assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+        assigneeUserId: req.query.assigneeUserId as string | undefined,
+        projectId: req.query.projectId as string | undefined,
+        parentId: req.query.parentId as string | undefined,
+        descendantOf: req.query.descendantOf as string | undefined,
+        labelId: req.query.labelId as string | undefined,
+        originKind: req.query.originKind as string | undefined,
+        originKindPrefix: req.query.originKindPrefix as string | undefined,
+        excludeRoutineExecutions:
+          req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
+        q: req.query.q as string | undefined,
+      },
+    });
+    res.json(page);
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -6054,10 +6111,13 @@ export function issueRoutes(
       typeof req.query.limit === "string" && req.query.limit.trim().length > 0
         ? Number(req.query.limit)
         : null;
+    // EDG-7566 AC1: default the comment page to the max ceiling (newest-first by default)
+    // when no limit is supplied, so an omitted limit can never trigger an unbounded read.
+    // Effective ceiling is unchanged; deeper history is reachable via the afterCommentId cursor.
     const limit =
       limitRaw && Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(Math.floor(limitRaw), MAX_ISSUE_COMMENT_LIMIT)
-        : null;
+        : MAX_ISSUE_COMMENT_LIMIT;
     const comments = await svc.listComments(id, {
       afterCommentId,
       order,

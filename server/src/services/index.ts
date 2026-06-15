@@ -20,7 +20,10 @@ export {
   clampIssueListLimit,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
+  ISSUE_EXPORT_DEFAULT_LIMIT,
+  ISSUE_EXPORT_MAX_LIMIT,
   issueService,
+  type IssueExportRow,
   type IssueFilters,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";

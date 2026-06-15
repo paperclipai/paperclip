@@ -92,6 +92,10 @@ const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "bloc
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
+// Keyset/cursor bulk-export bounds (EDG-7566 AC3). Export pages are deep-offset-safe
+// (keyset on (created_at, id)), so the cap only bounds per-request work, not total reach.
+export const ISSUE_EXPORT_DEFAULT_LIMIT = 200;
+export const ISSUE_EXPORT_MAX_LIMIT = 500;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
@@ -927,6 +931,14 @@ export interface IssueFilters {
   offset?: number;
   sortField?: "updated";
   sortDir?: "asc" | "desc";
+  /**
+   * Opt out of the default server-side page bound (EDG-7566 AC1). When `true`, no
+   * default LIMIT is imposed and the full filtered result set is returned. Reserved
+   * for trusted full-read callers (e.g. company export). Prefer the cursor export
+   * (`exportPage`) for large sweeps; this exists for callers that genuinely need the
+   * whole set materialised in one round-trip.
+   */
+  unbounded?: boolean;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -2715,6 +2727,67 @@ const issueListSelect = {
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
+
+// EDG-7566 AC3: lean projection for the cursor bulk-export. Deliberately excludes the
+// heavy description/label/run/stats enrichment that the list view carries — exports are
+// for full sweeps, not interactive rendering.
+const issueExportSelect = {
+  id: issues.id,
+  identifier: issues.identifier,
+  title: issues.title,
+  status: issues.status,
+  priority: issues.priority,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  parentId: issues.parentId,
+  projectId: issues.projectId,
+  originKind: issues.originKind,
+  createdAt: issues.createdAt,
+  updatedAt: issues.updatedAt,
+} as const;
+
+export type IssueExportRow = Pick<
+  IssueRow,
+  | "id"
+  | "identifier"
+  | "title"
+  | "status"
+  | "priority"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "parentId"
+  | "projectId"
+  | "originKind"
+  | "createdAt"
+  | "updatedAt"
+>;
+
+// Opaque continuation cursor for `exportPage`: base64url("<createdAt ISO>|<id>"). The
+// keyset is (created_at, id); encoding both keeps it stable across pages and tamper-evident
+// enough that a malformed/foreign cursor simply decodes to null (treated as "start").
+function encodeIssueExportCursor(createdAt: Date, id: string): string {
+  return Buffer.from(`${createdAt.toISOString()}|${id}`, "utf8").toString("base64url");
+}
+
+function decodeIssueExportCursor(
+  cursor?: string | null,
+): { createdAt: Date; id: string } | null {
+  if (!cursor) return null;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(cursor, "base64url").toString("utf8");
+  } catch {
+    return null;
+  }
+  const sep = decoded.indexOf("|");
+  if (sep <= 0) return null;
+  const createdAtRaw = decoded.slice(0, sep);
+  const id = decoded.slice(sep + 1);
+  if (!id) return null;
+  const createdAt = new Date(createdAtRaw);
+  if (Number.isNaN(createdAt.getTime())) return null;
+  return { createdAt, id };
+}
 
 function withActiveRuns(
   issueRows: IssueWithLabels[],
@@ -4690,6 +4763,152 @@ export function issueService(db: Db) {
     });
   }
 
+  // Shared WHERE-builder for the issue list family (EDG-7566). `list`, `count`, and
+  // `exportPage` all derive their filter predicate here so a count or export can never
+  // drift from what `list` returns for the same filters. Returns `null` when a label
+  // filter matches zero issues (callers short-circuit to an empty result / zero count).
+  async function buildIssueListWhere(
+    companyId: string,
+    filters?: IssueFilters,
+  ): Promise<
+    | null
+    | {
+        conditions: SQL[];
+        hasSearch: boolean;
+        titleStartsWithMatch: SQL<boolean>;
+        titleContainsMatch: SQL<boolean>;
+        identifierStartsWithMatch: SQL<boolean>;
+        identifierContainsMatch: SQL<boolean>;
+        descriptionContainsMatch: SQL<boolean>;
+        commentContainsMatch: SQL<boolean>;
+      }
+  > {
+    const conditions: SQL[] = [eq(issues.companyId, companyId)];
+    const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
+    assertValidAssigneeAgentFilter(assigneeAgentFilter);
+    const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
+    const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
+    const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
+    const rawSearch = filters?.q?.trim() ?? "";
+    const hasSearch = rawSearch.length > 0;
+    const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
+    const startsWithPattern = `${escapedSearch}%`;
+    const containsPattern = `%${escapedSearch}%`;
+    const titleStartsWithMatch = sql<boolean>`${issues.title} ILIKE ${startsWithPattern} ESCAPE '\\'`;
+    const titleContainsMatch = sql<boolean>`${issues.title} ILIKE ${containsPattern} ESCAPE '\\'`;
+    const identifierStartsWithMatch = sql<boolean>`${issues.identifier} ILIKE ${startsWithPattern} ESCAPE '\\'`;
+    const identifierContainsMatch = sql<boolean>`${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\'`;
+    const descriptionContainsMatch = sql<boolean>`${issues.description} ILIKE ${containsPattern} ESCAPE '\\'`;
+    const commentContainsMatch = sql<boolean>`
+      EXISTS (
+        SELECT 1
+        FROM ${issueComments}
+        WHERE ${issueComments.issueId} = ${issues.id}
+          AND ${issueComments.companyId} = ${companyId}
+          AND ${issueComments.deletedAt} IS NULL
+          AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
+      )
+    `;
+    if (filters?.descendantOf) {
+      conditions.push(sql<boolean>`
+        ${issues.id} IN (
+          WITH RECURSIVE descendants(id) AS (
+            SELECT ${issues.id}
+            FROM ${issues}
+            WHERE ${issues.companyId} = ${companyId}
+              AND ${issues.parentId} = ${filters.descendantOf}
+            UNION
+            SELECT ${issues.id}
+            FROM ${issues}
+            JOIN descendants ON ${issues.parentId} = descendants.id
+            WHERE ${issues.companyId} = ${companyId}
+          )
+          SELECT id FROM descendants
+        )
+      `);
+    }
+    const lowTrustCondition = lowTrustBoundaryIssueCondition(companyId, filters?.lowTrustBoundary);
+    if (lowTrustCondition) conditions.push(lowTrustCondition);
+    const statuses = parseStatusFilter(filters?.status);
+    if (statuses.length === 1) {
+      conditions.push(eq(issues.status, statuses[0]));
+    } else if (statuses.length > 1) {
+      conditions.push(inArray(issues.status, statuses));
+    }
+    if (assigneeAgentFilter === null) {
+      conditions.push(isNull(issues.assigneeAgentId));
+    } else if (assigneeAgentFilter) {
+      conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
+    }
+    if (filters?.participantAgentId) {
+      conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
+    }
+    if (filters?.assigneeUserId) {
+      conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+    }
+    if (touchedByUserId) {
+      conditions.push(touchedByUserCondition(companyId, touchedByUserId));
+    }
+    if (inboxArchivedByUserId) {
+      conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
+    }
+    if (unreadForUserId) {
+      conditions.push(unreadForUserCondition(companyId, unreadForUserId));
+    }
+    if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+    if (filters?.workspaceId) {
+      conditions.push(or(
+        eq(issues.executionWorkspaceId, filters.workspaceId),
+        eq(issues.projectWorkspaceId, filters.workspaceId),
+      )!);
+    }
+    if (filters?.executionWorkspaceId) {
+      conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
+    }
+    if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
+    if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
+    if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
+    if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+    if (filters?.hasPlanDocument !== undefined) {
+      conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
+    }
+    if (!shouldIncludePluginOperationIssues(filters)) {
+      conditions.push(nonPluginOperationIssueCondition());
+    }
+    if (filters?.labelId) {
+      const labeledIssueIds = await db
+        .select({ issueId: issueLabels.issueId })
+        .from(issueLabels)
+        .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
+      if (labeledIssueIds.length === 0) return null;
+      conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
+    }
+    if (hasSearch) {
+      conditions.push(
+        or(
+          titleContainsMatch,
+          identifierContainsMatch,
+          descriptionContainsMatch,
+          commentContainsMatch,
+        )!,
+      );
+    }
+    if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
+      conditions.push(ne(issues.originKind, "routine_execution"));
+    }
+    conditions.push(isNull(issues.hiddenAt));
+    return {
+      conditions,
+      hasSearch,
+      titleStartsWithMatch,
+      titleContainsMatch,
+      identifierStartsWithMatch,
+      identifierContainsMatch,
+      descriptionContainsMatch,
+      commentContainsMatch,
+    };
+  }
+
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
@@ -4703,12 +4922,28 @@ export function issueService(db: Db) {
         });
       }
 
-      const conditions = [eq(issues.companyId, companyId)];
-      const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
-      assertValidAssigneeAgentFilter(assigneeAgentFilter);
-      const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
-        ? Math.max(1, Math.floor(filters.limit))
+      const where = await buildIssueListWhere(companyId, filters);
+      if (!where) return [];
+      const {
+        conditions,
+        hasSearch,
+        titleStartsWithMatch,
+        titleContainsMatch,
+        identifierStartsWithMatch,
+        identifierContainsMatch,
+        descriptionContainsMatch,
+        commentContainsMatch,
+      } = where;
+      // EDG-7566 AC1: impose a default server-side page size when no explicit limit is
+      // supplied, so an omitted `limit` can never trigger a full-table scan-and-sort.
+      // A supplied limit is clamped to ISSUE_LIST_MAX_LIMIT; trusted full reads opt in
+      // via `unbounded: true` (or use the cursor `exportPage` for large sweeps).
+      const suppliedLimit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
+        ? Math.min(ISSUE_LIST_MAX_LIMIT, Math.max(1, Math.floor(filters.limit)))
         : undefined;
+      const limit = filters?.unbounded === true
+        ? undefined
+        : (suppliedLimit ?? ISSUE_LIST_DEFAULT_LIMIT);
       const offset = typeof filters?.offset === "number" && Number.isFinite(filters.offset)
         ? Math.max(0, Math.floor(filters.offset))
         : 0;
@@ -4718,114 +4953,6 @@ export function issueService(db: Db) {
       const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
       const includeBlockedInboxAttention = filters?.includeBlockedInboxAttention === true;
-      const rawSearch = filters?.q?.trim() ?? "";
-      const hasSearch = rawSearch.length > 0;
-      const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
-      const startsWithPattern = `${escapedSearch}%`;
-      const containsPattern = `%${escapedSearch}%`;
-      const titleStartsWithMatch = sql<boolean>`${issues.title} ILIKE ${startsWithPattern} ESCAPE '\\'`;
-      const titleContainsMatch = sql<boolean>`${issues.title} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const identifierStartsWithMatch = sql<boolean>`${issues.identifier} ILIKE ${startsWithPattern} ESCAPE '\\'`;
-      const identifierContainsMatch = sql<boolean>`${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const descriptionContainsMatch = sql<boolean>`${issues.description} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const commentContainsMatch = sql<boolean>`
-        EXISTS (
-          SELECT 1
-          FROM ${issueComments}
-          WHERE ${issueComments.issueId} = ${issues.id}
-            AND ${issueComments.companyId} = ${companyId}
-            AND ${issueComments.deletedAt} IS NULL
-            AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
-        )
-      `;
-      if (filters?.descendantOf) {
-        conditions.push(sql<boolean>`
-          ${issues.id} IN (
-            WITH RECURSIVE descendants(id) AS (
-              SELECT ${issues.id}
-              FROM ${issues}
-              WHERE ${issues.companyId} = ${companyId}
-                AND ${issues.parentId} = ${filters.descendantOf}
-              UNION
-              SELECT ${issues.id}
-              FROM ${issues}
-              JOIN descendants ON ${issues.parentId} = descendants.id
-              WHERE ${issues.companyId} = ${companyId}
-            )
-            SELECT id FROM descendants
-          )
-        `);
-      }
-      const lowTrustCondition = lowTrustBoundaryIssueCondition(companyId, filters?.lowTrustBoundary);
-      if (lowTrustCondition) conditions.push(lowTrustCondition);
-      const statuses = parseStatusFilter(filters?.status);
-      if (statuses.length === 1) {
-        conditions.push(eq(issues.status, statuses[0]));
-      } else if (statuses.length > 1) {
-        conditions.push(inArray(issues.status, statuses));
-      }
-      if (assigneeAgentFilter === null) {
-        conditions.push(isNull(issues.assigneeAgentId));
-      } else if (assigneeAgentFilter) {
-        conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
-      }
-      if (filters?.participantAgentId) {
-        conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
-      }
-      if (filters?.assigneeUserId) {
-        conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
-      }
-      if (touchedByUserId) {
-        conditions.push(touchedByUserCondition(companyId, touchedByUserId));
-      }
-      if (inboxArchivedByUserId) {
-        conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
-      }
-      if (unreadForUserId) {
-        conditions.push(unreadForUserCondition(companyId, unreadForUserId));
-      }
-      if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
-      if (filters?.workspaceId) {
-        conditions.push(or(
-          eq(issues.executionWorkspaceId, filters.workspaceId),
-          eq(issues.projectWorkspaceId, filters.workspaceId),
-        )!);
-      }
-      if (filters?.executionWorkspaceId) {
-        conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
-      }
-      if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
-      if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
-      if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
-      if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
-      if (filters?.hasPlanDocument !== undefined) {
-        conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
-      }
-      if (!shouldIncludePluginOperationIssues(filters)) {
-        conditions.push(nonPluginOperationIssueCondition());
-      }
-      if (filters?.labelId) {
-        const labeledIssueIds = await db
-          .select({ issueId: issueLabels.issueId })
-          .from(issueLabels)
-          .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
-        if (labeledIssueIds.length === 0) return [];
-        conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
-      }
-      if (hasSearch) {
-        conditions.push(
-          or(
-            titleContainsMatch,
-            identifierContainsMatch,
-            descriptionContainsMatch,
-            commentContainsMatch,
-          )!,
-        );
-      }
-      if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
-        conditions.push(ne(issues.originKind, "routine_execution"));
-      }
-      conditions.push(isNull(issues.hiddenAt));
 
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`
@@ -4944,39 +5071,55 @@ export function issueService(db: Db) {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
-      const conditions = [eq(issues.companyId, companyId), isNull(issues.hiddenAt)];
-      const statuses = parseStatusFilter(filters?.status);
-      if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]!));
-      else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
-      const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
-      assertValidAssigneeAgentFilter(assigneeAgentFilter);
-      if (assigneeAgentFilter === null) {
-        conditions.push(isNull(issues.assigneeAgentId));
-      } else if (assigneeAgentFilter) {
-        conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
-      }
-      if (filters?.assigneeUserId) conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
-      if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
-      if (filters?.workspaceId) {
-        conditions.push(or(
-          eq(issues.executionWorkspaceId, filters.workspaceId),
-          eq(issues.projectWorkspaceId, filters.workspaceId),
-        )!);
-      }
-      if (filters?.executionWorkspaceId) conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
-      if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
-      if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
-      if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
-      if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
-      if (filters?.hasPlanDocument !== undefined) {
-        conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
-      }
-      if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
+      // EDG-7566 AC2: derive the count predicate from the SAME builder `list` uses, so a
+      // total_count can never drift from what `list` returns for the same filters. (The
+      // prior hand-rolled count omitted descendantOf / participant / touchedBy / label /
+      // search / excludeRoutineExecutions / lowTrustBoundary — a silent count mismatch.)
+      const where = await buildIssueListWhere(companyId, filters);
+      if (!where) return 0;
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
         .from(issues)
-        .where(and(...conditions));
+        .where(and(...where.conditions));
       return Number(row?.count ?? 0);
+    },
+
+    // EDG-7566 AC3: first-class keyset/cursor bulk export for full sweeps. Keyset on
+    // (created_at, id) DESC is deep-offset-safe — no offset degradation on large tables —
+    // and returns a continuation cursor instead of re-pressuring the API with offset walks.
+    // Intentionally lean: no label/run/stats enrichment (those are list-view concerns).
+    exportPage: async (
+      companyId: string,
+      options?: { cursor?: string | null; limit?: number; filters?: IssueFilters },
+    ): Promise<{ items: IssueExportRow[]; nextCursor: string | null; hasMore: boolean }> => {
+      const requested = typeof options?.limit === "number"
+        && Number.isFinite(options.limit)
+        && options.limit > 0
+        ? Math.floor(options.limit)
+        : ISSUE_EXPORT_DEFAULT_LIMIT;
+      const pageSize = Math.min(ISSUE_EXPORT_MAX_LIMIT, Math.max(1, requested));
+      const where = await buildIssueListWhere(companyId, options?.filters);
+      if (!where) return { items: [], nextCursor: null, hasMore: false };
+      const conditions = [...where.conditions];
+      const cursor = decodeIssueExportCursor(options?.cursor);
+      if (cursor) {
+        // Strictly after the cursor in DESC (created_at, id) order → row-tuple less-than.
+        // Explicit casts keep the row-comparison param types unambiguous for the driver.
+        conditions.push(
+          sql`(${issues.createdAt}, ${issues.id}) < (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`,
+        );
+      }
+      const rows = await db
+        .select(issueExportSelect)
+        .from(issues)
+        .where(and(...conditions))
+        .orderBy(desc(issues.createdAt), desc(issues.id))
+        .limit(pageSize + 1);
+      const hasMore = rows.length > pageSize;
+      const items = hasMore ? rows.slice(0, pageSize) : rows;
+      const last = items[items.length - 1];
+      const nextCursor = hasMore && last ? encodeIssueExportCursor(last.createdAt, last.id) : null;
+      return { items, nextCursor, hasMore };
     },
 
     countUnreadTouchedByUser: async (
