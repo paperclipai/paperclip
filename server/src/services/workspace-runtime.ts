@@ -1100,12 +1100,25 @@ async function resolveGitRepoRootForWorkspaceCleanup(
 }
 
 /** Auto-provision JDK8 + Maven when a repo root contains pom.xml and no explicit command is set. */
-export const AUTO_MAVEN_PROVISION_COMMAND =
-  "bash -lc 'set -euo pipefail; if command -v mvn >/dev/null 2>&1; then mvn -version; exit 0; fi; " +
-  "if command -v sdk >/dev/null 2>&1; then sdk install java 8.0.392-zulu 2>/dev/null || true; " +
-  "sdk install maven 3.9.6 2>/dev/null || true; sdk default java 8.0.392-zulu 2>/dev/null || true; " +
-  "sdk default maven 3.9.6 2>/dev/null || true; " +
-  "elif command -v apt-get >/dev/null 2>&1; then (command -v sudo >/dev/null 2>&1 && sudo apt-get update -qq && sudo apt-get install -y -qq openjdk-8-jdk-headless maven) || apt-get update -qq && apt-get install -y -qq openjdk-8-jdk-headless maven; fi; mvn -version'";
+export const AUTO_MAVEN_PROVISION_COMMAND = [
+  "bash -lc 'set -euo pipefail;",
+  "if command -v mvn >/dev/null 2>&1; then mvn -version; exit 0; fi;",
+  "if command -v sdk >/dev/null 2>&1; then",
+  "  sdk install java 8.0.392-zulu 2>/dev/null || true;",
+  "  sdk install maven 3.9.6 2>/dev/null || true;",
+  "  sdk default java 8.0.392-zulu 2>/dev/null || true;",
+  "  sdk default maven 3.9.6 2>/dev/null || true;",
+  "elif command -v apt-get >/dev/null 2>&1; then",
+  "  if command -v sudo >/dev/null 2>&1; then",
+  "    sudo apt-get update -qq && sudo apt-get install -y -qq openjdk-8-jdk-headless maven;",
+  "  else",
+  "    apt-get update -qq && apt-get install -y -qq openjdk-8-jdk-headless maven;",
+  "  fi;",
+  "else",
+  "  echo \"No supported package manager found to install JDK8 + Maven\" >&2; exit 1;",
+  "fi;",
+  "mvn -version'",
+].join(" ");
 
 export async function resolveDefaultMavenProvisionCommand(repoRoot: string): Promise<string | null> {
   try {
