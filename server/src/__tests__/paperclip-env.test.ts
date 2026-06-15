@@ -87,6 +87,19 @@ describe("buildPaperclipEnv", () => {
     ]);
   });
 
+  it("deduplicates synthesized runtime API candidates", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:3101";
+    delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "3101";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(JSON.parse(env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON)).toEqual([
+      "http://127.0.0.1:3101",
+    ]);
+  });
+
   it("uses runtime listen host/port when explicit URL is not set", () => {
     delete process.env.PAPERCLIP_RUNTIME_API_URL;
     delete process.env.PAPERCLIP_API_URL;

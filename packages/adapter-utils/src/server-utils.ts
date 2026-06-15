@@ -949,6 +949,18 @@ function buildLocalPaperclipApiUrl(): string {
   return `http://${runtimeHost}:${runtimePort}`;
 }
 
+function uniquePaperclipApiCandidates(candidates: string[]): string[] {
+  const uniqueCandidates: string[] = [];
+  const seen = new Set<string>();
+  for (const rawCandidate of candidates) {
+    const candidate = rawCandidate.trim().replace(/\/+$/, "");
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    uniqueCandidates.push(candidate);
+  }
+  return uniqueCandidates;
+}
+
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
   const vars: Record<string, string> = {
     PAPERCLIP_AGENT_ID: agent.id,
@@ -964,7 +976,7 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   }
   vars.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON =
     process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ??
-    JSON.stringify([apiUrl, buildLocalPaperclipApiUrl()]);
+    JSON.stringify(uniquePaperclipApiCandidates([apiUrl, buildLocalPaperclipApiUrl()]));
   return vars;
 }
 
