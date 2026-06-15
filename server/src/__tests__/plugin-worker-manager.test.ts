@@ -74,7 +74,9 @@ describe("plugin-worker-manager stderr failure context", () => {
     expect(excerpt).not.toContain("second line");
     expect(excerpt.length).toBeLessThanOrEqual(8_000);
   });
+});
 
+describe("plugin-worker-manager RPC lifecycle", () => {
   it("times out environmentExecute calls using the handle default when no override is provided", async () => {
     const handle = createPluginWorkerHandle("test.plugin", {
       entrypointPath: DELAYED_WORKER_ENTRYPOINT,
@@ -185,7 +187,9 @@ describe("plugin-worker-manager stderr failure context", () => {
       await handle.stop().catch(() => undefined);
     }
   });
+});
 
+describe("plugin-worker-manager invocation scope", () => {
   it("passes performAction invocation scope to nested worker host calls", async () => {
     const companiesGet = vi.fn(async (
       params: { companyId: string },
@@ -270,6 +274,45 @@ describe("plugin-worker-manager stderr failure context", () => {
         { companyId: "company-1" },
         { invocationScope: { companyId: "company-1" } },
       );
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("keeps settled invocation scope briefly for already-emitted nested calls", async () => {
+    const companiesGet = vi.fn(async () => ({ id: "company-1" }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {
+        "companies.get": companiesGet,
+      },
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-1",
+        params: {
+          mode: "late-echo",
+          requestedCompanyId: "company-1",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ ok: true });
+
+      await vi.waitFor(() => {
+        expect(companiesGet).toHaveBeenCalledWith(
+          { companyId: "company-1" },
+          { invocationScope: { companyId: "company-1" } },
+        );
+      });
     } finally {
       await handle.stop().catch(() => undefined);
     }

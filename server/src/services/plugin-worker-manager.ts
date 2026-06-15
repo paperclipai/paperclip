@@ -73,6 +73,16 @@ const SHUTDOWN_DRAIN_MS = 10_000;
 /** Time to wait after SIGTERM before sending SIGKILL. */
 const SIGTERM_GRACE_MS = 5_000;
 
+/**
+ * Short grace period after a scoped host→worker RPC settles.
+ *
+ * A plugin can emit a worker→host request with the scoped invocation id just
+ * before the host receives the top-level RPC response. Keep the scope alive
+ * briefly so already-emitted nested requests are authorized even if stdio/IPC
+ * delivers the top-level response first.
+ */
+const INVOCATION_SETTLEMENT_GRACE_MS = 5_000;
+
 /** Minimum backoff delay for crash recovery (1 second). */
 const MIN_BACKOFF_MS = 1_000;
 
@@ -552,6 +562,17 @@ export function createPluginWorkerHandle(
     const entry = activeInvocations.get(invocation.id);
     if (entry?.timer) clearTimeout(entry.timer);
     activeInvocations.delete(invocation.id);
+  }
+
+  function releaseInvocationAfterGrace(invocation: PluginInvocationContext | null): void {
+    if (!invocation) return;
+    const entry = activeInvocations.get(invocation.id);
+    if (!entry) return;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      activeInvocations.delete(invocation.id);
+    }, INVOCATION_SETTLEMENT_GRACE_MS);
+    if (entry.timer.unref) entry.timer.unref();
   }
 
   function contextForWorkerMessage(message: JsonRpcRequest | JsonRpcNotification): WorkerHostCallContext {
@@ -1142,12 +1163,20 @@ export function createPluginWorkerHandle(
       // an already-settled promise, producing an unhandled rejection.
       let settled = false;
 
-      const settle = <T>(fn: (value: T) => void, value: T): void => {
+      const settle = <T>(
+        fn: (value: T) => void,
+        value: T,
+        invocationCleanup: "grace" | "immediate" = "grace",
+      ): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         pendingRequests.delete(id);
-        clearInvocation(invocation);
+        if (invocationCleanup === "grace") {
+          releaseInvocationAfterGrace(invocation);
+        } else {
+          clearInvocation(invocation);
+        }
         fn(value);
       };
 
@@ -1158,6 +1187,7 @@ export function createPluginWorkerHandle(
             code: PLUGIN_RPC_ERROR_CODES.TIMEOUT,
             message: `RPC call "${method}" timed out after ${timeout}ms`,
           }),
+          "immediate",
         );
       }, timeout);
 

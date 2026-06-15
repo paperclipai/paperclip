@@ -31,6 +31,30 @@ function sendNestedHostRequest(originalRequest, invocationId) {
   send(nestedRequest);
 }
 
+function sendLateNestedHostRequest(originalRequest, invocationId) {
+  const nestedId = `late-nested-${nextRequestId++}`;
+  const params = originalRequest.params?.params ?? {};
+  const requestedCompanyId = params.requestedCompanyId;
+
+  send({
+    jsonrpc: "2.0",
+    id: originalRequest.id,
+    result: { ok: true },
+  });
+
+  setImmediate(() => {
+    send({
+      jsonrpc: "2.0",
+      id: nestedId,
+      method: "companies.get",
+      params: {
+        companyId: requestedCompanyId,
+      },
+      paperclipInvocationId: invocationId,
+    });
+  });
+}
+
 const rl = readline.createInterface({
   input: process.stdin,
   crlfDelay: Infinity,
@@ -75,6 +99,10 @@ rl.on("line", (line) => {
   }
 
   if (method === "getData" || method === "performAction") {
+    if (message.params?.params?.mode === "late-echo") {
+      sendLateNestedHostRequest(message, message.paperclipInvocation?.id);
+      return;
+    }
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
   }
