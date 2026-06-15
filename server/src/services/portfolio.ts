@@ -92,16 +92,7 @@ export function portfolioService(db: Db) {
       )}`;
 
       const result = await db.execute(sql`
-        WITH issue_links AS (
-          SELECT execution_run_id AS run_id, id AS issue_id
-          FROM issues
-          WHERE company_id IN (${companyIdsParam}) AND execution_run_id IS NOT NULL
-          UNION
-          SELECT checkout_run_id AS run_id, id AS issue_id
-          FROM issues
-          WHERE company_id IN (${companyIdsParam}) AND checkout_run_id IS NOT NULL
-        ),
-        aggregated AS (
+        WITH aggregated AS (
           SELECT
             hr.company_id,
             hr.agent_id,
@@ -118,9 +109,8 @@ export function portfolioService(db: Db) {
               ),
               0
             )::int AS seconds_on_task,
-            COUNT(DISTINCT issue_links.issue_id)::int AS distinct_issues
+            COUNT(DISTINCT hr.context_snapshot ->> 'issueId')::int AS distinct_issues
           FROM heartbeat_runs hr
-          LEFT JOIN issue_links ON issue_links.run_id = hr.id
           WHERE
             hr.company_id IN (${companyIdsParam})
             AND hr.started_at >= ${input.since.toISOString()}::timestamptz
@@ -138,7 +128,7 @@ export function portfolioService(db: Db) {
           CASE
             WHEN distinct_issues > 0
               THEN ROUND((runs_total::numeric / distinct_issues::numeric), 2)::double precision
-            ELSE runs_total::double precision
+            ELSE 0::double precision
           END AS heartbeats_avg
         FROM aggregated
         ORDER BY company_id ASC, agent_id ASC

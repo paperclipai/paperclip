@@ -138,6 +138,7 @@ describeEmbeddedPostgres("portfolio routes", () => {
         status: "succeeded",
         startedAt: new Date("2026-06-10T10:00:00.000Z"),
         finishedAt: new Date("2026-06-10T10:02:00.000Z"),
+        contextSnapshot: { issueId: issueA },
       },
       {
         id: runB,
@@ -147,6 +148,7 @@ describeEmbeddedPostgres("portfolio routes", () => {
         status: "failed",
         startedAt: new Date("2026-06-11T10:00:00.000Z"),
         finishedAt: new Date("2026-06-11T10:03:00.000Z"),
+        contextSnapshot: { issueId: issueB },
       },
       {
         id: runOutsider,
@@ -156,6 +158,7 @@ describeEmbeddedPostgres("portfolio routes", () => {
         status: "succeeded",
         startedAt: new Date("2026-06-11T11:00:00.000Z"),
         finishedAt: new Date("2026-06-11T11:05:00.000Z"),
+        contextSnapshot: { issueId: randomUUID() },
       },
     ]);
 
