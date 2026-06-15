@@ -172,15 +172,17 @@ describeEmbeddedPostgres("heartbeat master runtime failover execution", () => {
       .then((rows) => rows[0] ?? null);
     expect(sourceAgent?.adapterType).toBe("claude_local");
 
-    const runtimeState = await db
-      .select({ adapterType: agentRuntimeState.adapterType, sessionId: agentRuntimeState.sessionId })
-      .from(agentRuntimeState)
-      .where(eq(agentRuntimeState.agentId, agentId))
-      .then((rows) => rows[0] ?? null);
-    expect(runtimeState).toMatchObject({
-      adapterType: "codex_local",
-      sessionId: "codex_local-session",
-    });
+    await vi.waitFor(async () => {
+      const runtimeState = await db
+        .select({ adapterType: agentRuntimeState.adapterType, sessionId: agentRuntimeState.sessionId })
+        .from(agentRuntimeState)
+        .where(eq(agentRuntimeState.agentId, agentId))
+        .then((rows) => rows[0] ?? null);
+      expect(runtimeState).toMatchObject({
+        adapterType: "codex_local",
+        sessionId: "codex_local-session",
+      });
+    }, { timeout: 5_000 });
 
     const persistedRun = await heartbeat.getRun(run!.id);
     expect(persistedRun?.agentId).toBe(agentId);
