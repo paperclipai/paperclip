@@ -102,6 +102,7 @@ function buildSourceConfig(): PaperclipConfig {
       port: 3100,
       allowedHostnames: ["localhost"],
       serveUi: true,
+      pluginHttpAllowedPrivateHosts: [],
     },
     auth: {
       baseUrlMode: "explicit",

@@ -234,6 +234,7 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
       port: Number(process.env.PORT) || 3100,
       allowedHostnames: Array.from(new Set([...allowedHostnamesFromEnv, ...(hostnameFromPublicUrl ? [hostnameFromPublicUrl] : [])])),
       serveUi: parseBooleanFromEnv(process.env.SERVE_UI) ?? true,
+      pluginHttpAllowedPrivateHosts: [],
     },
     auth: {
       baseUrlMode: authBaseUrlMode,

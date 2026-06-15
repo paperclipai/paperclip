@@ -96,6 +96,7 @@ function configWithSecretsProvider(provider: PaperclipConfig["secrets"]["provide
       port: 3100,
       allowedHostnames: [],
       serveUi: true,
+      pluginHttpAllowedPrivateHosts: [],
     },
     auth: {
       baseUrlMode: "auto",

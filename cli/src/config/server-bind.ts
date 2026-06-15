@@ -64,6 +64,7 @@ export function buildPresetServerConfig(
       port: input.port,
       allowedHostnames: input.allowedHostnames,
       serveUi: input.serveUi,
+      pluginHttpAllowedPrivateHosts: [],
     },
     auth: {
       baseUrlMode: "auto",
@@ -95,6 +96,7 @@ export function buildCustomServerConfig(input: BaseServerInput & {
       port: input.port,
       allowedHostnames: input.allowedHostnames,
       serveUi: input.serveUi,
+      pluginHttpAllowedPrivateHosts: [],
     },
     auth:
       input.deploymentMode === "authenticated" && input.exposure === "public"

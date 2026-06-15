@@ -216,6 +216,7 @@ export function buildWorktreeConfig(input: {
       port: serverPort,
       allowedHostnames: source?.server.allowedHostnames ?? [],
       serveUi: source?.server.serveUi ?? true,
+      pluginHttpAllowedPrivateHosts: source?.server.pluginHttpAllowedPrivateHosts ?? [],
     },
     auth: {
       baseUrlMode: source?.auth.baseUrlMode ?? "auto",

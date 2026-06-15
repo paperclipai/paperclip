@@ -41,6 +41,7 @@ function createTempConfig(): string {
       port: 3199,
       allowedHostnames: [],
       serveUi: true,
+      pluginHttpAllowedPrivateHosts: [],
     },
     auth: {
       baseUrlMode: "auto",

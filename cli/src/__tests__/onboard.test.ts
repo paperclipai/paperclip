@@ -41,6 +41,7 @@ function createExistingConfigFixture() {
       port: 3100,
       allowedHostnames: [],
       serveUi: true,
+      pluginHttpAllowedPrivateHosts: [],
     },
     auth: {
       baseUrlMode: "auto",
