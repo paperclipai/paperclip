@@ -69,6 +69,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { markDeduplicatedIssueCreate } from "./issue-create-dedup.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -4786,7 +4787,7 @@ export function issueService(db: Db) {
             .limit(1);
           if (duplicate) {
             const [enrichedDuplicate] = await withIssueLabels(tx, [duplicate]);
-            return enrichedDuplicate;
+            return markDeduplicatedIssueCreate(enrichedDuplicate);
           }
         }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
