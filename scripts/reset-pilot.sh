@@ -12,6 +12,7 @@
 #   <title>         optional plan title override
 #
 # What it does:
+#   0. Sets agentMonthlyTokens to 5M (sized for a full dev_team chain)
 #   1. Stops every active plan (cancels running subtree)
 #   2. Deletes every plan issue + its subtree
 #   3. Resets the root CTO's Claude session (clears --resume state)
@@ -51,13 +52,35 @@ echo "▶ company=$COMPANY_ID"
 echo ""
 
 # ---------------------------------------------------------------------------
-# 0. Clear budget pauses (kill switch). Pilots burn past the per-agent /
-#    per-company hard-stop token caps (esp. cold --resume replays), which
-#    pauses the company and cancels every agent wake with "budget pause".
-#    A plain /resume clears the AGENT flag but not the company-level budget
-#    pause, so the company re-pauses on the next run. The only safe unpause
-#    for a budget pause is resolving each open incident with
-#    raise_budget_and_resume (raises the cap above observed + resumes scope).
+# 0. Right-size instance guards so a full pilot chain fits within the cap.
+#    The default agentMonthlyTokens was 500k — below one real review pass
+#    (~1M), which tripped the hard-stop mid-chain on every HIVA-17 pilot.
+#    5M: enough for a full dev_team chain per agent; still stops a genuine
+#    runaway cold-resume loop (which would burn 4-5M per agent per replay).
+# ---------------------------------------------------------------------------
+echo "▶ Ensuring instance guards allow full pilot chains (agentMonthlyTokens → 5M)…"
+GUARDS_RESULT="$(curl -fsS -X PATCH "$API_BASE/instance/settings/guards" \
+  -H 'Content-Type: application/json' \
+  -d '{"budget":{"agentMonthlyTokens":5000000}}' 2>/dev/null || echo '{}')"
+GUARDS_OK="$(printf '%s' "$GUARDS_RESULT" | node -e '
+  try {
+    const d = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    process.stdout.write(d.budget ? "ok" : "warn");
+  } catch (e) { process.stdout.write("warn"); }
+')"
+if [[ "$GUARDS_OK" == "ok" ]]; then
+  echo "  agentMonthlyTokens = 5000000 ✓"
+else
+  echo "  warning: could not update instance guards (check server log)" >&2
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# 1. Clear budget pauses (kill switch). Pilots may still exhaust the cap
+#    mid-month after many runs. A plain /resume clears the AGENT flag but
+#    not the company-level budget pause — the only safe unpause is resolving
+#    each open incident with raise_budget_and_resume (raises the cap above
+#    observed + resumes scope).
 # ---------------------------------------------------------------------------
 echo "▶ Clearing budget pauses…"
 curl -fsS -X PATCH "$API_BASE/companies/$COMPANY_ID" \
@@ -67,11 +90,12 @@ OVERVIEW_JSON="$(curl -fsS "$API_BASE/companies/$COMPANY_ID/budgets/overview" 2>
 INCIDENT_LINES="$(printf '%s' "$OVERVIEW_JSON" | node -e '
   let d={}; try { d = JSON.parse(require("fs").readFileSync(0,"utf8")); } catch (e) {}
   const incidents = Array.isArray(d.activeIncidents) ? d.activeIncidents : [];
-  // raise each cap well above observed so the hard-stop does not re-trip mid-pilot
+  // raise each cap 5M above observed — enough headroom for the rest of the
+  // pilot without silently disabling the kill-switch (old floor was +100M).
   for (const i of incidents) {
     if (i.status !== "open") continue;
     const observed = Number(i.amountObserved || 0);
-    const next = Math.max(observed * 4, observed + 100000000, 100000000);
+    const next = Math.max(observed + 5000000, 5000000);
     process.stdout.write(`${i.id} ${Math.floor(next)} ${i.scopeName || i.scopeType}\n`);
   }
 ')"
