@@ -66,6 +66,22 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Subprocess-level silent-stall watchdog: if the `claude` child process emits
+ * zero stdout/stderr bytes for this many seconds, runChildProcess SIGTERMs and
+ * then SIGKILLs it. Surfaces as `proc.silentStall = true` and is converted to
+ * an `errorCode: "silent_stall"` AdapterExecutionResult below. Overridable via
+ * `PAPERCLIP_CLAUDE_LOCAL_SILENT_STALL_SEC` for tests.
+ */
+const DEFAULT_CLAUDE_LOCAL_SILENT_STALL_TIMEOUT_SEC = 30 * 60;
+const CLAUDE_LOCAL_SILENT_STALL_TIMEOUT_SEC = (() => {
+  const raw = process.env.PAPERCLIP_CLAUDE_LOCAL_SILENT_STALL_SEC;
+  if (!raw) return DEFAULT_CLAUDE_LOCAL_SILENT_STALL_TIMEOUT_SEC;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_CLAUDE_LOCAL_SILENT_STALL_TIMEOUT_SEC;
+  return parsed;
+})();
+
 interface ClaudeExecutionInput {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -773,6 +789,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceMs: terminalResultCleanupGraceMs,
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
       },
+      silentStallTimeoutSec: CLAUDE_LOCAL_SILENT_STALL_TIMEOUT_SEC,
     });
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);
@@ -809,6 +826,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: "timeout",
         errorMeta,
+        clearSession: Boolean(opts.clearSessionOnMissingSession),
+      };
+    }
+
+    if (proc.silentStall) {
+      return {
+        exitCode: proc.exitCode,
+        signal: proc.signal,
+        timedOut: false,
+        errorMessage: `Claude subprocess produced no output for ${CLAUDE_LOCAL_SILENT_STALL_TIMEOUT_SEC}s and was hard-killed (silent stall).`,
+        errorCode: "silent_stall",
+        errorMeta,
+        resultJson: {
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          silentStall: {
+            timeoutSec: CLAUDE_LOCAL_SILENT_STALL_TIMEOUT_SEC,
+            killedAt: new Date().toISOString(),
+          },
+        },
         clearSession: Boolean(opts.clearSessionOnMissingSession),
       };
     }

@@ -182,7 +182,10 @@ export function agentRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
-  const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
+  const recovery = recoveryService(db, {
+    enqueueWakeup: heartbeat.wakeup,
+    cancelRun: (runId, reason, options) => heartbeat.cancelRun(runId, reason, options),
+  });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();

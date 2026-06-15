@@ -82,6 +82,12 @@ export interface AdapterExecutionTargetProcessOptions {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
+  /**
+   * Subprocess-level silent-stall watchdog. Hard-kills the child if no
+   * stdout/stderr bytes arrive within this many seconds. Surfaces as
+   * `silentStall: true` on the result.
+   */
+  silentStallTimeoutSec?: number;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -433,6 +439,7 @@ export async function runAdapterExecutionTargetProcess(
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
+    silentStallTimeoutSec: options.silentStallTimeoutSec,
   });
 }
 

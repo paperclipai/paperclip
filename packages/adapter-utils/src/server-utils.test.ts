@@ -597,6 +597,60 @@ describe("runChildProcess", () => {
       }
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "kills a silent child after silentStallTimeoutSec when no stdout/stderr arrives",
+    async () => {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", "setTimeout(() => process.stdout.write('late'), 60_000);"],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 0,
+          graceSec: 1,
+          onLog: async () => {},
+          silentStallTimeoutSec: 1,
+        },
+      );
+
+      expect(result.silentStall).toBe(true);
+      expect(result.timedOut).toBe(false);
+      expect(result.stdout).toBe("");
+    },
+    15_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does NOT trigger silent stall when output keeps arriving within the window",
+    async () => {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          [
+            "let n = 0;",
+            "const iv = setInterval(() => { process.stdout.write('tick '); n += 1; if (n >= 4) { clearInterval(iv); process.exit(0); } }, 100);",
+          ].join(" "),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+          silentStallTimeoutSec: 1,
+        },
+      );
+
+      expect(result.silentStall).toBe(false);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("tick");
+    },
+    10_000,
+  );
 });
 
 describe("renderPaperclipWakePrompt", () => {

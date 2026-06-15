@@ -19,6 +19,11 @@ export interface RunProcessResult {
   stderr: string;
   pid: number | null;
   startedAt: string | null;
+  /**
+   * True when the process was terminated because no stdout/stderr bytes arrived
+   * within `silentStallTimeoutSec` (subprocess-level silent-stall watchdog).
+   */
+  silentStall?: boolean;
 }
 
 export interface TerminalResultCleanupOptions {
@@ -2147,6 +2152,12 @@ export async function runChildProcess(
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
+    /**
+     * If set, the process is hard-killed when no stdout/stderr bytes have arrived
+     * for this many seconds. Surfaces as `silentStall: true` on the result.
+     * 0 or omitted disables the watchdog.
+     */
+    silentStallTimeoutSec?: number;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -2197,6 +2208,7 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
+        let silentStall = false;
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
@@ -2206,6 +2218,33 @@ export async function runChildProcess(
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+        let silentStallTimer: NodeJS.Timeout | null = null;
+        let silentStallKillTimer: NodeJS.Timeout | null = null;
+        const silentStallTimeoutMs =
+          opts.silentStallTimeoutSec && opts.silentStallTimeoutSec > 0
+            ? opts.silentStallTimeoutSec * 1000
+            : 0;
+        const armSilentStallTimer = () => {
+          if (silentStallTimeoutMs <= 0) return;
+          if (silentStallTimer) clearTimeout(silentStallTimer);
+          silentStallTimer = setTimeout(() => {
+            silentStallTimer = null;
+            if (timedOut || silentStall || terminalCleanupStarted) return;
+            silentStall = true;
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            silentStallKillTimer = setTimeout(() => {
+              silentStallKillTimer = null;
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          }, silentStallTimeoutMs);
+        };
+        const clearSilentStallTimers = () => {
+          if (silentStallTimer) clearTimeout(silentStallTimer);
+          if (silentStallKillTimer) clearTimeout(silentStallKillTimer);
+          silentStallTimer = null;
+          silentStallKillTimer = null;
+        };
+        armSilentStallTimer();
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -2267,6 +2306,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
+          armSilentStallTimer();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
@@ -2283,6 +2323,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
+          armSilentStallTimer();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
@@ -2305,6 +2346,7 @@ export async function runChildProcess(
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearSilentStallTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
@@ -2323,6 +2365,7 @@ export async function runChildProcess(
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearSilentStallTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             void Promise.resolve()
@@ -2336,6 +2379,7 @@ export async function runChildProcess(
                 stderr,
                 pid: child.pid ?? null,
                 startedAt,
+                silentStall,
               });
               });
           });
