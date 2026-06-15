@@ -2129,6 +2129,32 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result?.descriptionTruncated).toBe(false);
   });
 
+  it("marks null list descriptions as not truncated", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Null description issue",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    const [result] = await svc.list(companyId);
+
+    expect(result?.description).toBeNull();
+    expect(result?.descriptionTruncated).toBe(false);
+  });
+
   it("does not let description preview truncation split multibyte characters", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
