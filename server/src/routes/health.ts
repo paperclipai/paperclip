@@ -7,6 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { getSchedulerHealth } from "../services/scheduler-leadership.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -153,6 +154,11 @@ export function healthRoutes(
       });
     }
 
+    // Fetched before the redacted/full branch: the operator identifies the
+    // leader pod via unauthenticated probes; booleans only — the lease row
+    // (ids/hostnames) stays in the full-details view.
+    const scheduler = await getSchedulerHealth(db);
+
     if (!exposeFullDetails) {
       res.json({
         status: "ok",
@@ -161,6 +167,7 @@ export function healthRoutes(
         bootstrapStatus,
         bootstrapInviteActive,
         ...(devServer ? { devServer } : {}),
+        scheduler: { candidate: scheduler.candidate, isLeader: scheduler.isLeader },
       });
       return;
     }
@@ -177,6 +184,7 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       ...(devServer ? { devServer } : {}),
+      scheduler,
     });
   });
 
