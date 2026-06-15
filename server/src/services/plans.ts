@@ -1,6 +1,19 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvals, budgetPolicies, issueApprovals, issues, planDetails } from "@paperclipai/db";
+import {
+  approvals,
+  budgetPolicies,
+  costEvents,
+  feedbackVotes,
+  financeEvents,
+  issueApprovals,
+  issueComments,
+  issueInboxArchives,
+  issueReadStates,
+  issueThreadInteractions,
+  issues,
+  planDetails,
+} from "@paperclipai/db";
 import type { PlanGateProfile } from "@paperclipai/shared";
 import { issueService } from "./issues.js";
 import { agentService } from "./agents.js";
@@ -391,6 +404,26 @@ export function planService(db: Db) {
           await db.delete(issueApprovals).where(inArray(issueApprovals.approvalId, gateApprovalIds));
           await db.delete(approvals).where(inArray(approvals.id, gateApprovalIds));
         }
+
+        // Clear the RESTRICT (no onDelete) foreign keys that reference issues.id
+        // and would otherwise block the issue delete with an FK violation (the
+        // 500 on force-delete once an agent has run on the plan). Financial rows
+        // are detached (SET NULL) to preserve the spend/finance trail that the
+        // budget meters read; the issue-scoped ephemera are removed with the
+        // issue. Add any future RESTRICT issue-referrer to this block.
+        await db
+          .update(costEvents)
+          .set({ issueId: null })
+          .where(inArray(costEvents.issueId, ordered));
+        await db
+          .update(financeEvents)
+          .set({ issueId: null })
+          .where(inArray(financeEvents.issueId, ordered));
+        await db.delete(issueReadStates).where(inArray(issueReadStates.issueId, ordered));
+        await db.delete(feedbackVotes).where(inArray(feedbackVotes.issueId, ordered));
+        await db.delete(issueInboxArchives).where(inArray(issueInboxArchives.issueId, ordered));
+        await db.delete(issueThreadInteractions).where(inArray(issueThreadInteractions.issueId, ordered));
+        await db.delete(issueComments).where(inArray(issueComments.issueId, ordered));
       }
       // Break self-referential links across the subtree before deletion so FK
       // ordering can never block a row, then delete deepest-first.

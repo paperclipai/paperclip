@@ -7,8 +7,15 @@ import {
   approvals,
   budgetPolicies,
   companies,
+  costEvents,
   createDb,
+  feedbackVotes,
+  financeEvents,
   issueApprovals,
+  issueComments,
+  issueInboxArchives,
+  issueReadStates,
+  issueThreadInteractions,
   issues,
   planDetails,
 } from "@paperclipai/db";
@@ -47,6 +54,13 @@ describeEmbeddedPostgres("planService gate-profile (soft)", () => {
     await db.delete(approvals);
     await db.delete(budgetPolicies);
     await db.delete(activityLog);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
+    await db.delete(issueReadStates);
+    await db.delete(issueInboxArchives);
+    await db.delete(feedbackVotes);
+    await db.delete(financeEvents);
+    await db.delete(costEvents);
     await db.delete(planDetails);
     await db.delete(issues);
     await db.delete(agents);
@@ -195,6 +209,73 @@ describeEmbeddedPostgres("planService gate-profile (soft)", () => {
     await plans.deletePlanSubtree(issue.id);
     expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(0);
     expect(await db.select().from(issueApprovals).where(eq(issueApprovals.companyId, companyId))).toHaveLength(0);
+  });
+
+  it("force-deletes a plan an agent has run on: nulls financial FKs, drops issue-scoped rows", async () => {
+    const { companyId, ids } = await seedCompany({ withGateAgents: true });
+    const { issue } = await createDevTeamPlan(companyId, "dev_team", ["Task"]);
+    await plans.activate(issue.id, { agentId: null, userId: "tester" });
+
+    // Seed every RESTRICT (no onDelete) referrer of issues.id on the plan root —
+    // exactly what a real CTO run + board interaction leaves behind, and what
+    // used to make the force-delete 500 with an FK violation.
+    await db.insert(costEvents).values({
+      companyId,
+      agentId: ids.architect,
+      issueId: issue.id,
+      provider: "anthropic",
+      model: "claude-opus-4-8",
+      costCents: 1234,
+      occurredAt: new Date(),
+    });
+    await db.insert(financeEvents).values({
+      companyId,
+      agentId: ids.architect,
+      issueId: issue.id,
+      eventKind: "usage",
+      biller: "anthropic",
+      amountCents: 1234,
+      occurredAt: new Date(),
+    });
+    await db.insert(issueComments).values({ companyId, issueId: issue.id, body: "ran" });
+    await db.insert(issueReadStates).values({ companyId, issueId: issue.id, userId: "tester" });
+    await db.insert(issueInboxArchives).values({ companyId, issueId: issue.id, userId: "tester" });
+    await db.insert(feedbackVotes).values({
+      companyId,
+      issueId: issue.id,
+      targetType: "issue",
+      targetId: issue.id,
+      authorUserId: "tester",
+      vote: "up",
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: issue.id,
+      kind: "question",
+      payload: {} as never,
+    });
+
+    // The delete must now succeed (previously a 500).
+    const deleted = await plans.deletePlanSubtree(issue.id);
+    expect(deleted).toContain(issue.id);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(0);
+
+    // Financial rows survive with issue_id detached (spend/finance trail kept).
+    const costs = await db.select().from(costEvents).where(eq(costEvents.companyId, companyId));
+    expect(costs).toHaveLength(1);
+    expect(costs[0]!.issueId).toBeNull();
+    const finance = await db.select().from(financeEvents).where(eq(financeEvents.companyId, companyId));
+    expect(finance).toHaveLength(1);
+    expect(finance[0]!.issueId).toBeNull();
+
+    // Issue-scoped ephemera are removed with the issue.
+    expect(await db.select().from(issueComments).where(eq(issueComments.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(issueInboxArchives).where(eq(issueInboxArchives.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(feedbackVotes).where(eq(feedbackVotes.companyId, companyId))).toHaveLength(0);
+    expect(
+      await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, companyId)),
+    ).toHaveLength(0);
   });
 
   it("E6: dev_team activation installs a hard-stop cents budget on the plan root from the cap", async () => {
