@@ -1940,6 +1940,20 @@ export function decideSessionRotation(input: {
     }
   }
 
+  // A1b: any cold session — even a small session replays its full transcript at
+  // full price when the Anthropic cache is cold. Inter-gate review gaps are
+  // always >5 min, so all post-review wakes should start fresh (with a handoff
+  // summary) rather than cold-resume and rebill the accumulated transcript.
+  // This fires regardless of token threshold because the replay cost is real
+  // whether or not a maxRawInputTokens cap is configured.
+  if (
+    latestRunCreatedAtMs != null &&
+    nowMs - latestRunCreatedAtMs >= SESSION_CACHE_TTL_MS
+  ) {
+    const gapMin = Math.round((nowMs - latestRunCreatedAtMs) / 60_000);
+    return `session cache cold (${gapMin}min gap) — rotating to avoid full transcript replay`;
+  }
+
   if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
     return `session age reached ${Math.floor(sessionAgeHours)} hours`;
   }

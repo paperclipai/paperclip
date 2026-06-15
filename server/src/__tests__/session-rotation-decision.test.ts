@@ -1,8 +1,9 @@
 /**
  * Unit tests for decideSessionRotation — the pure rotation-decision extracted
  * from evaluateSessionCompaction (heartbeat.ts). Tests cover:
- *   A4: hard stop when previous run rawInputTokens >= threshold
+ *   A4:  hard stop when previous run rawInputTokens >= threshold
  *   A1a: proactive rotation when ≥70% full AND cache cold (gap > 5-min TTL)
+ *   A1b: any cold session — rotate to avoid full transcript replay regardless of fill
  */
 
 import { describe, expect, it } from "vitest";
@@ -96,7 +97,7 @@ describe("decideSessionRotation — A1a proactive (cache-cold pre-emptive)", () 
     expect(reason).toBeNull();
   });
 
-  it("does NOT rotate under 70% even with cold cache", () => {
+  it("A1b fires (not A1a) when under 70% with cold cache — message is cold-replay, not proactively", () => {
     const reason = decideSessionRotation({
       policy: BASE_POLICY,
       runCount: 1,
@@ -105,7 +106,10 @@ describe("decideSessionRotation — A1a proactive (cache-cold pre-emptive)", () 
       sessionAgeHours: 0,
       nowMs: NOW,
     });
-    expect(reason).toBeNull();
+    // A1a does NOT fire (below fill ratio), but A1b fires for any cold session.
+    expect(reason).not.toBeNull();
+    expect(reason).not.toContain("proactively"); // A1a message
+    expect(reason).toContain("cold"); // A1b message
   });
 
   it("A4 wins over A1a (≥100% fill always rotates regardless of cache heat)", () => {
@@ -123,7 +127,7 @@ describe("decideSessionRotation — A1a proactive (cache-cold pre-emptive)", () 
 });
 
 describe("decideSessionRotation — policy guards", () => {
-  it("no token-based rotation when maxRawInputTokens is 0 (adapter-managed)", () => {
+  it("A1b fires even when maxRawInputTokens is 0 — cold replay cost is real regardless of threshold", () => {
     const reason = decideSessionRotation({
       policy: { ...BASE_POLICY, maxRawInputTokens: 0 },
       runCount: 1,
@@ -132,7 +136,9 @@ describe("decideSessionRotation — policy guards", () => {
       sessionAgeHours: 0,
       nowMs: NOW,
     });
-    expect(reason).toBeNull();
+    // A4/A1a don't fire (maxRawInputTokens=0 skips the token block), but A1b does.
+    expect(reason).not.toBeNull();
+    expect(reason).toContain("cold");
   });
 
   it("rotates on run count when maxSessionRuns exceeded", () => {
@@ -158,5 +164,73 @@ describe("decideSessionRotation — policy guards", () => {
       nowMs: NOW,
     });
     expect(reason).toBeNull();
+  });
+});
+
+describe("decideSessionRotation — A1b cold session (any fill, universal cold rotation)", () => {
+  it("rotates a small cold session (10% fill)", () => {
+    const reason = decideSessionRotation({
+      policy: BASE_POLICY,
+      runCount: 1,
+      latestInputTokens: Math.floor(THRESHOLD * 0.1), // 10%
+      latestRunCreatedAtMs: COLD_MS,
+      sessionAgeHours: 0,
+      nowMs: NOW,
+    });
+    expect(reason).not.toBeNull();
+    expect(reason).toContain("cold");
+    expect(reason).not.toContain("proactively");
+  });
+
+  it("does NOT rotate a small hot session (10% fill, within TTL)", () => {
+    const reason = decideSessionRotation({
+      policy: BASE_POLICY,
+      runCount: 1,
+      latestInputTokens: Math.floor(THRESHOLD * 0.1),
+      latestRunCreatedAtMs: HOT_MS,
+      sessionAgeHours: 0,
+      nowMs: NOW,
+    });
+    expect(reason).toBeNull();
+  });
+
+  it("A1a message wins over A1b when session ≥70% fill + cold", () => {
+    const pct70 = Math.floor(THRESHOLD * PROACTIVE_SESSION_FILL_RATIO);
+    const reason = decideSessionRotation({
+      policy: BASE_POLICY,
+      runCount: 1,
+      latestInputTokens: pct70,
+      latestRunCreatedAtMs: COLD_MS,
+      sessionAgeHours: 0,
+      nowMs: NOW,
+    });
+    expect(reason).not.toBeNull();
+    expect(reason).toContain("proactively"); // A1a fires first
+  });
+
+  it("does NOT rotate when latestRunCreatedAtMs is null (no prior runs)", () => {
+    const reason = decideSessionRotation({
+      policy: BASE_POLICY,
+      runCount: 0,
+      latestInputTokens: null,
+      latestRunCreatedAtMs: null,
+      sessionAgeHours: 0,
+      nowMs: NOW,
+    });
+    expect(reason).toBeNull();
+  });
+
+  it("includes gap duration in the rotation reason", () => {
+    const gapMs = 30 * 60_000; // 30 minutes
+    const reason = decideSessionRotation({
+      policy: BASE_POLICY,
+      runCount: 1,
+      latestInputTokens: Math.floor(THRESHOLD * 0.1),
+      latestRunCreatedAtMs: NOW - gapMs,
+      sessionAgeHours: 0,
+      nowMs: NOW,
+    });
+    expect(reason).not.toBeNull();
+    expect(reason).toContain("30min");
   });
 });
