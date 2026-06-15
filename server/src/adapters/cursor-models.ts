@@ -97,6 +97,11 @@ export function parseCursorModelsOutput(stdout: string, stderr: string): Adapter
   for (const lineRaw of combined.split(/\r?\n/)) {
     const line = lineRaw.trim();
     if (!line) continue;
+    const dashMatch = line.match(/^[-*]?\s*([A-Za-z0-9][A-Za-z0-9._/-]*)\s+-\s+\S/);
+    if (dashMatch) {
+      pushModelId(models, dashMatch[1]);
+      continue;
+    }
     const bullet = line.replace(/^[-*]\s+/, "").trim();
     if (!bullet || bullet.includes(" ")) continue;
     pushModelId(models, bullet);
