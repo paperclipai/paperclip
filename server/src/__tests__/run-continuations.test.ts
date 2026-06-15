@@ -4,6 +4,7 @@ import {
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,
   decideRunLivenessContinuation,
+  isAbnormalRunTermination,
 } from "../services/run-continuations.ts";
 
 const companyId = "company-1";
@@ -17,6 +18,10 @@ function run(overrides: Record<string, unknown> = {}) {
     companyId,
     agentId,
     continuationAttempt: 0,
+    status: "failed",
+    error: null,
+    errorCode: null,
+    resultJson: null,
     ...overrides,
   } as never;
 }
@@ -142,6 +147,59 @@ describe("run liveness continuations", () => {
     if (decision.kind !== "exhausted") return;
     expect(decision.comment).toContain("Bounded liveness continuation exhausted");
     expect(decision.comment).toContain("Attempts used: 2/2");
+  });
+
+  it("skips continuations after abnormal SIGTERM / detach termination", () => {
+    const cases = [
+      { run: run({ errorCode: "process_detached", status: "failed" }) },
+      { run: run({ errorCode: "run_reconciler", status: "failed", error: "Supervisor received SIGTERM" }) },
+      { run: run({ status: "failed", resultJson: { signal: "SIGTERM", exitCode: 143 } }) },
+      { run: run({ status: "succeeded", resultJson: { signal: "SIGTERM", exitCode: 143 } }) },
+    ];
+
+    for (const { run: abnormalRun } of cases) {
+      const decision = decideRunLivenessContinuation({
+        run: abnormalRun,
+        issue: issue(),
+        agent: agent(),
+        livenessState: "plan_only",
+        livenessReason: "Planned without acting",
+        nextAction: "Continue implementation.",
+        budgetBlocked: false,
+        idempotentWakeExists: false,
+      });
+      expect(decision).toEqual({
+        kind: "skip",
+        reason: "abnormal termination (SIGTERM/detach-before-commit) is not actionable for continuation",
+      });
+    }
+  });
+
+  it("skips abnormal SIGTERM and detach terminations instead of enqueueing continuations", () => {
+    const abnormalCases = [
+      { errorCode: "process_detached" },
+      { resultJson: { signal: "SIGTERM" } },
+      { resultJson: { exitCode: 143 } },
+      { status: "failed", error: "Supervisor received SIGTERM; finalizing owned run" },
+    ];
+
+    for (const abnormal of abnormalCases) {
+      expect(isAbnormalRunTermination(run(abnormal))).toBe(true);
+      const decision = decideRunLivenessContinuation({
+        run: run(abnormal),
+        issue: issue(),
+        agent: agent(),
+        livenessState: "plan_only",
+        livenessReason: "Planned without acting",
+        nextAction: null,
+        budgetBlocked: false,
+        idempotentWakeExists: false,
+      });
+      expect(decision).toEqual({
+        kind: "skip",
+        reason: "abnormal termination (SIGTERM/detach-before-commit) is not actionable for continuation",
+      });
+    }
   });
 
   it("skips non-actionable and guarded issues", () => {
