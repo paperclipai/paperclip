@@ -1154,6 +1154,70 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
   });
 }
 
+// Normalizes a thrown DB error (or its `cause`) into the pg conflict shape so we can
+// inspect the unique-constraint name. Mirrors the recovery service's helper of the same name.
+function unwrapDatabaseConflictError(error: unknown) {
+  if (!error || typeof error !== "object") return null;
+  const candidate = error as {
+    code?: string;
+    constraint?: string;
+    constraint_name?: string;
+    message?: string;
+    cause?: unknown;
+  };
+  if (
+    typeof candidate.code === "string" ||
+    typeof candidate.constraint === "string" ||
+    typeof candidate.constraint_name === "string"
+  ) {
+    return candidate;
+  }
+  const cause = candidate.cause;
+  if (!cause || typeof cause !== "object") return candidate;
+  return cause as {
+    code?: string;
+    constraint?: string;
+    constraint_name?: string;
+    message?: string;
+  };
+}
+
+function isUniqueGithubMirrorConflict(error: unknown) {
+  const maybe = unwrapDatabaseConflictError(error);
+  if (!maybe) return false;
+  return (
+    maybe.code === "23505" &&
+    (maybe.constraint === GITHUB_MIRROR_ACTIVE_UNIQUE_CONSTRAINT ||
+      maybe.constraint_name === GITHUB_MIRROR_ACTIVE_UNIQUE_CONSTRAINT ||
+      (typeof maybe.message === "string" && maybe.message.includes(GITHUB_MIRROR_ACTIVE_UNIQUE_CONSTRAINT)))
+  );
+}
+
+// Returns the existing non-terminal github_mirror issue for this origin id, enriched
+// with labels to match issueService.create()'s return shape, or null if none exists.
+async function findActiveGithubMirrorIssue(
+  dbOrTx: any,
+  companyId: string,
+  originId: string,
+): Promise<IssueWithLabels | null> {
+  const [row] = await dbOrTx
+    .select()
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, GITHUB_MIRROR_ORIGIN_KIND),
+        eq(issues.originId, originId),
+        isNull(issues.hiddenAt),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ),
+    )
+    .limit(1);
+  if (!row) return null;
+  const [enriched] = await withIssueLabels(dbOrTx, [row]);
+  return enriched ?? null;
+}
+
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
 const BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES = ["queued", "running"];
 const BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execution"];
@@ -1161,6 +1225,12 @@ const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
 const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND = "harness_liveness_escalation";
 const PRODUCTIVITY_REVIEW_ORIGIN_KIND = "issue_productivity_review";
+// GH→Paperclip mirror dedup: the `CRM X GitHub Sync & Triage` routine stamps each
+// mirrored create with originKind="github_mirror" / originId="<owner/repo>#<gh_issue_number>"
+// so one GH issue maps to exactly one non-terminal EDG mirror. Mirrors the
+// recovery-origin idempotency convention (pre-check → create → catch 23505 → return existing).
+const GITHUB_MIRROR_ORIGIN_KIND = "github_mirror";
+const GITHUB_MIRROR_ACTIVE_UNIQUE_CONSTRAINT = "issues_active_github_mirror_uq";
 const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"];
 const PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS = [
   "issue.productivity_review_created",
@@ -4877,7 +4947,17 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      // Claim-time GH-mirror idempotency (EDG-7537/B / EDG-7631): one GH issue → one EDG mirror.
+      // Pre-check avoids burning an issue number on a re-mirror; the 23505 catch below closes the
+      // race window backed by the issues_active_github_mirror_uq partial unique index.
+      const mirrorOriginId =
+        data.originKind === GITHUB_MIRROR_ORIGIN_KIND && data.originId ? data.originId : null;
+      if (mirrorOriginId) {
+        const existingMirror = await findActiveGithubMirrorIssue(db, companyId, mirrorOriginId);
+        if (existingMirror) return existingMirror;
+      }
+      try {
+        return await db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
@@ -5090,7 +5170,16 @@ export function issueService(db: Db) {
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
-      });
+        });
+      } catch (error) {
+        // A concurrent re-mirror raced past the pre-check and lost the unique-index insert.
+        // Re-fetch the winning row (outside the aborted transaction) and return it as a no-op.
+        if (mirrorOriginId && isUniqueGithubMirrorConflict(error)) {
+          const raced = await findActiveGithubMirrorIssue(db, companyId, mirrorOriginId);
+          if (raced) return raced;
+        }
+        throw error;
+      }
     },
 
     update: async (
