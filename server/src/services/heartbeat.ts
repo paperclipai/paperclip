@@ -1884,6 +1884,68 @@ function formatCount(value: number | null | undefined) {
   return value.toLocaleString("en-US");
 }
 
+// Anthropic prompt-cache TTL. Once a wake is spaced further than this from the
+// previous run, every cached token will be re-billed at full price on the next
+// --resume replay. Used by A1a proactive rotation.
+export const SESSION_CACHE_TTL_MS = 5 * 60 * 1000;
+
+// When the session transcript is this fraction of the rotation threshold AND the
+// cache is cold, the next --resume would very likely push past the threshold at
+// full price. Rotate proactively instead.
+export const PROACTIVE_SESSION_FILL_RATIO = 0.7;
+
+/**
+ * Pure rotation-decision function — no DB access, fully unit-testable.
+ * Returns a non-null reason string when the session should be rotated, null otherwise.
+ *
+ * Caller (evaluateSessionCompaction) is responsible for fetching run data and
+ * checking policy.enabled / hasSessionCompactionThresholds before calling this.
+ */
+export function decideSessionRotation(input: {
+  policy: SessionCompactionPolicy;
+  runCount: number;
+  latestInputTokens: number | null;
+  latestRunCreatedAtMs: number | null;
+  sessionAgeHours: number;
+  nowMs: number;
+}): string | null {
+  const { policy, runCount, latestInputTokens, latestRunCreatedAtMs, sessionAgeHours, nowMs } = input;
+
+  if (policy.maxSessionRuns > 0 && runCount > policy.maxSessionRuns) {
+    return `session exceeded ${policy.maxSessionRuns} runs`;
+  }
+
+  if (policy.maxRawInputTokens > 0 && latestInputTokens != null) {
+    // A4: hard stop — previous run already hit or crossed the threshold.
+    if (latestInputTokens >= policy.maxRawInputTokens) {
+      return (
+        `session raw input reached ${formatCount(latestInputTokens)} tokens ` +
+        `(threshold ${formatCount(policy.maxRawInputTokens)})`
+      );
+    }
+    // A1a: proactive rotation — session is ≥70% full AND the cache is cold.
+    // A cold --resume replays the entire transcript at full price, very likely
+    // pushing the session over threshold on the very next run.
+    if (
+      latestInputTokens >= policy.maxRawInputTokens * PROACTIVE_SESSION_FILL_RATIO &&
+      latestRunCreatedAtMs != null &&
+      nowMs - latestRunCreatedAtMs >= SESSION_CACHE_TTL_MS
+    ) {
+      const fillPct = Math.round((latestInputTokens / policy.maxRawInputTokens) * 100);
+      return (
+        `session raw input at ${formatCount(latestInputTokens)} tokens (${fillPct}% of threshold); ` +
+        `cache cold — rotating proactively`
+      );
+    }
+  }
+
+  if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
+    return `session age reached ${Math.floor(sessionAgeHours)} hours`;
+  }
+
+  return null;
+}
+
 export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect): SessionCompactionPolicy {
   return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
 }
@@ -4060,20 +4122,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           )
         : 0;
 
-    let reason: string | null = null;
-    if (policy.maxSessionRuns > 0 && runs.length > policy.maxSessionRuns) {
-      reason = `session exceeded ${policy.maxSessionRuns} runs`;
-    } else if (
-      policy.maxRawInputTokens > 0 &&
-      latestRawUsage &&
-      latestRawUsage.inputTokens >= policy.maxRawInputTokens
-    ) {
-      reason =
-        `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
-        `(threshold ${formatCount(policy.maxRawInputTokens)})`;
-    } else if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
-      reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
-    }
+    const reason = decideSessionRotation({
+      policy,
+      runCount: runs.length,
+      latestInputTokens: latestRawUsage?.inputTokens ?? null,
+      latestRunCreatedAtMs: latestRun ? new Date(latestRun.createdAt).getTime() : null,
+      sessionAgeHours,
+      nowMs: Date.now(),
+    });
 
     if (!reason || !latestRun) {
       return {
