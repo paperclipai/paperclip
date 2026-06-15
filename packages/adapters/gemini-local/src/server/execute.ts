@@ -491,7 +491,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
+    const notes: string[] = ["Prompt is piped to Gemini via stdin (non-interactive); passing it as a --prompt argv exceeds MAX_ARG_STRLEN (128 KiB) and makes spawn throw E2BIG."];
     notes.push("Added --approval-mode yolo for unattended execution.");
     if (executionTargetIsRemote) {
       notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
@@ -560,7 +560,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--sandbox=none");
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
-    args.push("--prompt", prompt);
+    // The heartbeat prompt is piped via stdin (below), NOT passed as a --prompt
+    // argv. A single argv entry is capped at MAX_ARG_STRLEN (128 KiB on Linux,
+    // 32 * page size), independent of the much larger total ARG_MAX. A full
+    // agent heartbeat prompt (company AGENTS.md + wake payload + template)
+    // exceeds that, so spawn() throws E2BIG *synchronously* — the run dies
+    // silently right after adapter.invoke with no run-log tail (TWB-931). gemini
+    // reads the prompt from stdin in non-interactive mode; mirrors claude_local.
     return args;
   };
 
@@ -572,9 +578,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         command: resolvedCommand,
         cwd: effectiveExecutionCwd,
         commandNotes,
-        commandArgs: args.map((value, index) => (
-          index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-        )),
+        commandArgs: [...args, `<prompt via stdin: ${prompt.length} chars>`],
         env: loggedEnv,
         prompt,
         promptMetrics,
@@ -585,6 +589,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
       env,
+      stdin: prompt,
       timeoutSec,
       graceSec,
       onSpawn,

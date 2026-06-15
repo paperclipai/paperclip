@@ -60,7 +60,7 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- Runs use positional prompt arguments, not stdin.
+- Runs pipe the prompt to Gemini via stdin (non-interactive headless mode); this avoids the argv MAX_ARG_STRLEN limit (128 KiB) that makes spawn throw E2BIG on large heartbeat prompts.
 - Sessions resume with --resume when stored session cwd matches the current cwd.
 - Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
 - Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY or local Gemini CLI login.
