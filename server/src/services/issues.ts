@@ -3871,7 +3871,16 @@ export function issueService(db: Db) {
       }
 
       if (issue.checkoutRunId && (await isTerminalOrMissingRun(tx, issue.checkoutRunId))) {
-        patch.checkoutRunId = null;
+        // Only clear checkoutRunId when executionRunId is also terminal/absent or the same run.
+        // When executionRunId is a live non-terminal run, leave checkoutRunId intact so the
+        // adoptStaleCheckoutRun path in checkout() can adopt it while preserving assigneeUserId.
+        const execAlsoClearable =
+          !issue.executionRunId ||
+          issue.executionRunId === issue.checkoutRunId ||
+          (await isTerminalOrMissingRun(tx, issue.executionRunId));
+        if (execAlsoClearable) {
+          patch.checkoutRunId = null;
+        }
       }
 
       if (Object.keys(patch).length <= 1) return false;
