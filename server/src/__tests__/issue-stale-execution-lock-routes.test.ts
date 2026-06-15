@@ -74,6 +74,8 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     const failedRunId = randomUUID();
     const currentRunId = randomUUID();
     const staleRunStatus = options.staleRunStatus ?? "failed";
+    const staleRunCreatedAt = new Date("2026-01-01T00:00:00.000Z");
+    const currentRunCreatedAt = new Date("2026-01-01T00:01:00.000Z");
 
     await db.insert(companies).values({
       id: companyId,
@@ -100,6 +102,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         status: staleRunStatus,
         invocationSource: "manual",
         finishedAt: new Date(),
+        createdAt: staleRunCreatedAt,
       },
       {
         id: currentRunId,
@@ -108,6 +111,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         status: "running",
         invocationSource: "manual",
         startedAt: new Date(),
+        createdAt: currentRunCreatedAt,
       },
     ]);
 
@@ -305,6 +309,156 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       checkoutRunId: null,
       executionRunId: null,
     });
+  });
+
+  it("allows a same-agent active issue-scoped run to adopt mismatched live run ownership", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns({
+      staleRunStatus: "running",
+    });
+    const issueId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Routine close from active scoped run",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("done");
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
+  it("rejects stale output after a newer active issue-scoped run adopts ownership", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns({
+      staleRunStatus: "running",
+    });
+    const issueId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(inArray(heartbeatRuns.id, [failedRunId, currentRunId]));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Active run adoption race",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const newerRunRes = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "claimed by newer run" });
+
+    expect(newerRunRes.status, JSON.stringify(newerRunRes.body)).toBe(200);
+    expect(newerRunRes.body.title).toBe("claimed by newer run");
+
+    const staleRunRes = await request(createApp(agentActor(companyId, agentId, failedRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "older stale output" });
+
+    expect(staleRunRes.status, JSON.stringify(staleRunRes.body)).toBe(409);
+    expect(staleRunRes.body.error).toBe("Issue run ownership conflict");
+
+    const row = await db
+      .select({
+        title: issues.title,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      title: "claimed by newer run",
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("lets an active issue-scoped routine publish a sweep comment then close its run issue", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns({
+      staleRunStatus: "running",
+    });
+    const routineIssueId = randomUUID();
+    const sweepTargetIssueId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId: routineIssueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
+    await db.insert(issues).values([
+      {
+        id: routineIssueId,
+        companyId,
+        title: "Agent health & stalled-issue check",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        checkoutRunId: failedRunId,
+        executionRunId: failedRunId,
+        executionAgentNameKey: "codexcoder",
+        executionLockedAt: new Date(),
+      },
+      {
+        id: sweepTargetIssueId,
+        companyId,
+        title: "[Sweep] Agent health & stalled-issue alerts",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    const app = createApp(agentActor(companyId, agentId, currentRunId));
+    const commentRes = await request(app)
+      .post(`/api/issues/${sweepTargetIssueId}/comments`)
+      .send({ body: "sweep complete" });
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(201);
+
+    const closeRes = await request(app)
+      .patch(`/api/issues/${routineIssueId}`)
+      .send({ status: "done" });
+    expect(closeRes.status, JSON.stringify(closeRes.body)).toBe(200);
+    expect(closeRes.body.status).toBe("done");
+
+    const comment = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, sweepTargetIssueId))
+      .then((rows) => rows[0]);
+    expect(comment?.body).toBe("sweep complete");
   });
 
   it("keeps live different-run ownership protected", async () => {

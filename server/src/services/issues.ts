@@ -3994,6 +3994,108 @@ export function issueService(db: Db) {
     return run?.agentId === input.actorAgentId && run.retryOfRunId === input.expectedCheckoutRunId;
   }
 
+  async function isActiveActorRunForIssue(input: {
+    issueId: string;
+    companyId: string;
+    actorAgentId: string;
+    actorRunId: string;
+  }) {
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.actorRunId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.actorAgentId),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    if (!run || !run.contextSnapshot || typeof run.contextSnapshot !== "object" || Array.isArray(run.contextSnapshot)) {
+      return false;
+    }
+    const context = run.contextSnapshot as Record<string, unknown>;
+    return context.issueId === input.issueId || context.taskId === input.issueId;
+  }
+
+  async function isActorRunNewerThanIssueOwners(input: {
+    companyId: string;
+    actorRunId: string;
+    ownerRunIds: string[];
+  }) {
+    const ownerRunIds = [...new Set(input.ownerRunIds.filter((id) => id && id !== input.actorRunId))];
+    if (ownerRunIds.length === 0) return true;
+
+    const rows = await db
+      .select({ id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          inArray(heartbeatRuns.id, [input.actorRunId, ...ownerRunIds]),
+        ),
+      );
+    const createdAtByRunId = new Map(rows.map((row) => [row.id, row.createdAt.getTime()]));
+    const actorCreatedAt = createdAtByRunId.get(input.actorRunId);
+    if (actorCreatedAt == null) return false;
+
+    return ownerRunIds.every((ownerRunId) => {
+      const ownerCreatedAt = createdAtByRunId.get(ownerRunId);
+      return ownerCreatedAt == null || actorCreatedAt > ownerCreatedAt;
+    });
+  }
+
+  async function adoptActiveActorIssueRun(input: {
+    issueId: string;
+    companyId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    expectedCheckoutRunId: string | null;
+    expectedExecutionRunId: string | null;
+  }) {
+    if (!(await isActiveActorRunForIssue(input))) return null;
+    if (!(await isActorRunNewerThanIssueOwners({
+      companyId: input.companyId,
+      actorRunId: input.actorRunId,
+      ownerRunIds: [input.expectedCheckoutRunId, input.expectedExecutionRunId].filter((id): id is string => Boolean(id)),
+    }))) return null;
+
+    const now = new Date();
+    return db
+      .update(issues)
+      .set({
+        checkoutRunId: input.actorRunId,
+        executionRunId: input.actorRunId,
+        executionLockedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.id, input.issueId),
+          eq(issues.companyId, input.companyId),
+          eq(issues.status, "in_progress"),
+          eq(issues.assigneeAgentId, input.actorAgentId),
+          input.expectedCheckoutRunId
+            ? eq(issues.checkoutRunId, input.expectedCheckoutRunId)
+            : isNull(issues.checkoutRunId),
+          input.expectedExecutionRunId
+            ? eq(issues.executionRunId, input.expectedExecutionRunId)
+            : undefined,
+        ),
+      )
+      .returning({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -6655,6 +6757,7 @@ export function issueService(db: Db) {
       const current = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
@@ -6693,6 +6796,47 @@ export function issueService(db: Db) {
             adoptedFromRunId: null as string | null,
           };
         }
+
+        const activeActorRun = await adoptActiveActorIssueRun({
+          issueId: id,
+          companyId: current.companyId,
+          actorAgentId,
+          actorRunId,
+          expectedCheckoutRunId: null,
+          expectedExecutionRunId: current.executionRunId,
+        });
+
+        if (activeActorRun) {
+          return {
+            ...activeActorRun,
+            adoptedFromRunId: current.executionRunId,
+          };
+        }
+      }
+
+      if (
+        actorRunId &&
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        current.checkoutRunId == null &&
+        current.executionRunId &&
+        current.executionRunId !== actorRunId
+      ) {
+        const activeActorRun = await adoptActiveActorIssueRun({
+          issueId: id,
+          companyId: current.companyId,
+          actorAgentId,
+          actorRunId,
+          expectedCheckoutRunId: null,
+          expectedExecutionRunId: current.executionRunId,
+        });
+
+        if (activeActorRun) {
+          return {
+            ...activeActorRun,
+            adoptedFromRunId: current.executionRunId,
+          };
+        }
       }
 
       if (
@@ -6712,6 +6856,22 @@ export function issueService(db: Db) {
         if (adopted) {
           return {
             ...adopted,
+            adoptedFromRunId: current.checkoutRunId,
+          };
+        }
+
+        const activeActorRun = await adoptActiveActorIssueRun({
+          issueId: id,
+          companyId: current.companyId,
+          actorAgentId,
+          actorRunId,
+          expectedCheckoutRunId: current.checkoutRunId,
+          expectedExecutionRunId: current.executionRunId,
+        });
+
+        if (activeActorRun) {
+          return {
+            ...activeActorRun,
             adoptedFromRunId: current.checkoutRunId,
           };
         }
