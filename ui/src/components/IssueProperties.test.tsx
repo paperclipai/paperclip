@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type {
   ExecutionWorkspace,
@@ -114,6 +114,14 @@ vi.mock("@/components/ui/popover", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 async function flush() {
   await act(async () => {
@@ -383,6 +391,120 @@ describe("IssueProperties", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("groups the assignee picker and gates a live-run reassign behind an interrupt confirm", async () => {
+    const minimalAgent = (id: string, name: string) =>
+      ({
+        id,
+        name,
+        role: "",
+        title: null,
+        icon: null,
+        status: "active",
+        orgChainHealth: { status: "ok" },
+      } as unknown as Parameters<typeof mockAgentsApi.list.mockResolvedValue>[0][number]);
+    mockAgentsApi.list.mockResolvedValue([minimalAgent("agent-1", "ClaudeCoder"), minimalAgent("agent-2", "QA")]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ assigneeAgentId: "agent-1" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+      hasActiveRun: true,
+    });
+    await flush();
+
+    // Wait for the agents query to resolve so the current assignee renders.
+    let trigger: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      trigger = Array.from(container.querySelectorAll("button")).find((b) =>
+        b.textContent?.includes("ClaudeCoder"),
+      );
+      expect(trigger).toBeTruthy();
+    });
+    await act(async () => {
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    // Live-run banner + grouped section headers are present.
+    expect(container.querySelector("[data-testid='assignee-running-banner']")?.textContent).toContain(
+      "ClaudeCoder is running",
+    );
+    expect(container.textContent).toContain("Agents");
+    expect(container.textContent).toContain("Board users");
+
+    // Picking a different agent mid-run stages a confirm rather than applying.
+    const qaOption = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "QA",
+    );
+    expect(qaOption).toBeTruthy();
+    await act(async () => {
+      qaOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector("[data-testid='interrupt-assign-confirm']")).not.toBeNull();
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    // Confirming applies the reassignment.
+    const confirmBtn = container.querySelector<HTMLButtonElement>(
+      "[data-testid='interrupt-assign-confirm-action']",
+    )!;
+    await act(async () => {
+      confirmBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(onUpdate).toHaveBeenCalledWith({ assigneeAgentId: "agent-2", assigneeUserId: null });
+
+    act(() => root.unmount());
+  });
+
+  it("filters the no-assignee option with assignee search", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "ClaudeCoder",
+        role: "",
+        title: null,
+        icon: null,
+        status: "active",
+        orgChainHealth: { status: "ok" },
+      } as unknown as Parameters<typeof mockAgentsApi.list.mockResolvedValue>[0][number],
+    ]);
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    const searchInput = container.querySelector(
+      'input[placeholder="Search assignees..."]',
+    ) as HTMLInputElement | null;
+    expect(searchInput).not.toBeNull();
+
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      nativeSetter?.call(searchInput, "no");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("No assignee");
+    expect(container.textContent).not.toContain("No matches.");
+
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      nativeSetter?.call(searchInput, "zzzz");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("No assignee");
+    expect(container.textContent).toContain("No matches.");
+
+    act(() => root.unmount());
   });
 
   it("always exposes the add sub-issue action", async () => {

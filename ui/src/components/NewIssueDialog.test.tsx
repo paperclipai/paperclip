@@ -989,4 +989,56 @@ describe("NewIssueDialog", () => {
 
     act(() => root.unmount());
   });
+
+  // PAP-139/PAP-140: work-mode labels and status hues branch on the Conference
+  // Room Chat experimental flag — OFF (default) must match master exactly.
+  describe("Conference Room Chat flag parity (PAP-140)", () => {
+    function workModeOption(value: string) {
+      return container.querySelector(`[data-issue-work-mode="${value}"]`);
+    }
+
+    function statusOptionIconClass(label: string, description?: string) {
+      const button = Array.from(container.querySelectorAll("button")).find((candidate) => {
+        const text = candidate.textContent ?? "";
+        return (
+          candidate.querySelector("svg") !== null &&
+          text.includes(label) &&
+          (description === undefined || text.includes(description))
+        );
+      });
+      return button?.querySelector("svg")?.getAttribute("class") ?? "";
+    }
+
+    it("uses master's work-mode labels and status hues when the flag is off (default)", async () => {
+      const { root } = renderDialog(container);
+      await flush();
+
+      expect(workModeOption("standard")?.textContent).toContain("Standard");
+      expect(workModeOption("standard")?.textContent).not.toContain("Agent mode");
+      expect(workModeOption("planning")?.textContent).toContain("Planning");
+      expect(workModeOption("planning")?.textContent).not.toContain("Plan mode");
+
+      // Master palette: todo → blue, in_progress → yellow.
+      expect(statusOptionIconClass("Todo", "Executable — assignee will be woken")).toContain("text-blue-600");
+      expect(statusOptionIconClass("In Progress")).toContain("text-yellow-600");
+
+      act(() => root.unmount());
+    });
+
+    it("uses NUX work-mode labels and brand status hues when the flag is on", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+
+      const { root } = renderDialog(container);
+      await flush();
+
+      expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+      expect(workModeOption("planning")?.textContent).toContain("Plan mode");
+
+      // PAP-75 brand palette: todo → amber, in_progress → blue.
+      expect(statusOptionIconClass("Todo", "Executable — assignee will be woken")).toContain("text-amber-600");
+      expect(statusOptionIconClass("In Progress")).toContain("text-blue-600");
+
+      act(() => root.unmount());
+    });
+  });
 });

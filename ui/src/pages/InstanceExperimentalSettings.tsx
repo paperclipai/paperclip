@@ -216,8 +216,11 @@ export function InstanceExperimentalSettings() {
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const enableStreamlinedLeftNavigation =
     experimentalQuery.data?.enableStreamlinedLeftNavigation === true;
+  const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
+  const enableExperimentalFileViewer =
+    experimentalQuery.data?.enableExperimentalFileViewer === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   // TWB-305: defaults to enabled, so treat anything other than an explicit `false`
@@ -377,6 +380,27 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Experimental File Viewer</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show task detail controls for browsing and previewing workspace files relative to a task.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableExperimentalFileViewer}
+            onCheckedChange={() =>
+              toggleMutation.mutate({
+                enableExperimentalFileViewer: !enableExperimentalFileViewer,
+              })
+            }
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle experimental file viewer setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Enable Isolated Workspaces</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show execution workspace controls in project configuration and allow isolated workspace behavior for new
@@ -410,6 +434,29 @@ export function InstanceExperimentalSettings() {
             }
             disabled={toggleMutation.isPending}
             aria-label="Toggle streamlined left navigation experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Conference Room Chat</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Adds a Conference Room — one chat where you and your whole team work together — plus the live activity
+              feed and the redesigned onboarding. Also restyles task threads as chat bubbles. Turn off anytime to
+              restore the classic UI.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableConferenceRoomChat}
+            onCheckedChange={() =>
+              toggleMutation.mutate({
+                enableConferenceRoomChat: !enableConferenceRoomChat,
+              })
+            }
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle conference room chat experimental setting"
           />
         </div>
       </section>

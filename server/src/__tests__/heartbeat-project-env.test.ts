@@ -333,4 +333,29 @@ describe("applyRunScopedMentionedSkillKeys", () => {
       },
     });
   });
+
+  it("preserves existing version pins when adding mentioned skills", () => {
+    const originalConfig = {
+      command: "codex",
+      paperclipSkillSync: {
+        desiredSkills: [
+          { key: "company/company-1/release-changelog", versionId: "version-1" },
+        ],
+      },
+    };
+
+    const updatedConfig = applyRunScopedMentionedSkillKeys(originalConfig, [
+      "company/company-1/security-review",
+    ]);
+
+    expect(updatedConfig).toEqual({
+      command: "codex",
+      paperclipSkillSync: {
+        desiredSkills: [
+          { key: "company/company-1/release-changelog", versionId: "version-1" },
+          { key: "company/company-1/security-review", versionId: null },
+        ],
+      },
+    });
+  });
 });

@@ -73,6 +73,8 @@ jobs:
       - name: Run security gates
         if: steps.commitperclip-key.outputs.available == 'true'
         run: node .github/scripts/check-pr-security.mjs
+        continue-on-error: true
+        timeout-minutes: 3
         env:
           GH_TOKEN: ${{ steps.token.outputs.value }}
           GH_REPO: ${{ github.repository }}

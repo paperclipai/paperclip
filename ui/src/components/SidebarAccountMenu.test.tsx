@@ -112,6 +112,21 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.textContent).toContain("Edit profile");
     expect(document.body.textContent).not.toContain("Instance settings");
     expect(document.body.textContent).toContain("Documentation");
+    expect(document.body.textContent).toContain("Feedback");
+
+    // Feedback link opens in a new tab pointing at the feedback URL
+    const feedbackAnchor = document.body.querySelector('a[href="https://paperclip.ing/feedback"]') as HTMLAnchorElement | null;
+    expect(feedbackAnchor).not.toBeNull();
+    expect(feedbackAnchor?.getAttribute("target")).toBe("_blank");
+
+    // Feedback appears after Documentation and before the theme toggle
+    const menuText = document.body.querySelector('[data-slot="popover-content"]')?.textContent ?? "";
+    const docsPos = menuText.indexOf("Documentation");
+    const feedbackPos = menuText.indexOf("Feedback");
+    const themePos = menuText.indexOf("Switch to");
+    expect(docsPos).toBeLessThan(feedbackPos);
+    expect(feedbackPos).toBeLessThan(themePos);
+
     expect(document.body.textContent).toContain("Paperclip v1.2.3");
     expect(document.body.textContent).toContain("jane@example.com");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)

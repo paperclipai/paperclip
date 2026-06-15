@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, createDb } from "@paperclipai/db";
+import { companies, companyMemberships, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -62,6 +62,14 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
       issuePrefix: "LNG",
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "cloud-user-1",
+      status: "active",
+      membershipRole: "owner",
+      updatedAt: new Date(),
+    });
   }, 20_000);
 
   afterAll(async () => {
@@ -92,7 +100,9 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
         companyIds: [companyId],
         memberships: [{ companyId, membershipRole: "owner", status: "active" }],
         source: "cloud_tenant",
-        isInstanceAdmin: true,
+        // cloud_tenant actors are never instance admins — reads flow through
+        // the active company membership seeded in beforeAll.
+        isInstanceAdmin: false,
       };
       next();
     });

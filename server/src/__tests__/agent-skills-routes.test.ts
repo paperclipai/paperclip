@@ -44,6 +44,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
 
 const mockCompanySkillService = vi.hoisted(() => ({
   listRuntimeSkillEntries: vi.fn(),
+  resolveRequestedSkillEntries: vi.fn(),
   resolveRequestedSkillKeys: vi.fn(),
 }));
 
@@ -258,6 +259,13 @@ describe.sequential("agent skill routes", () => {
             : value,
         ),
     );
+    mockCompanySkillService.resolveRequestedSkillEntries.mockImplementation(
+      async (_companyId: string, requested: Array<{ key: string; versionId?: string | null }>) =>
+        requested.map((entry) => ({
+          key: entry.key === "paperclip" ? "paperclipai/paperclip/paperclip" : entry.key,
+          versionId: entry.versionId ?? null,
+        })),
+    );
     mockAdapter.listSkills.mockResolvedValue({
       adapterType: "claude_local",
       supported: true,
@@ -338,9 +346,10 @@ describe.sequential("agent skill routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", expect.objectContaining({
       materializeMissing: false,
-    });
+      versionSelections: expect.any(Map),
+    }));
     expect(mockAdapter.listSkills).toHaveBeenCalledWith(
       expect.objectContaining({
         adapterType: "claude_local",
@@ -369,9 +378,10 @@ describe.sequential("agent skill routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", expect.objectContaining({
       materializeMissing: false,
-    });
+      versionSelections: expect.any(Map),
+    }));
   });
 
   it("passes ACPX Claude config through the agent skill listing route", async () => {
@@ -398,9 +408,10 @@ describe.sequential("agent skill routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", expect.objectContaining({
       materializeMissing: false,
-    });
+      versionSelections: expect.any(Map),
+    }));
     expect(mockAdapter.listSkills).toHaveBeenCalledWith(
       expect.objectContaining({
         adapterType: "acpx_local",
@@ -485,9 +496,10 @@ describe.sequential("agent skill routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", expect.objectContaining({
       materializeMissing: false,
-    });
+      versionSelections: expect.any(Map),
+    }));
   });
 
   it("skips runtime materialization when syncing Claude skills", async () => {

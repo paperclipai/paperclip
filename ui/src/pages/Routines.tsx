@@ -885,51 +885,59 @@ export function Routines() {
               />
             </div>
           ) : (
-            <div className="rounded-lg border border-border">
-              {routineGroups.map((group) => (
-                <Collapsible
-                  key={group.key}
-                  open={!routineViewState.collapsedGroups.includes(group.key)}
-                  onOpenChange={(open) => {
-                    updateRoutineView({
-                      collapsedGroups: open
-                        ? routineViewState.collapsedGroups.filter((item) => item !== group.key)
-                        : [...routineViewState.collapsedGroups, group.key],
-                    });
-                  }}
-                >
-                  {group.label ? (
-                    <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-                      <CollapsibleTrigger className="flex items-center gap-1.5">
-                        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
-                        <span className="text-sm font-semibold uppercase tracking-wide">
-                          {group.label}
+            <div className="flex flex-col gap-3">
+              {routineGroups.map((group) => {
+                const isOpen = !routineViewState.collapsedGroups.includes(group.key);
+                return (
+                  <Collapsible
+                    key={group.key}
+                    open={isOpen}
+                    onOpenChange={(open) => {
+                      updateRoutineView({
+                        collapsedGroups: open
+                          ? routineViewState.collapsedGroups.filter((item) => item !== group.key)
+                          : [...routineViewState.collapsedGroups, group.key],
+                      });
+                    }}
+                  >
+                    {group.label ? (
+                      <div
+                        className={`flex items-center gap-2 rounded-lg border border-border px-3 py-2${
+                          isOpen ? " mb-1" : ""
+                        }`}
+                      >
+                        <CollapsibleTrigger className="flex items-center gap-1.5">
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
+                          <span className="text-sm font-semibold uppercase tracking-wide">
+                            {group.label}
+                          </span>
+                        </CollapsibleTrigger>
+                        <span className="text-xs text-muted-foreground">
+                          {group.items.length}
                         </span>
-                      </CollapsibleTrigger>
-                      <span className="text-xs text-muted-foreground">
-                        {group.items.length}
-                      </span>
-                    </div>
-                  ) : null}
-                  <CollapsibleContent>
-                    {group.items.map((routine) => (
-                      <RoutineListRow
-                        key={routine.id}
-                        routine={routine}
-                        projectById={projectById}
-                        agentById={agentById}
-                        runningRoutineId={runningRoutineId}
-                        statusMutationRoutineId={statusMutationRoutineId}
-                        href={`/routines/${routine.id}`}
-                        runNowButton
-                        onRunNow={handleRunNow}
-                        onToggleEnabled={handleToggleEnabled}
-                        onToggleArchived={handleToggleArchived}
-                      />
-                    ))}
-                  </CollapsibleContent>
-                </Collapsible>
-              ))}
+                      </div>
+                    ) : null}
+                    <CollapsibleContent>
+                      {group.items.map((routine) => (
+                        <RoutineListRow
+                          key={routine.id}
+                          routine={routine}
+                          projectById={projectById}
+                          agentById={agentById}
+                          runningRoutineId={runningRoutineId}
+                          statusMutationRoutineId={statusMutationRoutineId}
+                          href={`/routines/${routine.id}`}
+                          runNowButton
+                          divider={false}
+                          onRunNow={handleRunNow}
+                          onToggleEnabled={handleToggleEnabled}
+                          onToggleArchived={handleToggleArchived}
+                        />
+                      ))}
+                    </CollapsibleContent>
+                  </Collapsible>
+                );
+              })}
             </div>
           )}
         </div>

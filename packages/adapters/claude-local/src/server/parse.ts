@@ -204,7 +204,31 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
     .filter(Boolean);
 
   return allMessages.some((msg) =>
-    /no conversation found with session id|unknown session|session .* not found/i.test(msg),
+    /no conversation found with session id|unknown session|session .* not found|not a valid UUID|--resume requires a valid session|is not a UUID|does not match any session title/i.test(
+      msg,
+    ),
+  );
+}
+
+export function isClaudePoisonedPreviousMessageIdError(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) =>
+    /diagnostics\.previous_message_id.*starts with `msg_`/i.test(msg),
+  );
+}
+
+export function isClaudeImageProcessingError(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) =>
+    /could not process image/i.test(msg),
   );
 }
 
@@ -387,7 +411,7 @@ export function isClaudeTransientUpstreamError(input: {
 }): boolean {
   const parsed = input.parsed ?? null;
   // Deterministic failures are handled by their own classifiers.
-  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed))) {
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
     return false;
   }
   const loginMeta = detectClaudeLoginRequired({

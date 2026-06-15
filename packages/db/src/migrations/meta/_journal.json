@@ -698,8 +698,29 @@
     {
       "idx": 99,
       "version": "7",
+      "when": 1781130000000,
+      "tag": "0099_skills_store_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
       "when": 1781275200000,
-      "tag": "0099_decision_owner_user",
+      "tag": "0100_decision_owner_user",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1781480000000,
+      "tag": "0101_skill_install_count_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1781490000000,
+      "tag": "0102_plugin_company_id_tenant_isolation",
       "breakpoints": true
     }
   ]
