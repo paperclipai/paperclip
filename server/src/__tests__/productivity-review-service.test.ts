@@ -407,6 +407,69 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
+  it("suppresses long-active reviews for monitor-parked records with no standing-record text (EDG-7692)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    // A plain title/description that does NOT match isStandingRecordIssue — proves the
+    // objective monitor-metadata predicate (not description parsing) does the suppression,
+    // which is exactly the EDG-7004 churn case the text-parser was missing.
+    const seeded = await seedAssignedIssue({
+      title: "Quarterly competitor watch",
+      description: "Keep an eye on competitor pricing changes.",
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await db
+      .update(issues)
+      .set({
+        monitorNextCheckAt: new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000),
+        executionState: { monitor: { status: "scheduled" } },
+      })
+      .where(eq(issues.id, seeded.issueId));
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still spawns a no_comment_streak review on a monitor-parked issue (suppression is long_active-only)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      title: "Quarterly competitor watch",
+      description: "Keep an eye on competitor pricing changes.",
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await db
+      .update(issues)
+      .set({
+        monitorNextCheckAt: new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000),
+        executionState: { monitor: { status: "scheduled" } },
+      })
+      .where(eq(issues.id, seeded.issueId));
+    // Genuine no-comment churn on the parked issue must still surface.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `no_comment_streak`");
+  });
+
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
