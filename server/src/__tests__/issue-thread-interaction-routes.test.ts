@@ -22,6 +22,17 @@ const mockInteractionService = vi.hoisted(() => ({
   cancelQuestions: vi.fn(),
 }));
 
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(async () => true),
+  decide: vi.fn(async (input: { action?: string }) => ({
+    allowed: true,
+    action: input.action,
+    reason: "allow_explicit_grant",
+    explanation: "Allowed by test grant.",
+  })),
+  hasPermission: vi.fn(async () => true),
+}));
+
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
 }));
@@ -55,14 +66,9 @@ function registerModuleMocks() {
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
     }),
     accessService: () => ({
-      canUser: vi.fn(async () => true),
-      decide: vi.fn(async (input: { action?: string }) => ({
-        allowed: true,
-        action: input.action,
-        reason: "allow_explicit_grant",
-        explanation: "Allowed by test grant.",
-      })),
-      hasPermission: vi.fn(async () => true),
+      canUser: mockAccessService.canUser,
+      decide: mockAccessService.decide,
+      hasPermission: mockAccessService.hasPermission,
     }),
     agentService: () => ({
       getById: vi.fn(async () => ({ id: CREATED_AGENT_ID, companyId: "company-1", permissions: null })),
@@ -175,6 +181,12 @@ describe.sequential("issue thread interaction routes", () => {
     vi.doUnmock("../services/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant.",
+    }));
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
@@ -431,6 +443,28 @@ describe.sequential("issue thread interaction routes", () => {
           }),
         }),
       }),
+    );
+  });
+
+  it("does not run interaction catch-up when issue read access is denied", async () => {
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "done" }));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "issue:read",
+      action: input.action,
+      reason: "deny_missing_grant",
+      explanation: "Denied by test grant.",
+    }));
+    const app = await createApp();
+
+    const listRes = await request(app).get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions");
+
+    expect(listRes.status).toBe(403);
+    expect(mockInteractionService.expirePendingInteractionsForTerminalIssue).not.toHaveBeenCalled();
+    expect(mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments).not.toHaveBeenCalled();
+    expect(mockInteractionService.listForIssue).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.thread_interaction_expired" }),
     );
   });
 

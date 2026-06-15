@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   acceptIssueThreadInteractionSchema,
+  askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
+  requestConfirmationResultSchema,
+  suggestTasksResultSchema,
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
@@ -266,5 +269,23 @@ describe("issue thread interaction schemas", () => {
     expect(() => acceptIssueThreadInteractionSchema.parse({
       selectedOptionIds: ["item-1", "item-1"],
     })).toThrow("selectedOptionIds must be unique");
+  });
+
+  it("requires terminal cleanup results to include terminalStatus", () => {
+    const terminalWithoutStatus = { version: 1, outcome: "terminal_issue" };
+
+    expect(suggestTasksResultSchema.safeParse(terminalWithoutStatus).success).toBe(false);
+    expect(askUserQuestionsResultSchema.safeParse(terminalWithoutStatus).success).toBe(false);
+    expect(requestConfirmationResultSchema.safeParse(terminalWithoutStatus).success).toBe(false);
+
+    expect(suggestTasksResultSchema.parse({
+      version: 1,
+      outcome: "terminal_issue",
+      terminalStatus: "done",
+    })).toEqual({
+      version: 1,
+      outcome: "terminal_issue",
+      terminalStatus: "done",
+    });
   });
 });

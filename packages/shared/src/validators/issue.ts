@@ -622,6 +622,8 @@ const terminalIssueInteractionResultSchema = z.object({
 
 const suggestTasksResolvedResultSchema = z.object({
   version: z.literal(1),
+  outcome: z.undefined().optional(),
+  terminalStatus: z.undefined().optional(),
   createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
   skippedClientKeys: z.array(z.string().trim().min(1).max(120)).max(50).optional(),
   rejectionReason: z.string().trim().max(4000).nullable().optional(),

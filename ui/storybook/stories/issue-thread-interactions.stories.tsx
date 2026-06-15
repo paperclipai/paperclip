@@ -125,7 +125,6 @@ function InteractiveSuggestedTasksCard() {
           ...rejectedSuggestedTasksInteraction,
           result: {
             version: 1,
-            ...(rejectedSuggestedTasksInteraction.result ?? {}),
             rejectionReason:
               reason
               || rejectedSuggestedTasksInteraction.result?.rejectionReason

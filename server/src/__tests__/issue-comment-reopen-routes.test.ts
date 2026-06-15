@@ -1814,6 +1814,16 @@ describe.sequential("issue comment reopen routes", () => {
       }),
       mockTx,
     );
+    expect(mockIssueThreadInteractionService.expirePendingInteractionsForTerminalIssue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "11111111-1111-4111-8111-111111111111",
+        status: "done",
+      }),
+      {
+        agentId: reviewerAgentId,
+        userId: null,
+      },
+    );
   });
 
   it("auto-approves a reviewer comment with structured review metadata", async () => {

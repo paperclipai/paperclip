@@ -705,14 +705,35 @@ export interface SuggestTasksResultCreatedTask {
   parentIdentifier?: string | null;
 }
 
-export interface SuggestTasksResult {
+export interface TerminalIssueInteractionResult {
   version: 1;
-  outcome?: "terminal_issue";
-  terminalStatus?: "done" | "cancelled";
+  outcome: "terminal_issue";
+  terminalStatus: "done" | "cancelled";
+  createdTasks?: never;
+  skippedClientKeys?: never;
+  rejectionReason?: never;
+  answers?: never;
+  cancelled?: never;
+  cancellationReason?: never;
+  summaryMarkdown?: never;
+  reason?: never;
+  commentId?: never;
+  staleTarget?: never;
+  selectedOptionIds?: never;
+}
+
+export interface SuggestTasksResolvedResult {
+  version: 1;
+  outcome?: never;
+  terminalStatus?: never;
   createdTasks?: SuggestTasksResultCreatedTask[];
   skippedClientKeys?: string[];
   rejectionReason?: string | null;
 }
+
+export type SuggestTasksResult =
+  | TerminalIssueInteractionResult
+  | SuggestTasksResolvedResult;
 
 export interface AskUserQuestionsQuestionOption {
   id: string;
@@ -742,15 +763,19 @@ export interface AskUserQuestionsAnswer {
   otherText?: string | null;
 }
 
-export interface AskUserQuestionsResult {
+export interface AskUserQuestionsAnsweredResult {
   version: 1;
-  outcome?: "terminal_issue";
-  terminalStatus?: "done" | "cancelled";
-  answers?: AskUserQuestionsAnswer[];
+  outcome?: never;
+  terminalStatus?: never;
+  answers: AskUserQuestionsAnswer[];
   cancelled?: true;
   cancellationReason?: string | null;
   summaryMarkdown?: string | null;
 }
+
+export type AskUserQuestionsResult =
+  | TerminalIssueInteractionResult
+  | AskUserQuestionsAnsweredResult;
 
 export interface RequestConfirmationIssueDocumentTarget {
   type: "issue_document";
@@ -814,18 +839,22 @@ export interface RequestCheckboxConfirmationPayload {
   target?: RequestConfirmationTarget | null;
 }
 
-export interface RequestConfirmationResult {
+export interface RequestConfirmationResolvedResult {
   version: 1;
-  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target" | "terminal_issue";
-  terminalStatus?: "done" | "cancelled";
+  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
+  terminalStatus?: never;
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
 }
 
-export interface RequestCheckboxConfirmationResult extends RequestConfirmationResult {
-  selectedOptionIds?: string[];
-}
+export type RequestConfirmationResult =
+  | TerminalIssueInteractionResult
+  | RequestConfirmationResolvedResult;
+
+export type RequestCheckboxConfirmationResult =
+  | TerminalIssueInteractionResult
+  | (RequestConfirmationResolvedResult & { selectedOptionIds?: string[] });
 
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
   id: string;

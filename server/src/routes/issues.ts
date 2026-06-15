@@ -6067,6 +6067,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const actor = getActorInfo(req);
     const interactionSvc = issueThreadInteractionService(db);
     const expiredTerminalInteractions = await interactionSvc.expirePendingInteractionsForTerminalIssue(issue, {
@@ -7001,6 +7002,22 @@ export function issueRoutes(
       actor,
       source: "issue.comment",
     });
+
+    if (isClosedIssueStatus(currentIssue.status)) {
+      const expiredTerminalInteractions = await issueThreadInteractionService(db).expirePendingInteractionsForTerminalIssue(
+        currentIssue,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+      await logExpiredInteractions({
+        issue: currentIssue,
+        interactions: expiredTerminalInteractions,
+        actor,
+        source: "issue.comment_terminal_status",
+      });
+    }
 
     await revalidateActiveSourceRecoveryAfterCommittedWrite({
       issue: currentIssue,
