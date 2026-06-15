@@ -75,9 +75,9 @@ function signalRunningProcess(
   }
 }
 
-/** Persist uncommitted workspace edits before SIGTERM so detach does not discard work. */
-/** Maximum ms to block the event loop waiting for git autosave commands. */
-const WIP_AUTOSAVE_TIMEOUT_MS = 10_000;
+/** Maximum ms to block the event loop per git autosave command.
+ * There are up to 4 sequential spawnSync calls; worst-case total = 4 × this value. */
+const WIP_AUTOSAVE_TIMEOUT_MS = 5_000;
 
 export function commitDirtyWorkspaceWipAutosave(input: {
   cwd: string;

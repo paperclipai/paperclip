@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { renderRunReconcilerPrometheusMetrics } from "../services/recovery/run-reconciler-metrics.js";
@@ -10,7 +11,10 @@ export function metricsRoutes(opts?: { metricsToken?: string | null }) {
     if (expectedToken) {
       const auth = req.headers.authorization ?? "";
       const provided = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-      if (provided !== expectedToken) {
+      const a = Buffer.from(provided);
+      const b = Buffer.from(expectedToken);
+      const equal = a.length === b.length && timingSafeEqual(a, b);
+      if (!equal) {
         res.status(401).setHeader("WWW-Authenticate", 'Bearer realm="metrics"').send("Unauthorized");
         return;
       }
