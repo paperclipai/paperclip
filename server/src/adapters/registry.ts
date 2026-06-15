@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import type {
   AdapterModel,
   AdapterModelProfileDefinition,
@@ -183,6 +185,86 @@ function buildCursorRuntimeCommandSpec(config: Record<string, unknown>): Adapter
   };
 }
 
+function normalizeHermesOptionDash(value: string): string {
+  return /^[\u2010-\u2015-]/.test(value) ? value.replace(/[\u2010-\u2015]/g, "-") : value;
+}
+
+function splitShellLikeArgs(value: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+
+  for (const char of value.trim()) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if ((char === "'" || char === '"') && quote === null) {
+      quote = char;
+      continue;
+    }
+    if (quote === char) {
+      quote = null;
+      continue;
+    }
+    if (/\s/.test(char) && quote === null) {
+      if (current) {
+        args.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (escaped) current += "\\";
+  if (current) args.push(current);
+  return args;
+}
+
+function shouldExpandHermesExtraArg(value: string, commandTokens: Set<string>): boolean {
+  const tokens = splitShellLikeArgs(value);
+  if (tokens.length <= 1) return false;
+  const first = normalizeHermesOptionDash(tokens[0]);
+  return (first.startsWith("-") && !first.includes("=")) || commandTokens.has(first) || commandTokens.has(path.basename(first));
+}
+
+function normalizeHermesExtraArgs(extraArgs: unknown, command?: string): string[] | undefined {
+  const commandTokens = new Set(["chat", "hermes"]);
+  if (command) {
+    commandTokens.add(command);
+    commandTokens.add(path.basename(command));
+  }
+  const rawArgs = Array.isArray(extraArgs)
+    ? extraArgs.flatMap((arg) => {
+        if (typeof arg !== "string") return [];
+        return shouldExpandHermesExtraArg(arg, commandTokens)
+          ? splitShellLikeArgs(arg).map(normalizeHermesOptionDash)
+          : [normalizeHermesOptionDash(arg.trim())].filter(Boolean);
+      })
+    : typeof extraArgs === "string"
+      ? splitShellLikeArgs(extraArgs).map(normalizeHermesOptionDash)
+      : [];
+
+  const normalizedArgs = [...rawArgs];
+  while (normalizedArgs.length > 0) {
+    const first = normalizedArgs[0];
+    if (commandTokens.has(first) || commandTokens.has(path.basename(first))) {
+      normalizedArgs.shift();
+      continue;
+    }
+    break;
+  }
+
+  return normalizedArgs.length > 0 ? normalizedArgs : undefined;
+}
+
 function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(ctx: T): T {
   const config =
     ctx && typeof ctx === "object" && "config" in ctx && ctx.config && typeof ctx.config === "object"
@@ -209,6 +291,17 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   }
   if (agentAdapterConfig && !agentAdapterConfig.hermesCommand && agentCommand) {
     agentAdapterConfig.hermesCommand = agentCommand;
+  }
+  if (agentAdapterConfig && "extraArgs" in agentAdapterConfig) {
+    const normalizedExtraArgs = normalizeHermesExtraArgs(
+      agentAdapterConfig.extraArgs,
+      typeof agentAdapterConfig.hermesCommand === "string" ? agentAdapterConfig.hermesCommand : undefined,
+    );
+    if (normalizedExtraArgs) {
+      agentAdapterConfig.extraArgs = normalizedExtraArgs;
+    } else {
+      delete agentAdapterConfig.extraArgs;
+    }
   }
 
   return ctx;
