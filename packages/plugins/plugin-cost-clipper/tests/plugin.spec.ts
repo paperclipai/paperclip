@@ -198,4 +198,36 @@ describe("cost clipper plugin", () => {
     });
     expect(after.openBudgetIncidents).toHaveLength(0);
   });
+
+  it("ignores a budget.incident.resolved with no scopeId instead of clearing open incidents", async () => {
+    const harness = harnessForTest();
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.emit(
+      "budget.incident.opened",
+      { scopeType: "project", scopeId: "project-1", reason: "budget" },
+      { companyId: COMPANY_ID },
+    );
+    // A malformed resolution (no scopeId) must not wipe the open incident.
+    await harness.emit("budget.incident.resolved", {}, { companyId: COMPANY_ID });
+
+    const overview = await harness.getData<{ openBudgetIncidents: unknown[] }>(DATA_KEYS.overview, {
+      companyId: COMPANY_ID,
+    });
+    expect(overview.openBudgetIncidents).toHaveLength(1);
+  });
+
+  it("rejects a negative-cost event so it cannot skew the agent baseline", async () => {
+    const harness = harnessForTest();
+    await plugin.definition.setup(harness.ctx);
+
+    await emitCost(harness, costPayload({ costCents: -500 }));
+
+    // No metric written, and the agent has no aggregate to skew.
+    expect(harness.metrics).toHaveLength(0);
+    const overview = await harness.getData<{ topSpenders: unknown[] }>(DATA_KEYS.overview, {
+      companyId: COMPANY_ID,
+    });
+    expect(overview.topSpenders).toHaveLength(0);
+  });
 });

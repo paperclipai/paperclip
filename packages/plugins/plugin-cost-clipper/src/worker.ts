@@ -185,12 +185,16 @@ const plugin = definePlugin({
       if (!companyId) return;
       const payload = (event.payload ?? {}) as Record<string, unknown>;
       const resolvedScopeId = stringOrNull(payload.scopeId);
+      // A resolution event with no scopeId is unactionable — ignore it rather
+      // than blanking every open incident for the company.
+      if (!resolvedScopeId) {
+        ctx.logger.warn("budget.incident.resolved missing scopeId; ignoring", { companyId });
+        return;
+      }
       const incidents = await loadBudgetIncidents(ctx, companyId);
-      const remaining = resolvedScopeId
-        ? incidents.filter((incident) => incident.scopeId !== resolvedScopeId)
-        : [];
+      const remaining = incidents.filter((incident) => incident.scopeId !== resolvedScopeId);
       await ctx.state.set(companyScope(companyId, STATE_KEYS.budgetIncidents), remaining);
-      ctx.logger.info("Budget incident resolved", { companyId });
+      ctx.logger.info("Budget incident resolved", { companyId, resolvedScopeId });
     });
 
     // --- Dashboard data handler backing the widget. ---

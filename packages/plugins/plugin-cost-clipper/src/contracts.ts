@@ -58,7 +58,9 @@ export function parseCostEvent(
   // or non-numeric value as a parse failure rather than silently zero.
   const rawCost = p.costCents;
   const costNum = typeof rawCost === "number" ? rawCost : Number(rawCost);
-  if (!Number.isFinite(costNum)) return null;
+  // A negative cost (e.g. a refund/correction) would skew the Welford baseline
+  // if folded in as 0, so reject it the same way we reject non-numeric values.
+  if (!Number.isFinite(costNum) || costNum < 0) return null;
 
   return {
     companyId,
@@ -71,7 +73,7 @@ export function parseCostEvent(
     inputTokens: asNonNegativeInt(p.inputTokens),
     cachedInputTokens: asNonNegativeInt(p.cachedInputTokens),
     outputTokens: asNonNegativeInt(p.outputTokens),
-    costCents: Math.max(0, Math.round(costNum)),
+    costCents: Math.round(costNum),
     occurredAt: asOptionalString(p.occurredAt),
   };
 }
