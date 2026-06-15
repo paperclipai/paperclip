@@ -237,4 +237,86 @@ describe("applyRunScopedMentionedSkillKeys", () => {
       },
     });
   });
+
+  it("injects per-tenant provider keys, overriding the shared/agent env", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { env: { ANTHROPIC_API_KEY: "shared-from-agent-config", AGENT_ONLY: "x" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+    const resolveEnvBindings = vi.fn().mockResolvedValue({ env: {}, secretKeys: new Set<string>(), manifest: [] });
+    const resolveProviderKeyOverrides = vi.fn().mockResolvedValue({
+      env: { ANTHROPIC_API_KEY: "tenant-own-key" },
+      secretKeys: new Set(["ANTHROPIC_API_KEY"]),
+      manifest: [
+        {
+          configPath: "env.ANTHROPIC_API_KEY",
+          envKey: "ANTHROPIC_API_KEY",
+          secretId: "secret-tenant-anthropic",
+          secretKey: "anthropic-api-key",
+          version: 1,
+          provider: "local_encrypted",
+          outcome: "success",
+        },
+      ],
+    });
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "tenant-1",
+      agentId: "agent-1",
+      executionRunConfig: { env: { ANTHROPIC_API_KEY: "shared-from-agent-config" } },
+      projectEnv: null,
+      secretsSvc: { resolveAdapterConfigForRuntime, resolveEnvBindings, resolveProviderKeyOverrides } as any,
+    });
+
+    // Tenant's own key wins over the agent/shared value.
+    expect((result.resolvedConfig.env as Record<string, string>).ANTHROPIC_API_KEY).toBe("tenant-own-key");
+    expect((result.resolvedConfig.env as Record<string, string>).AGENT_ONLY).toBe("x");
+    expect(result.secretKeys.has("ANTHROPIC_API_KEY")).toBe(true);
+    expect(resolveProviderKeyOverrides).toHaveBeenCalledWith("tenant-1");
+    // The resolved key value never appears in the manifest (only metadata).
+    expect(JSON.stringify(result.secretManifest)).not.toContain("tenant-own-key");
+  });
+
+  it("falls back to the shared key when the tenant has no provider-key override", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { env: { ANTHROPIC_API_KEY: "shared-from-agent-config" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+    const resolveEnvBindings = vi.fn().mockResolvedValue({ env: {}, secretKeys: new Set<string>(), manifest: [] });
+    // No company secret for any provider key → empty override → shared key preserved.
+    const resolveProviderKeyOverrides = vi
+      .fn()
+      .mockResolvedValue({ env: {}, secretKeys: new Set<string>(), manifest: [] });
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "tenant-2",
+      agentId: "agent-2",
+      executionRunConfig: { env: { ANTHROPIC_API_KEY: "shared-from-agent-config" } },
+      projectEnv: null,
+      secretsSvc: { resolveAdapterConfigForRuntime, resolveEnvBindings, resolveProviderKeyOverrides } as any,
+    });
+
+    expect((result.resolvedConfig.env as Record<string, string>).ANTHROPIC_API_KEY).toBe("shared-from-agent-config");
+    expect(result.secretKeys.has("ANTHROPIC_API_KEY")).toBe(false);
+  });
+
+  it("does not crash when the resolver lacks resolveProviderKeyOverrides (back-compat)", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { env: { FOO: "bar" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+    const resolveEnvBindings = vi.fn().mockResolvedValue({ env: {}, secretKeys: new Set<string>(), manifest: [] });
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "tenant-3",
+      executionRunConfig: { env: { FOO: "bar" } },
+      projectEnv: null,
+      secretsSvc: { resolveAdapterConfigForRuntime, resolveEnvBindings } as any,
+    });
+
+    expect((result.resolvedConfig.env as Record<string, string>).FOO).toBe("bar");
+  });
 });

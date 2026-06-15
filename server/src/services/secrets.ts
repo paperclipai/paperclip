@@ -56,6 +56,18 @@ import type {
 import { isSecretProviderClientError } from "../secrets/types.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// Well-known LLM/provider key env names. When a tenant stores a company secret under one of
+// these names, that value overrides the shared instance-level key for that tenant's runs.
+// Absent → the run falls back to the shared process.env key (so tenants without their own key
+// keep working). This is the per-tenant key isolation hook consumed by the heartbeat runtime.
+const PROVIDER_KEY_ENV_NAMES = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "PERPLEXITY_API_KEY",
+] as const;
 const SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const REDACTED_SENTINEL = "***REDACTED***";
@@ -2233,6 +2245,37 @@ export function secretService(db: Db) {
         );
       }
       return normalized;
+    },
+
+    // Per-tenant provider-key override. For each well-known provider env name, if this company
+    // has a secret stored under that exact name, resolve its value so the heartbeat runtime can
+    // inject it into the run's env (overriding the shared instance key). Names with no company
+    // secret are simply omitted → the run inherits the shared process.env key as fallback.
+    // Resolved without a binding context: these are direct company-scoped named lookups, not
+    // config-path-bound references, so no per-consumer binding row is required.
+    resolveProviderKeyOverrides: async (
+      companyId: string,
+    ): Promise<{ env: Record<string, string>; secretKeys: Set<string>; manifest: RuntimeSecretManifestEntry[] }> => {
+      const env: Record<string, string> = {};
+      const secretKeys = new Set<string>();
+      const manifest: RuntimeSecretManifestEntry[] = [];
+      for (const name of PROVIDER_KEY_ENV_NAMES) {
+        const record = await getByName(companyId, name);
+        if (!record || record.status !== "active") continue;
+        try {
+          const resolution = await resolveSecretValueInternal(companyId, record.id, "latest");
+          if (resolution.value && resolution.value.length > 0) {
+            env[name] = resolution.value;
+            manifest.push(resolution.manifestEntry);
+            secretKeys.add(name);
+          }
+        } catch (err) {
+          // A broken/inactive per-tenant key must not abort the run — fall back to the shared
+          // key by leaving this name unset.
+          logger.warn({ err, companyId, name }, "per-tenant provider key resolution failed; using shared key");
+        }
+      }
+      return { env, secretKeys, manifest };
     },
 
     resolveEnvBindings: async (

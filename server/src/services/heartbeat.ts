@@ -330,7 +330,8 @@ const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64",
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
->;
+> &
+  Partial<Pick<ReturnType<typeof secretService>, "resolveProviderKeyOverrides">>;
 
 function isValadrienOsRuntimeEnvKey(key: string) {
   return key.startsWith("VALADRIEN_OS_");
@@ -431,6 +432,22 @@ export async function resolveExecutionRunAdapterConfig(input: {
       secretKeys.add(key);
     }
   }
+  // Per-tenant provider keys: if this company stored its own ANTHROPIC_API_KEY / OPENROUTER_API_KEY /
+  // etc. as a company secret, inject it last so it overrides both the resolved config env and the
+  // shared instance key (the spawn merges process.env first, then this env). Companies without their
+  // own key fall through to the shared process.env key — preserving today's behavior.
+  const providerKeyResolution = input.secretsSvc.resolveProviderKeyOverrides
+    ? await input.secretsSvc.resolveProviderKeyOverrides(input.companyId)
+    : { env: {} as Record<string, string>, secretKeys: new Set<string>(), manifest: [] };
+  if (Object.keys(providerKeyResolution.env).length > 0) {
+    resolvedConfig.env = {
+      ...parseObject(resolvedConfig.env),
+      ...providerKeyResolution.env,
+    };
+    for (const key of providerKeyResolution.secretKeys) {
+      secretKeys.add(key);
+    }
+  }
   return {
     resolvedConfig,
     secretKeys,
@@ -438,6 +455,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
       ...(manifest ?? []),
       ...(projectEnvResolution.manifest ?? []),
       ...(routineEnvResolution.manifest ?? []),
+      ...(providerKeyResolution.manifest ?? []),
     ],
   };
 }
