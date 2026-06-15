@@ -182,7 +182,7 @@ export function readPriorRunKnowledge(
     const yamlPath = yamlPathForEntry(knowledgeDir, row.identifier, row.decided_at);
     const decisions = readYamlListField(yamlPath, "decisions");
     return {
-      taskId: row.task_id,
+      taskId: row.identifier,
       summary: row.summary,
       antiPatterns: row.anti_patterns ?? [],
       decisions,

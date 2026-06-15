@@ -334,12 +334,14 @@ describe.sequential("heartbeat-context priorRunKnowledge — contract", () => {
 
   it("returns 5 priorRunKnowledge entries for SSI Director, newest-first", async () => {
     // Seed 5 entries with distinct decided_at times (out-of-order intentionally)
+    // task_id uses UUID format (matches real digester output); identifier is the SAG ticket.
+    // These must be distinct so the test catches the taskId←identifier mapping.
     const entries = [
-      { taskId: "t1", identifier: "SAG-1001", domain: "ssi-hp", summary: "Entry 1 — oldest", decidedAt: "2026-03-01T00:00:00.000Z", decisions: ["Decision A"] },
-      { taskId: "t2", identifier: "SAG-1002", domain: "ssi-hp", summary: "Entry 2", decidedAt: "2026-04-01T00:00:00.000Z", decisions: ["Decision B"] },
-      { taskId: "t3", identifier: "SAG-1003", domain: "ssi-hp", summary: "Entry 3", decidedAt: "2026-05-01T00:00:00.000Z", antiPatterns: ["AP 3"] },
-      { taskId: "t4", identifier: "SAG-1004", domain: "ssi-hp", summary: "Entry 4", decidedAt: "2026-06-01T00:00:00.000Z" },
-      { taskId: "t5", identifier: "SAG-1005", domain: "ssi-hp", summary: "Entry 5 — newest", decidedAt: "2026-07-01T00:00:00.000Z", decisions: ["Decision E"] },
+      { taskId: "11111111-0000-4000-8000-000000000001", identifier: "SAG-1001", domain: "ssi-hp", summary: "Entry 1 — oldest", decidedAt: "2026-03-01T00:00:00.000Z", decisions: ["Decision A"] },
+      { taskId: "22222222-0000-4000-8000-000000000002", identifier: "SAG-1002", domain: "ssi-hp", summary: "Entry 2", decidedAt: "2026-04-01T00:00:00.000Z", decisions: ["Decision B"] },
+      { taskId: "33333333-0000-4000-8000-000000000003", identifier: "SAG-1003", domain: "ssi-hp", summary: "Entry 3", decidedAt: "2026-05-01T00:00:00.000Z", antiPatterns: ["AP 3"] },
+      { taskId: "44444444-0000-4000-8000-000000000004", identifier: "SAG-1004", domain: "ssi-hp", summary: "Entry 4", decidedAt: "2026-06-01T00:00:00.000Z" },
+      { taskId: "55555555-0000-4000-8000-000000000005", identifier: "SAG-1005", domain: "ssi-hp", summary: "Entry 5 — newest", decidedAt: "2026-07-01T00:00:00.000Z", decisions: ["Decision E"] },
     ];
     for (const e of entries) seedKnowledgeEntry(tmpDir, e);
 
@@ -364,13 +366,13 @@ describe.sequential("heartbeat-context priorRunKnowledge — contract", () => {
     expect(res.body.priorRunKnowledge).toBeDefined();
     expect(res.body.priorRunKnowledge).toHaveLength(5);
 
-    // Must be ordered newest → oldest
-    const identifiers = res.body.priorRunKnowledge.map((e: { taskId: string }) => e.taskId);
-    expect(identifiers).toEqual(["t5", "t4", "t3", "t2", "t1"]);
+    // taskId must be the human ticket identifier, NOT the UUID task_id stored in the JSONL
+    const returnedTaskIds = res.body.priorRunKnowledge.map((e: { taskId: string }) => e.taskId);
+    expect(returnedTaskIds).toEqual(["SAG-1005", "SAG-1004", "SAG-1003", "SAG-1002", "SAG-1001"]);
 
-    // Spot-check fields
+    // Spot-check fields on newest entry
     const newest = res.body.priorRunKnowledge[0];
-    expect(newest.taskId).toBe("t5");
+    expect(newest.taskId).toBe("SAG-1005");  // identifier, not the UUID
     expect(newest.summary).toBe("Entry 5 — newest");
     expect(newest.decisions).toContain("Decision E");
     expect(newest.link).toBe("/SAG/issues/SAG-1005");
@@ -383,7 +385,7 @@ describe.sequential("heartbeat-context priorRunKnowledge — contract", () => {
   it("skips the current issue's own entry if present in the index", async () => {
     // SAG-9999 is the current issue; add it to the index — it must be excluded
     seedKnowledgeEntry(tmpDir, {
-      taskId: "self-id",
+      taskId: "ffffffff-0000-4000-8000-000000000099",  // UUID distinct from identifier
       identifier: "SAG-9999",
       domain: "ssi-hp",
       summary: "The current issue itself",
@@ -409,7 +411,8 @@ describe.sequential("heartbeat-context priorRunKnowledge — contract", () => {
 
     expect(res.status).toBe(200);
     const taskIds = res.body.priorRunKnowledge.map((e: { taskId: string }) => e.taskId);
-    expect(taskIds).not.toContain("self-id");
+    // taskId is the identifier, not the UUID — confirm "SAG-9999" (self) is excluded
+    expect(taskIds).not.toContain("SAG-9999");
   });
 });
 
