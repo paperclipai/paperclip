@@ -78,6 +78,20 @@ describe("master runtime failover", () => {
     });
   });
 
+  it("routes Claude agents through Codex in force_codex mode", () => {
+    expect(resolveMasterRuntimeAdapter({
+      adapterType: "claude_local",
+      settings: settings({ mode: "force_codex" }),
+      now,
+    })).toMatchObject({
+      sourceRuntime: "claude",
+      targetRuntime: "codex",
+      adapterType: "codex_local",
+      reason: "forced_codex_override",
+      blocked: false,
+    });
+  });
+
   it("detects hard usage limits even without transient_upstream classification", () => {
     expect(isHardMasterRuntimeLimitResult("claude_local", {
       exitCode: 1,

@@ -41,6 +41,7 @@ import { registerRoutineApiCommands } from "./commands/client/routine-api.js";
 import { registerAdapterCommands } from "./commands/client/adapter.js";
 import { registerAssetCommands } from "./commands/client/asset.js";
 import { registerSkillCommands } from "./commands/client/skill.js";
+import { registerRuntimeCommands } from "./commands/client/runtime.js";
 import { cliVersion } from "./version.js";
 
 const program = new Command();
@@ -176,6 +177,7 @@ registerRoutineApiCommands(program);
 registerAdapterCommands(program);
 registerAssetCommands(program);
 registerSkillCommands(program);
+registerRuntimeCommands(program);
 registerRoutineCommands(program);
 registerFeedbackCommands(program);
 registerSecretCommands(program);
