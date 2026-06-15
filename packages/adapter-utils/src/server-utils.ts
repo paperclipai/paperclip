@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess } from "node:child_process";
+import { spawnHidden } from "./spawn-hidden.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
@@ -2177,7 +2178,7 @@ export async function runChildProcess(
       remoteEnv: opts.remoteExecution ? opts.env : null,
     })
       .then((target) => {
-        const child = spawn(target.command, target.args, {
+        const child = spawnHidden(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,
           env: mergedEnv,
           detached: process.platform !== "win32",
