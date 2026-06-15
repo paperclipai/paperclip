@@ -123,7 +123,7 @@ export async function prepareManagedCodexHome(
   options: { apiKey?: string | null } = {},
 ): Promise<string> {
   const targetHome = resolveManagedCodexHomeDir(env, companyId);
-  const apiKey = nonEmpty(options.apiKey ?? undefined);
+  const apiKey = nonEmpty(options.apiKey ?? undefined) ?? nonEmpty(env.OPENAI_API_KEY);
 
   const sourceHome = resolveSharedCodexHomeDir(env);
   const seedFromShared = path.resolve(sourceHome) !== path.resolve(targetHome);
@@ -165,7 +165,7 @@ export async function prepareManagedCodexHome(
     await writeApiKeyAuthJson(targetHome, apiKey);
     await onLog(
       "stdout",
-      `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
+      `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY or runtime environment.\n`,
     );
   }
 
