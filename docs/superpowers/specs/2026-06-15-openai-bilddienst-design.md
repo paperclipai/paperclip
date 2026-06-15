@@ -110,8 +110,10 @@ abgeschlossenen Subtask und arbeitet weiter.
 
 ### 5. Fehlerbehandlung
 
-- **Idempotenz**: `in_progress`-Lock vor dem OpenAI-Call; der nächste Poll fasst
-  den Subtask nicht erneut an.
+- **Idempotenz**: `fcntl.flock`-Single-Instance-Guard (Umsetzungs-Korrektur — der
+  ursprünglich geplante `in_progress`-Lock scheitert an Paperclips Assignee-Pflicht,
+  HTTP 422). Der Subtask bleibt bis Abschluss in `todo`/`backlog`, geht dann auf
+  `done`/`cancelled`.
 - **Harte Fehler** (Content-Policy-Ablehnung, Rate-Limit, Auth): Subtask →
   **`cancelled`** + erklärender Kommentar. Der Parent wacht trotzdem auf
   (`cancelled` ist terminal) und sieht den Grund — kein Hängenbleiben.

@@ -736,6 +736,26 @@ Expected: `{"2026-06-15": {"count": N, "cost_usd": …}}`.
 
 ---
 
+## Umsetzungs-Korrekturen (Ist-Stand 2026-06-15, nach Implementierung)
+
+Beim Integrationstest aufgetretene Abweichungen vom Plan — hier dokumentiert:
+
+1. **Idempotenz-Lock geändert: `in_progress` → `flock`.** Der geplante Lock via
+   `PATCH status=in_progress` scheitert mit `HTTP 422: "in_progress issues require
+   an assignee"` — label-basierte Subtasks haben keinen Assignee. Ersetzt durch einen
+   **Datei-Lock (`fcntl.flock`, Single-Instance-Guard)** in `bild_service.main()`;
+   der Subtask bleibt bis zum Abschluss in `todo`/`backlog` und geht dann direkt auf
+   `done`/`cancelled`. Robuster: bei Crash kein Stranden in `in_progress`, der Task
+   wird beim nächsten Lauf erneut versucht. (`done`/`cancelled` ohne Assignee = HTTP 200, verifiziert.)
+2. **Task 9 nur WHITESTAG ausgerollt.** Der Generator `build-agents-md.py` deckt
+   ausschließlich WHITESTAG ab (24 Agenten, eigenes `_common.md` + Manifest). Clara
+   und Health haben hier keinen Generator — ihr Instruktions-Mechanismus ist noch zu
+   klären; ihr Rollout ist **vertagt**. Der Dienst selbst bedient bereits alle 3 Companies.
+3. **`~/.paperclip` ist kein Git-Repo** → der Service-Code unter
+   `~/.paperclip/scripts/bild-service/` ist nicht versioniert (nur Spec/Plan im Monorepo).
+4. **Label-Index-Lag:** Direkt (~200 ms) nach dem Anlegen eines gelabelten Subtasks
+   liefert der `?labelId=`-Filter noch 0 Treffer; der 60-s-Poll fängt es beim nächsten Lauf.
+
 ## Bekannte V1-Grenzen (bewusst, für später)
 
 - **Hängende `in_progress`-Subtasks:** Crasht der Dienst zwischen Lock und Abschluss,
