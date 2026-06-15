@@ -30,6 +30,7 @@ import {
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
   resetRuntimeServicesForTests,
+  resolveRunScopedWorktree,
   resolveWorkspaceRuntimeReadinessTimeoutSec,
   resolveShell,
   sanitizeRuntimeServiceBaseEnv,
@@ -3480,5 +3481,24 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
       scopeId: "execution-workspace-1",
       executionWorkspaceId: "execution-workspace-1",
     });
+  });
+});
+
+describe("resolveRunScopedWorktree", () => {
+  it("scopes worktree path and branch per heartbeat run", () => {
+    const parent = "/tmp/worktrees";
+    const runId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const scoped = resolveRunScopedWorktree(parent, "CODA-2526-guardrails", runId);
+    expect(scoped.runScoped).toBe(true);
+    expect(scoped.branchName).toBe("CODA-2526-guardrails-run-aaaaaaaa");
+    expect(scoped.worktreePath).toBe(path.join(parent, "CODA-2526-guardrails-run-aaaaaaaa"));
+  });
+
+  it("reuses legacy shared worktree when no run id is provided", () => {
+    const parent = "/tmp/worktrees";
+    const legacy = resolveRunScopedWorktree(parent, "CODA-2526-guardrails", null);
+    expect(legacy.runScoped).toBe(false);
+    expect(legacy.branchName).toBe("CODA-2526-guardrails");
+    expect(legacy.worktreePath).toBe(path.join(parent, "CODA-2526-guardrails"));
   });
 });
