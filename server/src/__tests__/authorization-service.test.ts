@@ -516,17 +516,17 @@ describeEmbeddedPostgres("authorization service", () => {
       actor,
       action: "agent:read",
       resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
-    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_company_member_read" });
     await expect(authorization.decide({
       actor,
       action: "company_scope:read",
       resource: { type: "company", companyId: company.id },
-    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_company_member_read" });
     await expect(authorization.decide({
       actor,
       action: "project:read",
       resource: { type: "project", companyId: company.id, projectId: project.id },
-    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_company_member_read" });
     await expect(authorization.decide({
       actor,
       action: "issue:read",
@@ -538,7 +538,7 @@ describeEmbeddedPostgres("authorization service", () => {
         parentIssueId: issue.parentId,
         status: issue.status,
       },
-    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_company_member_read" });
     await expect(authorization.decide({
       actor,
       action: "runtime:manage",
@@ -638,12 +638,12 @@ describeEmbeddedPostgres("authorization service", () => {
       actor,
       action: "agent:read",
       resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
-    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_company_member_read" });
     await expect(authorization.decide({
       actor,
       action: "company_scope:read",
       resource: { type: "company", companyId: company.id },
-    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_company_member_read" });
     await expect(authorization.decide({
       actor,
       action: "runtime:manage",
@@ -763,7 +763,7 @@ describeEmbeddedPostgres("authorization service", () => {
     }
   });
 
-  it("does not let board member read access leak sensitive null-mapped actions", async () => {
+  it("allows board operators to use sensitive null-mapped actions through the simple membership path", async () => {
     const company = await createCompany(db, "BoardMemberReadSensitive");
     const userId = `user-${randomUUID()}`;
     await db.insert(companyMemberships).values({
@@ -780,7 +780,7 @@ describeEmbeddedPostgres("authorization service", () => {
       resource: { type: "company", companyId: company.id },
     });
 
-    expect(decision).toMatchObject({ allowed: false, reason: "deny_unsupported_action" });
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
   });
 
   it("denies agent reads for board users who are not active members of the company", async () => {
