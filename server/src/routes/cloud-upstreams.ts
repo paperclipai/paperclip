@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@valadrien-os/db";
 import { badRequest, notFound } from "../errors.js";
-import { assertBoardOrgAccess } from "./authz.js";
+import { assertBoardOrgAccess, assertCompanyAccess } from "./authz.js";
 import { cloudUpstreamService, instanceSettingsService } from "../services/index.js";
 
 export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {}) {
@@ -20,6 +20,7 @@ export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {
     assertBoardOrgAccess(req);
     await assertEnabled();
     const companyId = stringQuery(req.query.companyId, "companyId");
+    assertCompanyAccess(req, companyId);
     res.json(await service.list(companyId));
   });
 
@@ -27,11 +28,14 @@ export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {
     assertBoardOrgAccess(req);
     await assertEnabled();
     const companyId = stringBody(req.body, "companyId");
+    assertCompanyAccess(req, companyId);
     const remoteUrl = stringBody(req.body, "remoteUrl");
     const redirectUri = stringBody(req.body, "redirectUri");
     res.json(await service.startConnect({ companyId, remoteUrl, redirectUri }));
   });
 
+  // No companyId in the request: this OAuth callback is gated by the `state` token
+  // minted in connect/start, which only the initiator holds.
   router.post("/cloud-upstreams/connect/finish", async (req, res) => {
     assertBoardOrgAccess(req);
     await assertEnabled();
@@ -45,15 +49,19 @@ export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {
   router.post("/cloud-upstreams/:connectionId/push-runs/preview", async (req, res) => {
     assertBoardOrgAccess(req);
     await assertEnabled();
-    res.json(await service.preview(req.params.connectionId, stringBody(req.body, "companyId")));
+    const companyId = stringBody(req.body, "companyId");
+    assertCompanyAccess(req, companyId);
+    res.json(await service.preview(req.params.connectionId, companyId));
   });
 
   router.post("/cloud-upstreams/:connectionId/push-runs", async (req, res) => {
     assertBoardOrgAccess(req);
     await assertEnabled();
+    const companyId = stringBody(req.body, "companyId");
+    assertCompanyAccess(req, companyId);
     res.json(await service.createRun({
       connectionId: req.params.connectionId,
-      companyId: stringBody(req.body, "companyId"),
+      companyId,
       retryOfRunId: optionalString(req.body?.retryOfRunId),
     }));
   });
@@ -61,22 +69,28 @@ export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {
   router.get("/cloud-upstreams/:connectionId/push-runs/:runId", async (req, res) => {
     assertBoardOrgAccess(req);
     await assertEnabled();
-    res.json(await service.readRun(req.params.connectionId, req.params.runId, stringQuery(req.query.companyId, "companyId")));
+    const companyId = stringQuery(req.query.companyId, "companyId");
+    assertCompanyAccess(req, companyId);
+    res.json(await service.readRun(req.params.connectionId, req.params.runId, companyId));
   });
 
   router.post("/cloud-upstreams/:connectionId/push-runs/:runId/cancel", async (req, res) => {
     assertBoardOrgAccess(req);
     await assertEnabled();
-    res.json(await service.cancelRun(req.params.connectionId, req.params.runId, stringBody(req.body, "companyId")));
+    const companyId = stringBody(req.body, "companyId");
+    assertCompanyAccess(req, companyId);
+    res.json(await service.cancelRun(req.params.connectionId, req.params.runId, companyId));
   });
 
   router.post("/cloud-upstreams/:connectionId/push-runs/:runId/activation", async (req, res) => {
     assertBoardOrgAccess(req);
     await assertEnabled();
+    const companyId = stringBody(req.body, "companyId");
+    assertCompanyAccess(req, companyId);
     res.json(await service.activateRunEntities({
       connectionId: req.params.connectionId,
       runId: req.params.runId,
-      companyId: stringBody(req.body, "companyId"),
+      companyId,
       entityType: activationEntityTypeBody(req.body),
     }));
   });
