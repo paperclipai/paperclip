@@ -62,6 +62,7 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import { getActivePause, recordRetryAfter } from "./quota-guard.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -363,6 +364,29 @@ export async function runClaudeLogin(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+
+  const activePause = getActivePause();
+  if (activePause) {
+    const pauseIso = activePause.pauseUntil.toISOString();
+    await onLog(
+      "stdout",
+      `[paperclip] Anthropic quota guard: skipping Claude run; pausing until ${pauseIso} (reason=${activePause.reason}).\n`,
+    );
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorMessage: `Anthropic quota exhausted (${activePause.reason}); paused until ${pauseIso}`,
+      errorCode: "claude_quota_exhausted",
+      errorFamily: "transient_upstream",
+      retryNotBefore: pauseIso,
+      resultJson: {
+        errorFamily: "transient_upstream",
+        retryNotBefore: pauseIso,
+        quotaGuard: { reason: activePause.reason, pauseUntil: pauseIso },
+      },
+    };
+  }
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -832,6 +856,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage: fallbackErrorMessage,
           })
         : null;
+      if (transientRetryNotBefore) recordRetryAfter(transientRetryNotBefore);
       const errorCode = loginMeta.requiresLogin
         ? "claude_auth_required"
         : transientUpstream
@@ -925,6 +950,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         })
       : null;
+    if (transientRetryNotBefore) recordRetryAfter(transientRetryNotBefore);
     const resolvedErrorCode = loginMeta.requiresLogin
       ? "claude_auth_required"
       : failed && clearSessionForMaxTurns
