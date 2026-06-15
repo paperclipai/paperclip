@@ -51,7 +51,15 @@ export interface GateApprovalSpec {
   issueId: string;
   // Designated agent resolved by urlKey; null = board fallback.
   designatedAgentId: string | null;
+  // B1: single-dimension lens for isolated review contexts.
+  // Absent on wiring-review and light code-review gates (generalist).
+  lensKey?: ReviewGateLens;
 }
+
+// B1: distinct-lens code-review gates. Each lens runs in an isolated agent
+// context so blind spots are uncorrelated. Gate passes when ALL lenses approve.
+export const REVIEW_GATE_LENSES = ["scalability", "test_coverage", "security_authz"] as const;
+export type ReviewGateLens = (typeof REVIEW_GATE_LENSES)[number];
 
 export interface GateActivationInput {
   planRootIssueId: string;
@@ -93,16 +101,27 @@ export function buildGateApprovalsForActivation(
   }
 
   for (const leafId of input.leafIssueIds) {
-    specs.push({
-      type: GATE_APPROVAL_TYPES.codeReview,
-      issueId: leafId,
-      designatedAgentId: resolve(GATE_APPROVAL_TYPES.codeReview),
-    });
     if (profile === "dev_team") {
+      // B1: one isolated code-review gate per lens (uncorrelated blind spots).
+      for (const lensKey of REVIEW_GATE_LENSES) {
+        specs.push({
+          type: GATE_APPROVAL_TYPES.codeReview,
+          issueId: leafId,
+          designatedAgentId: resolve(GATE_APPROVAL_TYPES.codeReview),
+          lensKey,
+        });
+      }
       specs.push({
         type: GATE_APPROVAL_TYPES.wiringReview,
         issueId: leafId,
         designatedAgentId: resolve(GATE_APPROVAL_TYPES.wiringReview),
+      });
+    } else {
+      // light: single generalist code-review (no lens).
+      specs.push({
+        type: GATE_APPROVAL_TYPES.codeReview,
+        issueId: leafId,
+        designatedAgentId: resolve(GATE_APPROVAL_TYPES.codeReview),
       });
     }
   }
@@ -167,23 +186,42 @@ export function isGateReviewWake(
 }
 
 // W5b — the review-gate agents to push-wake when a leaf reaches in_review.
-// Reads the issue's persisted approvals (listApprovalsForIssue): the designated
-// code-reviewer + wiring-expert of any still-pending review gate. Plan-approval
-// gates are excluded (their agent is woken at activation, W5a); decided gates and
-// board-routed gates (null designatedAgentId) yield nothing. De-duplicated.
+// Returns one entry per pending review-gate approval (not deduplicated by agent):
+// B1 lens gates give the same agent multiple targeted wakes, each carrying the
+// approvalId + lensKey so the agent knows exactly which gate to decide.
+// Plan-approval gates are excluded (woken at activation, W5a); decided gates and
+// board-routed gates (null designatedAgentId) yield nothing.
+export interface ReviewGateWakeTarget {
+  agentId: string;
+  approvalId: string;
+  lensKey: ReviewGateLens | null;
+}
+
 export function reviewGateAgentIdsFromApprovals(
-  approvals: ReadonlyArray<{ type: string; status: string; payload: Record<string, unknown> | null }>,
-): string[] {
-  const ids = new Set<string>();
+  approvals: ReadonlyArray<{
+    id: string;
+    type: string;
+    status: string;
+    payload: Record<string, unknown> | null;
+  }>,
+): ReviewGateWakeTarget[] {
+  const targets: ReviewGateWakeTarget[] = [];
+  const seen = new Set<string>();
   for (const approval of approvals) {
     if (!REVIEW_GATE_TYPES.has(approval.type)) continue;
     if (approval.status !== "pending") continue;
     const designated = approval.payload?.designatedAgentId;
-    if (typeof designated === "string" && designated.length > 0) {
-      ids.add(designated);
-    }
+    if (typeof designated !== "string" || designated.length === 0) continue;
+    if (seen.has(approval.id)) continue;
+    seen.add(approval.id);
+    const rawLens = approval.payload?.lensKey;
+    const lensKey =
+      typeof rawLens === "string" && (REVIEW_GATE_LENSES as ReadonlyArray<string>).includes(rawLens)
+        ? (rawLens as ReviewGateLens)
+        : null;
+    targets.push({ agentId: designated, approvalId: approval.id, lensKey });
   }
-  return Array.from(ids);
+  return targets;
 }
 
 // Fix 3 (B1 gap-fix) + triage — the pure `done`-gate decision, right-sized by

@@ -119,6 +119,7 @@ export function planService(db: Db) {
             gate: true,
             planRootIssueId,
             designatedAgentId: spec.designatedAgentId,
+            ...(spec.lensKey != null ? { lensKey: spec.lensKey } : {}),
           },
           decisionNote: null,
           decidedByUserId: null,

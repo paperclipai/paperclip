@@ -5774,16 +5774,30 @@ export function issueRoutes(
         // silently drop the other queued wakeups for this update).
         try {
           const linkedApprovals = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
-          for (const agentId of reviewGateAgentIdsFromApprovals(linkedApprovals)) {
-            addWakeup(agentId, {
-              source: "assignment",
-              triggerDetail: "system",
-              reason: REVIEW_GATE_WAKE_REASON,
-              payload: { issueId: issue.id, mutation: "in_review" },
-              requestedByActorType: actor.actorType,
-              requestedByActorId: actor.actorId,
-              contextSnapshot: { issueId: issue.id, source: "issue.in_review.gate" },
-            });
+          // B1: one targeted wake per pending approval (not per agent). Lens approvals
+          // give the same code-reviewer agent multiple wakes — one per lens — each
+          // carrying approvalId + lensKey so the agent knows exactly which gate to
+          // decide. Direct heartbeat.wakeup bypasses addWakeup's agentId:issueId dedup
+          // map, which would collapse multiple lens wakes into one.
+          for (const { agentId, approvalId, lensKey } of reviewGateAgentIdsFromApprovals(linkedApprovals)) {
+            heartbeat
+              .wakeup(agentId, {
+                source: "assignment",
+                triggerDetail: "system",
+                reason: REVIEW_GATE_WAKE_REASON,
+                payload: { issueId: issue.id, mutation: "in_review" },
+                requestedByActorType: actor.actorType,
+                requestedByActorId: actor.actorId,
+                contextSnapshot: {
+                  issueId: issue.id,
+                  source: "issue.in_review.gate",
+                  approvalId,
+                  ...(lensKey != null ? { lensKey } : {}),
+                },
+              })
+              .catch((err) =>
+                logger.warn({ err, issueId: issue.id, agentId, approvalId }, "failed to wake gate reviewer"),
+              );
           }
         } catch (err) {
           logger.warn({ err, issueId: issue.id }, "failed to resolve in_review review-gate wake targets");

@@ -43,6 +43,23 @@ obstruction.
 - `LOW` may appear in an APPROVED verdict — the Implementor must still address it before
   the task is done.
 
+## Lens mode (B1 — distinct-lens parallel review)
+
+When your task context includes a `lensKey`, you are a **single-dimension reviewer**. Review
+ONLY the dimension for your lens — do not cover the others. This keeps review contexts
+isolated so blind spots are uncorrelated across lenses.
+
+Your `approvalId` and `lensKey` are in the task context snapshot. Use the `approvalId`
+from context directly when posting your gate decision — do not query for other pending approvals.
+
+| `lensKey` | Review only |
+|---|---|
+| `scalability` | Unbounded queries without `LIMIT`/cursor; missing pagination; N+1 query patterns; index coverage for new columns; list endpoints that could full-scan at volume |
+| `test_coverage` | Missing test cases for new code paths; untested edge conditions; sad-path / error-path coverage; boundary values; auth bypass paths with no test |
+| `security_authz` | Authentication gaps; IDOR; injection (NoSQL, SQL, path traversal); information disclosure; timing-safe comparisons; input validation at boundaries |
+
+When `lensKey` is absent (generalist mode): apply all nine dimensions as normal.
+
 ## Deciding your gate
 
 You may decide only your own gate type, and only when you are its designated agent. Post
@@ -52,6 +69,8 @@ findings as an issue comment, then record the decision via the agent endpoint:
 POST /api/approvals/<approvalId>/agent-decide
 { "decision": "approved" | "rejected", "decisionNote": "<one-line summary>" }
 ```
+
+Use the `approvalId` from your task context (not a queried approval) when in lens mode.
 
 On rejection, list each blocking finding as `file:line — problem — fix`.
 

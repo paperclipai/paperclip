@@ -9,6 +9,7 @@ import {
   buildGateApprovalsForActivation,
   planApprovalAgentIds,
   reviewGateAgentIdsFromApprovals,
+  REVIEW_GATE_LENSES,
 } from "../services/plan-gates.js";
 
 describe("gate triage — Layer 0 hard-rule floor", () => {
@@ -78,18 +79,25 @@ describe("gate triage — Layer 2 buildGateApprovalsForActivation by profile", (
     expect(specs.map((s) => s.issueId)).toEqual(["leaf-1", "leaf-2"]);
   });
 
-  it("emits plan-approval + code-review + wiring for dev_team", () => {
+  it("emits plan-approval + lens code-reviews + wiring for dev_team", () => {
     const specs = buildGateApprovalsForActivation({ ...base, gateProfile: "dev_team" });
-    // 1 plan-approval + 2 leaves x (code-review + wiring) = 5
-    expect(specs).toHaveLength(5);
+    // 1 plan-approval + 2 leaves x (3 lens code-reviews + 1 wiring) = 9
+    expect(specs).toHaveLength(9);
     expect(specs.filter((s) => s.type === GATE_APPROVAL_TYPES.planApproval)).toHaveLength(1);
-    expect(specs.filter((s) => s.type === GATE_APPROVAL_TYPES.codeReview)).toHaveLength(2);
+    expect(specs.filter((s) => s.type === GATE_APPROVAL_TYPES.codeReview)).toHaveLength(
+      2 * REVIEW_GATE_LENSES.length,
+    );
     expect(specs.filter((s) => s.type === GATE_APPROVAL_TYPES.wiringReview)).toHaveLength(2);
+    // Each code-review spec has a distinct lensKey
+    const lensKeys = specs
+      .filter((s) => s.type === GATE_APPROVAL_TYPES.codeReview)
+      .map((s) => s.lensKey);
+    expect(new Set(lensKeys).size).toBe(REVIEW_GATE_LENSES.length);
   });
 
   it("defaults to the full set when no profile is given (back-compat)", () => {
     const specs = buildGateApprovalsForActivation(base);
-    expect(specs).toHaveLength(5);
+    expect(specs).toHaveLength(9);
   });
 });
 
@@ -121,19 +129,27 @@ describe("gate triage — W5a planApprovalAgentIds (activation-actionable wake t
 });
 
 describe("gate triage — W5b reviewGateAgentIdsFromApprovals (in_review wake targets)", () => {
-  const pending = (type: string, designatedAgentId: unknown) => ({
+  let idSeq = 0;
+  const pending = (
+    type: string,
+    designatedAgentId: unknown,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    id: `appr-${++idSeq}`,
     type,
     status: "pending",
-    payload: { gate: true, designatedAgentId } as Record<string, unknown>,
+    payload: { gate: true, designatedAgentId, ...extra } as Record<string, unknown>,
   });
 
-  it("returns the designated code-review + wiring agents for pending review gates, deduped", () => {
+  it("returns one entry per pending review-gate approval (code-review + wiring)", () => {
     const approvals = [
       pending(GATE_APPROVAL_TYPES.planApproval, "arch"),
       pending(GATE_APPROVAL_TYPES.codeReview, "cr"),
       pending(GATE_APPROVAL_TYPES.wiringReview, "we"),
     ];
-    expect(reviewGateAgentIdsFromApprovals(approvals).sort()).toEqual(["cr", "we"]);
+    const targets = reviewGateAgentIdsFromApprovals(approvals);
+    expect(targets).toHaveLength(2);
+    expect(targets.map((t) => t.agentId).sort()).toEqual(["cr", "we"]);
   });
 
   it("excludes the plan-approval gate (architect is woken at activation, W5a)", () => {
@@ -144,28 +160,31 @@ describe("gate triage — W5b reviewGateAgentIdsFromApprovals (in_review wake ta
 
   it("ignores non-pending review gates (already decided)", () => {
     const approvals = [
-      { type: GATE_APPROVAL_TYPES.codeReview, status: "approved", payload: { designatedAgentId: "cr" } },
-      { type: GATE_APPROVAL_TYPES.wiringReview, status: "rejected", payload: { designatedAgentId: "we" } },
+      { id: "a1", type: GATE_APPROVAL_TYPES.codeReview, status: "approved", payload: { designatedAgentId: "cr" } },
+      { id: "a2", type: GATE_APPROVAL_TYPES.wiringReview, status: "rejected", payload: { designatedAgentId: "we" } },
     ];
     expect(reviewGateAgentIdsFromApprovals(approvals)).toEqual([]);
   });
 
   it("ignores null / missing / empty designatedAgentId (board-routed gate)", () => {
     const approvals = [
-      pending(GATE_APPROVAL_TYPES.codeReview, null),
-      pending(GATE_APPROVAL_TYPES.wiringReview, ""),
-      { type: GATE_APPROVAL_TYPES.codeReview, status: "pending", payload: {} as Record<string, unknown> },
-      { type: GATE_APPROVAL_TYPES.wiringReview, status: "pending", payload: null },
+      { id: "b1", type: GATE_APPROVAL_TYPES.codeReview, status: "pending", payload: { designatedAgentId: null } },
+      { id: "b2", type: GATE_APPROVAL_TYPES.wiringReview, status: "pending", payload: { designatedAgentId: "" } },
+      { id: "b3", type: GATE_APPROVAL_TYPES.codeReview, status: "pending", payload: {} as Record<string, unknown> },
+      { id: "b4", type: GATE_APPROVAL_TYPES.wiringReview, status: "pending", payload: null },
     ];
     expect(reviewGateAgentIdsFromApprovals(approvals)).toEqual([]);
   });
 
-  it("dedups when the same agent holds both review gates (light/solo staffing)", () => {
+  it("returns two entries when same agent holds both review gates (no dedup by agentId)", () => {
     const approvals = [
       pending(GATE_APPROVAL_TYPES.codeReview, "same"),
       pending(GATE_APPROVAL_TYPES.wiringReview, "same"),
     ];
-    expect(reviewGateAgentIdsFromApprovals(approvals)).toEqual(["same"]);
+    const targets = reviewGateAgentIdsFromApprovals(approvals);
+    // B1: each approval is a separate wake target even if same agent
+    expect(targets).toHaveLength(2);
+    expect(targets.every((t) => t.agentId === "same")).toBe(true);
   });
 
   it("returns [] when there are no review gates", () => {
@@ -173,5 +192,27 @@ describe("gate triage — W5b reviewGateAgentIdsFromApprovals (in_review wake ta
     expect(
       reviewGateAgentIdsFromApprovals([pending(GATE_APPROVAL_TYPES.planApproval, "arch")]),
     ).toEqual([]);
+  });
+
+  it("includes lensKey from payload when present (B1 lens approval)", () => {
+    const approvals = [
+      pending(GATE_APPROVAL_TYPES.codeReview, "cr", { lensKey: "scalability" }),
+      pending(GATE_APPROVAL_TYPES.codeReview, "cr", { lensKey: "test_coverage" }),
+      pending(GATE_APPROVAL_TYPES.wiringReview, "we"),
+    ];
+    const targets = reviewGateAgentIdsFromApprovals(approvals);
+    expect(targets).toHaveLength(3);
+    expect(targets.find((t) => t.lensKey === "scalability")).toBeDefined();
+    expect(targets.find((t) => t.lensKey === "test_coverage")).toBeDefined();
+    expect(targets.find((t) => t.lensKey === null && t.agentId === "we")).toBeDefined();
+  });
+
+  it("sets lensKey to null for unknown/invalid lens values (defensive)", () => {
+    const approvals = [
+      { id: "c1", type: GATE_APPROVAL_TYPES.codeReview, status: "pending", payload: { designatedAgentId: "cr", lensKey: "not_a_real_lens" } },
+    ];
+    const targets = reviewGateAgentIdsFromApprovals(approvals);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.lensKey).toBeNull();
   });
 });
