@@ -129,15 +129,21 @@ function applyStatusSideEffects(
 // Authors mark a line `artifact_required: <key>` in the issue description; the
 // platform refuses status→done unless a comment supplies `<key>: <value>` with
 // a non-empty value. See doc/ARTIFACT_REQUIRED.md.
-const ARTIFACT_REQUIRED_KEY_RE = /^[\s>*\-]*artifact_required\s*:\s*([a-z][a-z0-9_]*)\s*$/gim;
+
+const REGEX_METACHARS_RE = /[.*+?^${}()|[\]\\]/g;
+
+function escapeRegex(literal: string): string {
+  return literal.replace(REGEX_METACHARS_RE, "\\$&");
+}
 
 export function parseArtifactRequiredKeys(description: string | null | undefined): string[] {
   if (!description) return [];
-  const keys: string[] = [];
+  // Local regex instance — never shared, so no `lastIndex` carryover and no
+  // hidden state between callers.
+  const pattern = /^[\s>*\-]*artifact_required\s*:\s*([a-z][a-z0-9_]*)\s*$/gim;
   const seen = new Set<string>();
-  ARTIFACT_REQUIRED_KEY_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = ARTIFACT_REQUIRED_KEY_RE.exec(description)) !== null) {
+  const keys: string[] = [];
+  for (const match of description.matchAll(pattern)) {
     const key = match[1].toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -150,8 +156,14 @@ function buildArtifactSatisfactionRegex(key: string): RegExp {
   // Match `<key>: <non-empty value>` anywhere in the comment body. Treat the
   // surrounding text as freeform — a line, a sentence, or a code fence are all
   // acceptable carriers. Value must contain at least one non-whitespace char.
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`\\b${escaped}\\s*:\\s*\\S+`, "i");
+  return new RegExp(`\\b${escapeRegex(key)}\\s*:\\s*\\S+`, "i");
+}
+
+function buildArtifactRedeclarationStripRegex(key: string): RegExp {
+  // A comment body that simply echoes `artifact_required: <key>` describes the
+  // requirement, it does not deliver the artifact. Strip those lines before
+  // the satisfaction test so they cannot self-satisfy.
+  return new RegExp(`^[\\s>*\\-]*artifact_required\\s*:\\s*${escapeRegex(key)}\\s*$`, "gim");
 }
 
 export function findUnsatisfiedArtifactKeys(
@@ -163,18 +175,9 @@ export function findUnsatisfiedArtifactKeys(
   const bodies = commentBodies.filter((body): body is string => typeof body === "string" && body.length > 0);
   const missing: string[] = [];
   for (const key of required) {
-    const re = buildArtifactSatisfactionRegex(key);
-    // Skip the declaration itself: an `artifact_required: <key>` line in a
-    // comment body must not satisfy the gate. Only `<key>: <value>` satisfies.
-    const satisfied = bodies.some((body) => {
-      // Strip lines that are themselves artifact_required declarations for this
-      // key — they describe the requirement, they do not deliver the artifact.
-      const stripped = body.replace(
-        new RegExp(`^[\\s>*\\-]*artifact_required\\s*:\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\s*$`, "gim"),
-        "",
-      );
-      return re.test(stripped);
-    });
+    const satisfactionRe = buildArtifactSatisfactionRegex(key);
+    const stripRe = buildArtifactRedeclarationStripRegex(key);
+    const satisfied = bodies.some((body) => satisfactionRe.test(body.replace(stripRe, "")));
     if (!satisfied) {
       missing.push(key);
     }
@@ -188,48 +191,48 @@ interface MissingArtifactReport {
   missingKeys: string[];
 }
 
-async function loadIssueCommentBodies(dbOrTx: any, companyId: string, issueId: string): Promise<string[]> {
+async function loadCommentBodiesByIssue(
+  dbOrTx: any,
+  companyId: string,
+  issueIds: ReadonlyArray<string>,
+): Promise<Map<string, string[]>> {
+  const byIssue = new Map<string, string[]>();
+  for (const id of issueIds) byIssue.set(id, []);
+  if (issueIds.length === 0) return byIssue;
   const rows = await dbOrTx
-    .select({ body: issueComments.body })
+    .select({ issueId: issueComments.issueId, body: issueComments.body })
     .from(issueComments)
     .where(
       and(
         eq(issueComments.companyId, companyId),
-        eq(issueComments.issueId, issueId),
+        inArray(issueComments.issueId, issueIds as string[]),
         isNull(issueComments.deletedAt),
       ),
     );
-  return rows.map((row: { body: string | null }) => row.body ?? "");
-}
-
-async function findUnsatisfiedArtifactsForIssue(
-  dbOrTx: any,
-  issue: { id: string; identifier: string; companyId: string; description: string | null },
-): Promise<MissingArtifactReport | null> {
-  const required = parseArtifactRequiredKeys(issue.description);
-  if (required.length === 0) return null;
-  const bodies = await loadIssueCommentBodies(dbOrTx, issue.companyId, issue.id);
-  const missing = findUnsatisfiedArtifactKeys(issue.description, bodies);
-  if (missing.length === 0) return null;
-  return { issueId: issue.id, issueIdentifier: issue.identifier, missingKeys: missing };
+  for (const row of rows as Array<{ issueId: string; body: string | null }>) {
+    const bucket = byIssue.get(row.issueId);
+    if (!bucket) continue;
+    bucket.push(row.body ?? "");
+  }
+  return byIssue;
 }
 
 async function assertArtifactRequiredSatisfiedOnDone(
   dbOrTx: any,
-  existing: { id: string; identifier: string; companyId: string; description: string | null; parentId: string | null },
+  subject: { id: string; identifier: string; companyId: string; description: string | null; parentId: string | null },
 ): Promise<void> {
-  const reports: MissingArtifactReport[] = [];
-
-  const selfReport = await findUnsatisfiedArtifactsForIssue(dbOrTx, existing);
-  if (selfReport) reports.push(selfReport);
-
   // Cascade-close guard: when a parent transitions to done, any still-open
   // child carrying an unmet artifact_required would be silently swept by the
   // wakeable-parent / agent-driven cascade. Refuse the parent transition until
   // each child either satisfies its gate, is explicitly cancelled, or has its
   // artifact_required declaration removed. Children already done/cancelled are
   // not re-validated — their close was already gated when it happened.
-  const openChildren: Array<{ id: string; identifier: string; companyId: string; description: string | null }> = await dbOrTx
+  const openChildren: Array<{
+    id: string;
+    identifier: string;
+    companyId: string;
+    description: string | null;
+  }> = await dbOrTx
     .select({
       id: issues.id,
       identifier: issues.identifier,
@@ -239,17 +242,46 @@ async function assertArtifactRequiredSatisfiedOnDone(
     .from(issues)
     .where(
       and(
-        eq(issues.companyId, existing.companyId),
-        eq(issues.parentId, existing.id),
+        eq(issues.companyId, subject.companyId),
+        eq(issues.parentId, subject.id),
         notInArray(issues.status, ["done", "cancelled"]),
       ),
     );
 
-  for (const child of openChildren) {
-    const childReport = await findUnsatisfiedArtifactsForIssue(dbOrTx, child);
-    if (childReport) reports.push(childReport);
+  // Issues to check: the closing subject + every still-open child. Only issues
+  // that actually declare an `artifact_required` need a comment query, so we
+  // filter first to keep the comment fetch tight.
+  const candidates: Array<{
+    issue: { id: string; identifier: string; companyId: string; description: string | null };
+    requiredKeys: string[];
+  }> = [];
+  for (const issue of [
+    { id: subject.id, identifier: subject.identifier, companyId: subject.companyId, description: subject.description },
+    ...openChildren,
+  ]) {
+    const requiredKeys = parseArtifactRequiredKeys(issue.description);
+    if (requiredKeys.length > 0) {
+      candidates.push({ issue, requiredKeys });
+    }
   }
+  if (candidates.length === 0) return;
 
+  // Batched fetch: one query for every candidate's comments — replaces the
+  // per-child N+1 pattern flagged in PR #8176.
+  const commentsByIssue = await loadCommentBodiesByIssue(
+    dbOrTx,
+    subject.companyId,
+    candidates.map((c) => c.issue.id),
+  );
+
+  const reports: MissingArtifactReport[] = [];
+  for (const { issue } of candidates) {
+    const bodies = commentsByIssue.get(issue.id) ?? [];
+    const missingKeys = findUnsatisfiedArtifactKeys(issue.description, bodies);
+    if (missingKeys.length > 0) {
+      reports.push({ issueId: issue.id, issueIdentifier: issue.identifier, missingKeys });
+    }
+  }
   if (reports.length === 0) return;
 
   const summary = reports
@@ -5265,7 +5297,25 @@ export function issueService(db: Db) {
       }
 
       if (issueData.status === "done" && existing.status !== "done") {
-        await assertArtifactRequiredSatisfiedOnDone(dbOrTx, existing);
+        // Validate against the UNION of the pre-update and patched description:
+        // the parser dedupes by lowercased key, so concatenating both surfaces
+        // declarations from either source. This blocks two attack directions in
+        // one shot: (a) gate-strip — caller removes the declaration in the same
+        // PATCH that closes the issue; (b) late-add — caller adds a new
+        // declaration in the same PATCH that closes the issue. Both cases are
+        // handled because the union still contains the key, and satisfaction
+        // is checked against the issue's existing comment history.
+        const effectiveDescription =
+          issueData.description === undefined || issueData.description === existing.description
+            ? existing.description
+            : `${existing.description ?? ""}\n${issueData.description ?? ""}`;
+        await assertArtifactRequiredSatisfiedOnDone(dbOrTx, {
+          id: existing.id,
+          identifier: existing.identifier,
+          companyId: existing.companyId,
+          description: effectiveDescription,
+          parentId: existing.parentId,
+        });
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {

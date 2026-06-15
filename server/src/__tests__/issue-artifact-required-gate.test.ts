@@ -365,4 +365,153 @@ describeEmbeddedPostgres("issueService.update — artifact_required close gate (
     const updated = await svc.update(issueId, { status: "done" });
     expect(updated?.status).toBe("done");
   });
+
+  it("refuses gate-strip: stripping the declaration in the same PATCH that closes does not bypass the gate", async () => {
+    // Attack: caller PATCHes description (removing artifact_required) AND
+    // status (→ done) in one call, hoping the new clean description means no
+    // gate applies. The guard must use the UNION of pre-update + patched
+    // description so the old declaration still blocks the close.
+    const companyId = await seedCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Gate-strip attempt",
+      identifier: "T-STRIP",
+      description: "artifact_required: merged_sha_on_canon_master_at_close\nSome body.",
+      status: "in_progress",
+      priority: "high",
+    });
+
+    await expect(
+      svc.update(issueId, {
+        description: "Some body.", // declaration removed
+        status: "done",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "ARTIFACT_REQUIRED_MISSING",
+      }),
+    });
+  });
+
+  it("refuses late-add: adding a declaration in the same PATCH that closes still gates", async () => {
+    // Attack from the other direction: caller adds a new artifact_required in
+    // the same PATCH that closes. The guard must check the union, so the new
+    // declaration applies even though it wasn't in the pre-update description.
+    const companyId = await seedCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Late-add attempt",
+      identifier: "T-LATE",
+      description: "Plain body, no gate yet.",
+      status: "in_progress",
+      priority: "high",
+    });
+
+    await expect(
+      svc.update(issueId, {
+        description: "Plain body, no gate yet.\nartifact_required: merged_sha_on_canon_master_at_close",
+        status: "done",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "ARTIFACT_REQUIRED_MISSING",
+      }),
+    });
+  });
+
+  it("batches comment queries across the subject + open children (no N+1)", async () => {
+    // Functional check that the batched-fetch refactor still produces the same
+    // pass/fail outcomes as the per-issue loop. We don't measure query count
+    // here (vitest setup doesn't expose drizzle telemetry cleanly), but we do
+    // assert that a parent with multiple gated children that are ALL satisfied
+    // by comments succeeds, and a single missing satisfaction surfaces only
+    // the failing child in the error.
+    const companyId = await seedCompany();
+    const parentId = randomUUID();
+    const childA = randomUUID();
+    const childB = randomUUID();
+    const childC = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Parent with three gated children",
+        identifier: "T-MULTI-PARENT",
+        description: "Plain parent",
+        status: "in_progress",
+        priority: "high",
+      },
+      {
+        id: childA,
+        companyId,
+        parentId,
+        title: "Child A",
+        identifier: "T-MULTI-A",
+        description: "artifact_required: merged_sha_on_canon_master_at_close",
+        status: "in_review",
+        priority: "high",
+      },
+      {
+        id: childB,
+        companyId,
+        parentId,
+        title: "Child B",
+        identifier: "T-MULTI-B",
+        description: "artifact_required: merged_sha_on_canon_master_at_close",
+        status: "in_review",
+        priority: "high",
+      },
+      {
+        id: childC,
+        companyId,
+        parentId,
+        title: "Child C",
+        identifier: "T-MULTI-C",
+        description: "artifact_required: merged_sha_on_canon_master_at_close",
+        status: "in_review",
+        priority: "high",
+      },
+    ]);
+
+    // Satisfy A and B but not C.
+    await db.insert(issueComments).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId: childA,
+        body: "merged_sha_on_canon_master_at_close: aaaa1111",
+        authorType: "user",
+        authorUserId: "founder",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId: childB,
+        body: "merged_sha_on_canon_master_at_close: bbbb2222",
+        authorType: "user",
+        authorUserId: "founder",
+      },
+    ]);
+
+    await expect(svc.update(parentId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "ARTIFACT_REQUIRED_MISSING",
+        missingArtifacts: [
+          expect.objectContaining({
+            issueId: childC,
+            issueIdentifier: "T-MULTI-C",
+            missingKeys: ["merged_sha_on_canon_master_at_close"],
+          }),
+        ],
+      }),
+    });
+  });
 });
