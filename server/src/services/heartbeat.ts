@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -65,7 +65,7 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { parseObject, asBoolean, asNumber, asString, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -144,6 +144,7 @@ import {
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
+  isAbnormalRunTermination,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
   reapOrphanCheckouts as reapOrphanCheckoutsFromRecovery,
@@ -4629,6 +4630,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function handleRunLivenessContinuation(run: typeof heartbeatRuns.$inferSelect) {
+    if (isAbnormalRunTermination(run)) return;
+
     const livenessState = run.livenessState as RunLivenessState | null;
     if (livenessState !== "plan_only" && livenessState !== "empty_response") return;
 
@@ -8480,6 +8483,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           workspace: existingExecutionWorkspace,
         })
       : null;
+    const workspaceStrategyType = asString(parseObject(hostExecutionWorkspaceConfig.workspaceStrategy).type, "project_primary");
+    const useRunScopedWorktree = workspaceStrategyType === "git_worktree" && !shouldReuseExisting;
+    if (!useRunScopedWorktree && existingExecutionWorkspace?.id && shouldReuseExisting) {
+      const conflictingRun = await db
+        .select({ id: issues.id, executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, agent.companyId),
+            eq(issues.executionWorkspaceId, existingExecutionWorkspace.id),
+            eq(issues.status, "in_progress"),
+            isNotNull(issues.executionRunId),
+            ne(issues.executionRunId, run.id),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (conflictingRun) {
+        throw conflict("Execution workspace is locked by another active run", {
+          executionWorkspaceId: existingExecutionWorkspace.id,
+          conflictingIssueId: conflictingRun.id,
+          conflictingRunId: conflictingRun.executionRunId,
+        });
+      }
+    }
     const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
           base: executionWorkspaceBase,
           config: hostExecutionWorkspaceConfig,
@@ -8490,19 +8518,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: agent.companyId,
           },
           recorder: workspaceOperationRecorder,
+          heartbeatRunId: shouldReuseExisting ? null : run.id,
         });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
-    const nextExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
-      existingMetadata: existingExecutionWorkspace?.metadata ?? null,
-      source: executionWorkspace.source,
-      createdByRuntime: executionWorkspace.created,
-      configSnapshot,
-      shouldReuseExisting,
-      baseRef: executionWorkspace.repoRef,
-      baseRefSha: executionWorkspace.baseRefSha ?? null,
-    });
+    const nextExecutionWorkspaceMetadata = {
+      ...mergeExecutionWorkspaceMetadataForPersistence({
+        existingMetadata: existingExecutionWorkspace?.metadata ?? null,
+        source: executionWorkspace.source,
+        createdByRuntime: executionWorkspace.created,
+        configSnapshot,
+        shouldReuseExisting,
+        baseRef: executionWorkspace.repoRef,
+        baseRefSha: executionWorkspace.baseRefSha ?? null,
+      }),
+      ...(executionWorkspace.runScopedWorktree
+        ? { runScopedWorktree: true, runScopedByRunId: run.id }
+        : {}),
+    };
     try {
       persistedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
         ? await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
@@ -9383,6 +9417,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : livenessRun,
           agent,
         );
+
+        if (executionWorkspace.runScopedWorktree && executionWorkspace.worktreePath) {
+          try {
+            await cleanupExecutionWorkspaceArtifacts({
+              workspace: {
+                id: persistedExecutionWorkspace?.id ?? `transient-${run.id}`,
+                cwd: executionWorkspace.cwd,
+                providerType: "git_worktree",
+                providerRef: executionWorkspace.worktreePath,
+                branchName: executionWorkspace.branchName,
+                repoUrl: executionWorkspace.repoUrl,
+                baseRef: executionWorkspace.repoRef,
+                projectId: resolvedProjectId,
+                projectWorkspaceId: resolvedProjectWorkspaceId,
+                sourceIssueId: issueRef?.id ?? null,
+                metadata: { createdByRuntime: true, runScopedWorktree: true },
+              },
+              projectWorkspace: {
+                cwd: resolvedWorkspace.cwd,
+                cleanupCommand: null,
+              },
+              cleanupCommand: configSnapshot?.cleanupCommand ?? null,
+              teardownCommand:
+                configSnapshot?.teardownCommand
+                ?? projectExecutionWorkspacePolicy?.workspaceStrategy?.teardownCommand
+                ?? null,
+              recorder: workspaceOperationRecorder,
+            });
+          } catch (cleanupErr) {
+            logger.warn(
+              { err: cleanupErr, runId: run.id, worktreePath: executionWorkspace.worktreePath },
+              "failed to tear down run-scoped git worktree after run finalization",
+            );
+          }
+        }
 
         // Workspace-finalize wake re-fire: if this run's issue was marked done
         // mid-run (so the original `issue_blockers_resolved` wake was gated by
