@@ -10,6 +10,45 @@ import type {
   AwaitingHumanNotificationReviewFile,
 } from "./awaiting-human-notifications.js";
 
+const CLICKUP_ATTACHMENT_MAX_BYTES = 1_000_000_000;
+
+const REVIEW_FILE_CONTENT_TYPES = new Set([
+  "application/json",
+  "application/msword",
+  "application/pdf",
+  "application/rtf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/x-rtf",
+  "application/x-yaml",
+  "text/csv",
+  "text/html",
+  "text/markdown",
+  "text/plain",
+  "text/rtf",
+  "text/tab-separated-values",
+  "text/x-markdown",
+  "text/yaml",
+]);
+
+const REVIEW_FILE_EXTENSIONS = new Set([
+  ".csv",
+  ".doc",
+  ".docx",
+  ".htm",
+  ".html",
+  ".json",
+  ".md",
+  ".mdown",
+  ".markdown",
+  ".pdf",
+  ".rtf",
+  ".text",
+  ".tsv",
+  ".txt",
+  ".yaml",
+  ".yml",
+]);
+
 function toRowArray<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   if (result && typeof result === "object" && Array.isArray((result as { rows?: unknown[] }).rows)) {
@@ -48,6 +87,35 @@ function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function normalizeContentType(value: string) {
+  return value.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+}
+
+function fileExtension(filename: string) {
+  const normalized = filename.trim().toLowerCase();
+  const lastDot = normalized.lastIndexOf(".");
+  if (lastDot <= 0 || lastDot === normalized.length - 1) return "";
+  return normalized.slice(lastDot);
+}
+
+export function validateAwaitingHumanReviewFileForClickUp(
+  reviewFile: AwaitingHumanNotificationReviewFile,
+  body: Buffer,
+) {
+  if (body.length === 0) {
+    throw new Error("invalid-review-file: empty file");
+  }
+  if (body.length > CLICKUP_ATTACHMENT_MAX_BYTES) {
+    throw new Error("invalid-review-file: file exceeds ClickUp 1GB limit");
+  }
+
+  const contentType = normalizeContentType(reviewFile.contentType);
+  const extension = fileExtension(reviewFile.filename);
+  if (!REVIEW_FILE_CONTENT_TYPES.has(contentType) && !REVIEW_FILE_EXTENSIONS.has(extension)) {
+    throw new Error(`invalid-review-file: unsupported file type ${reviewFile.contentType || extension || "unknown"}`);
+  }
+}
+
 export function normalizeReviewFile(value: unknown): AwaitingHumanNotificationReviewFile | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
@@ -71,6 +139,7 @@ export function normalizeReviewFile(value: unknown): AwaitingHumanNotificationRe
     byteSize,
     contentPath,
     deliverableUrl,
+    clickupTaskId: readString(row.clickupTaskId),
     clickupTaskUrl: readString(row.clickupTaskUrl),
     clickupAttachmentId: readString(row.clickupAttachmentId),
     clickupAttachmentUrl: readString(row.clickupAttachmentUrl),
@@ -135,7 +204,8 @@ export async function resolveAwaitingHumanReviewFile(
     object_key: string | null;
     sha256: string | null;
   }>(artifactRows)[0];
-  if (artifact?.content_path && artifact.content_type) {
+  if (artifact?.content_path && artifact.content_type && artifact.object_key) {
+    const canonicalContentPath = `/api/deliverables/${artifact.deliverable_id}/content`;
     return {
       source: "artifact",
       deliverableId: artifact.deliverable_id,
@@ -144,7 +214,7 @@ export async function resolveAwaitingHumanReviewFile(
       contentType: artifact.content_type,
       byteSize: Number(artifact.byte_size) || 0,
       contentPath: artifact.content_path,
-      deliverableUrl: resolveAbsoluteUrl(artifact.content_path, input.sourceLink),
+      deliverableUrl: resolveAbsoluteUrl(canonicalContentPath, input.sourceLink),
       attachmentId: artifact.attachment_id,
       objectKey: artifact.object_key,
       sha256: artifact.sha256,
@@ -200,11 +270,12 @@ export async function resolveAwaitingHumanReviewFile(
 
 export async function readAwaitingHumanReviewFileBody(
   db: Db,
-  storage: StorageService,
+  storage: StorageService | undefined,
   companyId: string,
   reviewFile: AwaitingHumanNotificationReviewFile,
 ) {
   if (reviewFile.source === "artifact") {
+    if (!storage) throw new Error("missing-storage: review artifact upload requires storage");
     if (!reviewFile.objectKey) throw new Error("review artifact is missing object key");
     const object = await storage.getObject(companyId, reviewFile.objectKey);
     const body = await readStreamToBuffer(object.stream);
@@ -226,22 +297,5 @@ export async function readAwaitingHumanReviewFileBody(
   return {
     body,
     sha256: sha256Hex(body),
-  };
-}
-
-export function withClickUpTaskUrl(
-  notification: AwaitingHumanNotificationPayload,
-  reviewFile: AwaitingHumanNotificationReviewFile | null,
-  clickupTaskUrl: string | null,
-  clickupAttachmentId: string | null,
-) {
-  if (!reviewFile) return notification;
-  return {
-    ...notification,
-    reviewFile: {
-      ...reviewFile,
-      clickupTaskUrl,
-      clickupAttachmentId,
-    },
   };
 }

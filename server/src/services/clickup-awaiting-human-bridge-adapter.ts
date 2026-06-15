@@ -10,83 +10,13 @@ import {
 import type { AwaitingHumanBridgeAdapter, AwaitingHumanBridgePollEvent } from "./awaiting-human-bridge.js";
 import { awaitingHumanBridges, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
-import { Readable } from "node:stream";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
-import { issueService } from "./issues.js";
-import type { StorageService } from "../storage/types.js";
-import { resolveMostRecentIssueAttachmentForUpload } from "./awaiting-human-issue-attachments.js";
-
-
-function readString(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-async function readStreamToBuffer(stream: Readable) {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
-}
-
-async function loadIssueAttachmentUploadPayload(
-  db: Db,
-  storage: StorageService,
-  companyId: string,
-  attachmentId: string,
-  meta: { title: string; contentPath: string },
-) {
-  const attachment = await issueService(db).getAttachmentById(attachmentId);
-  if (!attachment || attachment.companyId !== companyId) return null;
-  const object = await storage.getObject(attachment.companyId, attachment.objectKey);
-  const body = await readStreamToBuffer(object.stream);
-  return {
-    body,
-    reviewFile: {
-      source: "artifact" as const,
-      deliverableId: attachment.id,
-      title: meta.title,
-      filename: attachment.originalFilename ?? "attachment",
-      contentType: attachment.contentType ?? object.contentType ?? "application/octet-stream",
-      byteSize: attachment.byteSize ?? object.contentLength ?? body.length,
-      contentPath: meta.contentPath,
-      deliverableUrl: meta.contentPath,
-      attachmentId: attachment.id,
-      objectKey: attachment.objectKey,
-      sha256: attachment.sha256,
-    },
-  };
-}
-
-async function resolveClickUpUploadPayload(
-  db: Db,
-  storage: StorageService | undefined,
-  companyId: string,
-  issueId: string,
-) {
-  if (!storage) return null;
-
-  const issueAttachment = await resolveMostRecentIssueAttachmentForUpload(db, {
-    companyId,
-    issueId,
-  });
-  if (!issueAttachment) return null;
-
-  const loaded = await loadIssueAttachmentUploadPayload(
-    db,
-    storage,
-    companyId,
-    issueAttachment.attachmentId,
-    {
-      title: issueAttachment.label,
-      contentPath: issueAttachment.href,
-    },
-  );
-  if (!loaded) return null;
-  return { ...loaded, attachTo: "target" as const };
-}
+import {
+  readAwaitingHumanReviewFileBody,
+  validateAwaitingHumanReviewFileForClickUp,
+} from "./awaiting-human-review-files.js";
 
 
 async function loadCompanyOverrides(db: Db, companyId: string): Promise<ClickUpAwaitingHumanConfigOverrides> {
@@ -107,6 +37,10 @@ function requireClickUpAttachmentTaskId(overrides: ClickUpAwaitingHumanConfigOve
     throw new Error("missing-target: attachmentTaskId");
   }
   return taskId;
+}
+
+function buildClickUpTaskUrl(taskId: string) {
+  return `https://app.clickup.com/t/${encodeURIComponent(taskId)}`;
 }
 
 async function loadBridgeOverrides(db: Db, bridgeId: string) {
@@ -266,48 +200,44 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
       const overrides = await loadCompanyOverrides(db, input.companyId);
       let clickupNotification = input.notification;
 
-      const uploadPayload = await resolveClickUpUploadPayload(
-        db,
-        input.storage,
-        input.companyId,
-        input.issueId,
-      );
-      if (uploadPayload) {
-        if (!input.storage) {
-          throw new Error("missing-storage: awaiting human ClickUp attachment upload requires storage");
-        }
+      if (clickupNotification.reviewFile) {
         const attachmentTaskId = requireClickUpAttachmentTaskId(overrides);
+        const uploadBody = await readAwaitingHumanReviewFileBody(
+          db,
+          input.storage,
+          input.companyId,
+          clickupNotification.reviewFile,
+        );
+        validateAwaitingHumanReviewFileForClickUp(clickupNotification.reviewFile, uploadBody.body);
         logger.info({
           companyId: input.companyId,
           issueId: input.issueId,
           interactionId: input.interactionId,
           attachmentTaskId,
-          attachTo: uploadPayload.attachTo,
-          filename: uploadPayload.reviewFile.filename,
-        }, "clickup awaiting human attachment upload starting");
+          filename: clickupNotification.reviewFile.filename,
+          contentType: clickupNotification.reviewFile.contentType,
+          byteSize: Math.max(clickupNotification.reviewFile.byteSize, uploadBody.body.length),
+        }, "clickup awaiting human review file upload starting");
 
         const uploaded = await uploadClickUpReviewFile(
           overrides,
           attachmentTaskId,
-          uploadPayload.reviewFile,
-          uploadPayload.body,
+          clickupNotification.reviewFile,
+          uploadBody.body,
         );
+        const uploadedReviewFile = {
+          ...clickupNotification.reviewFile,
+          clickupTaskId: attachmentTaskId,
+          clickupTaskUrl: buildClickUpTaskUrl(attachmentTaskId),
+          clickupAttachmentId: uploaded.attachmentId ?? null,
+          clickupAttachmentUrl: uploaded.attachmentUrl ?? null,
+          sha256: uploadBody.sha256,
+        };
 
         clickupNotification = {
           ...clickupNotification,
-          target: {
-            ...clickupNotification.target,
-            clickupAttachmentUrl: uploaded.attachmentUrl ?? null,
-          },
+          reviewFile: uploadedReviewFile,
         };
-      } else if (resolveClickUpAttachmentTaskId(overrides)) {
-        logger.warn({
-          companyId: input.companyId,
-          issueId: input.issueId,
-          interactionId: input.interactionId,
-          targetHref: readString(input.notification.target?.href),
-          hasStorage: Boolean(input.storage),
-        }, "clickup awaiting human attachment upload skipped: no uploadable file resolved");
       }
 
       const result = await sendAwaitingHumanNotification({
@@ -336,6 +266,7 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
         externalThreadId: result.externalId ?? null,
         externalMessageId: result.externalId ?? null,
         nextPollAt: new Date(Date.now() + 60_000),
+        reviewFile: clickupNotification.reviewFile ?? null,
       };
     },
 

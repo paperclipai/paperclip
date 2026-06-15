@@ -5,7 +5,10 @@ import {
   getClickUpChatMessageReplies,
   sendAwaitingHumanNotification,
 } from "../services/clickup-awaiting-human-transport.js";
-import { resolveAwaitingHumanReviewFile } from "../services/awaiting-human-review-files.js";
+import {
+  resolveAwaitingHumanReviewFile,
+  validateAwaitingHumanReviewFileForClickUp,
+} from "../services/awaiting-human-review-files.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -23,6 +26,123 @@ afterEach(() => {
   delete process.env.CLICKUP_WORKSPACE_ID;
   delete process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID;
   delete process.env.CLICKUP_ENGINEERING_CHANNEL_ID;
+});
+
+describe("validateAwaitingHumanReviewFileForClickUp", () => {
+  const baseFile = {
+    source: "artifact" as const,
+    deliverableId: "deliverable-1",
+    title: "Review output",
+    filename: "review.md",
+    contentType: "text/markdown",
+    byteSize: 12,
+    contentPath: "/api/attachments/attachment-1/content",
+    deliverableUrl: "https://bizbox.example/api/deliverables/deliverable-1/content",
+  };
+
+  it("accepts markdown files even when storage reports a generic content type", () => {
+    expect(() => validateAwaitingHumanReviewFileForClickUp({
+      ...baseFile,
+      contentType: "application/octet-stream",
+    }, Buffer.from("# Review"))).not.toThrow();
+  });
+
+  it("rejects unsupported image-only outputs", () => {
+    expect(() => validateAwaitingHumanReviewFileForClickUp({
+      ...baseFile,
+      filename: "logo.png",
+      contentType: "image/png",
+    }, Buffer.from("png"))).toThrow("invalid-review-file: unsupported file type image/png");
+  });
+
+  it("rejects empty outputs", () => {
+    expect(() => validateAwaitingHumanReviewFileForClickUp({
+      ...baseFile,
+      byteSize: 0,
+    }, Buffer.alloc(0))).toThrow("invalid-review-file: empty file");
+  });
+
+  it("accepts non-empty outputs even when legacy byte size metadata is missing", () => {
+    expect(() => validateAwaitingHumanReviewFileForClickUp({
+      ...baseFile,
+      byteSize: 0,
+    }, Buffer.from("# Review"))).not.toThrow();
+  });
+});
+
+describe("resolveAwaitingHumanReviewFile", () => {
+  it("uses the canonical deliverable content route for artifact review links", async () => {
+    const db = dbWithExecuteResults([[
+      {
+        deliverable_id: "33333333-3333-4333-8333-333333333333",
+        title: "Final report",
+        content_path: "/api/attachments/33333333-3333-4333-8333-333333333333/content",
+        content_type: "text/markdown",
+        byte_size: 42,
+        original_filename: "final-report.md",
+        attachment_id: "33333333-3333-4333-8333-333333333333",
+        object_key: "companies/company-1/issues/issue-1/final-report.md",
+        sha256: "abc123",
+      },
+    ]]);
+
+    const file = await resolveAwaitingHumanReviewFile(db, {
+      companyId: "company-1",
+      issueId: "issue-1",
+      sourceLink: "https://bizbox.example/issues/BIZ-35",
+    });
+
+    expect(file).toMatchObject({
+      source: "artifact",
+      contentPath: "/api/attachments/33333333-3333-4333-8333-333333333333/content",
+      deliverableUrl: "https://bizbox.example/api/deliverables/33333333-3333-4333-8333-333333333333/content",
+    });
+  });
+
+  it("falls back to a document review file when the artifact is missing its storage object key", async () => {
+    const db = dbWithExecuteResults([
+      [
+        {
+          deliverable_id: "33333333-3333-4333-8333-333333333333",
+          title: "Final report",
+          content_path: "/api/attachments/33333333-3333-4333-8333-333333333333/content",
+          content_type: "text/markdown",
+          byte_size: 42,
+          original_filename: "final-report.md",
+          attachment_id: "33333333-3333-4333-8333-333333333333",
+          object_key: null,
+          sha256: "abc123",
+        },
+      ],
+      [
+        {
+          deliverable_id: "44444444-4444-4444-8444-444444444444",
+          key: "summary",
+          title: "Executive summary",
+          format: "markdown",
+          body: "# Summary\n\nAll clear.",
+          byte_size: 21,
+        },
+      ],
+    ]);
+
+    const file = await resolveAwaitingHumanReviewFile(db, {
+      companyId: "company-1",
+      issueId: "issue-1",
+      sourceLink: "https://bizbox.example/issues/BIZ-35",
+    });
+
+    expect(file).toMatchObject({
+      source: "document",
+      deliverableId: "44444444-4444-4444-8444-444444444444",
+      title: "Executive summary",
+      filename: "summary.md",
+      contentType: "text/markdown; charset=utf-8",
+      byteSize: 21,
+      contentPath: "/api/deliverables/44444444-4444-4444-8444-444444444444/content",
+      deliverableUrl: "https://bizbox.example/api/deliverables/44444444-4444-4444-8444-444444444444/content",
+    });
+  });
 });
 
 describe.skip("sendAwaitingHumanNotification", () => {

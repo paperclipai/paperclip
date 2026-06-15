@@ -820,7 +820,12 @@ async function prepareBridgeDeliveryNotification(input: {
       updatedAt: new Date(),
     }).where(eq(awaitingHumanBridges.id, input.row.id)).returning();
 
-    return updated ?? input.row;
+    return {
+      ...(updated ?? input.row),
+      delivery: {
+        reviewFile: delivered.reviewFile ?? notification.reviewFile ?? null,
+      },
+    };
   }
 
   async function createRetryBridgeRowAndRedeliver(input: {
