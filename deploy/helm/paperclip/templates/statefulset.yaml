@@ -599,9 +599,29 @@ spec:
                   name: {{ include "paperclip.secretName" . }}
                   key: masterKey
             {{- end }}
+            {{- if .Values.runtimeCache.enabled }}
+            - name: XDG_CACHE_HOME
+              value: {{ printf "%s/xdg" .Values.runtimeCache.mountPath | quote }}
+            - name: GOCACHE
+              value: {{ printf "%s/go-build" .Values.runtimeCache.mountPath | quote }}
+            - name: GOMODCACHE
+              value: {{ printf "%s/gomod" .Values.runtimeCache.mountPath | quote }}
+            - name: npm_config_cache
+              value: {{ printf "%s/npm" .Values.runtimeCache.mountPath | quote }}
+            - name: BUN_INSTALL_CACHE
+              value: {{ printf "%s/bun" .Values.runtimeCache.mountPath | quote }}
+            - name: PIP_CACHE_DIR
+              value: {{ printf "%s/pip" .Values.runtimeCache.mountPath | quote }}
+            - name: PLAYWRIGHT_BROWSERS_PATH
+              value: {{ printf "%s/ms-playwright" .Values.runtimeCache.mountPath | quote }}
+            {{- end }}
           volumeMounts:
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- if .Values.runtimeCache.enabled }}
+            - name: runtime-cache
+              mountPath: {{ .Values.runtimeCache.mountPath | quote }}
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -638,6 +658,22 @@ spec:
               value: {{ .Values.persistence.mountPath | quote }}
             - name: PAPERCLIP_INSTANCE_ID
               value: {{ .Values.env.instanceId | quote }}
+            {{- if .Values.runtimeCache.enabled }}
+            - name: XDG_CACHE_HOME
+              value: {{ printf "%s/xdg" .Values.runtimeCache.mountPath | quote }}
+            - name: GOCACHE
+              value: {{ printf "%s/go-build" .Values.runtimeCache.mountPath | quote }}
+            - name: GOMODCACHE
+              value: {{ printf "%s/gomod" .Values.runtimeCache.mountPath | quote }}
+            - name: npm_config_cache
+              value: {{ printf "%s/npm" .Values.runtimeCache.mountPath | quote }}
+            - name: BUN_INSTALL_CACHE
+              value: {{ printf "%s/bun" .Values.runtimeCache.mountPath | quote }}
+            - name: PIP_CACHE_DIR
+              value: {{ printf "%s/pip" .Values.runtimeCache.mountPath | quote }}
+            - name: PLAYWRIGHT_BROWSERS_PATH
+              value: {{ printf "%s/ms-playwright" .Values.runtimeCache.mountPath | quote }}
+            {{- end }}
             - name: PAPERCLIP_AGENT_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -692,6 +728,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- if .Values.runtimeCache.enabled }}
+            - name: runtime-cache
+              mountPath: {{ .Values.runtimeCache.mountPath | quote }}
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -707,17 +747,25 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if and .Values.persistence.enabled .Values.persistence.existingClaim }}
+      {{- if or (and .Values.persistence.enabled .Values.persistence.existingClaim) .Values.runtimeCache.enabled .Values.extraVolumes }}
       volumes:
+        {{- if and .Values.persistence.enabled .Values.persistence.existingClaim }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | quote }}
+        {{- end }}
+        {{- if .Values.runtimeCache.enabled }}
+        - name: runtime-cache
+          {{- if .Values.runtimeCache.sizeLimit }}
+          emptyDir:
+            sizeLimit: {{ .Values.runtimeCache.sizeLimit | quote }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- else if .Values.extraVolumes }}
-      volumes:
-        {{- toYaml .Values.extraVolumes | nindent 8 }}
       {{- end }}
   {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
   volumeClaimTemplates:

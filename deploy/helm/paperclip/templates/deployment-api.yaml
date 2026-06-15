@@ -124,6 +124,22 @@ spec:
               value: {{ .Values.persistence.mountPath | quote }}
             - name: PAPERCLIP_INSTANCE_ID
               value: {{ .Values.env.instanceId | quote }}
+            {{- if .Values.runtimeCache.enabled }}
+            - name: XDG_CACHE_HOME
+              value: {{ printf "%s/xdg" .Values.runtimeCache.mountPath | quote }}
+            - name: GOCACHE
+              value: {{ printf "%s/go-build" .Values.runtimeCache.mountPath | quote }}
+            - name: GOMODCACHE
+              value: {{ printf "%s/gomod" .Values.runtimeCache.mountPath | quote }}
+            - name: npm_config_cache
+              value: {{ printf "%s/npm" .Values.runtimeCache.mountPath | quote }}
+            - name: BUN_INSTALL_CACHE
+              value: {{ printf "%s/bun" .Values.runtimeCache.mountPath | quote }}
+            - name: PIP_CACHE_DIR
+              value: {{ printf "%s/pip" .Values.runtimeCache.mountPath | quote }}
+            - name: PLAYWRIGHT_BROWSERS_PATH
+              value: {{ printf "%s/ms-playwright" .Values.runtimeCache.mountPath | quote }}
+            {{- end }}
             - name: PAPERCLIP_AGENT_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -181,6 +197,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- if .Values.runtimeCache.enabled }}
+            - name: runtime-cache
+              mountPath: {{ .Values.runtimeCache.mountPath | quote }}
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -192,6 +212,15 @@ spec:
             # both this Deployment and the workers StatefulSet can mount it.
             # The chart values fail-fast in NOTES.txt if existingClaim is unset.
             claimName: {{ required "api.enabled requires persistence.existingClaim (set to a pre-provisioned RWX PVC)" .Values.persistence.existingClaim | quote }}
+        {{- if .Values.runtimeCache.enabled }}
+        - name: runtime-cache
+          {{- if .Values.runtimeCache.sizeLimit }}
+          emptyDir:
+            sizeLimit: {{ .Values.runtimeCache.sizeLimit | quote }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

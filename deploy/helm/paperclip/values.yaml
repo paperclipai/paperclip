@@ -37,6 +37,19 @@ persistence:
   # `accessMode`, and `size` are ignored — the PVC must already exist in the release namespace.
   existingClaim: ""
 
+# -- Pod-local cache storage for regenerable build/package/browser downloads.
+# Keep durable identity/config state on `persistence.mountPath`; this emptyDir is
+# safe to discard on pod restart.
+# Rollback: set `enabled: false`, run a Helm upgrade, and restart affected
+# Paperclip pods/jobs so they fall back to image/default cache paths.
+runtimeCache:
+  # -- Mount an emptyDir cache volume and point common cache env vars at it.
+  enabled: true
+  # -- Mount path for the cache emptyDir.
+  mountPath: /runtime-cache
+  # -- Optional emptyDir size limit. Set to empty string for no explicit limit.
+  sizeLimit: 20Gi
+
 # -- HA API tier — splits the single-pod StatefulSet into a multi-replica
 # HTTP API Deployment plus a singleton worker StatefulSet. When enabled,
 # the workers tier owns the heartbeat scheduler + plugin workers + Linear

@@ -4,3 +4,4 @@
 .vscode/
 *.tgz
 README.md.gotmpl
+tests/
