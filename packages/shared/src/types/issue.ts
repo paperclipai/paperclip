@@ -519,6 +519,7 @@ export interface RequestConfirmationPayload {
   approvalName?: string | null;
   approvalStage?: "primary" | "final" | null;
   requiresSecondReview?: boolean | null;
+  approvalPolicy?: "full" | "primary_only" | null;
   priorApprovalInteractionId?: string | null;
   acceptLabel?: string | null;
   rejectLabel?: string | null;

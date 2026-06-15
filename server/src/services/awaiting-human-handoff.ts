@@ -298,10 +298,14 @@ async function resolveApprovalContext(
     const secondaryReviewerUserId = runtime.secondaryReviewerUserId?.trim() ?? "";
     if (!primaryReviewerUserId && !secondaryReviewerUserId) return null;
 
+    const policy = input.interaction?.kind === "request_confirmation"
+      ? (input.interaction.payload.approvalPolicy ?? "full")
+      : "full";
+
     return {
       approvalName: null,
       approvalStage: null,
-      requiresSecondReview: Boolean(secondaryReviewerUserId),
+      requiresSecondReview: policy !== "primary_only" && Boolean(secondaryReviewerUserId),
     };
   } catch (err) {
     if (err instanceof Error && err.message === "awaiting-human-bridge-disabled") {

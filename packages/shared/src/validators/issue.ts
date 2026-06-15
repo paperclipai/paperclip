@@ -357,6 +357,7 @@ export const requestConfirmationPayloadSchema = z.object({
   approvalName: z.string().trim().min(1).max(240).nullable().optional(),
   approvalStage: z.enum(["primary", "final"]).nullable().optional(),
   requiresSecondReview: z.boolean().nullable().optional(),
+  approvalPolicy: z.enum(["full", "primary_only"]).nullable().optional(),
   priorApprovalInteractionId: z.string().uuid().nullable().optional(),
   acceptLabel: z.string().trim().min(1).max(80).nullable().optional(),
   rejectLabel: z.string().trim().min(1).max(80).nullable().optional(),

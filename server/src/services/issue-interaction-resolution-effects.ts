@@ -103,6 +103,9 @@ async function advanceToFinalApprovalReview(input: {
     return false;
   }
 
+  // Agent explicitly requested single-stage review — skip secondary even if configured.
+  if (interaction.payload.approvalPolicy === "primary_only") return false;
+
   const settings = await awaitingHumanSettingsService(input.db).get(input.issue.companyId);
   const primaryReviewerUserId = settings.provider === "clickup"
     ? settings.providerConfig?.primaryReviewerUserId?.trim()
