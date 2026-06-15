@@ -137,6 +137,17 @@ SECURITY_CACHE_FILE=".git/security-backports-cache.tsv"
 SECURITY_CACHE_TTL_SECONDS=3600
 UPSTREAM_REPO="paperclipai/paperclip"
 
+# Upstream PRs we have FILED from this fork (contributions we want to land
+# upstream). The script checks each one on every run and reports whether
+# upstream has merged it yet. Once merged, the matching carry commit drops out
+# of master automatically on the next rebase via cherry-pick equivalence — this
+# watcher just tells us to expect that (or flags a closed-without-merge PR so we
+# decide whether to keep carrying it). Format:
+#   "PR_NUMBER|commit-subject-substring|short description"
+FORK_UPSTREAM_PRS=(
+  "8150|wire the plugin stream bus|plugin SSE stream-bus wiring (Closes #5879, Refs #440)"
+)
+
 DRY_RUN=false
 CHECK_ONLY=false
 case "${1:-}" in
@@ -339,6 +350,58 @@ check_security_backports() {
   fi
 }
 
+# Report upstream merge status of PRs we filed from this fork (FORK_UPSTREAM_PRS).
+# Purely informational: a merged PR's carry auto-drops on the next rebase via
+# cherry-pick equivalence; this surfaces that so it isn't a surprise, and flags
+# a closed-without-merge PR so we can decide whether to keep the carry.
+check_fork_upstream_prs() {
+  info ""
+  info "=== Checking upstream status of filed fork PRs ==="
+
+  if [[ ${#FORK_UPSTREAM_PRS[@]} -eq 0 ]]; then
+    info "  (none registered)"
+    return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1; then
+    warn "  gh CLI not available — skipping fork-PR status check"
+    return 0
+  fi
+
+  local entry pr rest subject desc merged state url
+  for entry in "${FORK_UPSTREAM_PRS[@]}"; do
+    pr="${entry%%|*}"
+    rest="${entry#*|}"
+    subject="${rest%%|*}"
+    desc="${rest##*|}"
+    url="https://github.com/$UPSTREAM_REPO/pull/$pr"
+
+    merged=$(cache_get "fpr-merged:$pr")
+    if [[ -z "$merged" ]]; then
+      merged=$(gh api "repos/$UPSTREAM_REPO/pulls/$pr" --jq '.merged' 2>/dev/null || echo "error")
+      cache_set "fpr-merged:$pr" "$merged"
+    fi
+    state=$(cache_get "fpr-state:$pr")
+    if [[ -z "$state" ]]; then
+      state=$(gh api "repos/$UPSTREAM_REPO/pulls/$pr" --jq '.state' 2>/dev/null || echo "error")
+      cache_set "fpr-state:$pr" "$state"
+    fi
+
+    if [[ "$merged" == "true" ]]; then
+      if git log --oneline upstream/master..master 2>/dev/null | grep -qi "$subject"; then
+        warn "  #$pr — MERGED upstream; our carry is still on master and will auto-drop on this rebase (cherry-pick equivalence). $url"
+      else
+        info "  #$pr — MERGED upstream; carry already gone — safe to remove from FORK_UPSTREAM_PRS. $url"
+      fi
+    elif [[ "$state" == "closed" ]]; then
+      warn "  #$pr — CLOSED WITHOUT MERGE — decide whether to keep carrying: $desc. $url"
+    elif [[ "$state" == "open" ]]; then
+      info "  #$pr — still OPEN (keep carrying: $desc). $url"
+    else
+      warn "  #$pr — status unknown (gh error). $url"
+    fi
+  done
+}
+
 # --- main flow --------------------------------------------------------------
 
 # Check for clean working tree
@@ -359,6 +422,9 @@ fi
 
 # 2. Security-backport upstream status check
 check_security_backports
+
+# 2a. Status of upstream PRs we filed from this fork
+check_fork_upstream_prs
 
 if $CHECK_ONLY; then
   info ""
