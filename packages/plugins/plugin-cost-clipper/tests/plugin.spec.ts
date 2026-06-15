@@ -230,4 +230,23 @@ describe("cost clipper plugin", () => {
     });
     expect(overview.topSpenders).toHaveLength(0);
   });
+
+  it("does not drop concurrent cost events for the same company", async () => {
+    const harness = harnessForTest();
+    await plugin.definition.setup(harness.ctx);
+
+    // Fire many events for one agent without awaiting between them; the
+    // per-company mutex must serialize the read-modify-write so none are lost.
+    const N = 12;
+    await Promise.all(
+      Array.from({ length: N }, () => emitCost(harness, costPayload({ issueId: null, costCents: 100 }))),
+    );
+
+    const overview = await harness.getData<{
+      topSpenders: Array<{ agentId: string; count: number; totalCents: number }>;
+    }>(DATA_KEYS.overview, { companyId: COMPANY_ID });
+
+    expect(overview.topSpenders).toHaveLength(1);
+    expect(overview.topSpenders[0]).toMatchObject({ agentId: AGENT_ID, count: N, totalCents: 100 * N });
+  });
 });

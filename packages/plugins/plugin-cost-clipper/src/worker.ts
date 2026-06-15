@@ -35,6 +35,29 @@ function companyScope(companyId: string, stateKey: string): ScopeKey {
   return { scopeKind: "company", scopeId: companyId, stateKey };
 }
 
+/**
+ * Per-company serialization. Event notifications are delivered fire-and-forget
+ * by the worker host, so two events for the same company can otherwise overlap
+ * and clobber each other's read-modify-write of the rolling aggregate / state.
+ * We chain work per companyId so each handler sees the previous one's writes.
+ */
+function createCompanyMutex() {
+  const tails = new Map<string, Promise<unknown>>();
+  return function runExclusive<T>(companyId: string, task: () => Promise<T>): Promise<T> {
+    const prior = tails.get(companyId) ?? Promise.resolve();
+    const next = prior.then(task, task);
+    // Keep the chain alive but drop the entry once it's the current tail and settled.
+    tails.set(
+      companyId,
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return next;
+  };
+}
+
 async function getConfig(ctx: PluginContext): Promise<CostClipperConfig> {
   const raw = (await ctx.config.get()) as Partial<CostClipperConfig>;
   return {
@@ -101,6 +124,9 @@ const plugin = definePlugin({
   async setup(ctx) {
     ctx.logger.info(`${PLUGIN_NAME} plugin setup`, { pluginId: PLUGIN_ID });
 
+    // Serialize state mutations per company (see createCompanyMutex).
+    const runExclusive = createCompanyMutex();
+
     // --- Cost lens: watch the cost stream, aggregate, and detect anomalies. ---
     ctx.events.on("cost_event.created", async (event: PluginEvent) => {
       const costEvent = parseCostEvent(event.payload, event.companyId);
@@ -111,56 +137,58 @@ const plugin = definePlugin({
       const { companyId } = costEvent;
       const config = await getConfig(ctx);
 
-      const aggregates = await loadAggregates(ctx, companyId);
-      const prior = aggregates.agents[costEvent.agentId];
+      await runExclusive(companyId, async () => {
+        const aggregates = await loadAggregates(ctx, companyId);
+        const prior = aggregates.agents[costEvent.agentId];
 
-      // Detect against the PRIOR baseline (before folding this event in).
-      const detectedAt = event.occurredAt ?? new Date().toISOString();
-      const anomaly = detect(prior, costEvent, config, detectedAt);
+        // Detect against the PRIOR baseline (before folding this event in).
+        const detectedAt = event.occurredAt ?? new Date().toISOString();
+        const anomaly = detect(prior, costEvent, config, detectedAt);
 
-      // Always fold the event into the rolling aggregate, then persist.
-      applyEvent(aggregates, costEvent);
-      await ctx.state.set(companyScope(companyId, STATE_KEYS.aggregates), aggregates);
+        // Always fold the event into the rolling aggregate, then persist.
+        applyEvent(aggregates, costEvent);
+        await ctx.state.set(companyScope(companyId, STATE_KEYS.aggregates), aggregates);
 
-      await ctx.metrics.write(METRIC_NAMES.costEvent, costEvent.costCents, {
-        agent: costEvent.agentId,
-        model: costEvent.model,
-        provider: costEvent.provider,
-      });
+        await ctx.metrics.write(METRIC_NAMES.costEvent, costEvent.costCents, {
+          agent: costEvent.agentId,
+          model: costEvent.model,
+          provider: costEvent.provider,
+        });
 
-      if (!anomaly) return;
+        if (!anomaly) return;
 
-      ctx.logger.warn("Cost anomaly detected", {
-        rule: anomaly.rule,
-        agentId: anomaly.agentId,
-        costCents: anomaly.costCents,
-        zScore: anomaly.zScore,
-      });
+        ctx.logger.warn("Cost anomaly detected", {
+          rule: anomaly.rule,
+          agentId: anomaly.agentId,
+          costCents: anomaly.costCents,
+          zScore: anomaly.zScore,
+        });
 
-      await ctx.metrics.write(METRIC_NAMES.anomaly, 1, {
-        rule: anomaly.rule,
-        agent: anomaly.agentId,
-        model: anomaly.model,
-        provider: anomaly.provider,
-      });
+        await ctx.metrics.write(METRIC_NAMES.anomaly, 1, {
+          rule: anomaly.rule,
+          agent: anomaly.agentId,
+          model: anomaly.model,
+          provider: anomaly.provider,
+        });
 
-      // Record for the dashboard (newest first, capped).
-      const anomalies = await loadAnomalies(ctx, companyId);
-      anomalies.unshift(anomaly);
-      if (anomalies.length > MAX_RECENT_ANOMALIES) anomalies.length = MAX_RECENT_ANOMALIES;
-      await ctx.state.set(companyScope(companyId, STATE_KEYS.anomalies), anomalies);
+        // Record for the dashboard (newest first, capped).
+        const anomalies = await loadAnomalies(ctx, companyId);
+        anomalies.unshift(anomaly);
+        if (anomalies.length > MAX_RECENT_ANOMALIES) anomalies.length = MAX_RECENT_ANOMALIES;
+        await ctx.state.set(companyScope(companyId, STATE_KEYS.anomalies), anomalies);
 
-      // Leave a breadcrumb on the offending issue when we can attribute one.
-      if (config.commentOnAnomaly && costEvent.issueId) {
-        try {
-          await ctx.issues.createComment(costEvent.issueId, anomalyComment(anomaly), companyId);
-        } catch (error) {
-          ctx.logger.error("Failed to post cost anomaly comment", {
-            issueId: costEvent.issueId,
-            message: error instanceof Error ? error.message : String(error),
-          });
+        // Leave a breadcrumb on the offending issue when we can attribute one.
+        if (config.commentOnAnomaly && costEvent.issueId) {
+          try {
+            await ctx.issues.createComment(costEvent.issueId, anomalyComment(anomaly), companyId);
+          } catch (error) {
+            ctx.logger.error("Failed to post cost anomaly comment", {
+              issueId: costEvent.issueId,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
-      }
+      });
     });
 
     // --- Correlate with real budget hard-stops so the dashboard lines up. ---
@@ -168,16 +196,18 @@ const plugin = definePlugin({
       const companyId = event.companyId;
       if (!companyId) return;
       const payload = (event.payload ?? {}) as Record<string, unknown>;
-      const incidents = await loadBudgetIncidents(ctx, companyId);
-      incidents.unshift({
-        scopeType: stringOrNull(payload.scopeType),
-        scopeId: stringOrNull(payload.scopeId),
-        reason: stringOrNull(payload.reason) ?? stringOrNull(payload.pauseReason),
-        openedAt: event.occurredAt ?? null,
+      await runExclusive(companyId, async () => {
+        const incidents = await loadBudgetIncidents(ctx, companyId);
+        incidents.unshift({
+          scopeType: stringOrNull(payload.scopeType),
+          scopeId: stringOrNull(payload.scopeId),
+          reason: stringOrNull(payload.reason) ?? stringOrNull(payload.pauseReason),
+          openedAt: event.occurredAt ?? null,
+        });
+        if (incidents.length > MAX_RECENT_ANOMALIES) incidents.length = MAX_RECENT_ANOMALIES;
+        await ctx.state.set(companyScope(companyId, STATE_KEYS.budgetIncidents), incidents);
+        ctx.logger.warn("Budget incident opened", { companyId });
       });
-      if (incidents.length > MAX_RECENT_ANOMALIES) incidents.length = MAX_RECENT_ANOMALIES;
-      await ctx.state.set(companyScope(companyId, STATE_KEYS.budgetIncidents), incidents);
-      ctx.logger.warn("Budget incident opened", { companyId });
     });
 
     ctx.events.on("budget.incident.resolved", async (event: PluginEvent) => {
@@ -191,10 +221,12 @@ const plugin = definePlugin({
         ctx.logger.warn("budget.incident.resolved missing scopeId; ignoring", { companyId });
         return;
       }
-      const incidents = await loadBudgetIncidents(ctx, companyId);
-      const remaining = incidents.filter((incident) => incident.scopeId !== resolvedScopeId);
-      await ctx.state.set(companyScope(companyId, STATE_KEYS.budgetIncidents), remaining);
-      ctx.logger.info("Budget incident resolved", { companyId, resolvedScopeId });
+      await runExclusive(companyId, async () => {
+        const incidents = await loadBudgetIncidents(ctx, companyId);
+        const remaining = incidents.filter((incident) => incident.scopeId !== resolvedScopeId);
+        await ctx.state.set(companyScope(companyId, STATE_KEYS.budgetIncidents), remaining);
+        ctx.logger.info("Budget incident resolved", { companyId, resolvedScopeId });
+      });
     });
 
     // --- Dashboard data handler backing the widget. ---
