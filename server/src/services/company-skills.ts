@@ -1118,10 +1118,11 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
   const imports: ImportedSkill[] = [];
   for (const skillPath of skillPaths) {
     const skillDir = path.posix.dirname(skillPath);
+    const isRootSkill = skillDir === ".";
     const inventory = allFiles
-      .filter((entry) => entry === skillPath || entry.startsWith(`${skillDir}/`))
+      .filter((entry) => entry === skillPath || (isRootSkill ? true : entry.startsWith(`${skillDir}/`)))
       .map((entry) => {
-        const relative = entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1);
+        const relative = entry === skillPath ? "SKILL.md" : isRootSkill ? entry : entry.slice(skillDir.length + 1);
         return {
           path: normalizePortablePath(relative),
           kind: classifyInventoryKind(relative),
@@ -1171,11 +1172,16 @@ async function readUrlSkillImports(
       ? allPaths.filter((entry) => entry.startsWith(basePrefix))
       : allPaths;
     const relativePaths = scopedPaths.map((entry) => basePrefix ? entry.slice(basePrefix.length) : entry);
-    const filteredPaths = parsed.filePath
-      ? relativePaths.filter((entry) => entry === path.posix.relative(parsed.basePath || ".", parsed.filePath!))
-      : relativePaths;
-    const skillPaths = filteredPaths.filter(
-      (entry) => path.posix.basename(entry).toLowerCase() === "skill.md",
+    // 源地址若指向具体 SKILL.md 文件，仅用它「选定要导入哪个 skill」，
+    // 不要把可见文件集合塌缩成这一个文件——否则该 skill 目录下的
+    // references/、scripts/、assets/ 会被全部丢弃，只剩 SKILL.md。
+    const targetSkillRelative = parsed.filePath
+      ? normalizePortablePath(path.posix.relative(parsed.basePath || ".", parsed.filePath))
+      : null;
+    const skillPaths = relativePaths.filter(
+      (entry) =>
+        path.posix.basename(entry).toLowerCase() === "skill.md"
+        && (targetSkillRelative ? entry === targetSkillRelative : true),
     );
     if (skillPaths.length === 0) {
       throw unprocessable(
@@ -1204,17 +1210,25 @@ async function readUrlSkillImports(
         repo: parsed.repo,
         ref,
         trackingRef,
-        repoSkillDir: normalizeGitHubSkillDirectory(
-          basePrefix ? `${basePrefix}${skillDir}` : skillDir,
-          slug,
-        ),
+        repoSkillDir: skillDir === "." && !basePrefix
+          ? "."
+          : normalizeGitHubSkillDirectory(
+            basePrefix ? path.posix.join(basePrefix, skillDir) : skillDir,
+            slug,
+          ),
       };
-      const inventory = filteredPaths
-        .filter((entry) => entry === relativeSkillPath || entry.startsWith(`${skillDir}/`))
-        .map((entry) => ({
-          path: entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1),
-          kind: classifyInventoryKind(entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1)),
-        }))
+      // skillDir 为 "." 表示 SKILL.md 位于扫描根（仓库根或 basePath 根），
+      // 此时整个 scope 即该 skill，所有兄弟文件都应收录；用 startsWith(`./`)
+      // 过滤会匹配不到 references/ 等无前缀路径，导致只剩 SKILL.md。
+      const isRootSkill = skillDir === ".";
+      const toSkillRelative = (entry: string) =>
+        entry === relativeSkillPath ? "SKILL.md" : isRootSkill ? entry : entry.slice(skillDir.length + 1);
+      const inventory = relativePaths
+        .filter((entry) => entry === relativeSkillPath || (isRootSkill ? true : entry.startsWith(`${skillDir}/`)))
+        .map((entry) => {
+          const relPath = toSkillRelative(entry);
+          return { path: relPath, kind: classifyInventoryKind(relPath) };
+        })
         .sort((left, right) => left.path.localeCompare(right.path));
       skills.push({
         key: deriveCanonicalSkillKey(companyId, {
@@ -2310,7 +2324,12 @@ export function companySkillService(db: Db) {
       const repo = asString(metadata.repo);
       const hostname = asString(metadata.hostname) || "github.com";
       const ref = skill.sourceRef ?? asString(metadata.ref) ?? "main";
-      const repoSkillDir = normalizeGitHubSkillDirectory(asString(metadata.repoSkillDir), skill.slug);
+      const rawRepoSkillDir = asString(metadata.repoSkillDir);
+      // "." 表示 skill 位于仓库根（references/ 等与 SKILL.md 同级在根），
+      // 回源路径即仓库根，不能套用 slug 兜底，否则会拼出不存在的子目录。
+      const repoSkillDir = rawRepoSkillDir === "."
+        ? ""
+        : normalizeGitHubSkillDirectory(rawRepoSkillDir, skill.slug);
       if (!owner || !repo) {
         throw unprocessable("Skill source metadata is incomplete.");
       }
