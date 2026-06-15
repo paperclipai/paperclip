@@ -715,6 +715,13 @@
       "when": 1779000180000,
       "tag": "0101_credential_failover",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1780000000000,
+      "tag": "0102_work_item_type",
+      "breakpoints": true
     }
   ]
 }
