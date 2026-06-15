@@ -7031,11 +7031,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
+      // finish_successful_run_handoff wakes exist solely to resolve a missing disposition
+      // on an in_progress issue. If the issue is already terminal, the handoff is moot —
+      // cancel it unconditionally so concurrent run races don't trigger re-closing loops.
       if (!resumeIntent && !wakeCommentId) {
         return {
           stale: true,
           errorCode: "issue_terminal_status",
           reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
+          details: { issueId, currentStatus: issue.status },
+        };
+      }
+      if (wakeReason === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON) {
+        return {
+          stale: true,
+          errorCode: "issue_terminal_status",
+          reason: `Cancelled finish_successful_run_handoff because issue already reached terminal status (${issue.status})`,
           details: { issueId, currentStatus: issue.status },
         };
       }
