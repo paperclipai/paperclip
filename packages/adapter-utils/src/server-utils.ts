@@ -76,6 +76,9 @@ function signalRunningProcess(
 }
 
 /** Persist uncommitted workspace edits before SIGTERM so detach does not discard work. */
+/** Maximum ms to block the event loop waiting for git autosave commands. */
+const WIP_AUTOSAVE_TIMEOUT_MS = 10_000;
+
 export function commitDirtyWorkspaceWipAutosave(input: {
   cwd: string;
   runId: string;
@@ -83,28 +86,18 @@ export function commitDirtyWorkspaceWipAutosave(input: {
   env?: Record<string, string>;
 }): boolean {
   const mergedEnv = { ...process.env, ...input.env };
-  const insideWorkTree = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
-    cwd: input.cwd,
-    env: mergedEnv,
-    encoding: "utf8",
-  });
+  const spawnOpts = { cwd: input.cwd, env: mergedEnv, encoding: "utf8" as const, timeout: WIP_AUTOSAVE_TIMEOUT_MS };
+
+  const insideWorkTree = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], spawnOpts);
   if (insideWorkTree.stdout?.trim() !== "true") return false;
 
-  const status = spawnSync("git", ["status", "--porcelain"], {
-    cwd: input.cwd,
-    env: mergedEnv,
-    encoding: "utf8",
-  });
+  const status = spawnSync("git", ["status", "--porcelain"], spawnOpts);
   if (!status.stdout?.trim()) return false;
 
   const issueId = input.issueId?.trim() || "unknown";
   const message = `WIP: detach autosave ${issueId} ${input.runId}`;
-  spawnSync("git", ["add", "-A"], { cwd: input.cwd, env: mergedEnv });
-  const commit = spawnSync("git", ["commit", "--no-verify", "-m", message], {
-    cwd: input.cwd,
-    env: mergedEnv,
-    encoding: "utf8",
-  });
+  spawnSync("git", ["add", "-A"], spawnOpts);
+  const commit = spawnSync("git", ["commit", "--no-verify", "-m", message], spawnOpts);
   return commit.status === 0;
 }
 

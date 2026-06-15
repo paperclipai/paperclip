@@ -38,7 +38,11 @@ export function renderRunReconcilerPrometheusMetrics(now = new Date()) {
     lines.push("paperclip_run_active{adapter=\"none\",agent=\"none\",runId=\"none\"} 0");
   }
 
-  lines.push(`paperclip_run_reconciler_metrics_generated_timestamp_seconds ${Math.floor(now.getTime() / 1000)}`);
+  lines.push(
+    "# HELP paperclip_run_reconciler_metrics_generated_timestamp_seconds Unix timestamp when these metrics were last generated.",
+    "# TYPE paperclip_run_reconciler_metrics_generated_timestamp_seconds gauge",
+    `paperclip_run_reconciler_metrics_generated_timestamp_seconds ${Math.floor(now.getTime() / 1000)}`,
+  );
   return `${lines.join("\n")}\n`;
 }
 
