@@ -55,6 +55,7 @@ export interface OrgNode {
   id: string;
   name: string;
   role: string;
+  portraitUrl?: string | null;
   status: string;
   reports: OrgNode[];
 }

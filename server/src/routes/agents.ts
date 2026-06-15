@@ -56,6 +56,8 @@ import {
   collectAgentAdapterWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import type { StorageService } from "../storage/types.js";
+import { agentPortraitService } from "../services/agent-portraits.js";
 import { environmentService } from "../services/environments.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -119,7 +121,7 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
 
 export function agentRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: { pluginWorkerManager?: PluginWorkerManager; storageService?: StorageService } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
@@ -179,6 +181,7 @@ export function agentRoutes(
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
+  const portraits = options.storageService ? agentPortraitService(db, options.storageService) : null;
   const strictSecretsMode = process.env.VALADRIEN_OS_SECRETS_STRICT_MODE === "true";
 
   async function assertAgentEnvironmentSelection(
@@ -571,6 +574,40 @@ export function agentRoutes(
     }
     return actorAgent;
   }
+
+  // Generate (or regenerate) one agent's GLASSHOUSE portrait. Runs on the control plane where the
+  // GEMINI_API_KEY + object storage live.
+  router.post("/companies/:companyId/agents/:agentId/portrait", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    await assertCanCreateAgentsForCompany(req, companyId);
+    if (!portraits) {
+      res.status(503).json({ error: "Portrait generation is not configured (object storage unavailable)" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    const result = await portraits.generateForAgent(companyId, agentId, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    res.status(201).json(result);
+  });
+
+  // Generate portraits for every agent in the company that has none yet (one-time backfill).
+  router.post("/companies/:companyId/agents/portraits/backfill", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanCreateAgentsForCompany(req, companyId);
+    if (!portraits) {
+      res.status(503).json({ error: "Portrait generation is not configured (object storage unavailable)" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    const result = await portraits.backfillCompany(companyId, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    res.json(result);
+  });
 
   async function assertBoardCanManageAgentsForCompany(req: Request, companyId: string) {
     assertBoard(req);
@@ -1281,6 +1318,7 @@ export function agentRoutes(
       name: agent.name,
       role: agent.role,
       title: agent.title,
+      portraitUrl: (agent as { portraitUrl?: string | null }).portraitUrl ?? null,
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
@@ -1331,6 +1369,7 @@ export function agentRoutes(
       id: String(node.id),
       name: String(node.name),
       role: String(node.role),
+      portraitUrl: node.portraitUrl ? String(node.portraitUrl) : null,
       status: String(node.status),
       reports,
     };

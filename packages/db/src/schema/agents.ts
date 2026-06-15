@@ -20,6 +20,9 @@ export const agents = pgTable(
     role: text("role").notNull().default("general"),
     title: text("title"),
     icon: text("icon"),
+    // Generated character portrait (the GLASSHOUSE identity layer). URL is /api/assets/<id>/content;
+    // null falls back to the animated eyes face in <AgentPortrait>. See docs/portrait-generation.md.
+    portraitUrl: text("portrait_url"),
     status: text("status").notNull().default("idle"),
     reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
     capabilities: text("capabilities"),

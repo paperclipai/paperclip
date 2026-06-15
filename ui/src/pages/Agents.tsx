@@ -290,7 +290,7 @@ export function Agents() {
                 }
                 leading={
                   <AgentPortrait
-                    src={null}
+                    src={agent.portraitUrl ?? null}
                     name={agent.name}
                     state={liveState}
                     size={28}
@@ -403,7 +403,7 @@ function OrgTreeNode({
           <HeartbeatSpine state={liveState} beat={cad.beat} delay={cad.delay} />
         </span>
         <AgentPortrait
-          src={null}
+          src={node.portraitUrl ?? null}
           name={node.name}
           state={liveState}
           size={24}
