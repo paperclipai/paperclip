@@ -3752,42 +3752,53 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  async function isTerminalOrMissingRun(tx: any, runId: string): Promise<boolean> {
+    await tx.execute(
+      sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runId} for update`,
+    );
+    const run = await tx
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows: Array<{ status: string }>) => rows[0] ?? null);
+    return !run || TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+  }
+
   async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
     return db.transaction(async (tx) => {
       await tx.execute(
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
       );
       const issue = await tx
-        .select({ executionRunId: issues.executionRunId })
+        .select({
+          executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId,
+        })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
-      if (!issue?.executionRunId) return false;
+      if (!issue?.executionRunId && !issue?.checkoutRunId) return false;
 
-      await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
-      );
-      const run = await tx
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, issue.executionRunId))
-        .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      const patch: Partial<typeof issues.$inferInsert> = {
+        updatedAt: new Date(),
+      };
+
+      if (issue.executionRunId && (await isTerminalOrMissingRun(tx, issue.executionRunId))) {
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
+      }
+
+      if (issue.checkoutRunId && (await isTerminalOrMissingRun(tx, issue.checkoutRunId))) {
+        patch.checkoutRunId = null;
+      }
+
+      if (Object.keys(patch).length <= 1) return false;
 
       const updated = await tx
         .update(issues)
-        .set({
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(issues.id, issueId),
-            eq(issues.executionRunId, issue.executionRunId),
-          ),
-        )
+        .set(patch)
+        .where(eq(issues.id, issueId))
         .returning({ id: issues.id })
         .then((rows) => rows[0] ?? null);
 

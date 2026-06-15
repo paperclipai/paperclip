@@ -715,15 +715,27 @@ export async function startServer(): Promise<StartedServer> {
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
+
+  let shutdownHeartbeat: ReturnType<typeof heartbeatService> | null = null;
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeat = heartbeatService(db as any, {
+      pluginWorkerManager,
+      runReconciler: {
+        enabled: config.runReconcilerEnabled,
+        outputStagnantTtlMs: config.runReconcilerOutputStagnantTtlMs,
+        pidFileDir: config.runReconcilerPidFileDir,
+      },
+    });
+    shutdownHeartbeat = heartbeat;
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
       .reapOrphanedRuns()
+      .then(() => heartbeat.reapOrphanCheckouts())
+      .then(() => heartbeat.reconcileRunFinalization())
       .then(() => heartbeat.promoteDueScheduledRetries())
       .then(async (promotion) => {
         await heartbeat.resumeQueuedRuns();
@@ -790,6 +802,8 @@ export async function startServer(): Promise<StartedServer> {
       // persisted queued work is still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .then(() => heartbeat.reapOrphanCheckouts({ staleThresholdMs: 5 * 60 * 1000 }))
+        .then(() => heartbeat.reconcileRunFinalization())
         .then(() => heartbeat.promoteDueScheduledRetries())
         .then(async (promotion) => {
           await heartbeat.resumeQueuedRuns();
@@ -919,6 +933,20 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      if (shutdownHeartbeat && config.runReconcilerEnabled) {
+        try {
+          const result = await shutdownHeartbeat.finalizeOwnedRunsOnShutdown(signal);
+          if (result.finalized > 0) {
+            logger.warn(
+              { finalized: result.finalized, runIds: result.runIds, signal },
+              "finalized owned runs during graceful shutdown",
+            );
+          }
+        } catch (err) {
+          logger.error({ err, signal }, "run-finalization shutdown hook failed");
+        }
+      }
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
