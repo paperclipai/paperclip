@@ -334,6 +334,15 @@ tolerations:
 secret:
   existingSecret: paperclip-credentials
 
+# GitHub App creds (BLO-10448): mint short-lived installation tokens so the
+# server can authoritatively verify a posted PR review before flagging a run
+# pr_review_output_missing. Reuses the existing `paperclip-github-app-creds`
+# Secret in the paperclip namespace (keys app_id / installation_id /
+# private_key.pem). Mounted into both the api and workers tiers; the workers
+# StatefulSet runs the heartbeat executeRun finalization where the check fires.
+githubApp:
+  enabled: true
+
 # paperclip-plugin-gbrain (Blockcast/paperclip#25, wave 2.1) reads
 # per-agent OAuth client credentials from /etc/paperclip-plugin-gbrain/clients.json
 # to route gbrain MCP calls through admin-ui:3130/mcp (Bearer-authed, leak-free)
