@@ -12,7 +12,7 @@ import {
   RECOVERY_CHIP_DEFAULT_TONE,
 } from "../lib/recovery-display";
 import { ExternalLink } from "lucide-react";
-import { Identity } from "./Identity";
+import { AgentPortrait } from "./AgentPortrait";
 import { AgentFace } from "./AgentFace";
 import { HeartbeatSpine } from "./HeartbeatSpine";
 import { runLiveState, liveCadence } from "../lib/status-colors";
@@ -203,7 +203,18 @@ const AgentRunCard = memo(function AgentRunCard({
                 scan={cad.scan}
                 className="shrink-0"
               />
-              <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
+              {/* Identity portrait (framed + ring + pip) — shows the agent's portrait
+                  once generated, the eyes-fallback until then; replaces the initials. */}
+              <AgentPortrait
+                src={null}
+                name={run.agentName}
+                state={faceState}
+                size={22}
+                look={cad.look}
+                scan={cad.scan}
+                className="shrink-0"
+              />
+              <span className="truncate text-[11px] font-medium">{run.agentName}</span>
             </div>
             <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
               <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>

@@ -1027,7 +1027,7 @@ export function AgentDetail() {
                 src={agent.portraitUrl ?? null}
                 name={agent.name}
                 state={agentLiveState(agent.status)}
-                size={48}
+                size={56}
               />
             </button>
           </AgentIconPicker>
