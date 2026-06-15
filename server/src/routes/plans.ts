@@ -100,20 +100,6 @@ export function planRoutes(
       },
     });
 
-    // If assigned, wake the agent so it can draft the plan (it stays a draft
-    // until the operator activates it).
-    if (body.assigneeAgentId) {
-      void queueIssueAssignmentWakeup({
-        heartbeat,
-        issue: { id: issue.id, assigneeAgentId: body.assigneeAgentId, status: "todo" },
-        reason: "issue_assigned",
-        mutation: "plan_created",
-        contextSource: "plan.created",
-        requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
-        requestedByActorId: actor.actorId,
-      });
-    }
-
     res.status(201).json({ issue, planDetails });
   });
 
