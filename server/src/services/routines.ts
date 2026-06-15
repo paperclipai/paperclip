@@ -1370,6 +1370,7 @@ export function routineService(
         await queueIssueAssignmentWakeup({
           heartbeat,
           issue: createdIssue,
+          linkedIssueIds: input.routine.parentIssueId ? [input.routine.parentIssueId] : [],
           reason: "issue_assigned",
           mutation: "create",
           contextSource: "routine.dispatch",

@@ -219,6 +219,16 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
   it("supports creating, scheduling, and manually running a routine through the API", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      identifier: "PAP-11248",
+      title: "Routine report target",
+      status: "in_progress",
+      priority: "high",
+    });
     const app = await createApp({
       type: "board",
       userId,
@@ -231,6 +241,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       .post(`/api/companies/${companyId}/routines`)
       .send({
         projectId,
+        parentIssueId,
         title: "Daily standup prep",
         description: "Summarize blockers and open PRs",
         assigneeAgentId: agentId,
@@ -310,6 +321,19 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       originKind: "routine_execution",
     });
     expect(issue?.executionRunId).toBeTruthy();
+
+    const [queuedRun] = await db
+      .select({
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, issue!.executionRunId!));
+
+    expect(queuedRun?.contextSnapshot).toMatchObject({
+      issueId: runRes.body.linkedIssueId,
+      issueIds: [runRes.body.linkedIssueId, parentIssueId],
+      source: "routine.dispatch",
+    });
 
     const actions = await db
       .select({
