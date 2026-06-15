@@ -17,6 +17,7 @@ const mockInteractionService = vi.hoisted(() => ({
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
+  expirePendingInteractionsForTerminalIssue: vi.fn(),
   answerQuestions: vi.fn(),
   cancelQuestions: vi.fn(),
 }));
@@ -177,6 +178,7 @@ describe.sequential("issue thread interaction routes", () => {
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
+    mockInteractionService.expirePendingInteractionsForTerminalIssue.mockResolvedValue([]);
     mockInteractionService.create.mockResolvedValue({
       id: "interaction-1",
       companyId: "company-1",
@@ -378,6 +380,55 @@ describe.sequential("issue thread interaction routes", () => {
         details: expect.objectContaining({
           interactionId: "interaction-1",
           interactionKind: "suggest_tasks",
+        }),
+      }),
+    );
+  });
+
+  it("expires pending interactions on terminal issues before listing them", async () => {
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "done" }));
+    mockInteractionService.expirePendingInteractionsForTerminalIssue.mockResolvedValueOnce([
+      {
+        id: "interaction-terminal",
+        kind: "ask_user_questions",
+        status: "expired",
+        result: {
+          version: 1,
+          outcome: "terminal_issue",
+          terminalStatus: "done",
+        },
+      },
+    ]);
+    mockInteractionService.listForIssue.mockResolvedValue([
+      { id: "interaction-terminal", kind: "ask_user_questions", status: "expired" },
+    ]);
+    const app = await createApp();
+
+    const listRes = await request(app).get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions");
+
+    expect(listRes.status).toBe(200);
+    expect(mockInteractionService.expirePendingInteractionsForTerminalIssue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        status: "done",
+      }),
+      {
+        agentId: null,
+        userId: "local-board",
+      },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_expired",
+        details: expect.objectContaining({
+          interactionId: "interaction-terminal",
+          interactionKind: "ask_user_questions",
+          source: "issue.interactions.catchup_terminal_issue",
+          result: expect.objectContaining({
+            outcome: "terminal_issue",
+            terminalStatus: "done",
+          }),
         }),
       }),
     );

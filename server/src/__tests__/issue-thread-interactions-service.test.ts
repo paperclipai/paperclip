@@ -98,6 +98,150 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     return { companyId, goalId, issueId };
   }
 
+  async function createPendingInteractionOfEachKind(issue: { id: string; companyId: string }) {
+    return Promise.all([
+      interactionsSvc.create(issue, {
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Approve the terminal cleanup?",
+        },
+      }, {
+        userId: "local-board",
+      }),
+      interactionsSvc.create(issue, {
+        kind: "request_checkbox_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Select cleanup targets.",
+          options: [{ id: "target-a", label: "Target A" }],
+        },
+      }, {
+        userId: "local-board",
+      }),
+      interactionsSvc.create(issue, {
+        kind: "ask_user_questions",
+        payload: {
+          version: 1,
+          questions: [
+            {
+              id: "scope",
+              prompt: "What should happen next?",
+              selectionMode: "single",
+              options: [{ id: "ship", label: "Ship it" }],
+            },
+          ],
+        },
+      }, {
+        userId: "local-board",
+      }),
+      interactionsSvc.create(issue, {
+        kind: "suggest_tasks",
+        payload: {
+          version: 1,
+          tasks: [{ clientKey: "follow-up", title: "Create follow-up" }],
+        },
+      }, {
+        userId: "local-board",
+      }),
+    ]);
+  }
+
+  it("expires every pending interaction kind when the issue is terminal", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Terminal interaction cleanup");
+    const created = await createPendingInteractionOfEachKind({ id: issueId, companyId });
+
+    await db
+      .update(issues)
+      .set({ status: "done" })
+      .where(eq(issues.id, issueId));
+
+    const expired = await interactionsSvc.expirePendingInteractionsForTerminalIssue({
+      id: issueId,
+      companyId,
+      status: "done",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired).toHaveLength(4);
+    expect(expired.map((interaction) => interaction.kind).sort()).toEqual([
+      "ask_user_questions",
+      "request_checkbox_confirmation",
+      "request_confirmation",
+      "suggest_tasks",
+    ]);
+    expect(expired).toEqual(expect.arrayContaining(
+      created.map((interaction) => expect.objectContaining({
+        id: interaction.id,
+        status: "expired",
+        resolvedByUserId: "local-board",
+        result: {
+          version: 1,
+          outcome: "terminal_issue",
+          terminalStatus: "done",
+        },
+      })),
+    ));
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed.every((interaction) => interaction.status === "expired")).toBe(true);
+  });
+
+  it("expires pending interactions with cancelled as the terminal status", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Cancelled interaction cleanup");
+    await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      payload: {
+        version: 1,
+        tasks: [{ clientKey: "cancelled-follow-up", title: "Cancelled follow-up" }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const expired = await interactionsSvc.expirePendingInteractionsForTerminalIssue({
+      id: issueId,
+      companyId,
+      status: "cancelled",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({
+      kind: "suggest_tasks",
+      status: "expired",
+      resolvedByUserId: "local-board",
+      result: {
+        version: 1,
+        outcome: "terminal_issue",
+        terminalStatus: "cancelled",
+      },
+    });
+  });
+
+  it("keeps pending interactions untouched on active issues", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Active interaction cleanup");
+    await createPendingInteractionOfEachKind({ id: issueId, companyId });
+
+    const expired = await interactionsSvc.expirePendingInteractionsForTerminalIssue({
+      id: issueId,
+      companyId,
+      status: "in_progress",
+    }, {
+      agentId: randomUUID(),
+    });
+
+    expect(expired).toHaveLength(0);
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed).toHaveLength(4);
+    expect(listed.every((interaction) => interaction.status === "pending")).toBe(true);
+  });
+
   it("accepts suggested tasks by creating a rooted issue tree under the current issue", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

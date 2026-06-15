@@ -1646,7 +1646,7 @@ export function issueRoutes(
     });
   }
 
-  async function logExpiredRequestConfirmations(input: {
+  async function logExpiredInteractions(input: {
     issue: { id: string; companyId: string; identifier?: string | null };
     interactions: Array<{ id: string; kind: string; status: string; result?: unknown }>;
     actor: ReturnType<typeof getActorInfo>;
@@ -3494,7 +3494,7 @@ export function issueRoutes(
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
       );
-      await logExpiredRequestConfirmations({
+      await logExpiredInteractions({
         issue,
         interactions: expiredInteractions,
         actor,
@@ -3720,7 +3720,7 @@ export function issueRoutes(
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
       );
-      await logExpiredRequestConfirmations({
+      await logExpiredInteractions({
         issue,
         interactions: expiredInteractions,
         actor,
@@ -3798,7 +3798,7 @@ export function issueRoutes(
         userId: actor.actorType === "user" ? actor.actorId : null,
       },
     );
-    await logExpiredRequestConfirmations({
+    await logExpiredInteractions({
       issue,
       interactions: expiredInteractions,
       actor,
@@ -5361,6 +5361,22 @@ export function issueRoutes(
         });
     }
 
+    if (isClosedIssueStatus(issue.status)) {
+      const expiredInteractions = await issueThreadInteractionService(db).expirePendingInteractionsForTerminalIssue(
+        issue,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+      await logExpiredInteractions({
+        issue,
+        interactions: expiredInteractions,
+        actor,
+        source: "issue.terminal_status",
+      });
+    }
+
     if (Array.isArray(req.body.blockedByIssueIds)) {
       const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));
       const nextBlockedByIds = new Set(req.body.blockedByIssueIds as string[]);
@@ -5562,7 +5578,7 @@ export function issueRoutes(
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
       );
-      await logExpiredRequestConfirmations({
+      await logExpiredInteractions({
         issue,
         interactions: expiredInteractions,
         actor,
@@ -6053,8 +6069,18 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     const actor = getActorInfo(req);
     const interactionSvc = issueThreadInteractionService(db);
+    const expiredTerminalInteractions = await interactionSvc.expirePendingInteractionsForTerminalIssue(issue, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    await logExpiredInteractions({
+      issue,
+      interactions: expiredTerminalInteractions,
+      actor,
+      source: "issue.interactions.catchup_terminal_issue",
+    });
     const expiredInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
-    await logExpiredRequestConfirmations({
+    await logExpiredInteractions({
       issue,
       interactions: expiredInteractions,
       actor,
@@ -6969,7 +6995,7 @@ export function issueRoutes(
         userId: actor.actorType === "user" ? actor.actorId : null,
       },
     );
-    await logExpiredRequestConfirmations({
+    await logExpiredInteractions({
       issue: currentIssue,
       interactions: expiredInteractions,
       actor,

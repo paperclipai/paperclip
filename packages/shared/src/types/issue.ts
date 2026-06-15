@@ -707,6 +707,8 @@ export interface SuggestTasksResultCreatedTask {
 
 export interface SuggestTasksResult {
   version: 1;
+  outcome?: "terminal_issue";
+  terminalStatus?: "done" | "cancelled";
   createdTasks?: SuggestTasksResultCreatedTask[];
   skippedClientKeys?: string[];
   rejectionReason?: string | null;
@@ -742,7 +744,9 @@ export interface AskUserQuestionsAnswer {
 
 export interface AskUserQuestionsResult {
   version: 1;
-  answers: AskUserQuestionsAnswer[];
+  outcome?: "terminal_issue";
+  terminalStatus?: "done" | "cancelled";
+  answers?: AskUserQuestionsAnswer[];
   cancelled?: true;
   cancellationReason?: string | null;
   summaryMarkdown?: string | null;
@@ -812,7 +816,8 @@ export interface RequestCheckboxConfirmationPayload {
 
 export interface RequestConfirmationResult {
   version: 1;
-  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
+  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target" | "terminal_issue";
+  terminalStatus?: "done" | "cancelled";
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
