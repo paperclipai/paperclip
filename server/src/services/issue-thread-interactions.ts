@@ -170,7 +170,7 @@ async function touchIssue(db: IssueTouchDb, issueId: string) {
     .where(eq(issues.id, issueId));
 }
 
-function isTerminalIssueStatus(status: string) {
+function isTerminalIssueStatus(status: string): status is "done" | "cancelled" {
   return status === "done" || status === "cancelled";
 }
 

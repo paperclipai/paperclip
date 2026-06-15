@@ -64,6 +64,7 @@ const mockStorageService = vi.hoisted(() => ({
   deleteObject: vi.fn(),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
