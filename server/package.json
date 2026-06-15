@@ -44,6 +44,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",
+    "@sentry/node": "^10.57.0",
     "@valadrien-os/adapter-acpx-local": "workspace:*",
     "@valadrien-os/adapter-claude-local": "workspace:*",
     "@valadrien-os/adapter-codex-local": "workspace:*",

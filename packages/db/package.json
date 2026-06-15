@@ -44,6 +44,7 @@
     "seed": "tsx src/seed.ts"
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
     "@valadrien-os/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "embedded-postgres": "^18.1.0-beta.16",

@@ -2,11 +2,28 @@ import path from "path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { sentryVitePlugin } from "@sentry/vite-plugin";
 import { createUiDevWatchOptions } from "./src/lib/vite-watch";
 
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    // Upload source maps to Sentry so UI stack traces are de-minified. Only runs when an auth
+    // token is present (set SENTRY_AUTH_TOKEN in the Vercel build env); otherwise a normal build.
+    ...(process.env.SENTRY_AUTH_TOKEN
+      ? [
+          sentryVitePlugin({
+            org: process.env.SENTRY_ORG ?? "valadriendev",
+            project: process.env.SENTRY_PROJECT ?? "valadrien-os-ui",
+            authToken: process.env.SENTRY_AUTH_TOKEN,
+          }),
+        ]
+      : []),
+  ],
   build: {
+    // Source maps only when uploading to Sentry (they're consumed by the upload, not served).
+    sourcemap: Boolean(process.env.SENTRY_AUTH_TOKEN),
     minify: "esbuild",
     rollupOptions: {
       output: {

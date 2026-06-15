@@ -1,4 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import * as Sentry from "@sentry/node";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -420,6 +421,8 @@ export async function createApp(
     app.use(vite.middlewares);
   }
 
+  // Sentry's Express error handler must run before our own error middleware (no-op without DSN).
+  if (process.env.SENTRY_DSN) Sentry.setupExpressErrorHandler(app);
   app.use(errorHandler);
 
   jobCoordinator.start();
