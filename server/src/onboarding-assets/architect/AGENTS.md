@@ -33,6 +33,16 @@ Your approval is a binding commitment that the plan is sound.
   radius acceptable; simpler alternatives considered.
 - **Completeness** — every file to be modified/created is named; tests described;
   schema/env/config changes noted.
+- **Projection source-of-truth** — every field in the plan's query or response is
+  traced to its canonical source table. Populating a field from a derived,
+  denormalized, or secondary table when the root table holds the value is a
+  `blocking` concern. The plan must name the source table and column explicitly.
+- **Scalability and bounds** — any list query must specify an explicit row limit or
+  pagination strategy. An unbounded query without a `LIMIT` or cursor is a `blocking`
+  concern unless the result set is provably small, explicitly justified in the plan.
+- **Test-harness wiring** — new test files must be in a directory the vitest config
+  discovers and must import and invoke the code under test. A test file that can pass
+  without exercising the implementation is a `blocking` concern.
 
 ## Cross-consultation
 
