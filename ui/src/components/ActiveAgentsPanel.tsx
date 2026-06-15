@@ -4,6 +4,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import type { Issue, IssueRecoveryAction } from "@valadrien-os/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
+import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
@@ -83,6 +84,19 @@ export function ActiveAgentsPanel({
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: minRunCount, limit: fetchLimit }),
   });
 
+  // Pull the company roster so each run card can show the agent's real portrait
+  // (the live-run payload only carries agentName/agentId, no portraitUrl).
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+    staleTime: 60_000,
+  });
+  const portraitByAgent = useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const agent of agents ?? []) map.set(agent.id, agent.portraitUrl ?? null);
+    return map;
+  }, [agents]);
+
   const runs = liveRuns ?? [];
   const visibleRuns = useMemo(() => runs.slice(0, cardLimit), [cardLimit, runs]);
   const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
@@ -134,6 +148,7 @@ export function ActiveAgentsPanel({
               key={run.id}
               companyId={companyId}
               run={run}
+              portraitUrl={portraitByAgent.get(run.agentId) ?? null}
               issue={run.issueId ? issueById.get(run.issueId) : undefined}
               transcript={transcriptByRun.get(run.id) ?? EMPTY_TRANSCRIPT}
               hasOutput={hasOutputForRun(run.id)}
@@ -157,6 +172,7 @@ export function ActiveAgentsPanel({
 const AgentRunCard = memo(function AgentRunCard({
   companyId,
   run,
+  portraitUrl,
   issue,
   transcript,
   hasOutput,
@@ -165,6 +181,7 @@ const AgentRunCard = memo(function AgentRunCard({
 }: {
   companyId: string;
   run: LiveRunForIssue;
+  portraitUrl: string | null;
   issue?: Issue;
   transcript: TranscriptEntry[];
   hasOutput: boolean;
@@ -206,7 +223,7 @@ const AgentRunCard = memo(function AgentRunCard({
               {/* Identity portrait (framed + ring + pip) — shows the agent's portrait
                   once generated, the eyes-fallback until then; replaces the initials. */}
               <AgentPortrait
-                src={null}
+                src={portraitUrl}
                 name={run.agentName}
                 state={faceState}
                 size={22}
