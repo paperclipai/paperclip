@@ -168,7 +168,7 @@ Only after completing Steps 1 and 2, run `gh pr create`. Use the template conten
 
 ### Step 4 — Post-submit follow-up
 
-After posting to GitHub outside the active company repo — especially PRs, comments, or review replies on `paperclipai/paperclip` — you MUST complete a read-back loop before claiming the post succeeded:
+After posting to an external GitHub repository from a Paperclip task — including PRs, comments, or review replies on `paperclipai/paperclip` — you MUST complete a read-back loop before claiming the post succeeded:
 
 1. Re-read the created PR/comment/reply from GitHub and confirm the URL, author, body, head/base branch, and commit SHA match what you intended.
 2. Confirm the post satisfies the repo's contributing requirements and PR template sections you read in Step 1.
@@ -277,3 +277,4 @@ lsof -nP -iTCP:<port> -sTCP:LISTEN
 | Agent tries manual postgres operations | NEVER do this — all DB ops go through the CLI (see Hard Rules above) |
 | Dev server dies between heartbeats | Launch in a detached `tmux` session — see "Persistent Dev Servers" above |
 | Pushed feature branch to `paperclipai/paperclip` when a fork exists | Push to the user's fork remote instead — see "Forks" above |
+| Treating `gh pr create` / `gh pr comment` success as proof the post is correct | Complete the read-back loop in Step 4 — verify URL, body, CI, and reviews before claiming success |
