@@ -32,6 +32,35 @@ export {
   recoveryService,
 } from "./service.js";
 export {
+  DETACHED_PROCESS_ERROR_CODE as ORPHAN_CHECKOUT_DETACHED_PROCESS_ERROR_CODE,
+  TERMINAL_HEARTBEAT_RUN_STATUSES as ORPHAN_CHECKOUT_TERMINAL_HEARTBEAT_RUN_STATUSES,
+  isCheckoutOwningRunOrphan,
+  reapOrphanCheckouts,
+} from "./orphan-checkout-reaper.js";
+export { isProcessAlive, outputSilenceAgeMs } from "./process-liveness.js";
+export {
+  readRunPidFile,
+  removeRunPidFile,
+  resolveRunChildPid,
+  runPidFilePath,
+  writeRunPidFile,
+} from "./run-pid-file.js";
+export type { RunPidFileRecord } from "./run-pid-file.js";
+export {
+  RUN_RECONCILER_ERROR_CODE,
+  buildRunReconcilerSystemComment,
+  shouldFinalizeRunForReconciler,
+} from "./run-finalization-reconciler.js";
+export type {
+  RunFinalizationCandidate,
+  RunFinalizationDecision,
+} from "./run-finalization-reconciler.js";
+export {
+  renderRunReconcilerPrometheusMetrics,
+  setRunReconcilerMetricSamples,
+} from "./run-reconciler-metrics.js";
+export type { RunReconcilerMetricSample } from "./run-reconciler-metrics.js";
+export {
   DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,

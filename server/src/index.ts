@@ -752,6 +752,8 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
     });
 
+  let shutdownHeartbeat: ReturnType<typeof heartbeatService> | null = null;
+
   // Force the instance onto the Kubernetes sandbox provider when configured via
   // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
   // queued runs so the policy + managed k8s environments are in place. A bad
@@ -774,8 +776,17 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeat = heartbeatService(db as any, {
+      pluginWorkerManager,
+      runReconciler: {
+        enabled: config.runReconcilerEnabled,
+        outputStagnantTtlMs: config.runReconcilerOutputStagnantTtlMs,
+        pidFileDir: config.runReconcilerPidFileDir,
+      },
+    });
+    shutdownHeartbeat = heartbeat;
     const routines = routineService(db as any, { pluginWorkerManager });
+
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
     // into a dead "running" row during startup recovery.
@@ -799,6 +810,9 @@ export async function startServer(): Promise<StartedServer> {
           }
         }
       }
+
+      await heartbeat.reapOrphanCheckouts();
+      await heartbeat.reconcileRunFinalization();
 
       const promotion = await heartbeat.promoteDueScheduledRetries();
       await heartbeat.resumeQueuedRuns();
@@ -886,6 +900,8 @@ export async function startServer(): Promise<StartedServer> {
       // persisted queued work is still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .then(() => heartbeat.reapOrphanCheckouts({ staleThresholdMs: 5 * 60 * 1000 }))
+        .then(() => heartbeat.reconcileRunFinalization())
         .then(() => heartbeat.promoteDueScheduledRetries())
         .then(async (promotion) => {
           await heartbeat.resumeQueuedRuns();
@@ -1039,6 +1055,20 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      if (shutdownHeartbeat && config.runReconcilerEnabled) {
+        try {
+          const result = await shutdownHeartbeat.finalizeOwnedRunsOnShutdown(signal);
+          if (result.finalized > 0) {
+            logger.warn(
+              { finalized: result.finalized, runIds: result.runIds, signal },
+              "finalized owned runs during graceful shutdown",
+            );
+          }
+        } catch (err) {
+          logger.error({ err, signal }, "run-finalization shutdown hook failed");
+        }
+      }
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();

@@ -103,6 +103,18 @@ export const telemetryConfigSchema = z.object({
   enabled: z.boolean().default(true),
 }).default({});
 
+export const runReconcilerConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  outputStagnantTtlMs: z.number().int().min(60_000).default(30 * 60 * 1000),
+  sweepIntervalMs: z.number().int().min(10_000).default(60_000),
+  pidFileDir: z.string().default("/var/run/paperclip"),
+}).default({
+  enabled: false,
+  outputStagnantTtlMs: 30 * 60 * 1000,
+  sweepIntervalMs: 60_000,
+  pidFileDir: "/var/run/paperclip",
+});
+
 export const paperclipConfigSchema = z
   .object({
     $meta: configMetaSchema,
@@ -111,6 +123,7 @@ export const paperclipConfigSchema = z
     logging: loggingConfigSchema,
     server: serverConfigSchema,
     telemetry: telemetryConfigSchema,
+    runReconciler: runReconcilerConfigSchema,
     auth: authConfigSchema.default({
       baseUrlMode: "auto",
       disableSignUp: false,
@@ -195,5 +208,6 @@ export type SecretsConfig = z.infer<typeof secretsConfigSchema>;
 export type SecretsLocalEncryptedConfig = z.infer<typeof secretsLocalEncryptedConfigSchema>;
 export type AuthConfig = z.infer<typeof authConfigSchema>;
 export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>;
+export type RunReconcilerConfig = z.infer<typeof runReconcilerConfigSchema>;
 export type ConfigMeta = z.infer<typeof configMetaSchema>;
 export type DatabaseBackupConfig = z.infer<typeof databaseBackupConfigSchema>;
