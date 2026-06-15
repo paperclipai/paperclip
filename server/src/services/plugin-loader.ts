@@ -146,8 +146,15 @@ const K8S_IN_CLUSTER_ENV_PASSTHROUGH = [
   "KUBERNETES_SERVICE_PORT_HTTPS",
 ];
 
+/**
+ * The ccrotate connector plugin id. Its worker is the only one that receives the
+ * CCROTATE_* host env (see buildPluginWorkerEnv) — the serve/admin tokens are
+ * scoped to the connector and never broadcast to other plugin workers.
+ */
+const CCROTATE_PLUGIN_ID = "kkroo.ccrotate";
+
 export function buildPluginWorkerEnv(input: {
-  manifest: Pick<PaperclipPluginManifestV1, "capabilities">;
+  manifest: Pick<PaperclipPluginManifestV1, "capabilities"> & { id?: string };
   instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
   processEnv?: NodeJS.ProcessEnv;
 }): Record<string, string> {
@@ -156,6 +163,22 @@ export function buildPluginWorkerEnv(input: {
     PAPERCLIP_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
     PAPERCLIP_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
   };
+
+  // ccrotate connector: its worker calls ccrotate-serve (/v1/internal/probe-one)
+  // and the state-server, reading CCROTATE_SERVE_TOKEN / CCROTATE_SERVE_BASE_URL /
+  // CCROTATE_STATE_* / CCROTATE_AUTH_BOT_URL from process.env. The default worker
+  // env allowlist strips them, so refresh/probe routes throw "CCROTATE_SERVE_TOKEN
+  // is not configured for ccrotate-serve probe operations". Forward the CCROTATE_*
+  // slice to THIS plugin's worker only — scoped to the connector, never leaked to
+  // other plugin workers (matching the no-broadcast posture of the lists below).
+  if (input.manifest.id === CCROTATE_PLUGIN_ID) {
+    for (const [key, value] of Object.entries(processEnv)) {
+      if (key.startsWith("CCROTATE_") && typeof value === "string" && value.trim().length > 0) {
+        env[key] = value;
+      }
+    }
+  }
+
   const canRegisterEnvironmentDrivers = Array.isArray(input.manifest.capabilities)
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
