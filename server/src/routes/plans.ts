@@ -5,6 +5,7 @@ import { planService, type PlanTier } from "../services/plans.js";
 import { agentService, heartbeatService, issueService, logActivity } from "../services/index.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { cancelIssueSubtree } from "../services/issue-subtree-cancel.js";
+import { PLAN_APPROVAL_WAKE_REASON } from "../services/plan-gates.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { logger } from "../middleware/logger.js";
@@ -233,7 +234,7 @@ export function planRoutes(
         .wakeup(agentId, {
           source: "assignment",
           triggerDetail: "system",
-          reason: "gate_plan_approval_requested",
+          reason: PLAN_APPROVAL_WAKE_REASON,
           payload: { issueId: planIssueId, mutation: "plan_activated" },
           requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
           requestedByActorId: actor.actorId,

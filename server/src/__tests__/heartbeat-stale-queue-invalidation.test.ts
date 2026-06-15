@@ -361,6 +361,132 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it("keeps a plan-approval gate wake (W5a) running after the issue assignee changes", async () => {
+    // The architect is a non-assignee reviewing the plan-root issue. When the CTO
+    // delegates the plan-root to an implementor between W5a queue and claim, the
+    // architect's queued review must NOT be cancelled as issue_assignee_changed.
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      agentName: "Architect",
+      agentRole: "architect",
+    });
+    const implementorAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: implementorAgentId,
+      companyId,
+      name: "Implementor",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    // Plan-root issue is now owned by the implementor (CTO already delegated).
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Plan root delegated to implementor",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: implementorAgentId,
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId, // the architect — NOT the current assignee
+      issueId,
+      wakeReason: "gate_plan_approval_requested",
+      contextExtras: { source: "plan.activated.gate" },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
+  it("still cancels a gate-reason wake that lacks the matching gate source (spoof guard)", async () => {
+    // A wake carrying a gate reason but NOT a gate contextSnapshot.source must not
+    // bypass owner-change cancellation — the exemption requires both factors.
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "Architect" });
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "Implementor",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned task with spoofed gate reason",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: otherAgentId,
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "gate_plan_approval_requested",
+      contextExtras: { source: "issue.assignment" }, // wrong source
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_assignee_changed");
+    expect(wakeup?.status).toBe("skipped");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

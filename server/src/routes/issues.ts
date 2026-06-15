@@ -90,7 +90,11 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
-import { evaluateDevTeamDoneReadiness, reviewGateAgentIdsFromApprovals } from "../services/plan-gates.js";
+import {
+  evaluateDevTeamDoneReadiness,
+  REVIEW_GATE_WAKE_REASON,
+  reviewGateAgentIdsFromApprovals,
+} from "../services/plan-gates.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -5774,7 +5778,7 @@ export function issueRoutes(
             addWakeup(agentId, {
               source: "assignment",
               triggerDetail: "system",
-              reason: "gate_review_requested",
+              reason: REVIEW_GATE_WAKE_REASON,
               payload: { issueId: issue.id, mutation: "in_review" },
               requestedByActorType: actor.actorType,
               requestedByActorId: actor.actorId,

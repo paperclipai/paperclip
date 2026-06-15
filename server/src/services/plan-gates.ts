@@ -131,6 +131,41 @@ const REVIEW_GATE_TYPES = new Set<string>([
   GATE_APPROVAL_TYPES.wiringReview,
 ]);
 
+// Gate-review wake identity. These are emitted by the push-wakes that start a
+// gate review off-cadence — W5a (plan activation, routes/plans.ts) and W5b (leaf
+// reaches in_review, routes/issues.ts) — and consumed by the heartbeat queued-run
+// staleness evaluator to exempt gate reviewers from the `issue_assignee_changed`
+// cancellation. A gate reviewer (architect / code-reviewer / wiring-expert) is a
+// non-assignee acting on someone else's issue, so a change of the issue's assignee
+// (e.g. the CTO delegating the plan-root to an implementor) must not cancel its
+// queued review. Centralized so the emitter and the checker can never drift.
+export const PLAN_APPROVAL_WAKE_REASON = "gate_plan_approval_requested";
+export const REVIEW_GATE_WAKE_REASON = "gate_review_requested";
+export const GATE_REVIEW_WAKE_REASONS: ReadonlySet<string> = new Set([
+  PLAN_APPROVAL_WAKE_REASON,
+  REVIEW_GATE_WAKE_REASON,
+]);
+// The `contextSnapshot.source` tag each gate wake sets — the second factor that,
+// together with the reason, authorizes the assignee-change exemption (mirrors how
+// allowsIssueInteractionWake requires both a reason and a derived commentId).
+export const GATE_WAKE_SOURCES: ReadonlySet<string> = new Set([
+  "plan.activated.gate", // W5a — routes/plans.ts plan-approval wake
+  "issue.in_review.gate", // W5b — routes/issues.ts review wake
+]);
+
+// Pure predicate for the heartbeat staleness evaluator: is this queued run a
+// gate-review wake that should survive an assignee change? Requires BOTH the gate
+// reason and the matching gate source so a stray wakeReason alone cannot bypass
+// owner-change cancellation.
+export function isGateReviewWake(
+  context: { wakeReason?: unknown; source?: unknown } | null | undefined,
+): boolean {
+  if (!context) return false;
+  const wakeReason = typeof context.wakeReason === "string" ? context.wakeReason : "";
+  const source = typeof context.source === "string" ? context.source : "";
+  return GATE_REVIEW_WAKE_REASONS.has(wakeReason) && GATE_WAKE_SOURCES.has(source);
+}
+
 // W5b — the review-gate agents to push-wake when a leaf reaches in_review.
 // Reads the issue's persisted approvals (listApprovalsForIssue): the designated
 // code-reviewer + wiring-expert of any still-pending review gate. Plan-approval

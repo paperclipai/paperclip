@@ -119,6 +119,7 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
+import { isGateReviewWake } from "./plan-gates.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
@@ -6948,6 +6949,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
+    // A gate reviewer (architect / code-reviewer / wiring-expert) is a non-assignee
+    // acting on someone else's issue, so a change of the issue's assignee — e.g. the
+    // CTO delegating the plan-root to an implementor between W5a queue and claim —
+    // must not cancel its queued review. Two-factor (reason + source) like the
+    // interaction-wake exemption above.
+    const gateReviewWake = isGateReviewWake(context);
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
@@ -6981,7 +6988,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake) {
+    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake && !gateReviewWake) {
       return {
         stale: true,
         errorCode: "issue_assignee_changed",
