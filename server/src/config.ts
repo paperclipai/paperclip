@@ -87,6 +87,10 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  runReconcilerEnabled: boolean;
+  runReconcilerOutputStagnantTtlMs: number;
+  runReconcilerSweepIntervalMs: number;
+  runReconcilerPidFileDir: string;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -333,5 +337,24 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    runReconcilerEnabled:
+      process.env.RUN_RECONCILER_ENABLED === "true" ||
+      (fileConfig?.runReconciler?.enabled ?? false),
+    runReconcilerOutputStagnantTtlMs: Math.max(
+      60_000,
+      Number(process.env.RUN_RECONCILER_OUTPUT_STAGNANT_TTL_MS) ||
+        fileConfig?.runReconciler?.outputStagnantTtlMs ||
+        30 * 60 * 1000,
+    ),
+    runReconcilerSweepIntervalMs: Math.max(
+      10_000,
+      Number(process.env.RUN_RECONCILER_SWEEP_INTERVAL_MS) ||
+        fileConfig?.runReconciler?.sweepIntervalMs ||
+        60_000,
+    ),
+    runReconcilerPidFileDir:
+      process.env.RUN_RECONCILER_PID_FILE_DIR?.trim() ||
+      fileConfig?.runReconciler?.pidFileDir ||
+      "/var/run/paperclip",
   };
 }
