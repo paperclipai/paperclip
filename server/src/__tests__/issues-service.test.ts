@@ -36,6 +36,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
+import { recoveryService } from "../services/recovery/service.ts";
 import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -4911,5 +4912,223 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
+  });
+});
+
+// EDG-6246 AC#1: periodic reconcile that auto-closes open repo-backed issues
+// whose only completion evidence is a merged PR referenced as a threaded
+// comment/body URL. Verifies the resolver + reconcile method drive `done`
+// through the gated update path, and that the idempotency/safety
+// short-circuits (AC#4) hold.
+describeEmbeddedPostgres("recoveryService merged-PR thread auto-close (EDG-6246)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let recovery!: ReturnType<typeof recoveryService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  async function seedRepoBackedIssue(args?: {
+    repoUrl?: string;
+    title?: string;
+    description?: string;
+    identifier?: string;
+    status?: "todo" | "in_progress" | "in_review" | "done";
+  }) {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Server" });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "primary",
+      sourceType: "git_repo",
+      repoUrl: args?.repoUrl ?? "https://github.com/paperclipai/paperclip.git",
+      repoRef: "origin/main",
+      defaultRef: "origin/main",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      title: args?.title ?? "Repo-backed issue",
+      description: args?.description ?? "No PR linked here.",
+      status: args?.status ?? "in_progress",
+      priority: "high",
+      identifier: args?.identifier ?? "PAP-8000",
+    });
+
+    return { companyId, projectId, workspaceId, issueId };
+  }
+
+  async function addComment(issueId: string, companyId: string, body: string) {
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: null,
+      authorUserId: null,
+      authorType: "system",
+      body,
+    });
+  }
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-thread-autoclose-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    await db.delete(issueComments);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("true positive: closes an issue whose ONLY merged-PR evidence is a threaded comment URL", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        merged: true,
+        merged_at: "2026-06-15T10:00:00Z",
+        merge_commit_sha: "abc1234",
+        html_url: "https://github.com/paperclipai/paperclip/pull/4242",
+      }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Thread-only merged PR",
+      description: "No PR linked in the body.",
+      identifier: "PAP-8001",
+      status: "in_progress",
+    });
+    await addComment(issueId, companyId, "Landed in https://github.com/paperclipai/paperclip/pull/4242");
+
+    const result = await recovery.reconcileMergedPullRequestThreadAutoClose();
+    expect(result.closed).toBe(1);
+    expect(result.issueIds).toContain(issueId);
+
+    const [row] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(row?.status).toBe("done");
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+    const evidence = comments.find((c) => c.body.includes("Paperclip auto-closed"));
+    expect(evidence?.body).toContain("#4242");
+    expect(evidence?.body).toContain("mergedAt: 2026-06-15T10:00:00Z");
+    expect(evidence?.body).toContain("commit: abc1234");
+  });
+
+  it("true negative: CLOSED-unmerged PR leaves the issue open", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: false, merged_at: null, merge_commit_sha: null }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Closed but unmerged",
+      identifier: "PAP-8002",
+      status: "in_progress",
+    });
+    await addComment(issueId, companyId, "See https://github.com/paperclipai/paperclip/pull/4243 (closed)");
+
+    const result = await recovery.reconcileMergedPullRequestThreadAutoClose();
+    expect(result.closed).toBe(0);
+
+    const [row] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(row?.status).toBe("in_progress");
+  });
+
+  it("true negative: unanswered [DAN]/[NEEDS-FIX] question keeps the issue open even with a merged PR", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true, merged_at: "2026-06-15T10:00:00Z", merge_commit_sha: "def5678" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Open question pending",
+      identifier: "PAP-8003",
+      status: "in_progress",
+    });
+    await addComment(issueId, companyId, "Landed in https://github.com/paperclipai/paperclip/pull/4244");
+    await addComment(issueId, companyId, "[DAN] should we also backport this to the release branch?");
+
+    const result = await recovery.reconcileMergedPullRequestThreadAutoClose();
+    expect(result.closed).toBe(0);
+
+    const [row] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(row?.status).toBe("in_progress");
+  });
+
+  it("idempotent: a non-candidate (done) issue is never queried and never re-opened", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true, merged_at: "2026-06-15T10:00:00Z", merge_commit_sha: "aaa" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Already done",
+      identifier: "PAP-8004",
+      status: "done",
+    });
+    await addComment(issueId, companyId, "Landed in https://github.com/paperclipai/paperclip/pull/4245");
+
+    const result = await recovery.reconcileMergedPullRequestThreadAutoClose();
+    expect(result.closed).toBe(0);
+    expect(result.issueIds).not.toContain(issueId);
+
+    const [row] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(row?.status).toBe("done");
+    // No GitHub verification should have been attempted for a terminal issue.
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
