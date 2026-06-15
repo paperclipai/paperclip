@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import { useSearchParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
@@ -14,30 +14,9 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { BriefcaseBusiness, Bot, Users, ArrowLeftRight } from "lucide-react";
+import type { Issue } from "@paperclipai/shared";
 
 const WORK_HUB_PAGE_SIZE = 500;
-
-interface IssueLike {
-  id: string;
-  [key: string]: unknown;
-}
-
-function getNextPageOffset(loadedPageSize: number, currentOffset: number): number | undefined {
-  return loadedPageSize >= WORK_HUB_PAGE_SIZE ? currentOffset + WORK_HUB_PAGE_SIZE : undefined;
-}
-
-function mergePages(pages: IssueLike[][]): IssueLike[] {
-  const seen = new Set<string>();
-  const merged: IssueLike[] = [];
-  for (const page of pages) {
-    for (const item of page) {
-      if (seen.has(item.id)) continue;
-      seen.add(item.id);
-      merged.push(item);
-    }
-  }
-  return merged;
-}
 
 type WorkItemFilter = "all" | "initiative" | "human_task" | "ai_task";
 
@@ -48,14 +27,36 @@ const FILTER_CONFIG: Record<WorkItemFilter, { label: string; icon: typeof Briefc
   ai_task: { label: "AI Execution", icon: Bot, workItemTypes: ["ai_task"] },
 };
 
+function mergeIssuePagesStable(pages: Issue[][]): Issue[] {
+  const seen = new Set<string>();
+  const merged: Issue[] = [];
+  for (const page of pages) {
+    for (const issue of page) {
+      if (seen.has(issue.id)) continue;
+      seen.add(issue.id);
+      merged.push(issue);
+    }
+  }
+  return merged;
+}
+
+function getNextPageOffset(loaded: number, offset: number): number | undefined {
+  return loaded >= WORK_HUB_PAGE_SIZE ? offset + WORK_HUB_PAGE_SIZE : undefined;
+}
+
 export function WorkHub() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
+  const fetchNextPageInFlightRef = useRef(false);
 
   const activeFilter = (searchParams.get("filter") as WorkItemFilter) || "all";
+  const filterConfig = FILTER_CONFIG[activeFilter];
+  const workItemTypeParam = filterConfig.workItemTypes.length > 0
+    ? filterConfig.workItemTypes.join(",")
+    : undefined;
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Work Hub" }]);
@@ -83,14 +84,9 @@ export function WorkHub() {
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
 
   const issueLinkState = useMemo(
-    () => createIssueDetailLocationState("Work Hub", "/work", "work"),
+    () => createIssueDetailLocationState("Work Hub", "/work", "issues"),
     [],
   );
-
-  const filterConfig = FILTER_CONFIG[activeFilter];
-  const workItemTypeParam = filterConfig.workItemTypes.length > 0
-    ? filterConfig.workItemTypes.join(",")
-    : undefined;
 
   const {
     data: issuePages,
@@ -100,24 +96,37 @@ export function WorkHub() {
     hasNextPage,
     fetchNextPage,
   } = useInfiniteQuery({
-    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "work-hub", activeFilter],
-    queryFn: ({ pageParam }) => {
-      const params: Record<string, unknown> = {
-        limit: WORK_HUB_PAGE_SIZE,
-        offset: pageParam,
-      };
-      if (workItemTypeParam) params.workItemType = workItemTypeParam;
-      return issuesApi.list(selectedCompanyId!, params as Parameters<typeof issuesApi.list>[1]);
-    },
+    queryKey: [
+      ...queryKeys.issues.list(selectedCompanyId!),
+      "work-hub",
+      activeFilter,
+      WORK_HUB_PAGE_SIZE,
+    ],
+    queryFn: ({ pageParam }) => issuesApi.list(selectedCompanyId!, {
+      participantAgentId: undefined,
+      workspaceId: undefined,
+      includeRoutineExecutions: true,
+      limit: WORK_HUB_PAGE_SIZE,
+      offset: pageParam,
+      ...(workItemTypeParam ? { workItemType: workItemTypeParam } : {}),
+    } as Parameters<typeof issuesApi.list>[1]),
     initialPageParam: 0,
-    getNextPageParam: (lastPage: IssueLike[], _allPages: unknown, lastPageParam: number) =>
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
       getNextPageOffset(lastPage.length, lastPageParam),
     enabled: !!selectedCompanyId,
-    placeholderData: (previousData: unknown) => previousData,
+    placeholderData: (previousData) => previousData,
   });
 
-  const issues = useMemo(() => mergePages((issuePages as any)?.pages ?? []), [issuePages]);
+  const issues = useMemo(() => mergeIssuePagesStable((issuePages as any)?.pages ?? []), [issuePages]);
   const hasMore = hasNextPage === true;
+
+  const loadMoreIssues = useCallback(() => {
+    if (!hasNextPage || isFetchingNextPage || fetchNextPageInFlightRef.current) return;
+    fetchNextPageInFlightRef.current = true;
+    void fetchNextPage({ cancelRefetch: false }).finally(() => {
+      fetchNextPageInFlightRef.current = false;
+    });
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -125,7 +134,7 @@ export function WorkHub() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
     },
-    onError: (err: unknown) => {
+    onError: (err) => {
       pushToast({
         title: "Failed to update issue",
         body: err instanceof Error ? err.message : "Unknown error",
@@ -157,11 +166,10 @@ export function WorkHub() {
                 }
                 setSearchParams(next);
               }}
-              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all ${
-                isActive
+              className={"inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all " +
+                (isActive
                   ? "bg-foreground text-background shadow-sm"
-                  : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
+                  : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground")}
             >
               <Icon className="h-3 w-3" />
               {config.label}
@@ -169,10 +177,9 @@ export function WorkHub() {
           );
         })}
       </div>
-
       <div className="flex-1 min-h-0">
         <IssuesList
-          issues={issues ?? []}
+          issues={issues}
           isLoading={isLoading}
           isLoadingMoreIssues={isFetchingNextPage}
           error={error as Error | null}
@@ -182,7 +189,7 @@ export function WorkHub() {
           viewStateKey="paperclip:workhub-view"
           issueLinkState={issueLinkState}
           hasMoreIssues={hasMore}
-          onLoadMoreIssues={fetchNextPage}
+          onLoadMoreIssues={loadMoreIssues}
           onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
           enableRoutineVisibilityFilter
         />

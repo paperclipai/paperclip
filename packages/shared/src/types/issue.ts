@@ -369,7 +369,7 @@ export interface Issue {
   description: string | null;
   status: IssueStatus;
   workMode: IssueWorkMode;
-  workItemType: IssueWorkItemType;
+  workItemType?: IssueWorkItemType;
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
