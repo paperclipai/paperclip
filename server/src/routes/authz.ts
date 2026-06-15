@@ -74,6 +74,27 @@ export function assertCompanyAccess(req: Request, companyId: string) {
   }
 }
 
+export function assertPortfolioAccess(req: Request, companyIds: string[]) {
+  assertAuthenticated(req);
+  if (companyIds.length === 0) {
+    throw forbidden("Portfolio access denied");
+  }
+  if (req.actor.type === "agent") {
+    return;
+  }
+  if (req.actor.type === "board") {
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+      return;
+    }
+    const allowedCompanies = new Set(req.actor.companyIds ?? []);
+    if (!companyIds.every((companyId) => allowedCompanies.has(companyId))) {
+      throw forbidden("Portfolio access denied");
+    }
+    return;
+  }
+  throw forbidden("Portfolio access denied");
+}
+
 export function getActorInfo(req: Request) {
   assertAuthenticated(req);
   if (req.actor.type === "agent") {

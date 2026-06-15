@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess } from "../routes/authz.js";
+import { assertBoardOrgAccess, assertCompanyAccess, assertPortfolioAccess, hasBoardOrgAccess } from "../routes/authz.js";
 
 function makeReq(input: {
   method?: string;
@@ -153,5 +153,46 @@ describe("assertBoardOrgAccess", () => {
 
     expect(hasBoardOrgAccess(req)).toBe(false);
     expect(() => assertBoardOrgAccess(req)).toThrow("Company membership or instance admin access required");
+  });
+});
+
+describe("assertPortfolioAccess", () => {
+  it("allows local board access across companies", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      },
+    });
+
+    expect(() => assertPortfolioAccess(req, ["company-1", "company-2"])).not.toThrow();
+  });
+
+  it("rejects board actors missing one of the requested companies", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: ["company-1"],
+      },
+    });
+
+    expect(() => assertPortfolioAccess(req, ["company-1", "company-2"])).toThrow("Portfolio access denied");
+  });
+
+  it("allows agent actors through to service-level capability checks", () => {
+    const req = makeReq({
+      actor: {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        source: "agent_key",
+      },
+    });
+
+    expect(() => assertPortfolioAccess(req, ["company-2"])).not.toThrow();
   });
 });
