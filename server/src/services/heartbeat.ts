@@ -151,6 +151,15 @@ import {
   findExistingRunLivenessContinuationWake,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
+  reapOrphanCheckouts as reapOrphanCheckoutsFromRecovery,
+  buildRunReconcilerSystemComment,
+  outputSilenceAgeMs as outputSilenceAgeMsForRun,
+  removeRunPidFile,
+  resolveRunChildPid,
+  RUN_RECONCILER_ERROR_CODE,
+  setRunReconcilerMetricSamples,
+  shouldFinalizeRunForReconciler,
+  writeRunPidFile,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import {
@@ -3188,9 +3197,19 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  runReconciler?: {
+    enabled: boolean;
+    outputStagnantTtlMs: number;
+    pidFileDir: string;
+  };
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  const runReconcilerConfig = {
+    enabled: options.runReconciler?.enabled ?? false,
+    outputStagnantTtlMs: options.runReconciler?.outputStagnantTtlMs ?? 30 * 60 * 1000,
+    pidFileDir: options.runReconciler?.pidFileDir ?? "/var/run/paperclip",
+  };
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -4720,6 +4739,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        await clearRunPidFile(updated.id);
+      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -5349,7 +5371,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     meta: { pid: number; processGroupId: number | null; startedAt: string },
   ) {
     const startedAt = new Date(meta.startedAt);
-    return db
+    const updated = await db
       .update(heartbeatRuns)
       .set({
         processPid: meta.pid,
@@ -5360,6 +5382,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    if (updated && runReconcilerConfig.enabled) {
+      await writeRunPidFile(runReconcilerConfig.pidFileDir, runId, {
+        pid: meta.pid,
+        runId,
+        startedAt: meta.startedAt,
+      }).catch((err) => {
+        logger.warn({ err, runId }, "failed to write run pid file for reconciler re-attach");
+      });
+    }
+
+    return updated;
+  }
+
+  async function clearRunPidFile(runId: string) {
+    if (!runReconcilerConfig.enabled) return;
+    await removeRunPidFile(runReconcilerConfig.pidFileDir, runId);
   }
 
   async function clearDetachedRunWarning(runId: string) {
@@ -7774,8 +7813,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      let descendantOnlyCleanup = false;
       if (processPidAlive) {
-        if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
+        const alreadyDetached = run.errorCode === DETACHED_PROCESS_ERROR_CODE;
+        if (!alreadyDetached) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
             error: detachedMessage,
@@ -7792,12 +7833,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+          continue;
         }
-        continue;
-      }
 
-      let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
+        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        const detachedStale =
+          staleThresholdMs === 0 || now.getTime() - refTime >= staleThresholdMs;
+        if (!detachedStale) {
+          continue;
+        }
+
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      } else if (processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
@@ -7872,6 +7922,282 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
     return { reaped: reaped.length, runIds: reaped };
+  }
+
+  async function reapOrphanCheckouts(opts?: { now?: Date; staleThresholdMs?: number; companyId?: string }) {
+    const result = await reapOrphanCheckoutsFromRecovery(db, {
+      now: opts?.now,
+      staleThresholdMs: opts?.staleThresholdMs,
+      companyId: opts?.companyId,
+      hasInMemoryRunHandle: (runId) => runningProcesses.has(runId) || activeRunExecutions.has(runId),
+    });
+
+    if (result.reaped > 0) {
+      logger.warn(
+        { reapedCount: result.reaped, issueIds: result.issueIds },
+        "reaped orphaned issue checkouts",
+      );
+      for (const entry of result.entries) {
+        await logActivity(db, {
+          companyId: entry.companyId,
+          actorType: "system",
+          actorId: "heartbeat",
+          action: "issue.orphan_checkout_reaped",
+          entityType: "issue",
+          entityId: entry.issueId,
+          details: {
+            source: "recovery.orphan_checkout_reaper",
+            issueIdentifier: entry.identifier,
+            checkoutRunId: entry.checkoutRunId,
+            staleThresholdMs: opts?.staleThresholdMs ?? 0,
+          },
+        });
+      }
+    }
+
+    return result;
+  }
+
+  async function finalizeRunViaReconciler(
+    run: typeof heartbeatRuns.$inferSelect,
+    input: {
+      reason: string;
+      signal: "reconciler" | "sigterm";
+      terminateProcess?: boolean;
+    },
+  ) {
+    const now = new Date();
+    if (input.terminateProcess && (run.processPid || run.processGroupId)) {
+      await terminateHeartbeatRunProcess({
+        pid: run.processPid,
+        processGroupId: run.processGroupId,
+      });
+    }
+
+    const finalizedRun = await setRunStatus(run.id, "failed", {
+      error: input.reason,
+      errorCode: RUN_RECONCILER_ERROR_CODE,
+      finishedAt: now,
+      resultJson: mergeRunStopMetadataForAgent(
+        { adapterType: (await getAgent(run.agentId))?.adapterType ?? "process", adapterConfig: {} },
+        "failed",
+        {
+          resultJson: parseObject(run.resultJson),
+          errorCode: RUN_RECONCILER_ERROR_CODE,
+          errorMessage: input.reason,
+        },
+      ),
+    });
+    await setWakeupStatus(run.wakeupRequestId, "failed", {
+      finishedAt: now,
+      error: input.reason,
+    });
+    if (!finalizedRun) return null;
+
+    await releaseEnvironmentLeasesForRun({
+      runId: finalizedRun.id,
+      companyId: finalizedRun.companyId,
+      agentId: finalizedRun.agentId,
+      status: finalizedRun.status,
+      failureReason: finalizedRun.error ?? undefined,
+    });
+
+    const issueId = issueIdFromRunContext(finalizedRun.contextSnapshot);
+    if (issueId) {
+      await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from issues where company_id = ${finalizedRun.companyId} and id = ${issueId} for update`,
+        );
+        const issue = await tx
+          .select()
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, finalizedRun.companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (!issue) return;
+
+        const lockPatch: Partial<typeof issues.$inferInsert> = {
+          updatedAt: now,
+        };
+        if (issue.executionRunId === finalizedRun.id) {
+          lockPatch.executionRunId = null;
+          lockPatch.executionAgentNameKey = null;
+          lockPatch.executionLockedAt = null;
+        }
+        if (issue.checkoutRunId === finalizedRun.id) {
+          lockPatch.checkoutRunId = null;
+        }
+        if (
+          issue.assigneeAgentId === finalizedRun.agentId &&
+          issue.status === "in_progress" &&
+          !issue.assigneeUserId
+        ) {
+          lockPatch.status = "todo";
+          lockPatch.executionState = null;
+        }
+        if (Object.keys(lockPatch).length > 1) {
+          await tx.update(issues).set(lockPatch).where(eq(issues.id, issue.id));
+        }
+      });
+
+      await issuesSvc.addComment(
+        issueId,
+        buildRunReconcilerSystemComment({
+          runId: finalizedRun.id,
+          reason: input.reason,
+          childPid: run.processPid,
+          outputSilenceAgeMs: outputSilenceAgeMsForRun(run, now),
+          signal: input.signal,
+        }),
+        {
+          agentId: finalizedRun.agentId,
+          runId: finalizedRun.id,
+        },
+      );
+    } else {
+      await reapOrphanCheckoutsFromRecovery(db, {
+        now,
+        staleThresholdMs: 0,
+        hasInMemoryRunHandle: () => false,
+      });
+    }
+
+    await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "error",
+      message: input.reason,
+      payload: {
+        source: "recovery.run_finalization_reconciler",
+        signal: input.signal,
+        ...(run.processPid ? { processPid: run.processPid } : {}),
+      },
+    });
+    await logActivity(db, {
+      companyId: finalizedRun.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      action: "heartbeat.run.finalized_by_reconciler",
+      entityType: "heartbeat_run",
+      entityId: finalizedRun.id,
+      details: {
+        signal: input.signal,
+        reason: input.reason,
+        issueId,
+      },
+    });
+    await finalizeAgentStatus(run.agentId, "failed");
+    await startNextQueuedRunForAgent(run.agentId);
+    runningProcesses.delete(run.id);
+    await clearRunPidFile(run.id);
+    return finalizedRun;
+  }
+
+  async function reconcileRunFinalization(opts?: { now?: Date; signal?: "reconciler" | "sigterm" }) {
+    if (!runReconcilerConfig.enabled) {
+      return { finalized: 0, runIds: [] as string[], metricsSamples: 0 };
+    }
+
+    const now = opts?.now ?? new Date();
+    const signal = opts?.signal ?? "reconciler";
+    const activeRuns = await db
+      .select({
+        run: heartbeatRuns,
+        adapterType: agents.adapterType,
+        agentName: agents.name,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(eq(heartbeatRuns.status, "running"));
+
+    const finalizedRunIds: string[] = [];
+    const metricSamples: Array<{
+      runId: string;
+      adapterType: string;
+      agentNameKey: string | null;
+      active: 0 | 1;
+      lastOutputAgeSeconds: number;
+      childPidAlive: 0 | 1;
+    }> = [];
+
+    for (const { run, adapterType, agentName } of activeRuns) {
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      const hasInMemoryHandle =
+        runningProcesses.has(run.id) || activeRunExecutions.has(run.id);
+      const childPid = tracksLocalChild
+        ? await resolveRunChildPid({
+            pidFileDir: runReconcilerConfig.pidFileDir,
+            runId: run.id,
+            processPid: run.processPid,
+          })
+        : run.processPid;
+      const childPidAlive = childPid ? isProcessAlive(childPid) : false;
+      const silenceAgeMs = outputSilenceAgeMsForRun(run, now) ?? 0;
+      metricSamples.push({
+        runId: run.id,
+        adapterType,
+        agentNameKey: normalizeAgentNameKey(agentName),
+        active: 1,
+        lastOutputAgeSeconds: Math.round(silenceAgeMs / 1000),
+        childPidAlive: childPidAlive ? 1 : 0,
+      });
+
+      const decision = signal === "sigterm"
+        ? {
+            finalize: hasInMemoryHandle,
+            reason: hasInMemoryHandle ? "supervisor_sigterm" : "not_owned_by_supervisor",
+            childPid,
+            childPidAlive: childPid ? isProcessAlive(childPid) : null,
+            outputSilenceAgeMs: silenceAgeMs,
+          }
+        : await shouldFinalizeRunForReconciler({
+            runId: run.id,
+            status: run.status,
+            processPid: childPid,
+            lastOutputAt: run.lastOutputAt,
+            lastOutputSeq: run.lastOutputSeq ?? 0,
+            processStartedAt: run.processStartedAt,
+            startedAt: run.startedAt,
+            createdAt: run.createdAt,
+            tracksLocalChild,
+            hasInMemoryHandle,
+            now,
+            outputStagnantTtlMs: runReconcilerConfig.outputStagnantTtlMs,
+            pidFileDir: runReconcilerConfig.pidFileDir,
+          });
+
+      if (!decision.finalize) continue;
+
+      const reason =
+        signal === "sigterm"
+          ? "Supervisor received SIGTERM; finalizing owned run to release checkout lock"
+          : decision.reason === "child_pid_not_alive"
+            ? "Run-finalization reconciler detected dead child PID"
+            : "Run-finalization reconciler detected output silence beyond TTL";
+
+      const finalized = await finalizeRunViaReconciler(run, {
+        reason,
+        signal,
+        terminateProcess: decision.childPidAlive === true,
+      });
+      if (finalized) finalizedRunIds.push(finalized.id);
+    }
+
+    setRunReconcilerMetricSamples(metricSamples);
+    if (finalizedRunIds.length > 0) {
+      logger.warn(
+        { finalizedCount: finalizedRunIds.length, runIds: finalizedRunIds, signal },
+        "run-finalization reconciler finalized stale active runs",
+      );
+    }
+    return { finalized: finalizedRunIds.length, runIds: finalizedRunIds, metricsSamples: metricSamples.length };
+  }
+
+  async function finalizeOwnedRunsOnShutdown(signal: "SIGINT" | "SIGTERM") {
+    if (!runReconcilerConfig.enabled) return { finalized: 0, runIds: [] as string[] };
+    return reconcileRunFinalization({
+      signal: "sigterm",
+      now: new Date(),
+    });
   }
 
   async function resumeQueuedRuns() {
@@ -10089,7 +10415,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : candidateIssues[0]) ?? null;
 
       if (!issue) return null;
-      if (issue.executionRunId && issue.executionRunId !== run.id) return null;
+      if (issue.executionRunId && issue.executionRunId !== run.id && issue.checkoutRunId !== run.id) {
+        return null;
+      }
+
+      const lockPatch: Partial<typeof issues.$inferInsert> = {
+        updatedAt: new Date(),
+      };
+      if (issue.executionRunId === run.id) {
+        lockPatch.executionRunId = null;
+        lockPatch.executionAgentNameKey = null;
+        lockPatch.executionLockedAt = null;
+      }
+      if (issue.checkoutRunId === run.id) {
+        lockPatch.checkoutRunId = null;
+      }
+      if (Object.keys(lockPatch).length > 1) {
+        await tx
+          .update(issues)
+          .set(lockPatch)
+          .where(
+            and(
+              eq(issues.id, issue.id),
+              or(
+                issue.executionRunId === run.id ? eq(issues.executionRunId, run.id) : sql`false`,
+                issue.checkoutRunId === run.id ? eq(issues.checkoutRunId, run.id) : sql`false`,
+              ),
+            ),
+          );
+      }
 
       // Workspace-validation recovery: if the finalizing run failed workspace
       // validation, surface the primary issue for the blocked-recovery comment path.
@@ -11990,6 +12344,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+
+    reapOrphanCheckouts,
+
+    reconcileRunFinalization,
+
+    finalizeOwnedRunsOnShutdown,
 
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
