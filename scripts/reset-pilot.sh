@@ -241,7 +241,7 @@ else
   echo "  CTO status: $STATUS"
 
   # -------------------------------------------------------------------------
-  # 6. Ensure heartbeat enabled, maxConcurrentRuns=1, and model=sonnet (A5)
+  # 6. Ensure CTO heartbeat enabled, maxConcurrentRuns=1, and model=sonnet (A5)
   # -------------------------------------------------------------------------
   echo "▶ Ensuring CTO heartbeat config and model tier…"
   curl -fsS -X PATCH "$API_BASE/agents/$CTO_ID" \
@@ -251,6 +251,32 @@ else
     -H 'Content-Type: application/json' \
     -d '{"adapterConfig":{"model":"claude-sonnet-4-6"}}' > /dev/null
   echo "  heartbeat.enabled=true  maxConcurrentRuns=1  model=claude-sonnet-4-6"
+
+  # -------------------------------------------------------------------------
+  # 6b. Resume + enable heartbeat for all non-CTO agents.
+  #     After a budget-exhausted pilot, every agent ends up paused with
+  #     heartbeat disabled. Only the CTO is fixed above — the rest stay
+  #     paused and never pick up new gate tasks (the bug that stalled the
+  #     Architect on the first post-reset run, 2026-06-16).
+  # -------------------------------------------------------------------------
+  echo "▶ Resuming all gate agents and enabling heartbeats…"
+  printf '%s' "$AGENTS_JSON" | node -e '
+    const agents = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const list = Array.isArray(agents) ? agents : (agents.agents || []);
+    // Print id|name for every non-CTO agent
+    for (const a of list) {
+      if (a.id === process.argv[1]) continue;
+      process.stdout.write(a.id + "|" + (a.name ?? a.id) + "\n");
+    }
+  ' "$CTO_ID" | while IFS='|' read -r AGENT_ID AGENT_NAME; do
+    [[ -z "$AGENT_ID" ]] && continue
+    curl -fsS -X POST "$API_BASE/agents/$AGENT_ID/resume" \
+      -H 'Content-Type: application/json' > /dev/null 2>&1 || true
+    curl -fsS -X PATCH "$API_BASE/agents/$AGENT_ID" \
+      -H 'Content-Type: application/json' \
+      -d '{"runtimeConfig":{"heartbeat":{"enabled":true,"maxConcurrentRuns":1}}}' > /dev/null
+    echo "  $AGENT_NAME: resumed, heartbeat.enabled=true"
+  done
 fi
 
 # ---------------------------------------------------------------------------
