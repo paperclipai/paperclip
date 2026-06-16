@@ -1533,7 +1533,14 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         assertReadableOriginFilter(params.originKind);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        // The plugin host windows results itself via applyWindow, so it reads the full
+        // filtered set and slices in-memory. Opt out of the default list page bound
+        // (EDG-7566 AC1) here to preserve plugin pagination semantics — the bound is
+        // applied by applyWindow below, not by an omitted `limit`.
+        return applyWindow(
+          (await issues.list(companyId, { ...(params as any), unbounded: true })) as Issue[],
+          params,
+        );
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);

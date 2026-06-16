@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { and, eq, or, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -9,6 +13,7 @@ import {
   agentWakeupRequests,
   budgetPolicies,
   companySkills,
+  companyMemberships,
   companies,
   costEvents,
   documentAnnotationAnchorSnapshots,
@@ -110,10 +115,28 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+const execFileAsync = promisify(execFile);
+
 function spawnAliveProcess() {
   return spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     stdio: "ignore",
   });
+}
+
+async function runGit(cwd: string, args: string[]) {
+  await execFileAsync("git", args, { cwd });
+}
+
+async function createTempRepo(defaultBranch = "main") {
+  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-heartbeat-repo-"));
+  await runGit(repoRoot, ["init"]);
+  await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
+  await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+  await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
+  await runGit(repoRoot, ["add", "README.md"]);
+  await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
+  await runGit(repoRoot, ["checkout", "-B", defaultBranch]);
+  return repoRoot;
 }
 
 function isPidAlive(pid: number | null | undefined) {
@@ -316,6 +339,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     cleanupPids.clear();
     await cancelActiveRunsForCleanup(db, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+    vi.clearAllMocks();
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Recovered stranded heartbeat work.",
+      provider: "test",
+      model: "test-model",
+    }));
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const runs = await db
@@ -374,6 +408,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
     }
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(activityLog);
       await db.delete(heartbeatRunEvents);
@@ -399,6 +435,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(companySkills);
+      await db.delete(companyMemberships);
       await db.delete(workspaceOperations);
       await db.delete(executionWorkspaces);
       await db.delete(projectWorkspaces);
@@ -1429,6 +1466,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
   });
 
+  it("preserves the original adapter failure for issue-bound runs instead of crashing liveness classification", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "adapter_failed",
+      errorMessage: "Synthetic adapter failure for liveness regression",
+      provider: "test",
+      model: "test-model",
+      resultJson: null,
+    });
+
+    const { runId } = await seedQueuedIssueRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+
+    const settledRun = await waitForValue(async () => {
+      const run = await heartbeat.getRun(runId);
+      return run?.status === "failed" && run.livenessState === "failed" ? run : null;
+    }, 5_000);
+
+    expect(settledRun?.errorCode).toBe("adapter_failed");
+    expect(settledRun?.error).toBe("Synthetic adapter failure for liveness regression");
+    expect(settledRun?.livenessReason ?? "").not.toContain("contextIssue is not defined");
+  });
+
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
@@ -2061,6 +2126,137 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("leaves assigned todo work non-terminal and comments when native dispatch finds a stale repo-backed checkout", async () => {
+    mockAdapterExecute.mockClear();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    const repoRoot = await createTempRepo();
+    const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-heartbeat-remote-"));
+    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+    await runGit(repoRoot, ["push", "-u", "origin", "main"]);
+    await runGit(remoteRoot, ["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+    const staleClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-heartbeat-stale-clone-"));
+    await runGit(staleClone, ["clone", remoteRoot, "."]);
+
+    for (let index = 0; index < 10; index += 1) {
+      await fs.writeFile(path.join(repoRoot, `commit-${index}.txt`), `${index}\n`, "utf8");
+      await runGit(repoRoot, ["add", `commit-${index}.txt`]);
+      await runGit(repoRoot, ["commit", "-m", `Commit ${index}`]);
+    }
+    await runGit(repoRoot, ["push", "origin", "main"]);
+    await fs.writeFile(path.join(staleClone, "leftover.txt"), "dirty\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Repo-backed project",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "primary",
+      sourceType: "local_path",
+      cwd: staleClone,
+      repoUrl: remoteRoot,
+      repoRef: "origin/main",
+      defaultRef: "origin/main",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Assigned todo work with stale checkout",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.assignmentDispatched).toBe(1);
+
+    const run = await waitForValue(async () =>
+      db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)).then((rows) => rows[0] ?? null),
+    );
+    expect(run?.id).toBeTruthy();
+    const settledRun = await waitForRunToSettle(heartbeat, run!.id, 5_000);
+    expect(settledRun?.errorCode).toBe("execution_workspace_freshness_failed");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("failed freshness validation");
+    expect(comments[0]?.body).toContain("untracked file");
+    expect(comments[0]?.body).toContain("behind origin/main by 10 commits");
+
+    const secondIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Second assigned todo on dirty checkout",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+
+    const pausedResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(pausedResult.assignmentDispatched).toBe(0);
+    expect(pausedResult.dispatchRequeued).toBe(0);
+
+    const runsAfterPause = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runsAfterPause).toHaveLength(1);
+
+    const firstIssueCommentsAfterPause = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(firstIssueCommentsAfterPause).toHaveLength(1);
+
+    const secondIssueComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, secondIssueId));
+    expect(secondIssueComments).toHaveLength(0);
+  });
+
   it("does not duplicate initial assigned todo dispatch when a queued wake already exists", async () => {
     const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
     await db.insert(agentWakeupRequests).values({
@@ -2086,6 +2282,140 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeups).toHaveLength(1);
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(0);
+  });
+
+  it("creates one [DAN-FYI] alert when a managed checkout hits the rescue rate cap", async () => {
+    const statePath = path.join(os.homedir(), ".paperclip", "state", "managed-checkout-freshness.json");
+    const previousState = await fs.readFile(statePath, "utf8").catch(() => null);
+
+    try {
+      const companyId = randomUUID();
+      const projectId = randomUUID();
+      const projectWorkspaceId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      const issuePrefix = "PAP";
+
+      await db.insert(companies).values({ id: companyId, name: "EVF" });
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: "local-board",
+        status: "active",
+        membershipRole: "owner",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Koda",
+        model: "gpt-5.4",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Repo-backed project",
+      });
+
+      const repoRoot = await createTempRepo();
+      const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-heartbeat-remote-"));
+      await runGit(remoteRoot, ["init", "--bare"]);
+      await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+      await runGit(repoRoot, ["push", "-u", "origin", "main"]);
+
+      const staleClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-heartbeat-managed-clone-"));
+      await runGit(staleClone, ["clone", remoteRoot, "."]);
+      await runGit(staleClone, ["config", "user.email", "paperclip@example.com"]);
+      await runGit(staleClone, ["config", "user.name", "Paperclip Test"]);
+      await fs.mkdir(path.join(staleClone, "persistent-dirt"), { recursive: true });
+      await fs.writeFile(path.join(staleClone, "persistent-dirt", "README.md"), "dirty\n", "utf8");
+
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "primary",
+        sourceType: "local_path",
+        cwd: staleClone,
+        repoUrl: remoteRoot,
+        repoRef: "origin/main",
+        defaultRef: "origin/main",
+        isPrimary: true,
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Assigned todo work on rate-capped checkout",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      await fs.mkdir(path.dirname(statePath), { recursive: true });
+      const now = Date.now();
+      await fs.writeFile(
+        statePath,
+        JSON.stringify({
+          checkouts: {
+            [staleClone]: {
+              signature: "same-failure",
+              count: 3,
+              updatedAt: new Date(now).toISOString(),
+              rescueHistory: [
+                new Date(now - 3 * 60 * 60 * 1000).toISOString(),
+                new Date(now - 2 * 60 * 60 * 1000).toISOString(),
+                new Date(now - 1 * 60 * 60 * 1000).toISOString(),
+              ],
+              remediation: {
+                signature: "same-failure",
+                count: 3,
+                updatedAt: new Date(now).toISOString(),
+              },
+            },
+          },
+        }, null, 2),
+        "utf8",
+      );
+
+      const heartbeat = heartbeatService(db);
+      const firstResult = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(firstResult.assignmentDispatched).toBe(0);
+      expect(firstResult.escalated).toBe(1);
+
+      const alertIssues = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.assigneeUserId, "local-board")));
+      expect(alertIssues).toHaveLength(1);
+      expect(alertIssues[0]?.title).toContain("[DAN-FYI]");
+      expect(alertIssues[0]?.description).toContain("rate-limited automatic managed-checkout rescue");
+      expect(alertIssues[0]?.description).toContain("Rescue attempts in last 24h: `3`");
+
+      const secondResult = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(secondResult.assignmentDispatched).toBe(0);
+
+      const alertIssuesAfterSecondPass = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.assigneeUserId, "local-board")));
+      expect(alertIssuesAfterSecondPass).toHaveLength(1);
+    } finally {
+      if (previousState === null) {
+        await fs.rm(statePath, { force: true });
+      } else {
+        await fs.writeFile(statePath, previousState, "utf8");
+      }
+    }
   });
 
   it("skips budget-blocked assigned todo work with no prior run and continues the sweep", async () => {
@@ -3364,6 +3694,75 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("still has no live execution path");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+  });
+
+  it("treats a future-scheduled monitor as the live continuation path and skips the continuation requeue (EDG-7700)", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    // Park the issue on a far-future native monitor (EDG-7004-style [EAB-WATCH]
+    // standing record). Without the guard this productive in-progress run falls
+    // through to the continuation requeue, re-arming the wake every cycle.
+    await db
+      .update(issues)
+      .set({
+        monitorNextCheckAt: new Date("2030-01-01T00:00:00.000Z"),
+        executionState: { monitor: { status: "scheduled", nextCheckAt: "2030-01-01T00:00:00.000Z" } },
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.monitorParkedSkipped).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    // No retry wake enqueued — the scheduled monitor is the live path.
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("does not flip a monitor-parked issue to blocked even after a productive continuation retry was used (EDG-7700)", async () => {
+    const { agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+    });
+    // Same parked-monitor record, but a productive terminal recovery was already
+    // used — the baseline path flips this to `blocked`. The live monitor must
+    // suppress that blocked-flip too.
+    await db
+      .update(issues)
+      .set({
+        monitorNextCheckAt: new Date("2030-01-01T00:00:00.000Z"),
+        executionState: { monitor: { status: "scheduled", nextCheckAt: "2030-01-01T00:00:00.000Z" } },
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.monitorParkedSkipped).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    // No blocked-flip comment was posted.
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
   });
 
   it("allows one productive-terminal recovery after regular continuation recovery made progress", async () => {

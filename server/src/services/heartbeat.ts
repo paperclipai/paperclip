@@ -91,10 +91,13 @@ import {
 } from "./run-liveness.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
+  assertExecutionWorkspaceFreshness,
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
+  ensureManagedCheckoutFreshness,
   ensurePersistedExecutionWorkspaceAvailable,
   ensureRuntimeServicesForRun,
+  ExecutionWorkspaceFreshnessError,
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
@@ -116,6 +119,7 @@ import {
 } from "./issue-tree-control.js";
 import {
   continuationSummaryParksExecutor,
+  filterIssueContinuationSummaryDocument,
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
@@ -2033,6 +2037,9 @@ export function shouldResetTaskSessionForWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (
     wakeReason === "issue_assigned" ||
+    // Status flips can invalidate the prior task conclusion; start from a fresh
+    // session so reopened issues do not inherit stale "done" context.
+    wakeReason === "issue_status_changed" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested" ||
@@ -2145,6 +2152,7 @@ export function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "issue_status_changed") return "wake reason is issue_status_changed";
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
@@ -2222,10 +2230,10 @@ function shouldAutoCheckoutIssueForWake(input: {
   if (!input.isDependencyReady) return false;
 
   const issueStatus = readNonEmptyString(input.issueStatus);
+  if (issueStatus === "blocked") return false;
   if (
     issueStatus !== "todo" &&
     issueStatus !== "backlog" &&
-    issueStatus !== "blocked" &&
     issueStatus !== "in_progress"
   ) {
     return false;
@@ -6857,25 +6865,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedIssueId = readNonEmptyString(claimedContext.issueId);
     const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
     if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
+      const claimedIssueContext = await getIssueExecutionContext(claimed.companyId, claimedIssueId);
+      const claimedIssueDependencyReadiness = await issuesSvc
+        .listDependencyReadiness(claimed.companyId, [claimedIssueId])
+        .then((rows) => rows.get(claimedIssueId) ?? null);
+
+      if (
+        claimedIssueContext &&
+        shouldAutoCheckoutIssueForWake({
+          contextSnapshot: claimedContext,
+          issueStatus: claimedIssueContext.status,
+          issueAssigneeAgentId: claimedIssueContext.assigneeAgentId,
+          isDependencyReady: claimedIssueDependencyReadiness?.isDependencyReady ?? true,
+          agentId: claimed.agentId,
         })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
+      ) {
+        const claimedAgent = await getAgent(claimed.agentId);
+        await db
+          .update(issues)
+          .set({
+            executionRunId: claimed.id,
+            executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, claimedIssueId),
+              eq(issues.companyId, claimed.companyId),
+              // Mention/context runs can touch an issue, but only the current assignee
+              // owns the issue execution lock shown as the active run.
+              eq(issues.assigneeAgentId, claimed.agentId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            ),
+          );
+      }
     }
 
     return claimed;
@@ -7249,7 +7273,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issue = contextIssueId
       ? await db
         .select({
+          id: issues.id,
+          identifier: issues.identifier,
           status: issues.status,
+          priority: issues.priority,
           title: issues.title,
           description: issues.description,
         })
@@ -7291,9 +7318,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((rows) => rows.reverse().map((row) => row.body))
       : [];
 
-    const continuationSummary = contextIssueId
-      ? await getIssueContinuationSummaryDocument(db, contextIssueId)
-      : null;
+    const continuationSummary =
+      contextIssueId && issue
+        ? filterIssueContinuationSummaryDocument(
+          {
+            id: issue.id,
+            identifier: issue.identifier,
+            title: issue.title,
+            status: issue.status,
+            priority: issue.priority,
+          },
+          await getIssueContinuationSummaryDocument(db, contextIssueId),
+        )
+        : null;
 
     const [documentStats] = contextIssueId
       ? await db
@@ -7559,6 +7596,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function reconcileStrandedAssignedIssues() {
     return recovery.reconcileStrandedAssignedIssues();
+  }
+
+  async function reconcileMergedPullRequestThreadAutoClose() {
+    return recovery.reconcileMergedPullRequestThreadAutoClose();
   }
 
   async function sweepStaleIssueLocks() {
@@ -7985,7 +8026,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       : null;
     const continuationSummary = issueRef
-      ? await getIssueContinuationSummaryDocument(db, issueRef.id)
+      ? filterIssueContinuationSummaryDocument(issueRef, await getIssueContinuationSummaryDocument(db, issueRef.id))
       : null;
     const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
     const safeContinuationSummary =
@@ -8371,6 +8412,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           recorder: workspaceOperationRecorder,
         });
+    if (executionWorkspace.repoUrl) {
+      try {
+        if (executionWorkspace.strategy === "project_primary") {
+          await ensureManagedCheckoutFreshness({
+            cwd: executionWorkspace.cwd,
+            expectedRepoUrl: executionWorkspace.repoUrl,
+            expectedBranchName: executionWorkspace.branchName,
+            expectedBaseRef: executionWorkspace.repoRef,
+          });
+        } else {
+          await assertExecutionWorkspaceFreshness({
+            cwd: executionWorkspace.cwd,
+            expectedRepoUrl: executionWorkspace.repoUrl,
+            expectedBranchName: executionWorkspace.branchName,
+            expectedBaseRef: executionWorkspace.repoRef,
+          });
+        }
+      } catch (error) {
+        if (error instanceof ExecutionWorkspaceFreshnessError && issueId) {
+          const detailLines = [
+            `Paperclip refused to start work because the repo-backed checkout for ${issueRef?.identifier ?? issueId} failed freshness validation.`,
+            ...error.details.failures.map((failure) => `- ${failure}`),
+          ];
+          if (error.details.warnings.length > 0) {
+            detailLines.push(...error.details.warnings.map((warning) => `- warning: ${warning}`));
+          }
+          await issuesSvc.addComment(
+            issueId,
+            detailLines.join("\n"),
+            { runId: run.id },
+            {
+              authorType: "system",
+              presentation: {
+                kind: "system_notice",
+                tone: "warning",
+                title: "Dispatch checkout freshness failed",
+                detailsDefaultOpen: false,
+              },
+            },
+          );
+          await issuesSvc.update(issueId, { status: "todo" });
+        }
+        throw error;
+      }
+    }
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
@@ -9458,15 +9544,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const setupErrorCode =
+            outerErr instanceof ExecutionWorkspaceFreshnessError
+              ? outerErr.code
+              : "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           await setRunStatus(runId, "failed", {
             error: message,
-            errorCode: "setup_failed",
+            errorCode: setupErrorCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "setup_failed",
+                errorCode: setupErrorCode,
                 errorMessage: message,
               }),
             } : {}),
@@ -9678,6 +9768,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      if (run.errorCode === "execution_workspace_freshness_failed") {
+        return { kind: "released" as const };
+      }
 
       while (true) {
         const deferred = await tx
@@ -10339,19 +10432,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
-        const cancelStaleScheduledRetry = async (scheduledRun: typeof heartbeatRuns.$inferSelect) => {
+        const cancelStalePendingExecutionRun = async (pendingRun: typeof heartbeatRuns.$inferSelect) => {
           const issueCancelled = issue.status === "cancelled";
+          const isPendingExecutionRun =
+            pendingRun.status === "scheduled_retry" || pendingRun.status === "queued";
           if (
-            scheduledRun.status !== "scheduled_retry" ||
-            (scheduledRun.agentId === issue.assigneeAgentId && !issueCancelled)
+            !isPendingExecutionRun ||
+            (pendingRun.agentId === issue.assigneeAgentId && !issueCancelled)
           ) {
             return false;
           }
 
           const now = new Date();
           const reason = issueCancelled
-            ? "Cancelled because the issue was cancelled before the scheduled retry became due"
-            : "Cancelled because the issue was reassigned before the scheduled retry became due";
+            ? pendingRun.status === "scheduled_retry"
+              ? "Cancelled because the issue was cancelled before the scheduled retry became due"
+              : "Cancelled because the issue was cancelled before the queued run started"
+            : pendingRun.status === "scheduled_retry"
+              ? "Cancelled because the issue was reassigned before the scheduled retry became due"
+              : "Cancelled because the issue was reassigned before the queued run started";
           const cancelled = await tx
             .update(heartbeatRuns)
             .set({
@@ -10361,13 +10460,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               errorCode: issueCancelled ? "issue_cancelled" : "issue_reassigned",
               updatedAt: now,
             })
-            .where(and(eq(heartbeatRuns.id, scheduledRun.id), eq(heartbeatRuns.status, "scheduled_retry")))
+            .where(and(eq(heartbeatRuns.id, pendingRun.id), eq(heartbeatRuns.status, pendingRun.status)))
             .returning()
             .then((rows) => rows[0] ?? null);
 
           if (!cancelled) return false;
 
-          if (scheduledRun.wakeupRequestId) {
+          if (pendingRun.wakeupRequestId) {
             await tx
               .update(agentWakeupRequests)
               .set({
@@ -10376,10 +10475,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 error: reason,
                 updatedAt: now,
               })
-              .where(eq(agentWakeupRequests.id, scheduledRun.wakeupRequestId));
+              .where(eq(agentWakeupRequests.id, pendingRun.wakeupRequestId));
           }
 
-          if (issue.executionRunId === scheduledRun.id) {
+          if (issue.executionRunId === pendingRun.id) {
             await tx
               .update(issues)
               .set({
@@ -10388,7 +10487,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 executionLockedAt: null,
                 updatedAt: now,
               })
-              .where(and(eq(issues.id, issue.id), eq(issues.executionRunId, scheduledRun.id)));
+              .where(and(eq(issues.id, issue.id), eq(issues.executionRunId, pendingRun.id)));
           }
 
           const [eventSeq] = await tx
@@ -10405,11 +10504,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             stream: "system",
             level: "warn",
             message: issueCancelled
-              ? "Scheduled retry cancelled because issue was cancelled before it became due"
-              : "Scheduled retry cancelled because issue ownership changed before it became due",
+              ? pendingRun.status === "scheduled_retry"
+                ? "Scheduled retry cancelled because issue was cancelled before it became due"
+                : "Queued run cancelled because issue was cancelled before it started"
+              : pendingRun.status === "scheduled_retry"
+                ? "Scheduled retry cancelled because issue ownership changed before it became due"
+                : "Queued run cancelled because issue ownership changed before it started",
             payload: {
               issueId: issue.id,
               issueStatus: issue.status,
+              previousRunStatus: pendingRun.status,
               scheduledRetryAttempt: cancelled.scheduledRetryAttempt,
               scheduledRetryAt: cancelled.scheduledRetryAt ? new Date(cancelled.scheduledRetryAt).toISOString() : null,
               scheduledRetryReason: cancelled.scheduledRetryReason,
@@ -10438,7 +10542,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           activeExecutionRun = null;
         }
 
-        if (activeExecutionRun && await cancelStaleScheduledRetry(activeExecutionRun)) {
+        if (activeExecutionRun && await cancelStalePendingExecutionRun(activeExecutionRun)) {
           activeExecutionRun = null;
         }
 
@@ -10526,7 +10630,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .then((rows) => rows[0] ?? null);
 
           if (legacyRun) {
-            if (await cancelStaleScheduledRetry(legacyRun)) {
+            if (await cancelStalePendingExecutionRun(legacyRun)) {
               activeExecutionRun = null;
             } else {
               activeExecutionRun = legacyRun;
@@ -11462,6 +11566,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    reconcileMergedPullRequestThreadAutoClose,
 
     sweepStaleIssueLocks,
 

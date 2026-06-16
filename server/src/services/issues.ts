@@ -76,6 +76,7 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -91,6 +92,10 @@ const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "bloc
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
+// Keyset/cursor bulk-export bounds (EDG-7566 AC3). Export pages are deep-offset-safe
+// (keyset on (created_at, id)), so the cap only bounds per-request work, not total reach.
+export const ISSUE_EXPORT_DEFAULT_LIMIT = 200;
+export const ISSUE_EXPORT_MAX_LIMIT = 500;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
@@ -100,6 +105,26 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 const DELETED_ISSUE_COMMENT_BODY = "";
+const REPO_BACKED_TERMINAL_GATE_EXEMPTION_KIND = "repo_backed_terminal_state_gate";
+const REPO_BACKED_TERMINAL_GATE_CODE = "repo_backed_terminal_state_gate_failed";
+const TERMINAL_GATE_NON_CODE_DELIVERABLES = new Set([
+  "decision",
+  "audit",
+  "diagnostic",
+  "qa",
+  "ops",
+  "governance",
+]);
+type TerminalGateDeliverable = "code" | "decision" | "audit" | "diagnostic" | "qa" | "ops" | "governance";
+type TerminalGateDocumentEvidence = {
+  key: string;
+  revisionNumber: number;
+};
+type TerminalGateSignals = {
+  deliverable: TerminalGateDeliverable | null;
+  subjectRepo: RepoCoordinates | null;
+  terminalEvidence: TerminalGateDocumentEvidence | null;
+};
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -129,6 +154,638 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+type RepoCoordinates = {
+  host: string;
+  owner: string;
+  repo: string;
+};
+
+function normalizeRepoHost(host: string) {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "github.com" || normalized.startsWith("github.com-")) {
+    return "github.com";
+  }
+  return normalized;
+}
+
+function parseRepoCoordinates(rawUrl: string | null | undefined): RepoCoordinates | null {
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return null;
+  try {
+    const sshMatch = trimmed.match(/^git@([^:]+):([^/]+)\/(.+?)(?:\.git)?$/i);
+    if (sshMatch) {
+      return {
+        host: normalizeRepoHost(sshMatch[1]!),
+        owner: sshMatch[2]!,
+        repo: sshMatch[3]!.replace(/\.git$/i, ""),
+      };
+    }
+
+    const parsed = new URL(trimmed);
+    const parts = parsed.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    return {
+      host: normalizeRepoHost(parsed.hostname),
+      owner: parts[0]!,
+      repo: parts[1]!.replace(/\.git$/i, ""),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseSubjectRepoCoordinates(rawValue: string | null | undefined): RepoCoordinates | null {
+  const trimmed = rawValue?.trim();
+  if (!trimmed) return null;
+  const simple = trimmed.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+  if (simple) {
+    return {
+      host: "github.com",
+      owner: simple[1]!,
+      repo: simple[2]!,
+    };
+  }
+  const withHost = trimmed.match(/^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/i);
+  if (withHost) {
+    return {
+      host: "github.com",
+      owner: withHost[1]!,
+      repo: withHost[2]!,
+    };
+  }
+  return parseRepoCoordinates(trimmed);
+}
+
+function repoCoordinatesEqual(expected: RepoCoordinates | null, actual: RepoCoordinates | null) {
+  if (!expected || !actual) return false;
+  return expected.host === actual.host && expected.owner === actual.owner && expected.repo === actual.repo;
+}
+
+function repoLabel(repo: RepoCoordinates) {
+  return `${repo.owner}/${repo.repo}`;
+}
+
+// EDG-6246: thread-only merged-PR auto-close needs to resolve a PR's repo from
+// the in-thread URL itself (multi-repo, AC#3), not just the workspace binding.
+// These reference/detail helpers complement the gate's single-repo
+// `extractMatchingPullRequestNumbers` without disturbing it.
+type PullRequestReference = {
+  repo: RepoCoordinates;
+  pullNumber: number;
+  url: string | null;
+};
+
+type PullRequestDetails = {
+  repo: RepoCoordinates;
+  pullNumber: number;
+  url: string | null;
+  merged: boolean;
+  mergedAt: string | null;
+  mergeCommitSha: string | null;
+};
+
+function parsePullRequestReferenceFromUrl(rawUrl: string | null | undefined): PullRequestReference | null {
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    const host = normalizeRepoHost(parsed.hostname);
+    const parts = parsed.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+    if (parts.length < 4 || parts[2] !== "pull") return null;
+    const pullNumber = Number.parseInt(parts[3] ?? "", 10);
+    if (!Number.isFinite(pullNumber) || pullNumber <= 0) return null;
+    const repo = parts[1]!.replace(/\.git$/i, "");
+    return {
+      repo: { host, owner: parts[0]!, repo },
+      pullNumber,
+      url: `https://${host}/${parts[0]}/${repo}/pull/${pullNumber}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function serializePullRequestReference(ref: PullRequestReference) {
+  return `${ref.repo.host}/${ref.repo.owner}/${ref.repo.repo}#${ref.pullNumber}`;
+}
+
+// Scans free text for PR references. Fully-qualified PR URLs resolve their own
+// repo coordinates (multi-repo); bare `#NNN` / `PR #NNN` mentions fall back to
+// the supplied repo binding.
+function extractReferencedPullRequests(
+  text: string | null | undefined,
+  fallbackRepo: RepoCoordinates,
+): PullRequestReference[] {
+  if (!text) return [];
+  const matches = new Map<string, PullRequestReference>();
+  const urlPattern = /https?:\/\/github(?:\.com|\.com-[^\s/]+)\/[^\s)]+\/pull\/\d+/gi;
+  for (const match of text.matchAll(urlPattern)) {
+    const parsed = parsePullRequestReferenceFromUrl(match[0]);
+    if (!parsed) continue;
+    matches.set(serializePullRequestReference(parsed), parsed);
+  }
+  for (const match of text.matchAll(/\bPR\s*#(\d+)\b|(^|[^\w/])#(\d+)\b/gim)) {
+    const rawValue = match[1] ?? match[3] ?? "";
+    const pullNumber = Number.parseInt(rawValue, 10);
+    if (!Number.isFinite(pullNumber) || pullNumber <= 0) continue;
+    const ref: PullRequestReference = {
+      repo: fallbackRepo,
+      pullNumber,
+      url: null,
+    };
+    matches.set(serializePullRequestReference(ref), ref);
+  }
+  return Array.from(matches.values());
+}
+
+// Full-detail variant of the gate's `verifyMergedPullRequestForRepo` boolean
+// check — returns mergedAt + merge commit so the auto-close evidence comment can
+// cite them (AC#1).
+async function fetchPullRequestDetails(input: {
+  repo: RepoCoordinates;
+  pullNumber: number;
+}): Promise<PullRequestDetails> {
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+  };
+  const token =
+    process.env.GITHUB_TOKEN?.trim()
+    || process.env.GITHUB_TOKEN_PERSONAL?.trim()
+    || process.env.GH_TOKEN?.trim()
+    || "";
+  if (token) headers.authorization = `Bearer ${token}`;
+  const response = await ghFetch(
+    `${gitHubApiBase(input.repo.host)}/repos/${input.repo.owner}/${input.repo.repo}/pulls/${input.pullNumber}`,
+    { headers },
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub returned ${response.status} while fetching pull #${input.pullNumber}.`);
+  }
+  const payload = await response.json() as {
+    merged?: boolean;
+    merged_at?: string | null;
+    merge_commit_sha?: string | null;
+    html_url?: string | null;
+  };
+  return {
+    repo: input.repo,
+    pullNumber: input.pullNumber,
+    url: payload.html_url ?? null,
+    merged: payload.merged === true,
+    mergedAt: payload.merged_at ?? null,
+    mergeCommitSha: payload.merge_commit_sha ?? null,
+  };
+}
+
+// Auto-close is suppressed when the most-recent unresolved blocking question is
+// still open: a trailing `[DAN]` or `[NEEDS-FIX]` comment that no later comment
+// answers (AC#4). Comments are expected newest-last (ascending createdAt).
+function hasUnansweredCloseBlockingThreadComment(
+  comments: Array<{ body: string | null }>,
+): boolean {
+  const blockingPattern = /\[(?:DAN|NEEDS-FIX)\]/i;
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const body = comments[i]?.body ?? "";
+    if (blockingPattern.test(body)) return true;
+    // Any non-blocking comment after the question counts as an answer; stop at
+    // the first such trailing comment.
+    if (body.trim().length > 0) return false;
+  }
+  return false;
+}
+
+function extractMatchingPullRequestNumbers(text: string | null | undefined, repo: RepoCoordinates): number[] {
+  if (!text) return [];
+  const escapedHost = repo.host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedOwner = repo.owner.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedRepo = repo.repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(
+    `https?://${escapedHost}/${escapedOwner}/${escapedRepo}/pull/(\\d+)`,
+    "gi",
+  );
+  const matches = new Set<number>();
+  for (const match of text.matchAll(pattern)) {
+    const value = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isFinite(value) && value > 0) matches.add(value);
+  }
+  return Array.from(matches);
+}
+
+function parseTerminalGateDeliverable(value: string | null | undefined): TerminalGateDeliverable | null {
+  const normalized = value?.trim().toLowerCase();
+  switch (normalized) {
+    case "code":
+    case "decision":
+    case "audit":
+    case "diagnostic":
+    case "qa":
+    case "ops":
+    case "governance":
+      return normalized;
+    default:
+      return null;
+  }
+}
+
+function parseTerminalGateDocumentEvidence(value: string | null | undefined): TerminalGateDocumentEvidence | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^document:([a-z0-9][a-z0-9_-]{0,63})#rev:(\d+)$/i);
+  if (!match) return null;
+  const revisionNumber = Number.parseInt(match[2] ?? "", 10);
+  if (!Number.isFinite(revisionNumber) || revisionNumber <= 0) return null;
+  return {
+    key: match[1]!,
+    revisionNumber,
+  };
+}
+
+function extractTerminalGateSignalsFromText(text: string | null | undefined): Partial<TerminalGateSignals> {
+  const signals: Partial<TerminalGateSignals> = {};
+  if (!text) return signals;
+  const deliverableMatch = text.match(/^\s*deliverable\s*:\s*([^\n\r]+)\s*$/im);
+  const subjectRepoMatch = text.match(/^\s*subjectRepo\s*:\s*([^\n\r]+)\s*$/im);
+  const terminalEvidenceMatch = text.match(/^\s*terminalEvidence\s*:\s*([^\n\r]+)\s*$/im);
+  const deliverable = parseTerminalGateDeliverable(deliverableMatch?.[1] ?? null);
+  const subjectRepo = parseSubjectRepoCoordinates(subjectRepoMatch?.[1] ?? null);
+  const terminalEvidence = parseTerminalGateDocumentEvidence(terminalEvidenceMatch?.[1] ?? null);
+  if (deliverable) signals.deliverable = deliverable;
+  if (subjectRepo) signals.subjectRepo = subjectRepo;
+  if (terminalEvidence) signals.terminalEvidence = terminalEvidence;
+  return signals;
+}
+
+function mergeTerminalGateSignals(
+  description: string | null | undefined,
+  latestAgentComment: string | null | undefined,
+): TerminalGateSignals {
+  const descriptionSignals = extractTerminalGateSignalsFromText(description);
+  const latestCommentSignals = extractTerminalGateSignalsFromText(latestAgentComment);
+  return {
+    deliverable: latestCommentSignals.deliverable ?? descriptionSignals.deliverable ?? null,
+    subjectRepo: latestCommentSignals.subjectRepo ?? descriptionSignals.subjectRepo ?? null,
+    terminalEvidence: latestCommentSignals.terminalEvidence ?? descriptionSignals.terminalEvidence ?? null,
+  };
+}
+
+// EDG-6360: a routine_execution run that found no eligible code work must be
+// able to close out cleanly instead of erroring/looping at the repo-backed
+// terminal gate. These helpers classify whether a routine-execution issue is
+// plainly operational (no code deliverable) and therefore exempt from the
+// merged-PR requirement.
+type RoutineExecutionDeliverableLabel = TerminalGateDeliverable | "doc";
+
+function parseRoutineExecutionDeliverableLabel(value: string | null | undefined): RoutineExecutionDeliverableLabel | null {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized?.startsWith("deliverable:")) return null;
+  const candidate = normalized.slice("deliverable:".length).trim();
+  if (!candidate) return null;
+  if (candidate === "doc") return "doc";
+  return parseTerminalGateDeliverable(candidate);
+}
+
+function hasRoutineExecutionPullRequestHints(text: string | null | undefined) {
+  if (!text) return false;
+  return /\bPR\s*#\d+\b|https?:\/\/github\.com\/[^\s]+\/pull\/\d+/i.test(text);
+}
+
+function hasRoutineExecutionSourceCodeHints(text: string | null | undefined) {
+  if (!text) return false;
+  return /\b(?:src|server|packages|ui|scripts|lib|app)\/|\b[a-z0-9_.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|sql|sh|ya?ml)\b/i.test(text);
+}
+
+function hasRoutineExecutionCodeHints(text: string | null | undefined) {
+  return hasRoutineExecutionPullRequestHints(text) || hasRoutineExecutionSourceCodeHints(text);
+}
+
+function hasRoutineExecutionNoEligibleWorkEvidence(text: string | null | undefined) {
+  if (!text) return false;
+  return /\b(?:no|zero|0)\s+eligible\b[^\n\r]*\bPRs?\b|\bno\b[^\n\r]*\bKoda-owned\b[^\n\r]*\bPRs?\b[^\n\r]*\bto rebase\b/i.test(text);
+}
+
+function canAutoExemptRoutineExecutionTerminalClose(input: {
+  originKind: string | null | undefined;
+  signals: TerminalGateSignals;
+  description: string | null | undefined;
+  latestAgentComment: string | null | undefined;
+  labelNames: string[];
+}) {
+  if (input.originKind !== "routine_execution") return false;
+  const explicitLabelDeliverable = input.labelNames
+    .map((name) => parseRoutineExecutionDeliverableLabel(name))
+    .find((value): value is RoutineExecutionDeliverableLabel => Boolean(value))
+    ?? null;
+  if (explicitLabelDeliverable === "code") return false;
+  if (explicitLabelDeliverable) return true;
+  if (input.signals.deliverable === "code") return false;
+  if (input.signals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(input.signals.deliverable)) {
+    return false;
+  }
+  const descriptionHasCodeHints = hasRoutineExecutionCodeHints(input.description);
+  const latestCommentHasCodeHints = hasRoutineExecutionCodeHints(input.latestAgentComment);
+  const latestCommentHasNoEligibleWorkEvidence = hasRoutineExecutionNoEligibleWorkEvidence(input.latestAgentComment);
+
+  if (latestCommentHasNoEligibleWorkEvidence) {
+    return !descriptionHasCodeHints && !latestCommentHasCodeHints && !hasRoutineExecutionNoEligibleWorkEvidence(input.description);
+  }
+
+  if (
+    descriptionHasCodeHints || latestCommentHasCodeHints
+  ) {
+    return false;
+  }
+  return true;
+}
+
+// EDG-6246: a repo-backed issue carrying an attached deliverable document is a
+// non-code-deliverable signal — the thread-only PR auto-close skips it (those
+// close on terminalEvidence, not a merged PR).
+async function issueHasAttachedDocuments(input: {
+  dbOrTx: any;
+  companyId: string;
+  issueId: string;
+}) {
+  const row = await input.dbOrTx
+    .select({ documentId: issueDocuments.documentId })
+    .from(issueDocuments)
+    .where(and(
+      eq(issueDocuments.companyId, input.companyId),
+      eq(issueDocuments.issueId, input.issueId),
+    ))
+    .limit(1)
+    .then((rows: Array<{ documentId: string }>) => rows[0] ?? null);
+  return Boolean(row);
+}
+
+function readTerminalStateExemption(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const exemption = (value as Record<string, unknown>).terminalStateExemption;
+  if (!exemption || typeof exemption !== "object") return null;
+  const record = exemption as Record<string, unknown>;
+  const kind = typeof record.kind === "string" ? record.kind.trim() : "";
+  const reason = typeof record.reason === "string" ? record.reason.trim() : "";
+  const grantedByUserId = typeof record.grantedByUserId === "string" ? record.grantedByUserId.trim() : "";
+  const grantedByAgentId = typeof record.grantedByAgentId === "string" ? record.grantedByAgentId.trim() : "";
+  if (kind !== REPO_BACKED_TERMINAL_GATE_EXEMPTION_KIND || !reason) return null;
+  if (!grantedByUserId && !grantedByAgentId) return null;
+  return {
+    kind,
+    reason,
+    grantedByUserId: grantedByUserId || null,
+    grantedByAgentId: grantedByAgentId || null,
+    createdAt: typeof record.createdAt === "string" ? record.createdAt : null,
+  };
+}
+
+async function resolveIssueRepoBinding(input: {
+  dbOrTx: any;
+  companyId: string;
+  projectId: string | null;
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string | null;
+}) {
+  if (input.executionWorkspaceId) {
+    const executionWorkspace = await input.dbOrTx
+      .select({ repoUrl: executionWorkspaces.repoUrl })
+      .from(executionWorkspaces)
+      .where(
+        and(
+          eq(executionWorkspaces.id, input.executionWorkspaceId),
+          eq(executionWorkspaces.companyId, input.companyId),
+        ),
+      )
+      .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+    const executionRepo = parseRepoCoordinates(executionWorkspace?.repoUrl ?? null);
+    if (executionRepo) return executionRepo;
+  }
+
+  if (input.projectWorkspaceId) {
+    const workspace = await input.dbOrTx
+      .select({ repoUrl: projectWorkspaces.repoUrl })
+      .from(projectWorkspaces)
+      .where(
+        and(
+          eq(projectWorkspaces.id, input.projectWorkspaceId),
+          eq(projectWorkspaces.companyId, input.companyId),
+        ),
+      )
+      .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+    const workspaceRepo = parseRepoCoordinates(workspace?.repoUrl ?? null);
+    if (workspaceRepo) return workspaceRepo;
+  }
+
+  if (!input.projectId) return null;
+  const primaryWorkspace = await input.dbOrTx
+    .select({ repoUrl: projectWorkspaces.repoUrl })
+    .from(projectWorkspaces)
+    .where(
+      and(
+        eq(projectWorkspaces.companyId, input.companyId),
+        eq(projectWorkspaces.projectId, input.projectId),
+        eq(projectWorkspaces.isPrimary, true),
+      ),
+    )
+    .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+  return parseRepoCoordinates(primaryWorkspace?.repoUrl ?? null);
+}
+
+async function verifyMergedPullRequestForRepo(input: {
+  repo: RepoCoordinates;
+  pullNumber: number;
+}) {
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+  };
+  const token =
+    process.env.GITHUB_TOKEN?.trim()
+    || process.env.GITHUB_TOKEN_PERSONAL?.trim()
+    || process.env.GH_TOKEN?.trim()
+    || "";
+  if (token) headers.authorization = `Bearer ${token}`;
+  const response = await ghFetch(
+    `${gitHubApiBase(input.repo.host)}/repos/${input.repo.owner}/${input.repo.repo}/pulls/${input.pullNumber}`,
+    { headers },
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub returned ${response.status} while verifying pull #${input.pullNumber}.`);
+  }
+  const payload = await response.json() as { merged?: boolean };
+  return payload.merged === true;
+}
+
+async function recordRepoBackedTerminalGateComment(input: {
+  dbHandle: Db;
+  issueId: string;
+  companyId: string;
+  body: string;
+}) {
+  await input.dbHandle.insert(issueComments).values({
+    companyId: input.companyId,
+    issueId: input.issueId,
+    authorAgentId: null,
+    authorUserId: null,
+    authorType: "system",
+    body: input.body,
+    presentation: {
+      kind: "system_notice",
+      tone: "warning",
+      title: "Repo-backed terminal-state gate",
+      detailsDefaultOpen: false,
+    },
+  });
+  await input.dbHandle
+    .update(issues)
+    .set({ updatedAt: new Date() })
+    .where(eq(issues.id, input.issueId));
+}
+
+async function issueDocumentRevisionExists(input: {
+  dbOrTx: any;
+  companyId: string;
+  issueId: string;
+  key: string;
+  revisionNumber: number;
+}) {
+  const row = await input.dbOrTx
+    .select({ documentId: issueDocuments.documentId })
+    .from(issueDocuments)
+    .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+    .innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
+    .where(and(
+      eq(issueDocuments.companyId, input.companyId),
+      eq(issueDocuments.issueId, input.issueId),
+      eq(issueDocuments.key, input.key),
+      eq(documentRevisions.companyId, input.companyId),
+      eq(documentRevisions.revisionNumber, input.revisionNumber),
+    ))
+    .then((rows: Array<{ documentId: string }>) => rows[0] ?? null);
+  return Boolean(row);
+}
+
+// EDG-6246 AC#1: resolve a verified-merged PR referenced ONLY as a threaded
+// comment/body URL on an open repo-backed issue (no work-product). Returns the
+// merged PR's details (for the evidence comment) or null when the issue must
+// not auto-close. Ported from the live lineage, adapted to this base:
+//  - gated to todo/in_progress/in_review and requires a repo binding;
+//  - skips non-code-deliverable issues (those close on terminalEvidence, and
+//    the close-time gate at update() applies the same TERMINAL_GATE_NON_CODE
+//    short-circuit) and issues carrying an attached deliverable document;
+//  - skips while an unanswered [DAN]/[NEEDS-FIX] question is the trailing
+//    blocking comment (AC#4);
+//  - scans BOTH description AND every comment body, resolving each PR's repo
+//    from its own URL so cross-repo references verify against the right repo
+//    (AC#3);
+//  - verifies via the GitHub API and only resolves on a MERGED PR (a
+//    CLOSED-unmerged PR yields null — never closes the issue, AC#4).
+export async function resolveMergedPullRequestDetailsForThreadAutoClose(
+  db: Db,
+  issue: typeof issues.$inferSelect,
+): Promise<PullRequestDetails | null> {
+  if (!["todo", "in_progress", "in_review"].includes(issue.status)) return null;
+
+  const repoBinding = await resolveIssueRepoBinding({
+    dbOrTx: db,
+    companyId: issue.companyId,
+    projectId: issue.projectId,
+    projectWorkspaceId: issue.projectWorkspaceId,
+    executionWorkspaceId: issue.executionWorkspaceId,
+  });
+  if (!repoBinding) return null;
+
+  const latestAgentComment = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(and(
+      eq(issueComments.issueId, issue.id),
+      sql`${issueComments.authorAgentId} is not null`,
+    ))
+    .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+    .limit(1)
+    .then((rows: Array<{ body: string }>) => rows[0]?.body ?? null);
+
+  const gateSignals = mergeTerminalGateSignals(issue.description, latestAgentComment);
+  // EDG-6360: routine_execution runs with no eligible code work close out via
+  // the terminal-gate exemption, not a merged PR — skip them here.
+  const issueLabelRows = await db
+    .select({ name: labels.name })
+    .from(issueLabels)
+    .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+    .where(eq(issueLabels.issueId, issue.id));
+  if (canAutoExemptRoutineExecutionTerminalClose({
+    originKind: issue.originKind,
+    signals: gateSignals,
+    description: issue.description,
+    latestAgentComment,
+    labelNames: issueLabelRows.map((row: { name: string }) => row.name),
+  })) {
+    return null;
+  }
+  // Non-code deliverables are closed by document-backed terminalEvidence, not a
+  // merged PR — skip them here so we never compete with that gate path.
+  if (gateSignals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(gateSignals.deliverable)) {
+    return null;
+  }
+  const hasAttachedIssueDocument = await issueHasAttachedDocuments({
+    dbOrTx: db,
+    companyId: issue.companyId,
+    issueId: issue.id,
+  });
+  if (hasAttachedIssueDocument) return null;
+
+  const verificationRepo = gateSignals.subjectRepo ?? repoBinding;
+  const commentRows = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(eq(issueComments.issueId, issue.id))
+    .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+  if (hasUnansweredCloseBlockingThreadComment(commentRows)) {
+    return null;
+  }
+
+  const pullReferences = new Map<string, PullRequestReference>();
+  for (const ref of extractReferencedPullRequests(issue.description, verificationRepo)) {
+    pullReferences.set(serializePullRequestReference(ref), ref);
+  }
+  for (const row of commentRows) {
+    for (const ref of extractReferencedPullRequests(row.body, verificationRepo)) {
+      pullReferences.set(serializePullRequestReference(ref), ref);
+    }
+  }
+
+  let firstVerificationError: unknown = null;
+  for (const ref of pullReferences.values()) {
+    try {
+      const details = await fetchPullRequestDetails({ repo: ref.repo, pullNumber: ref.pullNumber });
+      if (details.merged) {
+        return { ...details, url: details.url ?? ref.url };
+      }
+    } catch (error) {
+      firstVerificationError ??= error;
+    }
+  }
+
+  if (firstVerificationError) {
+    logger.warn(
+      { issueId: issue.id, error: firstVerificationError },
+      "Thread-only auto-close skipped: merged PR details could not be verified.",
+    );
+  }
+  return null;
+}
+
+export function buildMergedPullRequestAutoCloseComment(input: {
+  issue: { id: string; identifier: string | null };
+  pullRequest: PullRequestDetails;
+  fallbackUrl?: string | null;
+}) {
+  return [
+    `Paperclip auto-closed ${input.issue.identifier ?? input.issue.id} after verifying merged PR ${input.pullRequest.url ?? input.fallbackUrl ?? `#${input.pullRequest.pullNumber}`}.`,
+    `PR: ${repoLabel(input.pullRequest.repo)} #${input.pullRequest.pullNumber}`,
+    `mergedAt: ${input.pullRequest.mergedAt ?? "unknown"}`,
+    `commit: ${input.pullRequest.mergeCommitSha ?? "unknown"}`,
+  ].join("\n");
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -274,6 +931,14 @@ export interface IssueFilters {
   offset?: number;
   sortField?: "updated";
   sortDir?: "asc" | "desc";
+  /**
+   * Opt out of the default server-side page bound (EDG-7566 AC1). When `true`, no
+   * default LIMIT is imposed and the full filtered result set is returned. Reserved
+   * for trusted full-read callers (e.g. company export). Prefer the cursor export
+   * (`exportPage`) for large sweeps; this exists for callers that genuinely need the
+   * whole set materialised in one round-trip.
+   */
+  unbounded?: boolean;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -681,7 +1346,12 @@ async function listIssueDependencyReadinessMap(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
   issueIds: string[],
+  options?: { includeChildBlockers?: boolean },
 ) {
+  // EVF patch #6 (non-terminal children block parent checkout) is on by default.
+  // Callers under v529 tree-control (active pause-hold) pass false so children
+  // defer to tree-control and don't block an authorised parent checkout.
+  const includeChildBlockers = options?.includeChildBlockers ?? true;
   const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
   const readinessMap = new Map<string, IssueDependencyReadiness>();
   for (const issueId of uniqueIssueIds) {
@@ -689,28 +1359,47 @@ async function listIssueDependencyReadinessMap(
   }
   if (uniqueIssueIds.length === 0) return readinessMap;
 
-  const blockerRows = await dbOrTx
-    .select({
-      issueId: issueRelations.relatedIssueId,
-      blockerIssueId: issueRelations.issueId,
-      blockerStatus: issues.status,
-      blockerExecutionWorkspaceId: issues.executionWorkspaceId,
-    })
-    .from(issueRelations)
-    .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-    .where(
-      and(
-        eq(issueRelations.companyId, companyId),
-        eq(issueRelations.type, "blocks"),
-        inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+  const [blockerRows, childRows] = await Promise.all([
+    dbOrTx
+      .select({
+        issueId: issueRelations.relatedIssueId,
+        blockerIssueId: issueRelations.issueId,
+        blockerStatus: issues.status,
+        blockerExecutionWorkspaceId: issues.executionWorkspaceId,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+        ),
       ),
-    );
+    dbOrTx
+      .select({
+        issueId: issues.parentId,
+        blockerIssueId: issues.id,
+        blockerStatus: issues.status,
+        // Children gate on terminal-status only (EVF patch #6); never the
+        // workspace-finalize barrier. Null workspace id => finalize branch skips them.
+        blockerExecutionWorkspaceId: sql<string | null>`null`,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.parentId, uniqueIssueIds),
+        ),
+      ),
+  ]);
 
-  // Collect executionWorkspaceIds of "done" blockers — these are the only ones
-  // subject to the workspace-finalize barrier. Blockers that aren't done already
-  // mark the dependent as not-ready and don't need a finalize check.
+  // Collect executionWorkspaceIds of "done" blockers/children -- only these are
+  // subject to the workspace-finalize barrier. Dependencies that aren't done
+  // already mark the dependent as not-ready and need no finalize check.
+  const effectiveChildRows = includeChildBlockers ? childRows : [];
   const doneBlockerWorkspaceIds = new Set<string>();
-  for (const row of blockerRows) {
+  for (const row of [...blockerRows, ...effectiveChildRows]) {
     if (row.blockerStatus === "done" && row.blockerExecutionWorkspaceId) {
       doneBlockerWorkspaceIds.add(row.blockerExecutionWorkspaceId);
     }
@@ -721,26 +1410,29 @@ async function listIssueDependencyReadinessMap(
     [...doneBlockerWorkspaceIds],
   );
 
-  for (const row of blockerRows) {
+  for (const row of [...blockerRows, ...effectiveChildRows]) {
+    if (!row.issueId) continue;
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
-    current.blockerIssueIds.push(row.blockerIssueId);
-    // Only done blockers resolve dependents; cancelled blockers stay unresolved
-    // until an operator removes or replaces the blocker relationship explicitly.
-    if (row.blockerStatus !== "done") {
+    if (!current.blockerIssueIds.includes(row.blockerIssueId)) {
+      current.blockerIssueIds.push(row.blockerIssueId);
+    }
+    // Only done blockers/children resolve dependents; cancelled ones stay
+    // unresolved until an operator removes or replaces the relationship.
+    if (
+      row.blockerStatus !== "done" &&
+      !current.unresolvedBlockerIssueIds.includes(row.blockerIssueId)
+    ) {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
-      current.unresolvedBlockerCount += 1;
+      current.unresolvedBlockerCount = current.unresolvedBlockerIssueIds.length;
       current.allBlockersDone = false;
       current.isDependencyReady = false;
     } else if (
       row.blockerExecutionWorkspaceId &&
       unfinalizedWorkspaceIds.has(row.blockerExecutionWorkspaceId)
     ) {
-      // Workspace-finalize barrier: the blocker's most recent run on its
-      // execution workspace hasn't recorded a successful workspace_finalize.
-      // Treat the dependent as not-ready until sync-back lands (or the run
-      // finalizes); a subsequent finalize wake will re-evaluate readiness.
-      // `allBlockersDone` is cleared too so that callers using it as a
-      // proxy for "this dependent can proceed" still see the gate.
+      // Workspace-finalize barrier: the dependency's most recent run on its
+      // execution workspace has no successful workspace_finalize yet. Hold the
+      // dependent not-ready until sync-back lands; a finalize wake re-evaluates.
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.pendingFinalizeBlockerIssueIds.push(row.blockerIssueId);
@@ -1154,6 +1846,70 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
   });
 }
 
+// Normalizes a thrown DB error (or its `cause`) into the pg conflict shape so we can
+// inspect the unique-constraint name. Mirrors the recovery service's helper of the same name.
+function unwrapDatabaseConflictError(error: unknown) {
+  if (!error || typeof error !== "object") return null;
+  const candidate = error as {
+    code?: string;
+    constraint?: string;
+    constraint_name?: string;
+    message?: string;
+    cause?: unknown;
+  };
+  if (
+    typeof candidate.code === "string" ||
+    typeof candidate.constraint === "string" ||
+    typeof candidate.constraint_name === "string"
+  ) {
+    return candidate;
+  }
+  const cause = candidate.cause;
+  if (!cause || typeof cause !== "object") return candidate;
+  return cause as {
+    code?: string;
+    constraint?: string;
+    constraint_name?: string;
+    message?: string;
+  };
+}
+
+function isUniqueGithubMirrorConflict(error: unknown) {
+  const maybe = unwrapDatabaseConflictError(error);
+  if (!maybe) return false;
+  return (
+    maybe.code === "23505" &&
+    (maybe.constraint === GITHUB_MIRROR_ACTIVE_UNIQUE_CONSTRAINT ||
+      maybe.constraint_name === GITHUB_MIRROR_ACTIVE_UNIQUE_CONSTRAINT ||
+      (typeof maybe.message === "string" && maybe.message.includes(GITHUB_MIRROR_ACTIVE_UNIQUE_CONSTRAINT)))
+  );
+}
+
+// Returns the existing non-terminal github_mirror issue for this origin id, enriched
+// with labels to match issueService.create()'s return shape, or null if none exists.
+async function findActiveGithubMirrorIssue(
+  dbOrTx: any,
+  companyId: string,
+  originId: string,
+): Promise<IssueWithLabels | null> {
+  const [row] = await dbOrTx
+    .select()
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, GITHUB_MIRROR_ORIGIN_KIND),
+        eq(issues.originId, originId),
+        isNull(issues.hiddenAt),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ),
+    )
+    .limit(1);
+  if (!row) return null;
+  const [enriched] = await withIssueLabels(dbOrTx, [row]);
+  return enriched ?? null;
+}
+
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
 const BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES = ["queued", "running"];
 const BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execution"];
@@ -1161,6 +1917,12 @@ const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
 const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND = "harness_liveness_escalation";
 const PRODUCTIVITY_REVIEW_ORIGIN_KIND = "issue_productivity_review";
+// GH→Paperclip mirror dedup: the `CRM X GitHub Sync & Triage` routine stamps each
+// mirrored create with originKind="github_mirror" / originId="<owner/repo>#<gh_issue_number>"
+// so one GH issue maps to exactly one non-terminal EDG mirror. Mirrors the
+// recovery-origin idempotency convention (pre-check → create → catch 23505 → return existing).
+const GITHUB_MIRROR_ORIGIN_KIND = "github_mirror";
+const GITHUB_MIRROR_ACTIVE_UNIQUE_CONSTRAINT = "issues_active_github_mirror_uq";
 const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"];
 const PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS = [
   "issue.productivity_review_created",
@@ -1965,6 +2727,67 @@ const issueListSelect = {
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
+
+// EDG-7566 AC3: lean projection for the cursor bulk-export. Deliberately excludes the
+// heavy description/label/run/stats enrichment that the list view carries — exports are
+// for full sweeps, not interactive rendering.
+const issueExportSelect = {
+  id: issues.id,
+  identifier: issues.identifier,
+  title: issues.title,
+  status: issues.status,
+  priority: issues.priority,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  parentId: issues.parentId,
+  projectId: issues.projectId,
+  originKind: issues.originKind,
+  createdAt: issues.createdAt,
+  updatedAt: issues.updatedAt,
+} as const;
+
+export type IssueExportRow = Pick<
+  IssueRow,
+  | "id"
+  | "identifier"
+  | "title"
+  | "status"
+  | "priority"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "parentId"
+  | "projectId"
+  | "originKind"
+  | "createdAt"
+  | "updatedAt"
+>;
+
+// Opaque continuation cursor for `exportPage`: base64url("<createdAt ISO>|<id>"). The
+// keyset is (created_at, id); encoding both keeps it stable across pages and tamper-evident
+// enough that a malformed/foreign cursor simply decodes to null (treated as "start").
+function encodeIssueExportCursor(createdAt: Date, id: string): string {
+  return Buffer.from(`${createdAt.toISOString()}|${id}`, "utf8").toString("base64url");
+}
+
+function decodeIssueExportCursor(
+  cursor?: string | null,
+): { createdAt: Date; id: string } | null {
+  if (!cursor) return null;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(cursor, "base64url").toString("utf8");
+  } catch {
+    return null;
+  }
+  const sep = decoded.indexOf("|");
+  if (sep <= 0) return null;
+  const createdAtRaw = decoded.slice(0, sep);
+  const id = decoded.slice(sep + 1);
+  if (!id) return null;
+  const createdAt = new Date(createdAtRaw);
+  if (Number.isNaN(createdAt.getTime())) return null;
+  return { createdAt, id };
+}
 
 function withActiveRuns(
   issueRows: IssueWithLabels[],
@@ -3940,6 +4763,152 @@ export function issueService(db: Db) {
     });
   }
 
+  // Shared WHERE-builder for the issue list family (EDG-7566). `list`, `count`, and
+  // `exportPage` all derive their filter predicate here so a count or export can never
+  // drift from what `list` returns for the same filters. Returns `null` when a label
+  // filter matches zero issues (callers short-circuit to an empty result / zero count).
+  async function buildIssueListWhere(
+    companyId: string,
+    filters?: IssueFilters,
+  ): Promise<
+    | null
+    | {
+        conditions: SQL[];
+        hasSearch: boolean;
+        titleStartsWithMatch: SQL<boolean>;
+        titleContainsMatch: SQL<boolean>;
+        identifierStartsWithMatch: SQL<boolean>;
+        identifierContainsMatch: SQL<boolean>;
+        descriptionContainsMatch: SQL<boolean>;
+        commentContainsMatch: SQL<boolean>;
+      }
+  > {
+    const conditions: SQL[] = [eq(issues.companyId, companyId)];
+    const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
+    assertValidAssigneeAgentFilter(assigneeAgentFilter);
+    const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
+    const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
+    const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
+    const rawSearch = filters?.q?.trim() ?? "";
+    const hasSearch = rawSearch.length > 0;
+    const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
+    const startsWithPattern = `${escapedSearch}%`;
+    const containsPattern = `%${escapedSearch}%`;
+    const titleStartsWithMatch = sql<boolean>`${issues.title} ILIKE ${startsWithPattern} ESCAPE '\\'`;
+    const titleContainsMatch = sql<boolean>`${issues.title} ILIKE ${containsPattern} ESCAPE '\\'`;
+    const identifierStartsWithMatch = sql<boolean>`${issues.identifier} ILIKE ${startsWithPattern} ESCAPE '\\'`;
+    const identifierContainsMatch = sql<boolean>`${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\'`;
+    const descriptionContainsMatch = sql<boolean>`${issues.description} ILIKE ${containsPattern} ESCAPE '\\'`;
+    const commentContainsMatch = sql<boolean>`
+      EXISTS (
+        SELECT 1
+        FROM ${issueComments}
+        WHERE ${issueComments.issueId} = ${issues.id}
+          AND ${issueComments.companyId} = ${companyId}
+          AND ${issueComments.deletedAt} IS NULL
+          AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
+      )
+    `;
+    if (filters?.descendantOf) {
+      conditions.push(sql<boolean>`
+        ${issues.id} IN (
+          WITH RECURSIVE descendants(id) AS (
+            SELECT ${issues.id}
+            FROM ${issues}
+            WHERE ${issues.companyId} = ${companyId}
+              AND ${issues.parentId} = ${filters.descendantOf}
+            UNION
+            SELECT ${issues.id}
+            FROM ${issues}
+            JOIN descendants ON ${issues.parentId} = descendants.id
+            WHERE ${issues.companyId} = ${companyId}
+          )
+          SELECT id FROM descendants
+        )
+      `);
+    }
+    const lowTrustCondition = lowTrustBoundaryIssueCondition(companyId, filters?.lowTrustBoundary);
+    if (lowTrustCondition) conditions.push(lowTrustCondition);
+    const statuses = parseStatusFilter(filters?.status);
+    if (statuses.length === 1) {
+      conditions.push(eq(issues.status, statuses[0]));
+    } else if (statuses.length > 1) {
+      conditions.push(inArray(issues.status, statuses));
+    }
+    if (assigneeAgentFilter === null) {
+      conditions.push(isNull(issues.assigneeAgentId));
+    } else if (assigneeAgentFilter) {
+      conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
+    }
+    if (filters?.participantAgentId) {
+      conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
+    }
+    if (filters?.assigneeUserId) {
+      conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+    }
+    if (touchedByUserId) {
+      conditions.push(touchedByUserCondition(companyId, touchedByUserId));
+    }
+    if (inboxArchivedByUserId) {
+      conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
+    }
+    if (unreadForUserId) {
+      conditions.push(unreadForUserCondition(companyId, unreadForUserId));
+    }
+    if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+    if (filters?.workspaceId) {
+      conditions.push(or(
+        eq(issues.executionWorkspaceId, filters.workspaceId),
+        eq(issues.projectWorkspaceId, filters.workspaceId),
+      )!);
+    }
+    if (filters?.executionWorkspaceId) {
+      conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
+    }
+    if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
+    if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
+    if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
+    if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+    if (filters?.hasPlanDocument !== undefined) {
+      conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
+    }
+    if (!shouldIncludePluginOperationIssues(filters)) {
+      conditions.push(nonPluginOperationIssueCondition());
+    }
+    if (filters?.labelId) {
+      const labeledIssueIds = await db
+        .select({ issueId: issueLabels.issueId })
+        .from(issueLabels)
+        .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
+      if (labeledIssueIds.length === 0) return null;
+      conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
+    }
+    if (hasSearch) {
+      conditions.push(
+        or(
+          titleContainsMatch,
+          identifierContainsMatch,
+          descriptionContainsMatch,
+          commentContainsMatch,
+        )!,
+      );
+    }
+    if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
+      conditions.push(ne(issues.originKind, "routine_execution"));
+    }
+    conditions.push(isNull(issues.hiddenAt));
+    return {
+      conditions,
+      hasSearch,
+      titleStartsWithMatch,
+      titleContainsMatch,
+      identifierStartsWithMatch,
+      identifierContainsMatch,
+      descriptionContainsMatch,
+      commentContainsMatch,
+    };
+  }
+
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
@@ -3953,12 +4922,28 @@ export function issueService(db: Db) {
         });
       }
 
-      const conditions = [eq(issues.companyId, companyId)];
-      const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
-      assertValidAssigneeAgentFilter(assigneeAgentFilter);
-      const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
-        ? Math.max(1, Math.floor(filters.limit))
+      const where = await buildIssueListWhere(companyId, filters);
+      if (!where) return [];
+      const {
+        conditions,
+        hasSearch,
+        titleStartsWithMatch,
+        titleContainsMatch,
+        identifierStartsWithMatch,
+        identifierContainsMatch,
+        descriptionContainsMatch,
+        commentContainsMatch,
+      } = where;
+      // EDG-7566 AC1: impose a default server-side page size when no explicit limit is
+      // supplied, so an omitted `limit` can never trigger a full-table scan-and-sort.
+      // A supplied limit is clamped to ISSUE_LIST_MAX_LIMIT; trusted full reads opt in
+      // via `unbounded: true` (or use the cursor `exportPage` for large sweeps).
+      const suppliedLimit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
+        ? Math.min(ISSUE_LIST_MAX_LIMIT, Math.max(1, Math.floor(filters.limit)))
         : undefined;
+      const limit = filters?.unbounded === true
+        ? undefined
+        : (suppliedLimit ?? ISSUE_LIST_DEFAULT_LIMIT);
       const offset = typeof filters?.offset === "number" && Number.isFinite(filters.offset)
         ? Math.max(0, Math.floor(filters.offset))
         : 0;
@@ -3968,114 +4953,6 @@ export function issueService(db: Db) {
       const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
       const includeBlockedInboxAttention = filters?.includeBlockedInboxAttention === true;
-      const rawSearch = filters?.q?.trim() ?? "";
-      const hasSearch = rawSearch.length > 0;
-      const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
-      const startsWithPattern = `${escapedSearch}%`;
-      const containsPattern = `%${escapedSearch}%`;
-      const titleStartsWithMatch = sql<boolean>`${issues.title} ILIKE ${startsWithPattern} ESCAPE '\\'`;
-      const titleContainsMatch = sql<boolean>`${issues.title} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const identifierStartsWithMatch = sql<boolean>`${issues.identifier} ILIKE ${startsWithPattern} ESCAPE '\\'`;
-      const identifierContainsMatch = sql<boolean>`${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const descriptionContainsMatch = sql<boolean>`${issues.description} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const commentContainsMatch = sql<boolean>`
-        EXISTS (
-          SELECT 1
-          FROM ${issueComments}
-          WHERE ${issueComments.issueId} = ${issues.id}
-            AND ${issueComments.companyId} = ${companyId}
-            AND ${issueComments.deletedAt} IS NULL
-            AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
-        )
-      `;
-      if (filters?.descendantOf) {
-        conditions.push(sql<boolean>`
-          ${issues.id} IN (
-            WITH RECURSIVE descendants(id) AS (
-              SELECT ${issues.id}
-              FROM ${issues}
-              WHERE ${issues.companyId} = ${companyId}
-                AND ${issues.parentId} = ${filters.descendantOf}
-              UNION
-              SELECT ${issues.id}
-              FROM ${issues}
-              JOIN descendants ON ${issues.parentId} = descendants.id
-              WHERE ${issues.companyId} = ${companyId}
-            )
-            SELECT id FROM descendants
-          )
-        `);
-      }
-      const lowTrustCondition = lowTrustBoundaryIssueCondition(companyId, filters?.lowTrustBoundary);
-      if (lowTrustCondition) conditions.push(lowTrustCondition);
-      const statuses = parseStatusFilter(filters?.status);
-      if (statuses.length === 1) {
-        conditions.push(eq(issues.status, statuses[0]));
-      } else if (statuses.length > 1) {
-        conditions.push(inArray(issues.status, statuses));
-      }
-      if (assigneeAgentFilter === null) {
-        conditions.push(isNull(issues.assigneeAgentId));
-      } else if (assigneeAgentFilter) {
-        conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
-      }
-      if (filters?.participantAgentId) {
-        conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
-      }
-      if (filters?.assigneeUserId) {
-        conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
-      }
-      if (touchedByUserId) {
-        conditions.push(touchedByUserCondition(companyId, touchedByUserId));
-      }
-      if (inboxArchivedByUserId) {
-        conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
-      }
-      if (unreadForUserId) {
-        conditions.push(unreadForUserCondition(companyId, unreadForUserId));
-      }
-      if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
-      if (filters?.workspaceId) {
-        conditions.push(or(
-          eq(issues.executionWorkspaceId, filters.workspaceId),
-          eq(issues.projectWorkspaceId, filters.workspaceId),
-        )!);
-      }
-      if (filters?.executionWorkspaceId) {
-        conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
-      }
-      if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
-      if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
-      if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
-      if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
-      if (filters?.hasPlanDocument !== undefined) {
-        conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
-      }
-      if (!shouldIncludePluginOperationIssues(filters)) {
-        conditions.push(nonPluginOperationIssueCondition());
-      }
-      if (filters?.labelId) {
-        const labeledIssueIds = await db
-          .select({ issueId: issueLabels.issueId })
-          .from(issueLabels)
-          .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
-        if (labeledIssueIds.length === 0) return [];
-        conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
-      }
-      if (hasSearch) {
-        conditions.push(
-          or(
-            titleContainsMatch,
-            identifierContainsMatch,
-            descriptionContainsMatch,
-            commentContainsMatch,
-          )!,
-        );
-      }
-      if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
-        conditions.push(ne(issues.originKind, "routine_execution"));
-      }
-      conditions.push(isNull(issues.hiddenAt));
 
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`
@@ -4194,39 +5071,55 @@ export function issueService(db: Db) {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
-      const conditions = [eq(issues.companyId, companyId), isNull(issues.hiddenAt)];
-      const statuses = parseStatusFilter(filters?.status);
-      if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]!));
-      else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
-      const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
-      assertValidAssigneeAgentFilter(assigneeAgentFilter);
-      if (assigneeAgentFilter === null) {
-        conditions.push(isNull(issues.assigneeAgentId));
-      } else if (assigneeAgentFilter) {
-        conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
-      }
-      if (filters?.assigneeUserId) conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
-      if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
-      if (filters?.workspaceId) {
-        conditions.push(or(
-          eq(issues.executionWorkspaceId, filters.workspaceId),
-          eq(issues.projectWorkspaceId, filters.workspaceId),
-        )!);
-      }
-      if (filters?.executionWorkspaceId) conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
-      if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
-      if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
-      if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
-      if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
-      if (filters?.hasPlanDocument !== undefined) {
-        conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
-      }
-      if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
+      // EDG-7566 AC2: derive the count predicate from the SAME builder `list` uses, so a
+      // total_count can never drift from what `list` returns for the same filters. (The
+      // prior hand-rolled count omitted descendantOf / participant / touchedBy / label /
+      // search / excludeRoutineExecutions / lowTrustBoundary — a silent count mismatch.)
+      const where = await buildIssueListWhere(companyId, filters);
+      if (!where) return 0;
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
         .from(issues)
-        .where(and(...conditions));
+        .where(and(...where.conditions));
       return Number(row?.count ?? 0);
+    },
+
+    // EDG-7566 AC3: first-class keyset/cursor bulk export for full sweeps. Keyset on
+    // (created_at, id) DESC is deep-offset-safe — no offset degradation on large tables —
+    // and returns a continuation cursor instead of re-pressuring the API with offset walks.
+    // Intentionally lean: no label/run/stats enrichment (those are list-view concerns).
+    exportPage: async (
+      companyId: string,
+      options?: { cursor?: string | null; limit?: number; filters?: IssueFilters },
+    ): Promise<{ items: IssueExportRow[]; nextCursor: string | null; hasMore: boolean }> => {
+      const requested = typeof options?.limit === "number"
+        && Number.isFinite(options.limit)
+        && options.limit > 0
+        ? Math.floor(options.limit)
+        : ISSUE_EXPORT_DEFAULT_LIMIT;
+      const pageSize = Math.min(ISSUE_EXPORT_MAX_LIMIT, Math.max(1, requested));
+      const where = await buildIssueListWhere(companyId, options?.filters);
+      if (!where) return { items: [], nextCursor: null, hasMore: false };
+      const conditions = [...where.conditions];
+      const cursor = decodeIssueExportCursor(options?.cursor);
+      if (cursor) {
+        // Strictly after the cursor in DESC (created_at, id) order → row-tuple less-than.
+        // Explicit casts keep the row-comparison param types unambiguous for the driver.
+        conditions.push(
+          sql`(${issues.createdAt}, ${issues.id}) < (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`,
+        );
+      }
+      const rows = await db
+        .select(issueExportSelect)
+        .from(issues)
+        .where(and(...conditions))
+        .orderBy(desc(issues.createdAt), desc(issues.id))
+        .limit(pageSize + 1);
+      const hasMore = rows.length > pageSize;
+      const items = hasMore ? rows.slice(0, pageSize) : rows;
+      const last = items[items.length - 1];
+      const nextCursor = hasMore && last ? encodeIssueExportCursor(last.createdAt, last.id) : null;
+      return { items, nextCursor, hasMore };
     },
 
     countUnreadTouchedByUser: async (
@@ -4877,7 +5770,17 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      // Claim-time GH-mirror idempotency (EDG-7537/B / EDG-7631): one GH issue → one EDG mirror.
+      // Pre-check avoids burning an issue number on a re-mirror; the 23505 catch below closes the
+      // race window backed by the issues_active_github_mirror_uq partial unique index.
+      const mirrorOriginId =
+        data.originKind === GITHUB_MIRROR_ORIGIN_KIND && data.originId ? data.originId : null;
+      if (mirrorOriginId) {
+        const existingMirror = await findActiveGithubMirrorIssue(db, companyId, mirrorOriginId);
+        if (existingMirror) return existingMirror;
+      }
+      try {
+        return await db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
@@ -5090,7 +5993,16 @@ export function issueService(db: Db) {
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
-      });
+        });
+      } catch (error) {
+        // A concurrent re-mirror raced past the pre-check and lost the unique-index insert.
+        // Re-fetch the winning row (outside the aborted transaction) and return it as a no-op.
+        if (mirrorOriginId && isUniqueGithubMirrorConflict(error)) {
+          const raced = await findActiveGithubMirrorIssue(db, companyId, mirrorOriginId);
+          if (raced) return raced;
+        }
+        throw error;
+      }
     },
 
     update: async (
@@ -5171,6 +6083,10 @@ export function issueService(db: Db) {
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
+      const nextExecutionState =
+        issueData.executionState !== undefined ? issueData.executionState : existing.executionState;
+      const nextDescription =
+        issueData.description !== undefined ? issueData.description : existing.description;
       const nextExecutionWorkspacePreference =
         issueData.executionWorkspacePreference !== undefined
           ? issueData.executionWorkspacePreference
@@ -5201,6 +6117,134 @@ export function issueService(db: Db) {
       if (nextExecutionWorkspaceId) {
         if (!validatedExecutionWorkspace) {
           await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
+        }
+      }
+
+      const nextStatus = issueData.status ?? existing.status;
+      const requiresRepoBackedTerminalGate =
+        !actorUserId && (nextStatus === "done" || (nextStatus === "in_review" && Boolean(nextAssigneeUserId)));
+      if (requiresRepoBackedTerminalGate) {
+        const explicitExemption = readTerminalStateExemption(nextExecutionState);
+        if (!explicitExemption) {
+          const repoBinding = await resolveIssueRepoBinding({
+            dbOrTx,
+            companyId: existing.companyId,
+            projectId: nextProjectId,
+            projectWorkspaceId: nextProjectWorkspaceId,
+            executionWorkspaceId: nextExecutionWorkspaceId,
+          });
+          if (repoBinding) {
+            const latestAgentComment = await dbOrTx
+              .select({ body: issueComments.body })
+              .from(issueComments)
+              .where(and(
+                eq(issueComments.issueId, existing.id),
+                sql`${issueComments.authorAgentId} is not null`,
+              ))
+              .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+              .limit(1)
+              .then((rows: Array<{ body: string }>) => rows[0]?.body ?? null);
+            const gateSignals = mergeTerminalGateSignals(nextDescription, latestAgentComment);
+            const verificationRepo = gateSignals.subjectRepo ?? repoBinding;
+            const routineLabelRows = await dbOrTx
+              .select({ name: labels.name })
+              .from(issueLabels)
+              .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+              .where(eq(issueLabels.issueId, existing.id));
+            const routineExecutionTerminalAutoExempt = canAutoExemptRoutineExecutionTerminalClose({
+              originKind: existing.originKind,
+              signals: gateSignals,
+              description: nextDescription,
+              latestAgentComment,
+              labelNames: routineLabelRows.map((row: { name: string }) => row.name),
+            });
+            if (routineExecutionTerminalAutoExempt) {
+              // EDG-6360: routine_execution issues with no eligible code work
+              // close cleanly without merged-PR proof, instead of erroring or
+              // looping at the gate.
+            } else if (gateSignals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(gateSignals.deliverable)) {
+              const evidence = gateSignals.terminalEvidence;
+              const evidenceExists = evidence
+                ? await issueDocumentRevisionExists({
+                    dbOrTx,
+                    companyId: existing.companyId,
+                    issueId: existing.id,
+                    key: evidence.key,
+                    revisionNumber: evidence.revisionNumber,
+                  })
+                : false;
+              if (!evidenceExists) {
+                const reason = evidence
+                  ? `Paperclip refused a terminal transition for repo-backed ${gateSignals.deliverable} issue ${existing.identifier ?? existing.id} because terminalEvidence document:${evidence.key}#rev:${evidence.revisionNumber} does not resolve to an issue document revision.`
+                  : `Paperclip refused a terminal transition for repo-backed ${gateSignals.deliverable} issue ${existing.identifier ?? existing.id} because structured terminalEvidence is required.`;
+                await recordRepoBackedTerminalGateComment({
+                  dbHandle: db,
+                  issueId: existing.id,
+                  companyId: existing.companyId,
+                  body: reason,
+                });
+                throw unprocessable(
+                  "Repo-backed non-code terminal transitions require document-backed terminalEvidence.",
+                  {
+                    code: REPO_BACKED_TERMINAL_GATE_CODE,
+                    repo: repoLabel(verificationRepo),
+                    missing: "terminal_evidence",
+                  },
+                );
+              }
+            } else {
+              const commentBodies = await dbOrTx
+                .select({ body: issueComments.body })
+                .from(issueComments)
+                .where(eq(issueComments.issueId, existing.id));
+              const pullNumbers = new Set<number>();
+              for (const pullNumber of extractMatchingPullRequestNumbers(nextDescription, verificationRepo)) {
+                pullNumbers.add(pullNumber);
+              }
+              for (const row of commentBodies) {
+                for (const pullNumber of extractMatchingPullRequestNumbers(row.body, verificationRepo)) {
+                  pullNumbers.add(pullNumber);
+                }
+              }
+
+              let verifiedMergedPull = false;
+              const verificationFailures: string[] = [];
+              for (const pullNumber of pullNumbers) {
+                try {
+                  if (await verifyMergedPullRequestForRepo({ repo: verificationRepo, pullNumber })) {
+                    verifiedMergedPull = true;
+                    break;
+                  }
+                } catch (error) {
+                  verificationFailures.push(error instanceof Error ? error.message : String(error));
+                }
+              }
+              const verificationFailure = verificationFailures.length > 0 ? verificationFailures.join("; ") : null;
+
+              if (!verifiedMergedPull) {
+                const targetRepoLabel = repoLabel(verificationRepo);
+                const reason = verificationFailure
+                  ? `Paperclip could not verify a merged PR for repo-backed issue close on ${targetRepoLabel}: ${verificationFailure}`
+                  : pullNumbers.size === 0
+                    ? `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because the issue thread does not reference any PR URL for ${targetRepoLabel}.`
+                    : `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because none of the referenced PRs for ${targetRepoLabel} are verified merged.`;
+                await recordRepoBackedTerminalGateComment({
+                  dbHandle: db,
+                  issueId: existing.id,
+                  companyId: existing.companyId,
+                  body: reason,
+                });
+                throw unprocessable(
+                  "Repo-backed issues may only move to a terminal state after a verified merged PR or explicit exemption.",
+                  {
+                    code: REPO_BACKED_TERMINAL_GATE_CODE,
+                    repo: targetRepoLabel,
+                    missing: verificationFailure ? "merged_pr_verification_failed" : "merged_pr",
+                  },
+                );
+              }
+            }
+          }
         }
       }
 
@@ -5504,7 +6548,11 @@ export function issueService(db: Db) {
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
 
-      const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
+      const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id], {
+        // EVF patch #6 defers to v529 tree-control: when an active pause-hold gate
+        // governs this checkout, non-terminal children do not block it.
+        includeChildBlockers: !activePauseHold,
+      });
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
       if (unresolvedBlockerIssueIds.length > 0) {
         throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });

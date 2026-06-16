@@ -992,11 +992,14 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
-  it("does not promote a scheduled retry after the issue is handed to a human owner", async () => {
+  it("cancels a stale queued retry after release and reassignment before waking the new assignee", async () => {
     const companyId = randomUUID();
     const oldAgentId = randomUUID();
+    const newAgentId = randomUUID();
     const issueId = randomUUID();
     const sourceRunId = randomUUID();
+    const staleQueuedRunId = randomUUID();
+    const staleWakeupId = randomUUID();
     const now = new Date("2026-04-20T14:30:00.000Z");
 
     await db.insert(companies).values({
@@ -1006,22 +1009,40 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values({
-      id: oldAgentId,
-      companyId,
-      name: "ClaudeCoder",
-      role: "engineer",
-      status: "active",
-      adapterType: "claude_local",
-      adapterConfig: {},
-      runtimeConfig: {
-        heartbeat: {
-          wakeOnDemand: true,
-          maxConcurrentRuns: 1,
+    await db.insert(agents).values([
+      {
+        id: oldAgentId,
+        companyId,
+        name: "ClaudeCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
         },
+        permissions: {},
       },
-      permissions: {},
-    });
+      {
+        id: newAgentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
+        },
+        permissions: {},
+      },
+    ]);
 
     await db.insert(heartbeatRuns).values({
       id: sourceRunId,
@@ -1044,32 +1065,95 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Retry human handoff",
-      status: "in_progress",
+      title: "Queued retry reassignment",
+      status: "todo",
       priority: "medium",
-      assigneeAgentId: oldAgentId,
-      executionRunId: sourceRunId,
-      executionAgentNameKey: "claudecoder",
-      executionLockedAt: now,
+      assigneeAgentId: newAgentId,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
       issueNumber: 1,
-      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-3`,
-    });
-
-    const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
-      now,
-      random: () => 0.5,
-    });
-    expect(scheduled.outcome).toBe("scheduled");
-    if (scheduled.outcome !== "scheduled") return;
-
-    await db.update(issues).set({
-      assigneeAgentId: null,
-      assigneeUserId: "local-board",
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-queue`,
       updatedAt: now,
-    }).where(eq(issues.id, issueId));
+      createdAt: now,
+    });
 
-    const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
-    expect(promotion).toEqual({ promoted: 0, runIds: [] });
+    await db.insert(agentWakeupRequests).values({
+      id: staleWakeupId,
+      companyId,
+      agentId: oldAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "missing_issue_comment",
+      payload: {
+        issueId,
+        retryOfRunId: sourceRunId,
+        retryReason: "missing_issue_comment",
+      },
+      status: "queued",
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      runId: staleQueuedRunId,
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: staleQueuedRunId,
+      companyId,
+      agentId: oldAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: staleWakeupId,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_comment_missing_retry",
+        retryOfRunId: sourceRunId,
+        retryReason: "missing_issue_comment",
+      },
+      retryOfRunId: sourceRunId,
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    // Keep the new agent's queue from auto-claiming/executing during this unit test.
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: 5 }, () => ({
+        id: randomUUID(),
+        companyId,
+        agentId: newAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: {
+          wakeReason: "test_busy_slot",
+        },
+        startedAt: now,
+        updatedAt: now,
+        createdAt: now,
+      })),
+    );
+
+    const newAssigneeRun = await heartbeat.wakeup(newAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {
+        issueId,
+        mutation: "update",
+      },
+      contextSnapshot: {
+        issueId,
+        source: "issue.update",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(newAssigneeRun).not.toBeNull();
+    expect(newAssigneeRun?.agentId).toBe(newAgentId);
+    expect(newAssigneeRun?.status).toBe("queued");
 
     const oldRetry = await db
       .select({
@@ -1077,27 +1161,30 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         errorCode: heartbeatRuns.errorCode,
       })
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .where(eq(heartbeatRuns.id, staleQueuedRunId))
       .then((rows) => rows[0] ?? null);
     expect(oldRetry).toEqual({
       status: "cancelled",
       errorCode: "issue_reassigned",
     });
 
-    const issue = await db
+    const staleWakeup = await db
       .select({
-        assigneeAgentId: issues.assigneeAgentId,
-        assigneeUserId: issues.assigneeUserId,
-        executionRunId: issues.executionRunId,
+        status: agentWakeupRequests.status,
+        error: agentWakeupRequests.error,
       })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, staleWakeupId))
+      .then((rows) => rows[0] ?? null);
+    expect(staleWakeup?.status).toBe("cancelled");
+    expect(staleWakeup?.error).toContain("reassigned");
+
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue).toMatchObject({
-      assigneeAgentId: null,
-      assigneeUserId: "local-board",
-      executionRunId: null,
-    });
+    expect(issue?.executionRunId).toBeNull();
   });
 
   it("does not promote a scheduled retry after the issue is cancelled", async () => {

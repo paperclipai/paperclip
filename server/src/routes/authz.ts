@@ -1,6 +1,8 @@
 import type { Request } from "express";
 import { forbidden, unauthorized } from "../errors.js";
 
+export const LOCAL_TRUSTED_BOARD_AUDIT_ACTOR_ID = "dan-board";
+
 export function assertAuthenticated(req: Request) {
   if (req.actor.type === "none") {
     throw unauthorized();
@@ -87,7 +89,10 @@ export function getActorInfo(req: Request) {
 
   return {
     actorType: "user" as const,
-    actorId: req.actor.userId ?? "board",
+    actorId:
+      req.actor.source === "local_implicit"
+        ? LOCAL_TRUSTED_BOARD_AUDIT_ACTOR_ID
+        : req.actor.userId ?? "board",
     agentId: null,
     runId: req.actor.runId ?? null,
   };

@@ -9,12 +9,14 @@ const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const blockerIssueId = "88888888-8888-4888-8888-888888888888";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   create: vi.fn(),
   createChild: vi.fn(),
+  getDependencyReadiness: vi.fn(),
   getAttachmentById: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
@@ -448,6 +450,13 @@ describe("agent issue mutation checkout ownership", () => {
       parentBlockerAdded: false,
     }));
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId,
+      isDependencyReady: true,
+      blockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+    });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -1069,6 +1078,56 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalled();
     expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalled();
+  });
+
+  it("clears a stale recovery action when an assigned blocked issue only updates blocker state", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
+    );
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
+      ...patch,
+    }));
+    mockIssueService.getRelationSummaries
+      .mockResolvedValueOnce({ blockedBy: [], blocks: [] })
+      .mockResolvedValueOnce({
+        blockedBy: [{
+          id: blockerIssueId,
+          identifier: "PAP-2",
+          title: "External blocker",
+          status: "todo",
+          priority: "high",
+          assigneeAgentId: null,
+          assigneeUserId: "board-user",
+        }],
+        blocks: [],
+      });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId,
+      isDependencyReady: false,
+      blockerIssueIds: [blockerIssueId],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+    });
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerAgentId: peerAgentId,
+    });
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [blockerIssueId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalledWith({
+      companyId,
+      sourceIssueId: issueId,
+      actionId: recoveryActionId,
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote:
+        "Recovery action became stale because the source issue's blocker state was updated without restoring a live execution path.",
+    });
   });
 
   it("wakes the assigned agent when recovery resolution restores a source issue to todo", async () => {

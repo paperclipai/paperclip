@@ -3366,7 +3366,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         continue;
       }
       selectedProjects.set(match.id, match);
-      const projectIssues = await issuesSvc.list(companyId, { projectId: match.id });
+      // Full export: opt out of the default list page bound (EDG-7566 AC1) so the export
+      // captures every issue in the project, not just the first default page.
+      const projectIssues = await issuesSvc.list(companyId, { projectId: match.id, unbounded: true });
       for (const issue of projectIssues) {
         selectedIssues.set(issue.id, issue);
       }
@@ -3382,7 +3384,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.issues && selectedIssues.size === 0) {
-      const allIssues = await issuesSvc.list(companyId);
+      // Full export: opt out of the default list page bound (EDG-7566 AC1).
+      const allIssues = await issuesSvc.list(companyId, { unbounded: true });
       for (const issue of allIssues) {
         selectedIssues.set(issue.id, issue);
         if (issue.projectId) {

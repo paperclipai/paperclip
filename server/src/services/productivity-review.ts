@@ -19,6 +19,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import { hasScheduledMonitor } from "./recovery/issue-graph-liveness.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
@@ -127,6 +128,24 @@ function truncateInline(value: string | null | undefined, max = 260) {
   if (!value) return "";
   const compact = value.replace(/\s+/g, " ").trim();
   return compact.length <= max ? compact : `${compact.slice(0, max - 3)}...`;
+}
+
+function normalizeForStandingRecordMatch(value: string | null | undefined) {
+  return (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function isStandingRecordIssue(issue: Pick<IssueRow, "title" | "description">) {
+  const title = normalizeForStandingRecordMatch(issue.title);
+  const description = normalizeForStandingRecordMatch(issue.description);
+  if (!title && !description) return false;
+  if (title.includes("standing record")) return true;
+  const mentionsStandingRecord = description.includes("standing record") ||
+    description.includes("standing-record semantics");
+  if (!mentionsStandingRecord) return false;
+  return description.includes("intentionally long-lived") ||
+    description.includes("remains `in_progress`") ||
+    description.includes("remains in_progress") ||
+    description.includes("long_active_duration productivity-review children");
 }
 
 function readPositiveInteger(value: number, fallback: number) {
@@ -484,6 +503,19 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
     if (!trigger) return null;
+    // EDG-7692: a `long_active_duration` trigger on an issue with a valid future-scheduled
+    // native monitor is a deliberately parked standing-record (e.g. an [EAB-WATCH] record parked
+    // months out) — its active episode is permanently "long" by design, so suppress the review.
+    // The monitor-metadata predicate is the objective, drift-proof path (same one EDG-7047 added
+    // for stranded-recovery); `isStandingRecordIssue` (description/title text) is retained only as
+    // a legacy fallback for parked records that carry no native monitor. `no_comment_streak` /
+    // `high_churn` triggers are unaffected, so genuine churn on a parked issue still surfaces.
+    if (
+      trigger === "long_active_duration" &&
+      (hasScheduledMonitor(sourceIssue, now.getTime()) || isStandingRecordIssue(sourceIssue))
+    ) {
+      return null;
+    }
 
     const triggerReasons: string[] = [];
     if (noComment) triggerReasons.push(`${noCommentStreak} consecutive completed issue-linked runs had no run-created issue comment`);

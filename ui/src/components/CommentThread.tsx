@@ -162,9 +162,13 @@ function parseReassignment(target: string): CommentReassignment | null {
   return null;
 }
 
-function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
+function shouldImplicitlyReopenComment(
+  issueStatus: string | undefined,
+  assigneeValue: string,
+  assigneeChanged: boolean,
+) {
   const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
-  return resumesToTodo && assigneeValue.startsWith("agent:");
+  return resumesToTodo && assigneeChanged && assigneeValue.startsWith("agent:");
 }
 
 function humanizeValue(value: string | null): string {
@@ -898,6 +902,7 @@ export function CommentThread({
     const reopen = shouldImplicitlyReopenComment(
       issueStatus,
       hasReassignment ? reassignTarget : currentAssigneeValue,
+      hasReassignment,
     ) ? true : undefined;
     const submittedBody = trimmed;
 

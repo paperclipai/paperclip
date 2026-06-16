@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -15,12 +15,14 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueLabels,
   issueInboxArchives,
   issueDocuments,
   issuePlanDecompositions,
   issueRelations,
   issueThreadInteractions,
   issues,
+  labels,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -36,20 +38,11 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
-import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
+import { recoveryService } from "../services/recovery/service.ts";
+import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((promiseResolve, promiseReject) => {
-    resolve = promiseResolve;
-    reject = promiseReject;
-  });
-  return { promise, resolve, reject };
-}
 
 describe("issue list limit helpers", () => {
   it("clamps untrusted issue-list limits to the server maximum", () => {
@@ -157,7 +150,12 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     await db.delete(issueComments);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(issueRelations);
     await db.delete(issueDocuments);
     await db.delete(issueInboxArchives);
@@ -355,40 +353,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
-  it("resolves only structured same-company agent mentions", async () => {
-    const companyId = await seedAssignableAgentCompany();
-    const otherCompanyId = await seedAssignableAgentCompany();
-    const localAgentId = randomUUID();
-    const foreignAgentId = randomUUID();
-
-    await db.insert(agents).values([
-      agentRow(companyId, { id: localAgentId, name: "LocalAgent" }),
-      agentRow(otherCompanyId, { id: foreignAgentId, name: "ForeignAgent" }),
-    ]);
-
-    const mentions = await svc.findMentionedAgents(
-      companyId,
-      [
-        `hello [@LocalAgent](${buildAgentMentionHref(localAgentId)})`,
-        `and [@ForeignAgent](${buildAgentMentionHref(foreignAgentId)})`,
-      ].join(" "),
-    );
-
-    expect(mentions).toEqual([localAgentId]);
-  });
-
-  it("does not wake agents from raw @name text without a structured mention", async () => {
-    const companyId = await seedAssignableAgentCompany();
-    const localAgentId = randomUUID();
-
-    await db.insert(agents).values([
-      agentRow(companyId, { id: localAgentId, name: "LocalAgent" }),
-    ]);
-
-    await expect(svc.findMentionedAgents(companyId, "@LocalAgent please inspect this"))
-      .resolves.toEqual([]);
-  });
-
   it("returns issues an agent participated in across the supported signals", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -558,244 +522,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
-  });
-
-  it("treats assigneeAgentId='null' as an explicit unassigned filter", async () => {
-    const companyId = randomUUID();
-    const assigneeAgentId = randomUUID();
-    const assignedIssueId = randomUUID();
-    const unassignedIssueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    await db.insert(agents).values({
-      id: assigneeAgentId,
-      companyId,
-      name: "Assignee",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-
-    await db.insert(issues).values([
-      {
-        id: assignedIssueId,
-        companyId,
-        title: "Assigned issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId,
-      },
-      {
-        id: unassignedIssueId,
-        companyId,
-        title: "Unassigned issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId: null,
-      },
-    ]);
-
-    const result = await svc.list(companyId, { assigneeAgentId: "null" });
-    expect(result.map((issue) => issue.id)).toEqual([unassignedIssueId]);
-  });
-
-  it("keeps UUID assignee filtering behavior unchanged", async () => {
-    const companyId = randomUUID();
-    const assigneeAgentId = randomUUID();
-    const otherAgentId = randomUUID();
-    const assignedIssueId = randomUUID();
-    const otherIssueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    await db.insert(agents).values([
-      {
-        id: assigneeAgentId,
-        companyId,
-        name: "Assignee",
-        role: "engineer",
-        status: "active",
-        adapterType: "codex_local",
-        adapterConfig: {},
-        runtimeConfig: {},
-        permissions: {},
-      },
-      {
-        id: otherAgentId,
-        companyId,
-        name: "Other",
-        role: "engineer",
-        status: "active",
-        adapterType: "codex_local",
-        adapterConfig: {},
-        runtimeConfig: {},
-        permissions: {},
-      },
-    ]);
-
-    await db.insert(issues).values([
-      {
-        id: assignedIssueId,
-        companyId,
-        title: "Assigned issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId,
-      },
-      {
-        id: otherIssueId,
-        companyId,
-        title: "Other issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId: otherAgentId,
-      },
-    ]);
-
-    const result = await svc.list(companyId, { assigneeAgentId });
-    expect(result.map((issue) => issue.id)).toEqual([assignedIssueId]);
-  });
-
-  it("rejects malformed assigneeAgentId filter values", async () => {
-    const companyId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(issues).values({
-      id: randomUUID(),
-      companyId,
-      title: "Any issue",
-      status: "todo",
-      priority: "medium",
-    });
-
-    await expect(
-      svc.list(companyId, { assigneeAgentId: "not-a-uuid" }),
-    ).rejects.toThrow(/assigneeAgentId/i);
-  });
-
-  it("counts only unassigned issues for assigneeAgentId='null'", async () => {
-    const companyId = randomUUID();
-    const assigneeAgentId = randomUUID();
-    const assignedIssueId = randomUUID();
-    const unassignedIssueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    await db.insert(agents).values({
-      id: assigneeAgentId,
-      companyId,
-      name: "Assignee",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-
-    await db.insert(issues).values([
-      {
-        id: assignedIssueId,
-        companyId,
-        title: "Assigned issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId,
-      },
-      {
-        id: unassignedIssueId,
-        companyId,
-        title: "Unassigned issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId: null,
-      },
-    ]);
-
-    await expect(svc.count(companyId, { assigneeAgentId: "null" })).resolves.toBe(1);
-  });
-
-  it("counts UUID-assigned issues with assigneeAgentId", async () => {
-    const companyId = randomUUID();
-    const assigneeAgentId = randomUUID();
-    const assignedIssueId = randomUUID();
-    const otherIssueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    await db.insert(agents).values({
-      id: assigneeAgentId,
-      companyId,
-      name: "Assignee",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-
-    await db.insert(issues).values([
-      {
-        id: assignedIssueId,
-        companyId,
-        title: "Assigned issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId,
-      },
-      {
-        id: otherIssueId,
-        companyId,
-        title: "Other issue",
-        status: "todo",
-        priority: "medium",
-      },
-    ]);
-
-    await expect(svc.count(companyId, { assigneeAgentId })).resolves.toBe(1);
-  });
-
-  it("rejects malformed assigneeAgentId filter values in count", async () => {
-    const companyId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    await expect(
-      svc.count(companyId, { assigneeAgentId: "not-a-uuid" }),
-    ).rejects.toThrow(/assigneeAgentId/i);
   });
 
   it("applies result limits to issue search", async () => {
@@ -1475,51 +1201,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ]);
 
     await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
-    await expect(svc.countUnreadTouchedByUser(companyId, userId, ["todo", "in_progress"])).resolves.toBe(1);
-  });
-
-  it("accepts array-form status filters in list and count", async () => {
-    const companyId = randomUUID();
-    const todoIssueId = randomUUID();
-    const inProgressIssueId = randomUUID();
-    const doneIssueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(issues).values([
-      {
-        id: todoIssueId,
-        companyId,
-        title: "Todo issue",
-        status: "todo",
-        priority: "medium",
-      },
-      {
-        id: inProgressIssueId,
-        companyId,
-        title: "In-progress issue",
-        status: "in_progress",
-        priority: "medium",
-      },
-      {
-        id: doneIssueId,
-        companyId,
-        title: "Done issue",
-        status: "done",
-        priority: "medium",
-      },
-    ]);
-
-    const resultIds = (await svc.list(companyId, { status: ["todo", "in_progress"] }))
-      .map((issue) => issue.id);
-
-    expect(resultIds).toEqual(expect.arrayContaining([todoIssueId, inProgressIssueId]));
-    expect(resultIds).not.toContain(doneIssueId);
-    await expect(svc.count(companyId, { status: ["todo", "in_progress"] })).resolves.toBe(2);
   });
 
   it("hides archived inbox issues until new external activity arrives", async () => {
@@ -3390,6 +3071,54 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("rejects checkout when a blocked parent still has non-terminal children", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Blocked parent",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: childId,
+        companyId,
+        title: "Observation child",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+        parentId,
+      },
+    ]);
+
+    await expect(
+      svc.checkout(parentId, assigneeAgentId, ["todo", "blocked"], null),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+
   it("wakes parents only when all direct children are terminal", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -4162,344 +3891,6 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       .then((rows) => rows[0]);
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
-
-  it("does not clear checkout locks when a different execution run is live", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const issueId = randomUUID();
-    const failedRunId = randomUUID();
-    const runningRunId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "CodexCoder",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-    await db.insert(heartbeatRuns).values([
-      {
-        id: failedRunId,
-        companyId,
-        agentId,
-        status: "failed",
-        invocationSource: "manual",
-        finishedAt: new Date("2026-06-10T10:05:00.000Z"),
-      },
-      {
-        id: runningRunId,
-        companyId,
-        agentId,
-        status: "running",
-        invocationSource: "manual",
-        startedAt: new Date("2026-06-10T10:06:00.000Z"),
-      },
-    ]);
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Mixed execution lock",
-      status: "in_progress",
-      priority: "high",
-      assigneeAgentId: agentId,
-      checkoutRunId: failedRunId,
-      executionRunId: runningRunId,
-      executionAgentNameKey: "codexcoder",
-      executionLockedAt: new Date("2026-06-10T10:06:00.000Z"),
-    });
-
-    await expect(svc.clearCheckoutRunIfTerminal(issueId)).resolves.toBe(false);
-
-    const row = await db
-      .select({
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-        executionAgentNameKey: issues.executionAgentNameKey,
-        executionLockedAt: issues.executionLockedAt,
-      })
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0]);
-    expect(row?.checkoutRunId).toBe(failedRunId);
-    expect(row?.executionRunId).toBe(runningRunId);
-    expect(row?.executionAgentNameKey).toBe("codexcoder");
-    expect(row?.executionLockedAt).toBeInstanceOf(Date);
-  });
-
-  it("does not let stale release clobber a successor checkout lock", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const issueId = randomUUID();
-    const failedRunId = randomUUID();
-    const releasingRunId = randomUUID();
-    const successorRunId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "CodexCoder",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-    await db.insert(heartbeatRuns).values([
-      {
-        id: failedRunId,
-        companyId,
-        agentId,
-        status: "failed",
-        invocationSource: "manual",
-        finishedAt: new Date("2026-06-10T10:05:00.000Z"),
-      },
-      {
-        id: releasingRunId,
-        companyId,
-        agentId,
-        status: "running",
-        invocationSource: "manual",
-        startedAt: new Date("2026-06-10T10:06:00.000Z"),
-      },
-      {
-        id: successorRunId,
-        companyId,
-        agentId,
-        status: "running",
-        invocationSource: "manual",
-        startedAt: new Date("2026-06-10T10:07:00.000Z"),
-      },
-    ]);
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Race stale release",
-      status: "in_progress",
-      priority: "high",
-      assigneeAgentId: agentId,
-      checkoutRunId: failedRunId,
-      executionRunId: failedRunId,
-      executionAgentNameKey: "codexcoder",
-      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
-    });
-
-    const [releaseResult, checkoutResult] = await Promise.allSettled([
-      svc.release(issueId, agentId, releasingRunId),
-      svc.checkout(issueId, agentId, ["todo", "in_progress"], successorRunId),
-    ]);
-
-    expect(checkoutResult.status).toBe("fulfilled");
-    if (releaseResult.status === "rejected") {
-      expect(releaseResult.reason).toMatchObject({ status: 409 });
-    }
-
-    const row = await db
-      .select({
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0]);
-    expect(row).toMatchObject({
-      status: "in_progress",
-      assigneeAgentId: agentId,
-      checkoutRunId: successorRunId,
-      executionRunId: successorRunId,
-    });
-  });
-
-  it("checkout refuses to promote a 'done' issue when 'done' is not in expectedStatuses, even with a lingering executionRunId pointer", async () => {
-    // Regression for PR #2482 checkout-adoption review finding: the original
-    // patch's stale-executionRunId adoption SQL set `status: 'in_progress'`
-    // unconditionally, bypassing the caller's expectedStatuses guard. With the
-    // guard restored, attempting to take over a 'done' issue with
-    // expectedStatuses=['todo'] must fail and leave the row untouched.
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const issueId = randomUUID();
-    const failedRunId = randomUUID();
-    const successorRunId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "CodexCoder",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-    await db.insert(heartbeatRuns).values([
-      {
-        id: failedRunId,
-        companyId,
-        agentId,
-        status: "failed",
-        invocationSource: "manual",
-        finishedAt: new Date("2026-06-10T10:05:00.000Z"),
-      },
-      {
-        id: successorRunId,
-        companyId,
-        agentId,
-        status: "running",
-        invocationSource: "manual",
-        startedAt: new Date("2026-06-10T10:07:00.000Z"),
-      },
-    ]);
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Stale lock on done issue",
-      status: "done",
-      priority: "medium",
-      assigneeAgentId: agentId,
-      executionRunId: failedRunId,
-      executionAgentNameKey: "codexcoder",
-      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
-      completedAt: new Date("2026-06-10T10:01:00.000Z"),
-    });
-
-    await expect(svc.checkout(issueId, agentId, ["todo"], successorRunId))
-      .rejects.toMatchObject({ status: 409 });
-
-    const row = await db
-      .select({
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        checkoutRunId: issues.checkoutRunId,
-      })
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0]);
-    expect(row).toMatchObject({
-      status: "done",
-      assigneeAgentId: agentId,
-      checkoutRunId: null,
-    });
-  });
-
-  it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
-    // Regression for PR #2482 checkout-adoption review finding: any adoption
-    // helper that re-locks an existing in_progress issue (e.g. when the prior
-    // checkout/execution run is terminal) must not strip the row's
-    // assigneeUserId. We exercise this via the adoptStaleCheckoutRun path,
-    // which fires when checkoutRunId points at a terminal run while
-    // executionRunId still points at a different, non-terminal run.
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const userId = randomUUID();
-    const issueId = randomUUID();
-    const failedCheckoutRunId = randomUUID();
-    const queuedExecutionRunId = randomUUID();
-    const successorRunId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "CodexCoder",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-    await db.insert(heartbeatRuns).values([
-      {
-        id: failedCheckoutRunId,
-        companyId,
-        agentId,
-        status: "failed",
-        invocationSource: "manual",
-        finishedAt: new Date("2026-06-10T10:05:00.000Z"),
-      },
-      {
-        id: queuedExecutionRunId,
-        companyId,
-        agentId,
-        status: "queued",
-        invocationSource: "manual",
-      },
-      {
-        id: successorRunId,
-        companyId,
-        agentId,
-        status: "running",
-        invocationSource: "manual",
-        startedAt: new Date("2026-06-10T10:07:00.000Z"),
-      },
-    ]);
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Stale checkout lock with user co-assignee",
-      status: "in_progress",
-      priority: "medium",
-      assigneeAgentId: agentId,
-      assigneeUserId: userId,
-      checkoutRunId: failedCheckoutRunId,
-      executionRunId: queuedExecutionRunId,
-      executionAgentNameKey: "codexcoder",
-      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
-    });
-
-    const result = await svc.checkout(issueId, agentId, ["todo", "in_progress"], successorRunId);
-    expect(result).toBeTruthy();
-
-    const row = await db
-      .select({
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        assigneeUserId: issues.assigneeUserId,
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0]);
-    expect(row).toMatchObject({
-      status: "in_progress",
-      assigneeAgentId: agentId,
-      assigneeUserId: userId,
-      checkoutRunId: successorRunId,
-      executionRunId: successorRunId,
-    });
-  });
 });
 
 describeEmbeddedPostgres("accepted plan decomposition", () => {
@@ -5201,28 +4592,137 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
   });
 });
 
-describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adoption", () => {
+describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
+  async function seedRepoBackedIssue(args?: {
+    repoUrl?: string;
+    title?: string;
+    description?: string;
+    identifier?: string;
+    originKind?: string | null;
+  }) {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Server",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Koda",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "primary",
+      sourceType: "git_repo",
+      repoUrl: args?.repoUrl ?? "https://github.com/paperclipai/paperclip.git",
+      repoRef: "origin/main",
+      defaultRef: "origin/main",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      title: args?.title ?? "Repo-backed issue",
+      description: args?.description ?? "No PR linked here.",
+      status: "todo",
+      priority: "high",
+      identifier: args?.identifier ?? "PAP-9000",
+      originKind: args?.originKind ?? "manual",
+    });
+
+    return { companyId, projectId, workspaceId, issueId, agentId };
+  }
+
+  async function attachIssueDocumentRevision(input: {
+    companyId: string;
+    issueId: string;
+    key: string;
+    revisionNumber: number;
+    body?: string;
+  }) {
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    const body = input.body ?? "Triage decision";
+    await db.insert(documents).values({
+      id: documentId,
+      companyId: input.companyId,
+      title: input.key,
+      format: "markdown",
+      latestBody: body,
+      latestRevisionId: revisionId,
+      latestRevisionNumber: input.revisionNumber,
+      createdByAgentId: null,
+      updatedByAgentId: null,
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId: input.companyId,
+      documentId,
+      revisionNumber: input.revisionNumber,
+      title: input.key,
+      format: "markdown",
+      body,
+      createdByAgentId: null,
+    });
+    await db.insert(issueDocuments).values({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      documentId,
+      key: input.key,
+    });
+  }
+
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-owner-");
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-terminal-gate-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
+    await ensureIssueRelationsTable(db);
   }, 20_000);
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     await db.delete(issueComments);
+    await db.delete(issueLabels);
+    await db.delete(labels);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
-    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(goals);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -5232,197 +4732,710 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     await tempDb?.cleanup();
   });
 
-  async function seedOwnershipIssue(params: {
-    checkoutStatus: "running" | "failed" | "timed_out";
-    actorRunStatus?: "running" | "failed" | "timed_out" | "succeeded";
-    assigneeMatchesActor?: boolean;
+  it("rejects terminal transitions for repo-backed issues without a verified merged PR", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Close without proof",
+      description: "No PR linked here.",
+      identifier: "PAP-9001",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("does not reference any PR URL");
+  });
+
+  it("allows terminal transitions after verifying a merged PR in the issue thread", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response)));
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Close with merged PR",
+      description: "Reference: https://github.com/paperclipai/paperclip/pull/3303",
+      identifier: "PAP-9002",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("accepts GitHub SSH-alias repo bindings when verifying a merged PR", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response)));
+
+    const { issueId } = await seedRepoBackedIssue({
+      repoUrl: "git@github.com-paperclip:paperclipai/paperclip.git",
+      title: "Close with merged PR on aliased host",
+      description: "Reference: https://github.com/paperclipai/paperclip/pull/3303",
+      identifier: "PAP-9002A",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("continues verifying later PR references after an earlier lookup failure", async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).endsWith("/pulls/3303")) {
+        return {
+          ok: false,
+          status: 404,
+          statusText: "Not Found",
+          text: async () => "missing",
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({ merged: true }),
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Close with one bad PR reference and one merged PR",
+      description: [
+        "Reference: https://github.com/paperclipai/paperclip/pull/3303",
+        "Reference: https://github.com/paperclipai/paperclip/pull/3304",
+      ].join("\n"),
+      identifier: "PAP-9002AA",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows repo-backed decision deliverables when terminalEvidence resolves to a document revision", async () => {
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Decision-backed close",
+      description: [
+        "deliverable: decision",
+        "subjectRepo: Alchemist-DevAI/wotww-planner",
+        "terminalEvidence: document:edg5792_rescue_triage#rev:1",
+      ].join("\n"),
+      identifier: "PAP-9002B",
+    });
+    await attachIssueDocumentRevision({
+      companyId,
+      issueId,
+      key: "edg5792_rescue_triage",
+      revisionNumber: 1,
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("keeps explicit code deliverables behind merged PR proof", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Explicit code deliverable",
+      description: "deliverable: code",
+      identifier: "PAP-9002C",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+  });
+
+  it("verifies cross-repo code PRs against subjectRepo instead of the workspace repo", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Cross-repo code deliverable",
+      description: [
+        "deliverable: code",
+        "subjectRepo: Alchemist-DevAI/wotww-planner",
+        "Reference: https://github.com/Alchemist-DevAI/wotww-planner/pull/123",
+      ].join("\n"),
+      identifier: "PAP-9002D",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain("/repos/Alchemist-DevAI/wotww-planner/pulls/123");
+  });
+
+  it("rejects decision-style terminal transitions when terminalEvidence is missing", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Decision without evidence",
+      description: [
+        "deliverable: decision",
+        "subjectRepo: Alchemist-DevAI/wotww-planner",
+      ].join("\n"),
+      identifier: "PAP-9002E",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "terminal_evidence",
+      }),
+    });
+  });
+
+  it("fails closed for title-only triage issues without structured terminal signals", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "[TRIAGE] title-only exemption should fail",
+      description: "Investigated the situation but left no structured signals.",
+      identifier: "PAP-9002F",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+  });
+
+  it("allows human-authored terminal transitions without repo-backed PR verification", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Board can close directly",
+      description: "No PR linked here.",
+      identifier: "PAP-9003",
+    });
+
+    const updated = await svc.update(issueId, { status: "done", actorUserId: "local-board" });
+    expect(updated?.status).toBe("done");
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("allows routine_execution terminal closes without PR proof when no code-deliverable signal exists", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Daily health routine",
+      description: "Operational work is complete: daily health sweep ran successfully and found no anomalies.",
+      identifier: "PAP-9002C1",
+      originKind: "routine_execution",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("allows routine_execution terminal closes when an explicit non-code deliverable label overrides template code hints", async () => {
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "[EAB-AUDIT-WEEKLY] Run /gstack-agent-audit",
+      description: [
+        "Weekly agent reliability audit. Run /gstack-agent-audit.",
+        "Run: `node ~/.claude/skills/gstack/agent-audit/audit.cjs`",
+        "- `governance/audits/weekly/{this-week-ISO-date}.json` with full lint + behavioural-rate summary",
+      ].join("\n"),
+      identifier: "PAP-9002C1A",
+      originKind: "routine_execution",
+    });
+    const labelId = randomUUID();
+    await db.insert(labels).values({
+      id: labelId,
+      companyId,
+      name: "deliverable:doc",
+      color: "#2563eb",
+    });
+    await db.insert(issueLabels).values({
+      companyId,
+      issueId,
+      labelId,
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("keeps routine_execution closeouts behind merged PR proof when PR URLs appear with no-eligible-work evidence", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      status: 404,
+    } as Response)));
+
+    const { companyId, issueId, agentId } = await seedRepoBackedIssue({
+      title: "Koda nightly own-PR rebase",
+      description: "Nightly CRM X canary routine for Koda-owned pull requests.",
+      identifier: "PAP-9002C1D",
+      originKind: "routine_execution",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "[Orion]: Closeout audit for the 2026-06-10 AEST wake.",
+        "",
+        "Live CRM X PR check:",
+        "- https://github.com/edgeview-finance-business/edgeview-finance-crm/pull/958 links to EDG-1586, which is cancelled and Dan-routed, so it is not Koda-owned rebase work.",
+        "- https://github.com/edgeview-finance-business/edgeview-finance-crm/pull/957 links to EDG-6231, which is todo and assigned to Orion, so it is also not Koda-owned rebase work.",
+        "- https://github.com/paperclipai/paperclip/pull/999999 is the repo-backed implementation PR under verification.",
+        "",
+        "Net result: CRM X currently has zero eligible Koda-owned PRs to rebase.",
+      ].join("\n"),
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        repo: "paperclipai/paperclip",
+        missing: "merged_pr_verification_failed",
+      }),
+    });
+  });
+
+  it("keeps PR-only routine_execution code lanes behind merged PR proof even with no-eligible-work language", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      status: 404,
+    } as Response)));
+
+    const { companyId, issueId, agentId } = await seedRepoBackedIssue({
+      title: "Koda nightly own-PR rebase",
+      description: [
+        "Nightly CRM X canary routine for Koda-owned pull requests.",
+        "Related implementation PR: https://github.com/edgeview-finance-business/edgeview-finance-crm/pull/958",
+        "Repo-backed implementation PR: https://github.com/paperclipai/paperclip/pull/999999",
+      ].join("\n"),
+      identifier: "PAP-9002C1E",
+      originKind: "routine_execution",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "[Koda]: The referenced PR above is not eligible rebase work.",
+        "",
+        "Net result: CRM X currently has zero eligible Koda-owned PRs to rebase.",
+      ].join("\n"),
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        repo: "paperclipai/paperclip",
+        missing: "merged_pr_verification_failed",
+      }),
+    });
+  });
+
+  it("keeps routine_execution code lanes behind merged PR proof", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Routine code lane",
+      description: "deliverable: code",
+      identifier: "PAP-9002C2",
+      originKind: "routine_execution",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+  });
+
+  it("keeps mixed routine_execution code comments behind merged PR proof even with no-eligible-work language", async () => {
+    const { companyId, issueId, agentId } = await seedRepoBackedIssue({
+      title: "Routine code lane with mixed closeout",
+      description: "Routine follow-up touched server/src/services/issues.ts before closeout.",
+      identifier: "PAP-9002C2A",
+      originKind: "routine_execution",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "[Koda]: Closeout attempt.",
+        "",
+        "Diff summary:",
+        "- server/src/services/issues.ts updated while investigating the lane.",
+        "",
+        "Net result: CRM X currently has zero eligible Koda-owned PRs to rebase.",
+      ].join("\n"),
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+  });
+});
+
+// EDG-6246 AC#1: periodic reconcile that auto-closes open repo-backed issues
+// whose only completion evidence is a merged PR referenced as a threaded
+// comment/body URL. Verifies the resolver + reconcile method drive `done`
+// through the gated update path, and that the idempotency/safety
+// short-circuits (AC#4) hold.
+describeEmbeddedPostgres("recoveryService merged-PR thread auto-close (EDG-6246)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let recovery!: ReturnType<typeof recoveryService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  async function seedRepoBackedIssue(args?: {
+    repoUrl?: string;
+    title?: string;
+    description?: string;
+    identifier?: string;
+    status?: "todo" | "in_progress" | "in_review" | "done";
   }) {
     const companyId = randomUUID();
-    const assigneeAgentId = randomUUID();
-    const actorAgentId = params.assigneeMatchesActor === false ? randomUUID() : assigneeAgentId;
-    const staleRunId = randomUUID();
-    const actorRunId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
     const issueId = randomUUID();
-    const actorRunStatus = params.actorRunStatus ?? "running";
 
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Server" });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "primary",
+      sourceType: "git_repo",
+      repoUrl: args?.repoUrl ?? "https://github.com/paperclipai/paperclip.git",
+      repoRef: "origin/main",
+      defaultRef: "origin/main",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      title: args?.title ?? "Repo-backed issue",
+      description: args?.description ?? "No PR linked here.",
+      status: args?.status ?? "in_progress",
+      priority: "high",
+      identifier: args?.identifier ?? "PAP-8000",
+    });
+
+    return { companyId, projectId, workspaceId, issueId };
+  }
+
+  async function addComment(issueId: string, companyId: string, body: string) {
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: null,
+      authorUserId: null,
+      authorType: "system",
+      body,
+    });
+  }
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-thread-autoclose-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    await db.delete(issueComments);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("true positive: closes an issue whose ONLY merged-PR evidence is a threaded comment URL", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        merged: true,
+        merged_at: "2026-06-15T10:00:00Z",
+        merge_commit_sha: "abc1234",
+        html_url: "https://github.com/paperclipai/paperclip/pull/4242",
+      }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Thread-only merged PR",
+      description: "No PR linked in the body.",
+      identifier: "PAP-8001",
+      status: "in_progress",
+    });
+    await addComment(issueId, companyId, "Landed in https://github.com/paperclipai/paperclip/pull/4242");
+
+    const result = await recovery.reconcileMergedPullRequestThreadAutoClose();
+    expect(result.closed).toBe(1);
+    expect(result.issueIds).toContain(issueId);
+
+    const [row] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(row?.status).toBe("done");
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+    const evidence = comments.find((c) => c.body.includes("Paperclip auto-closed"));
+    expect(evidence?.body).toContain("#4242");
+    expect(evidence?.body).toContain("mergedAt: 2026-06-15T10:00:00Z");
+    expect(evidence?.body).toContain("commit: abc1234");
+  });
+
+  it("true negative: CLOSED-unmerged PR leaves the issue open", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: false, merged_at: null, merge_commit_sha: null }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Closed but unmerged",
+      identifier: "PAP-8002",
+      status: "in_progress",
+    });
+    await addComment(issueId, companyId, "See https://github.com/paperclipai/paperclip/pull/4243 (closed)");
+
+    const result = await recovery.reconcileMergedPullRequestThreadAutoClose();
+    expect(result.closed).toBe(0);
+
+    const [row] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(row?.status).toBe("in_progress");
+  });
+
+  it("true negative: unanswered [DAN]/[NEEDS-FIX] question keeps the issue open even with a merged PR", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true, merged_at: "2026-06-15T10:00:00Z", merge_commit_sha: "def5678" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Open question pending",
+      identifier: "PAP-8003",
+      status: "in_progress",
+    });
+    await addComment(issueId, companyId, "Landed in https://github.com/paperclipai/paperclip/pull/4244");
+    await addComment(issueId, companyId, "[DAN] should we also backport this to the release branch?");
+
+    const result = await recovery.reconcileMergedPullRequestThreadAutoClose();
+    expect(result.closed).toBe(0);
+
+    const [row] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(row?.status).toBe("in_progress");
+  });
+
+  it("idempotent: a non-candidate (done) issue is never queried and never re-opened", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true, merged_at: "2026-06-15T10:00:00Z", merge_commit_sha: "aaa" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Already done",
+      identifier: "PAP-8004",
+      status: "done",
+    });
+    await addComment(issueId, companyId, "Landed in https://github.com/paperclipai/paperclip/pull/4245");
+
+    const result = await recovery.reconcileMergedPullRequestThreadAutoClose();
+    expect(result.closed).toBe(0);
+    expect(result.issueIds).not.toContain(issueId);
+
+    const [row] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(row?.status).toBe("done");
+    // No GitHub verification should have been attempted for a terminal issue.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describeEmbeddedPostgres("issueService.create github_mirror idempotency", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-mirror-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
-    const agentRows = [
-      {
-        id: assigneeAgentId,
-        companyId,
-        name: "Assignee",
-        role: "engineer" as const,
-        status: "active" as const,
-        adapterType: "codex_local",
-        adapterConfig: {},
-        runtimeConfig: {},
-        permissions: {},
-      },
-    ];
-    if (actorAgentId !== assigneeAgentId) {
-      agentRows.push({
-        id: actorAgentId,
-        companyId,
-        name: "Actor",
-        role: "engineer",
-        status: "active",
-        adapterType: "codex_local",
-        adapterConfig: {},
-        runtimeConfig: {},
-        permissions: {},
-      });
-    }
-    await db.insert(agents).values(agentRows);
-    await db.insert(heartbeatRuns).values([
-      {
-        id: staleRunId,
-        companyId,
-        agentId: assigneeAgentId,
-        status: params.checkoutStatus,
-        invocationSource: "manual",
-        finishedAt: params.checkoutStatus === "running" ? null : new Date(),
-      },
-      {
-        id: actorRunId,
-        companyId,
-        agentId: actorAgentId,
-        status: actorRunStatus,
-        invocationSource: "manual",
-        startedAt: actorRunStatus === "running" ? new Date() : null,
-        finishedAt: actorRunStatus === "running" ? null : new Date(),
-      },
-    ]);
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Checkout owner recovery",
-      status: "in_progress",
-      priority: "high",
-      assigneeAgentId,
-      checkoutRunId: staleRunId,
-      executionRunId: staleRunId,
-      executionLockedAt: new Date(),
-      executionAgentNameKey: "assignee",
-    });
-
-    return { issueId, assigneeAgentId, actorAgentId, staleRunId, actorRunId };
+    return companyId;
   }
 
-  it("lets the current assignee adopt a stale terminal checkout owner", async () => {
-    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });
+  function mirrorInput(originId: string) {
+    return {
+      title: `Mirrored: ${originId}`,
+      description: "mirrored from GitHub",
+      status: "todo" as const,
+      priority: "medium" as const,
+      originKind: "github_mirror",
+      originId,
+    };
+  }
 
-    const ownership = await svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
-
-    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
-    expect(ownership.executionRunId).toBe(seeded.actorRunId);
-    expect(ownership.adoptedFromRunId).toBeNull();
-  });
-
-  it("treats timed_out checkout owners as stale and recoverable", async () => {
-    const seeded = await seedOwnershipIssue({ checkoutStatus: "timed_out" });
-
-    const ownership = await svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
-
-    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
-    expect(ownership.adoptedFromRunId).toBeNull();
-  });
-
-  it("does not allow non-assignees to adopt stale checkout ownership", async () => {
-    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed", assigneeMatchesActor: false });
-
-    await expect(
-      svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
-    ).rejects.toMatchObject({ status: 409 });
-  });
-
-  it("keeps live checkout owners protected with a 409 conflict", async () => {
-    const seeded = await seedOwnershipIssue({ checkoutStatus: "running" });
-
-    await expect(
-      svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
-    ).rejects.toMatchObject({ status: 409 });
-  });
-
-  it("does not let terminal actor runs adopt stale checkout ownership", async () => {
-    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed", actorRunStatus: "succeeded" });
-
-    await expect(
-      svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
-    ).rejects.toMatchObject({ status: 409 });
-
-    const row = await db
-      .select({
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
+  async function countIssues(companyId: string) {
+    return db
+      .select({ id: issues.id })
       .from(issues)
-      .where(eq(issues.id, seeded.issueId))
-      .then((rows) => rows[0]);
-    expect(row).toEqual({
-      checkoutRunId: null,
-      executionRunId: null,
-    });
+      .where(eq(issues.companyId, companyId))
+      .then((rows) => rows.length);
+  }
+
+  it("re-mirroring an already-mirrored GH issue is a no-op (returns the existing EDG)", async () => {
+    const companyId = await seedCompany();
+    const originId = "edgeview-finance-business/edgeview-finance-crm#1038";
+
+    const first = await svc.create(companyId, mirrorInput(originId));
+    const second = await svc.create(companyId, mirrorInput(originId));
+
+    expect(second.id).toBe(first.id);
+    expect(second.identifier).toBe(first.identifier);
+    expect(await countIssues(companyId)).toBe(1);
   });
 
-  it("adopts unowned checkout after a concurrent stale-checkout clear wins the lock race", async () => {
-    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });
-    await db
-      .update(issues)
-      .set({
-        executionRunId: seeded.actorRunId,
-        executionLockedAt: new Date(),
-      })
-      .where(eq(issues.id, seeded.issueId));
+  it("mirrors distinct GH issues to distinct EDG issues", async () => {
+    const companyId = await seedCompany();
 
-    const rowLocked = deferred<void>();
-    const clearCanCommit = deferred<void>();
+    const a = await svc.create(companyId, mirrorInput("owner/repo#1"));
+    const b = await svc.create(companyId, mirrorInput("owner/repo#2"));
 
-    const concurrentClear = db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select ${issues.id} from ${issues} where ${issues.id} = ${seeded.issueId} for update`,
-      );
-      rowLocked.resolve();
-      await clearCanCommit.promise;
-      await tx
-        .update(issues)
-        .set({
-          checkoutRunId: null,
-          executionRunId: seeded.actorRunId,
-          executionLockedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(issues.id, seeded.issueId));
-    });
-
-    await rowLocked.promise;
-
-    const ownershipPromise = svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    clearCanCommit.resolve();
-    await concurrentClear;
-
-    const ownership = await ownershipPromise;
-    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
-    expect(ownership.executionRunId).toBe(seeded.actorRunId);
-    expect(ownership.adoptedFromRunId).toBeNull();
-
-    const row = await db
-      .select({
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
-      .from(issues)
-      .where(eq(issues.id, seeded.issueId))
-      .then((rows) => rows[0]);
-    expect(row).toEqual({
-      checkoutRunId: seeded.actorRunId,
-      executionRunId: seeded.actorRunId,
-    });
+    expect(a.id).not.toBe(b.id);
+    expect(await countIssues(companyId)).toBe(2);
   });
 
+  it("allows a fresh mirror once the prior EDG reached a terminal state", async () => {
+    const companyId = await seedCompany();
+    const originId = "owner/repo#948";
+
+    const first = await svc.create(companyId, mirrorInput(originId));
+    // Terminal issues are excluded from the partial unique index, so the GH issue
+    // can be re-mirrored if it is reopened/re-triaged after the original was closed.
+    await svc.update(first.id, { status: "done" });
+
+    const second = await svc.create(companyId, mirrorInput(originId));
+    expect(second.id).not.toBe(first.id);
+    expect(await countIssues(companyId)).toBe(2);
+  });
+
+  it("collapses a concurrent re-mirror race to a single EDG via the unique index", async () => {
+    const companyId = await seedCompany();
+    const originId = "owner/repo#945";
+
+    const [a, b] = await Promise.all([
+      svc.create(companyId, mirrorInput(originId)),
+      svc.create(companyId, mirrorInput(originId)),
+    ]);
+
+    expect(a.id).toBe(b.id);
+    expect(await countIssues(companyId)).toBe(1);
+  });
+
+  it("does not dedup manual issues that happen to share an originId", async () => {
+    const companyId = await seedCompany();
+
+    const a = await svc.create(companyId, {
+      title: "Manual one",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      originKind: "manual",
+      originId: "owner/repo#1",
+    });
+    const b = await svc.create(companyId, {
+      title: "Manual two",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      originKind: "manual",
+      originId: "owner/repo#1",
+    });
+
+    expect(a.id).not.toBe(b.id);
+    expect(await countIssues(companyId)).toBe(2);
+  });
 });

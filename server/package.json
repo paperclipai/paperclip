@@ -39,6 +39,7 @@
     "prepack": "pnpm run prepare:ui-dist",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
+    "drill:edg-6246-thread-autoclose": "tsx scripts/drills/edg-6246-thread-autoclose-drill.ts",
     "start": "node dist/index.js",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
