@@ -16,7 +16,7 @@ export const DP0_PATTERN_NPM = /"%dp0%\\(.+?\.exe)"/i;
 export const DP0_PATTERN_DIRECT = /%dp0%\\(.+?\.exe)/i;
 export const TILDE_PATTERN_NPM = /"%~dp0\\(.+?\.exe)"/i;
 export const TILDE_PATTERN_DIRECT = /%~dp0\\(.+?\.exe)/i;
-export const SET_PATTERN = /^\s*SET\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$/gim;
+export const SET_PATTERN = /^\s*@?\s*SET\s+"?([A-Za-z_][A-Za-z0-9_]*)=(.+?)"?\s*$/gim;
 
 /**
  * Parse a .cmd wrapper file's content to extract the real executable

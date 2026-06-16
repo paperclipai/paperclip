@@ -129,6 +129,26 @@ describe(".cmd wrapper resolution", () => {
     expect(result.exeRelativePath).toBe("bin\\tool.EXE");
   });
 
+  it("handles SET with quoted key-value pairs (SET \"KEY=VALUE\")", () => {
+    // npm .cmd wrappers often use SET "KEY=VALUE" format
+    const content = `SET "NODE_ENV=production\nSET "MY_VAR=hello`;
+    const result = parseCmdWrapperContent(content);
+    expect(result.envOverrides).toEqual({
+      NODE_ENV: "production",
+      MY_VAR: "hello",
+    });
+  });
+
+  it("handles @SET prefix", () => {
+    const content = `@SET NODE_ENV=production\n@SET PATH=C:\\custom;%PATH%\n%dp0%\\bin\\tool.exe %*`;
+    const result = parseCmdWrapperContent(content);
+    expect(result.exeRelativePath).toBe("bin\\tool.exe");
+    expect(result.envOverrides).toEqual({
+      NODE_ENV: "production",
+      PATH: "C:\\custom;%PATH%",
+    });
+  });
+
   it("handles multiple SET commands with various casing", () => {
     const content = `SET foo=bar\nSET Baz=qux\nSET DP0=skip\nSET my_var=123`;
     const result = parseCmdWrapperContent(content);
