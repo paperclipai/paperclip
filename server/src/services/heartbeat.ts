@@ -7187,33 +7187,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
 
     let nextFailureCount = priorFailureCount;
-    let nextMetadata: Record<string, unknown> | null = priorMetadata;
-    let softFail = false;
-
     if (isFailureOutcome) {
       nextFailureCount = priorFailureCount + 1;
-      const lastFailure: Record<string, unknown> = {
-        outcome,
-        errorCode: failureErrorCode ?? null,
-        errorMessage: readNonEmptyString(failureContext?.errorMessage) ?? null,
-        runId: readNonEmptyString(failureContext?.runId) ?? null,
-        at: new Date().toISOString(),
-        consecutiveFailures: nextFailureCount,
-      };
-      nextMetadata = { ...(priorMetadata ?? {}), lastFailure };
-      softFail = !validationBypass && nextFailureCount < threshold;
     } else if (outcome === "succeeded") {
       nextFailureCount = 0;
-      if (priorMetadata && Object.prototype.hasOwnProperty.call(priorMetadata, "lastFailure")) {
-        const copy: Record<string, unknown> = { ...priorMetadata };
-        delete copy.lastFailure;
-        nextMetadata = copy;
-      }
-    } else if (outcome === "cancelled") {
-      // Cancelled runs are not a health signal — preserve the counter and metadata as-is.
-      nextFailureCount = priorFailureCount;
-      nextMetadata = priorMetadata;
     }
+    // cancelled: nextFailureCount stays at priorFailureCount.
 
     let nextStatus: "running" | "idle" | "error";
     if (runningCount > 0) {
@@ -7228,12 +7207,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       nextStatus = "idle";
     }
 
+    // The counter we will actually persist. When other runs are still in flight we keep
+    // the prior count so the bump is only observed once the agent settles — metadata and
+    // the live event must agree with the stored column value.
+    const storedFailureCount = nextStatus === "running" ? priorFailureCount : nextFailureCount;
+    const softFail = isFailureOutcome && !validationBypass && nextStatus === "idle";
+
+    let nextMetadata: Record<string, unknown> | null = priorMetadata;
+    if (isFailureOutcome) {
+      const lastFailure: Record<string, unknown> = {
+        outcome,
+        errorCode: failureErrorCode ?? null,
+        errorMessage: readNonEmptyString(failureContext?.errorMessage) ?? null,
+        runId: readNonEmptyString(failureContext?.runId) ?? null,
+        at: new Date().toISOString(),
+        consecutiveFailures: storedFailureCount,
+      };
+      nextMetadata = { ...(priorMetadata ?? {}), lastFailure };
+    } else if (outcome === "succeeded") {
+      if (priorMetadata && Object.prototype.hasOwnProperty.call(priorMetadata, "lastFailure")) {
+        const copy: Record<string, unknown> = { ...priorMetadata };
+        delete copy.lastFailure;
+        nextMetadata = copy;
+      }
+    }
+    // cancelled: preserve metadata as-is.
+
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
         lastHeartbeatAt: new Date(),
-        consecutiveFailureCount: nextStatus === "running" ? priorFailureCount : nextFailureCount,
+        consecutiveFailureCount: storedFailureCount,
         metadata: nextMetadata,
         updatedAt: new Date(),
       })
@@ -7259,7 +7264,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           outcome,
           ...(isFailureOutcome
             ? {
-              consecutiveFailures: nextFailureCount,
+              consecutiveFailures: storedFailureCount,
               threshold,
               softFail,
               ...(validationBypass ? { workspaceValidationFailure: true } : {}),
@@ -8857,7 +8862,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const runningAgent = await db
         .update(agents)
-        .set({ status: "running", consecutiveFailureCount: 0, updatedAt: new Date() })
+        .set({
+          status: "running",
+          consecutiveFailureCount: 0,
+          // Strip any soft-fail `lastFailure` marker from the prior cycle so the dashboard
+          // doesn't render a stale failure card alongside a healthy run.
+          metadata: sql`${agents.metadata} - 'lastFailure'`,
+          updatedAt: new Date(),
+        })
         .where(eq(agents.id, agent.id))
         .returning()
         .then((rows) => rows[0] ?? null);

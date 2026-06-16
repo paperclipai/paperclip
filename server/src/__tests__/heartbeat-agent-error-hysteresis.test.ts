@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   agents,
   agentWakeupRequests,
@@ -220,6 +220,67 @@ describeEmbeddedPostgres("heartbeat agent status hysteresis (finalizeAgentStatus
     expect((row.metadata as Record<string, unknown>).lastFailure).toMatchObject({
       errorCode: WORKSPACE_VALIDATION_FAILURE_CODE,
     });
+  });
+
+  it("keeps the column and metadata consistent when a concurrent run is still in flight", async () => {
+    const { companyId, agentId } = await insertHealthyAgent({ consecutiveFailureCount: 1 });
+    // Simulate a sibling run that is still running on this agent — finalizeAgentStatus
+    // should keep status="running" and must not bump the column. Metadata.lastFailure
+    // and the live event must report the same count that the column actually holds.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "on_demand",
+      startedAt: new Date(),
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.__test_finalizeAgentStatus(agentId, "failed", {
+      errorCode: "adapter_failed",
+      errorMessage: "transient",
+      runId: randomUUID(),
+    });
+
+    const row = await readAgent(agentId);
+    expect(row.status).toBe("running");
+    // Column was NOT bumped because another run is still in flight.
+    expect(row.consecutiveFailureCount).toBe(1);
+    // Metadata's consecutiveFailures must match the stored column value, not priorCount+1.
+    expect((row.metadata as Record<string, unknown>).lastFailure).toMatchObject({
+      outcome: "failed",
+      errorCode: "adapter_failed",
+      consecutiveFailures: 1,
+    });
+  });
+
+  it("clears stale metadata.lastFailure when the run-start writer flips the agent to running", async () => {
+    const { companyId, agentId } = await insertHealthyAgent({
+      consecutiveFailureCount: 2,
+      metadata: {
+        lastFailure: { outcome: "failed", consecutiveFailures: 2, errorCode: "adapter_failed" },
+        otherField: "preserved",
+      },
+    });
+
+    // Mirror the run-start writer in heartbeat.ts:8858 — status=running, counter=0,
+    // and the jsonb minus expression that strips the stale lastFailure marker.
+    await db
+      .update(agents)
+      .set({
+        status: "running",
+        consecutiveFailureCount: 0,
+        metadata: sql`${agents.metadata} - 'lastFailure'`,
+        updatedAt: new Date(),
+      })
+      .where(eq(agents.id, agentId));
+
+    const row = await readAgent(agentId);
+    expect(row.status).toBe("running");
+    expect(row.consecutiveFailureCount).toBe(0);
+    expect(row.metadata).toEqual({ otherField: "preserved" });
+    expect(companyId).toBeTruthy();
   });
 
   it("does not touch paused or terminated agents", async () => {
