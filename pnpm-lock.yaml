@@ -123,8 +123,8 @@ importers:
         specifier: workspace:*
         version: link:../../adapter-utils
       '@zed-industries/codex-acp':
-        specifier: ^0.12.0
-        version: 0.12.0
+        specifier: ^0.16.0
+        version: 0.16.0
       acpx:
         specifier: ^0.6.1
         version: 0.6.1
@@ -4870,44 +4870,44 @@ packages:
   '@webcontainer/env@1.1.1':
     resolution: {integrity: sha512-6aN99yL695Hi9SuIk1oC88l9o0gmxL1nGWWQ/kNy81HigJ0FoaoTXpytCj6ItzgyCEwA9kF1wixsTuv5cjsgng==}
 
-  '@zed-industries/codex-acp-darwin-arm64@0.12.0':
-    resolution: {integrity: sha512-RvTXH21sLpswEo8xLeQXcA/uWZauyNP1y+WI6b355+/o7sQ5wrvBkxt+NyhaJXJIQvbfdpl04LND4cmM+DTcNg==}
+  '@zed-industries/codex-acp-darwin-arm64@0.16.0':
+    resolution: {integrity: sha512-2AmbWsc/+Mpn6U8UOIlPLvgwGsGOr/LFpgcvrnjcCT9V1yY92MLrqzjMX82+VjTrRLRuXvc25SB5Z1++4Pw29g==}
     cpu: [arm64]
     os: [darwin]
     hasBin: true
 
-  '@zed-industries/codex-acp-darwin-x64@0.12.0':
-    resolution: {integrity: sha512-N7EhrUTioix3L21qnm6kZzAESc+B7Mac+/uW3khn/UQe7fJJ7u1ojbgMPDdGo/8Xm6HBBXgak2NOj7mJ+NNXSw==}
+  '@zed-industries/codex-acp-darwin-x64@0.16.0':
+    resolution: {integrity: sha512-QCWggk0s4GTPLCR7eznyx29Dls4gzUKvp4MjZ4nzPX5gDL/02PGY+oCV1WsQOsnzWRK0RxM+GlK19rG1qzqplw==}
     cpu: [x64]
     os: [darwin]
     hasBin: true
 
-  '@zed-industries/codex-acp-linux-arm64@0.12.0':
-    resolution: {integrity: sha512-Kq35FclgZiSMBKyf80PnCvvJ3xfMjZIkPJXpci35U/VqXVQelhHCwYWwA3waTxvW07tNHxsehv1eQICz7wZdVQ==}
+  '@zed-industries/codex-acp-linux-arm64@0.16.0':
+    resolution: {integrity: sha512-8HaZGWVPVs1N6yqImLCKlnlcYTYc9BMCEhaVJk0ON9lyofhK9mOBBAHQndKC4Scqq5JLUHQIOyb8+jwHUe3hSQ==}
     cpu: [arm64]
     os: [linux]
     hasBin: true
 
-  '@zed-industries/codex-acp-linux-x64@0.12.0':
-    resolution: {integrity: sha512-twmX9noSqfgWgVkGG1dd9u20Pxp8vNRXggvJ61RQSrNYITGuqHil2F3ViYICZoXyr9w1gok28bWG5DU2d9adPg==}
+  '@zed-industries/codex-acp-linux-x64@0.16.0':
+    resolution: {integrity: sha512-xs5zZBLpJuciEbZNx6ZSNL0qCa9h3i/zWpj40sp6QtF+L4Ow/7qzHdBzboGhHdcz1jrLedfZeRFDA2Elj8TLMA==}
     cpu: [x64]
     os: [linux]
     hasBin: true
 
-  '@zed-industries/codex-acp-win32-arm64@0.12.0':
-    resolution: {integrity: sha512-VoFsTIrQopO917x2EpxYXm3jTIoSknCbzP76FwX9uOThlRms+M+fHWJ4kJttOPpeofz1ulAS3vPVMQ3WNlvnhw==}
+  '@zed-industries/codex-acp-win32-arm64@0.16.0':
+    resolution: {integrity: sha512-4V3pDJvEyNkgVqWqlm0bLYEZ8liGXXp8InuHzCy5cgr+SFur6BuasA29tisN8NUrLus/ZvMhXCrOsNKurYAWQw==}
     cpu: [arm64]
     os: [win32]
     hasBin: true
 
-  '@zed-industries/codex-acp-win32-x64@0.12.0':
-    resolution: {integrity: sha512-HImgXGIYgW6Wxr3rylrHS7Dzs35zvcQQB7eqAEWZ2Lj+3AxP/7TViW9KkjS+PTPnVWqpTkz0hYDQhk63Ruw3JA==}
+  '@zed-industries/codex-acp-win32-x64@0.16.0':
+    resolution: {integrity: sha512-ZriI/ay5E3DCg8s22LZykIRI2XzQL6sZg/t81K+6qc86ldscaSWQSOT6KSnRcv31QJCMfBlFxMj22pZiGSVjQA==}
     cpu: [x64]
     os: [win32]
     hasBin: true
 
-  '@zed-industries/codex-acp@0.12.0':
-    resolution: {integrity: sha512-0d7gRzOiYTgDmIyh783mCcq50h3mdOg/TtKdLfBIghOLushpQRwhuLjKK8Q9hxZfNlPL0Ua56DoPjnsW8amf8g==}
+  '@zed-industries/codex-acp@0.16.0':
+    resolution: {integrity: sha512-XKzqztT5R8Wg1BVFnk6/U4JVx5GNUaZgxpf9gP2Cw6BsknvJWh3aefcAGZQljgdMivRqczjNKYL4F6H65dc5vA==}
     hasBin: true
 
   abbrev@1.1.1:
@@ -12558,32 +12558,32 @@ snapshots:
 
   '@webcontainer/env@1.1.1': {}
 
-  '@zed-industries/codex-acp-darwin-arm64@0.12.0':
+  '@zed-industries/codex-acp-darwin-arm64@0.16.0':
     optional: true
 
-  '@zed-industries/codex-acp-darwin-x64@0.12.0':
+  '@zed-industries/codex-acp-darwin-x64@0.16.0':
     optional: true
 
-  '@zed-industries/codex-acp-linux-arm64@0.12.0':
+  '@zed-industries/codex-acp-linux-arm64@0.16.0':
     optional: true
 
-  '@zed-industries/codex-acp-linux-x64@0.12.0':
+  '@zed-industries/codex-acp-linux-x64@0.16.0':
     optional: true
 
-  '@zed-industries/codex-acp-win32-arm64@0.12.0':
+  '@zed-industries/codex-acp-win32-arm64@0.16.0':
     optional: true
 
-  '@zed-industries/codex-acp-win32-x64@0.12.0':
+  '@zed-industries/codex-acp-win32-x64@0.16.0':
     optional: true
 
-  '@zed-industries/codex-acp@0.12.0':
+  '@zed-industries/codex-acp@0.16.0':
     optionalDependencies:
-      '@zed-industries/codex-acp-darwin-arm64': 0.12.0
-      '@zed-industries/codex-acp-darwin-x64': 0.12.0
-      '@zed-industries/codex-acp-linux-arm64': 0.12.0
-      '@zed-industries/codex-acp-linux-x64': 0.12.0
-      '@zed-industries/codex-acp-win32-arm64': 0.12.0
-      '@zed-industries/codex-acp-win32-x64': 0.12.0
+      '@zed-industries/codex-acp-darwin-arm64': 0.16.0
+      '@zed-industries/codex-acp-darwin-x64': 0.16.0
+      '@zed-industries/codex-acp-linux-arm64': 0.16.0
+      '@zed-industries/codex-acp-linux-x64': 0.16.0
+      '@zed-industries/codex-acp-win32-arm64': 0.16.0
+      '@zed-industries/codex-acp-win32-x64': 0.16.0
 
   abbrev@1.1.1:
     optional: true
