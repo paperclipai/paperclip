@@ -196,7 +196,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
-      Authorization: apiKey,
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
