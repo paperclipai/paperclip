@@ -126,6 +126,7 @@ import {
   InboxIssueTrailingColumns,
   formatJoinRequestInboxLabel,
 } from "./Inbox";
+import { ToastProvider } from "../context/ToastContext";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, className, ...props }: ComponentProps<"a">) => (
@@ -276,7 +277,9 @@ describe("Inbox toolbar", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <Inbox />
+          <ToastProvider>
+            <Inbox />
+          </ToastProvider>
         </QueryClientProvider>,
       );
     });

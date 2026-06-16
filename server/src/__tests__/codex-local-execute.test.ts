@@ -247,6 +247,121 @@ describe("codex execute", () => {
     }
   });
 
+  it("injects task context markdown into the Codex prompt", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-task-context-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-task-context",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipTaskMarkdown: "## Task Memory\n\nRemember the approved architecture decision.",
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("## Task Memory");
+      expect(capture.prompt).toContain("Remember the approved architecture decision.");
+      expect(capture.prompt).toContain("Follow the paperclip heartbeat.");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("injects memory context markdown into the Codex prompt after the task context", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-memory-context-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-memory-context",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipTaskMarkdown: "## Task Memory\n\nRemember the approved architecture decision.",
+          paperclipMemoryMarkdown:
+            "## Remembered context (advisory)\n- [paperclip/test/runs/prior] (0.91) — prior run insight",
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("## Remembered context (advisory)");
+      expect(capture.prompt).toContain("prior run insight");
+      const taskContextIndex = capture.prompt.indexOf("## Task Memory");
+      const memoryContextIndex = capture.prompt.indexOf("## Remembered context (advisory)");
+      const heartbeatPromptIndex = capture.prompt.indexOf("Follow the paperclip heartbeat.");
+      expect(taskContextIndex).toBeGreaterThanOrEqual(0);
+      expect(memoryContextIndex).toBeGreaterThan(taskContextIndex);
+      expect(heartbeatPromptIndex).toBeGreaterThan(memoryContextIndex);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("logs HOME and the resolved executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-meta-"));
     const workspace = path.join(root, "workspace");
@@ -589,14 +704,13 @@ describe("codex execute", () => {
       });
 
       expect(result.exitCode).toBe(1);
-      expect(result.errorCode).toBe("codex_transient_upstream");
-      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.errorCode).toBe("codex_usage_limit");
+      expect(result.errorFamily).toBeNull();
       const expectedRetryNotBefore = new Date(2026, 3, 22, 23, 31, 0, 0).toISOString();
       expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.resultJson?.codexUsageLimit).toBe(true);
       expect(result.resultJson?.retryNotBefore).toBe(expectedRetryNotBefore);
-      expect(new Date(String(result.resultJson?.transientRetryNotBefore)).getTime()).toBe(
-        new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
-      );
+      expect(result.resultJson?.transientRetryNotBefore).toBeUndefined();
     } finally {
       vi.useRealTimers();
       if (previousHome === undefined) delete process.env.HOME;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractCodexRetryNotBefore,
   isCodexTransientUpstreamError,
+  isCodexUsageLimitError,
   isCodexUnknownSessionError,
   parseCodexJsonl,
 } from "./parse.js";
@@ -103,14 +104,27 @@ describe("isCodexTransientUpstreamError", () => {
     ).toBe(true);
   });
 
-  it("classifies usage-limit windows as transient and extracts the retry time", () => {
+  it("classifies usage-limit windows separately and extracts the retry time", () => {
     const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.";
     const now = new Date(2026, 3, 22, 22, 29, 2);
 
-    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
+    expect(isCodexUsageLimitError({ errorMessage })).toBe(true);
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
     expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
       new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
     );
+  });
+
+  it("parses explicit date usage-limit retry windows", () => {
+    const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at Jun 11th, 2026 7:39 AM.";
+
+    expect(isCodexUsageLimitError({ errorMessage })).toBe(true);
+    const retryNotBefore = extractCodexRetryNotBefore({ errorMessage });
+    expect(retryNotBefore?.getFullYear()).toBe(2026);
+    expect(retryNotBefore?.getMonth()).toBe(5);
+    expect(retryNotBefore?.getDate()).toBe(11);
+    expect(retryNotBefore?.getHours()).toBe(7);
+    expect(retryNotBefore?.getMinutes()).toBe(39);
   });
 
   it("parses explicit timezone hints on usage-limit retry windows", () => {

@@ -41,6 +41,7 @@ import {
 import {
   parseCodexJsonl,
   extractCodexRetryNotBefore,
+  isCodexUsageLimitError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
@@ -681,12 +682,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
+    const memoryContextNote = asString(context.paperclipMemoryMarkdown, "").trim();
     const prompt = joinPromptSections([
       promptInstructionsPrefix,
       renderedBootstrapPrompt,
       wakePrompt,
       codexFallbackHandoffNote,
       sessionHandoffNote,
+      taskContextNote,
+      memoryContextNote,
       renderedPrompt,
     ]);
     const promptMetrics = {
@@ -695,6 +700,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
+      taskContextChars: taskContextNote.length,
+      memoryContextChars: memoryContextNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     };
 
@@ -803,8 +810,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
+      const usageLimit =
+        (attempt.proc.exitCode ?? 0) !== 0 &&
+        isCodexUsageLimitError({
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
+        !usageLimit &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -820,7 +835,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? null
             : fallbackErrorMessage,
         errorCode:
-          transientUpstream
+          usageLimit
+            ? "codex_usage_limit"
+            : transientUpstream
             ? "codex_transient_upstream"
             : null,
         errorFamily: transientUpstream ? "transient_upstream" : null,
@@ -837,9 +854,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
+          ...(usageLimit ? { codexUsageLimit: true } : {}),
           ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
           ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
-          ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+          ...(transientUpstream && transientRetryNotBefore
+            ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() }
+            : {}),
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean((clearSessionOnMissingSession || forceFreshSession) && !resolvedSessionId),

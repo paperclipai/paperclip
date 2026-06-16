@@ -3035,6 +3035,39 @@ export function IssueDetail() {
     };
   }, [location.hash, workProducts, attachments]);
 
+  // Deep-link to a specific thread interaction (e.g. an approval toast or
+  // Blocked-inbox notification using #interaction-<id>). The interaction card
+  // lives in the chat thread, so switch to that tab first, then scroll + briefly
+  // highlight it once the thread has rendered.
+  useEffect(() => {
+    const match = location.hash.match(/^#interaction-(.+)$/);
+    if (!match) return;
+    setDetailTab("chat");
+    const targetId = `interaction-${decodeURIComponent(match[1]!)}`;
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tryScroll = () => {
+      if (cancelled) return;
+      const element = document.getElementById(targetId);
+      if (!element) {
+        if (attempts < 30) {
+          attempts += 1;
+          timer = setTimeout(tryScroll, 100);
+        }
+        return;
+      }
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+      element.classList.add("ring-2", "ring-primary/50", "transition-shadow");
+      timer = setTimeout(() => element.classList.remove("ring-2", "ring-primary/50", "transition-shadow"), 3000);
+    };
+    tryScroll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [location.hash]);
+
   useEffect(() => {
     if (pendingCommentComposerFocusKey === 0) return;
     if (detailTab !== "chat") return;

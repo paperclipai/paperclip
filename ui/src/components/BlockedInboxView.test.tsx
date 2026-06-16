@@ -9,13 +9,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
   count: vi.fn(),
+  acceptInteraction: vi.fn(),
 }));
+const mockNavigate = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
 
 vi.mock("@/lib/router", () => ({
+  useNavigate: () => mockNavigate,
   Link: ({
     children,
     className,
@@ -32,6 +35,7 @@ vi.mock("@/lib/router", () => ({
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { BlockedInboxView } from "./BlockedInboxView";
+import { ToastProvider } from "../context/ToastContext";
 import { defaultIssueFilterState } from "../lib/issue-filters";
 
 function attention(
@@ -106,7 +110,11 @@ function renderWithClient(node: React.ReactNode, container: HTMLDivElement) {
   });
   const root = createRoot(container);
   act(() => {
-    root.render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>);
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>{node}</ToastProvider>
+      </QueryClientProvider>,
+    );
   });
   return { root, queryClient };
 }
@@ -144,6 +152,8 @@ describe("BlockedInboxView", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockIssuesApi.list.mockReset();
+    mockIssuesApi.acceptInteraction.mockReset();
+    mockNavigate.mockReset();
   });
 
   afterEach(() => {
@@ -160,6 +170,74 @@ describe("BlockedInboxView", () => {
     );
     await waitFor(() => container.querySelector('[data-testid="blocked-inbox-empty"]') !== null);
     expect(container.querySelector('[data-testid="blocked-inbox-empty"]')).not.toBeNull();
+    act(() => root.unmount());
+  });
+
+  it("offers an inline Approve button for a pending board decision and accepts the interaction", async () => {
+    const interactionId = "00000000-0000-0000-0000-0000000000aa";
+    mockIssuesApi.acceptInteraction.mockResolvedValue({ id: interactionId, kind: "request_confirmation" });
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-approve",
+        "PAP-50",
+        "Approve cockpit data entry flows plan",
+        attention({
+          reason: "pending_board_decision",
+          state: "awaiting_decision",
+          owner: { type: "board", agentId: null, userId: null, label: "Board" },
+          action: { label: "Answer confirmation", detail: null },
+          interactionId,
+        }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(<BlockedInboxView {...blockedViewProps} />, container);
+    await waitFor(() => container.querySelector('[data-testid="blocked-row-approve"]') !== null);
+
+    const approveButton = container.querySelector('[data-testid="blocked-row-approve"]') as HTMLButtonElement;
+    expect(approveButton).not.toBeNull();
+    await act(async () => {
+      approveButton.click();
+    });
+    await waitFor(() => mockIssuesApi.acceptInteraction.mock.calls.length > 0);
+    expect(mockIssuesApi.acceptInteraction).toHaveBeenCalledWith("issue-approve", interactionId, {});
+    act(() => root.unmount());
+  });
+
+  it("shows a labelled action (not Approve) for a non-interaction blocker and opens the target issue", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-recovery",
+        "PAP-60",
+        "Open recovery row",
+        attention({
+          reason: "open_recovery_issue",
+          severity: "high",
+          action: { label: "Resolve recovery", detail: null },
+          recoveryIssue: {
+            id: "issue-recovery",
+            identifier: "PAP-60",
+            title: "Open recovery row",
+            status: "in_review",
+            priority: "high",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        }),
+      ),
+    ]);
+    const { root } = renderWithClient(<BlockedInboxView {...blockedViewProps} />, container);
+    await waitFor(() => container.querySelector('[data-testid="blocked-row-action"]') !== null);
+    // No Approve button for a non-board-decision row...
+    expect(container.querySelector('[data-testid="blocked-row-approve"]')).toBeNull();
+    // ...but there is a labelled action control the user can act on.
+    const actionButton = container.querySelector('[data-testid="blocked-row-action"]') as HTMLButtonElement;
+    expect(actionButton).not.toBeNull();
+    expect(actionButton.textContent).toContain("Resolve recovery");
+    await act(async () => {
+      actionButton.click();
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/issues/PAP-60");
     act(() => root.unmount());
   });
 
@@ -242,6 +320,7 @@ describe("BlockedInboxView", () => {
           severity: "medium",
           owner: { type: "board", agentId: null, userId: null, label: "Board" },
           action: { label: "Accept or reject", detail: null },
+          interactionId: "00000000-0000-0000-0000-0000000000b4",
         }),
       ),
     ]);
@@ -258,7 +337,10 @@ describe("BlockedInboxView", () => {
     expect(rowText.indexOf("Pending board decision")).toBeGreaterThanOrEqual(0);
     expect(rowText.indexOf("Needs decision")).toBeGreaterThan(rowText.indexOf("Pending board decision"));
     expect(rowText.indexOf("Board")).toBeGreaterThan(rowText.indexOf("Needs decision"));
+    // A real board decision carries an interaction id, so it shows Approve/Review
+    // controls rather than dumping the raw server action label into the row.
     expect(rowText).not.toContain("Accept or reject");
+    expect(container.querySelector('[data-testid="blocked-row-approve"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="blocked-row-reason-column"]')?.textContent).toContain("Needs decision");
 
     act(() => root.unmount());

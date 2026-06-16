@@ -10,6 +10,32 @@ const CODEX_TRANSIENT_UPSTREAM_RE =
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+const MONTH_INDEX_BY_NAME = new Map([
+  ["jan", 0],
+  ["january", 0],
+  ["feb", 1],
+  ["february", 1],
+  ["mar", 2],
+  ["march", 2],
+  ["apr", 3],
+  ["april", 3],
+  ["may", 4],
+  ["jun", 5],
+  ["june", 5],
+  ["jul", 6],
+  ["july", 6],
+  ["aug", 7],
+  ["august", 7],
+  ["sep", 8],
+  ["sept", 8],
+  ["september", 8],
+  ["oct", 9],
+  ["october", 9],
+  ["nov", 10],
+  ["november", 10],
+  ["dec", 11],
+  ["december", 11],
+]);
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
@@ -234,6 +260,62 @@ function parseLocalClockTime(clockText: string, now: Date): Date | null {
   return retryAt;
 }
 
+function parseExplicitMonthDateTime(clockText: string): Date | null {
+  const normalized = clockText.trim();
+  const match = normalized.match(
+    /^([a-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(\d{4})\s+(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?$/i,
+  );
+  if (!match) return null;
+
+  const month = MONTH_INDEX_BY_NAME.get((match[1] ?? "").toLowerCase());
+  const day = Number.parseInt(match[2] ?? "", 10);
+  const year = Number.parseInt(match[3] ?? "", 10);
+  const hour12 = Number.parseInt(match[4] ?? "", 10);
+  const minute = Number.parseInt(match[5] ?? "0", 10);
+  if (month == null || !Number.isInteger(day) || day < 1 || day > 31) return null;
+  if (!Number.isInteger(year) || year < 2000) return null;
+  if (!Number.isInteger(hour12) || hour12 < 1 || hour12 > 12) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+
+  let hour24 = hour12 % 12;
+  if ((match[6] ?? "").toLowerCase() === "p") hour24 += 12;
+
+  const timeZoneHint = match[7] ?? match[8];
+  if (timeZoneHint) {
+    const timeZone = normalizeResetTimeZone(timeZoneHint);
+    if (timeZone) {
+      return dateFromTimeZoneWallClock({
+        year,
+        month: month + 1,
+        day,
+        hour: hour24,
+        minute,
+        timeZone,
+      });
+    }
+  }
+
+  const retryAt = new Date(year, month, day, hour24, minute, 0, 0);
+  if (
+    retryAt.getFullYear() !== year ||
+    retryAt.getMonth() !== month ||
+    retryAt.getDate() !== day ||
+    retryAt.getHours() !== hour24 ||
+    retryAt.getMinutes() !== minute
+  ) {
+    return null;
+  }
+  return retryAt;
+}
+
+export function isCodexUsageLimitError(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  return CODEX_USAGE_LIMIT_RE.test(buildCodexErrorHaystack(input));
+}
+
 export function extractCodexRetryNotBefore(input: {
   stdout?: string | null;
   stderr?: string | null;
@@ -242,7 +324,8 @@ export function extractCodexRetryNotBefore(input: {
   const haystack = buildCodexErrorHaystack(input);
   const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RE);
   if (!usageLimitMatch) return null;
-  return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
+  const retryText = usageLimitMatch[1] ?? "";
+  return parseExplicitMonthDateTime(retryText) ?? parseLocalClockTime(retryText, now);
 }
 
 export function isCodexTransientUpstreamError(input: {
@@ -252,7 +335,7 @@ export function isCodexTransientUpstreamError(input: {
 }): boolean {
   const haystack = buildCodexErrorHaystack(input);
 
-  if (extractCodexRetryNotBefore(input) != null) return true;
+  if (isCodexUsageLimitError(input)) return false;
   if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
   // Keep automatic retries scoped to the observed remote-compaction/high-demand
   // failure shape, plus explicit usage-limit windows that tell us when retrying

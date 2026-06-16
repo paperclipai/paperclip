@@ -618,6 +618,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/issues/{id}/children",
   "POST /api/issues/{id}/interactions",
   "POST /api/issues/{id}/comments",
+  "POST /api/companies/{companyId}/memory/note",
   "POST /api/companies/{companyId}/issues/{issueId}/attachments",
   "POST /api/companies/{companyId}/projects",
   "POST /api/projects/{id}/workspaces",
@@ -646,6 +647,38 @@ const FORBIDDEN_RESPONSE = {
     },
   },
 };
+
+const memoryQuerySchema = z.object({
+  query: z.string().trim().min(1).max(2_000),
+  topK: z.number().int().min(1).max(20).optional(),
+});
+
+const memoryNoteSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional().nullable(),
+  text: z.string().trim().min(1).max(20_000),
+});
+
+const memoryBindingConfigPatchSchema = z
+  .object({
+    binPath: z.string().trim().min(1).max(1_024).optional(),
+    queryTimeoutMs: z.number().int().min(250).max(60_000).optional(),
+    captureTimeoutMs: z.number().int().min(250).max(120_000).optional(),
+    topK: z.number().int().min(1).max(20).optional(),
+    hydrateEnabled: z.boolean().optional(),
+    captureRunsEnabled: z.boolean().optional(),
+    maxSnippetChars: z.number().int().min(50).max(5_000).optional(),
+    maxBundleChars: z.number().int().min(200).max(20_000).optional(),
+  })
+  .strict();
+
+const updateMemoryBindingSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    config: memoryBindingConfigPatchSchema.optional(),
+  })
+  .refine((value) => value.enabled !== undefined || value.config !== undefined, {
+    message: "enabled or config is required",
+  });
 
 function operationKey(method: string, path: string) {
   return `${method.toUpperCase()} ${path}`;
@@ -1561,6 +1594,15 @@ registry.registerPath({
   summary: "Release an issue",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/clear-cancelled-blockers",
+  tags: ["issues"],
+  summary: "Clear cancelled blocker links from an issue",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -4120,6 +4162,51 @@ registerCurrentRoute({
   path: "/api/issues/{id}/cost-summary",
   tags: ["costs"],
   summary: "Get issue cost summary",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/memory/overview",
+  tags: ["memory"],
+  summary: "Get company memory overview",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/memory/operations",
+  tags: ["memory"],
+  summary: "List company memory operations",
+  query: z.object({
+    limit: z.string().optional(),
+    before: z.string().optional(),
+  }),
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/memory/query",
+  tags: ["memory"],
+  summary: "Query company memory",
+  body: memoryQuerySchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict, 500: r.serverError },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/memory/note",
+  tags: ["memory"],
+  summary: "Create a company memory note",
+  body: memoryNoteSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict, 500: r.serverError },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/companies/{companyId}/memory/binding",
+  tags: ["memory"],
+  summary: "Update company memory binding",
+  body: updateMemoryBindingSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
 
 for (const route of [

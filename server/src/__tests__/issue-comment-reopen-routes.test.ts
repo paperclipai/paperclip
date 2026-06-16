@@ -522,6 +522,25 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("honors reopen false for closed POST audit comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "audit note only", reopen: false });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "audit note only",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.getCurrentScheduledRetry).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("rejects non-assignee agent POST comments on closed issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({

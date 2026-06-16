@@ -1,9 +1,22 @@
-export const RECOVERY_ORIGIN_KINDS = {
-  issueGraphLivenessEscalation: "harness_liveness_escalation",
-  issueProductivityReview: "issue_productivity_review",
-  strandedIssueRecovery: "stranded_issue_recovery",
-  staleActiveRunEvaluation: "stale_active_run_evaluation",
-} as const;
+import {
+  RECOVERY_ISSUE_ORIGIN_KINDS,
+  RECOVERY_ISSUE_TITLE_PREFIXES,
+  RECOVERY_ORIGIN_KINDS,
+  isRecoveryIssueLike,
+  isRecoveryIssueOriginKind,
+  isRecoveryIssueTitle,
+  type RecoveryOriginKind,
+} from "@paperclipai/shared";
+
+export {
+  RECOVERY_ISSUE_ORIGIN_KINDS,
+  RECOVERY_ISSUE_TITLE_PREFIXES,
+  RECOVERY_ORIGIN_KINDS,
+  isRecoveryIssueLike,
+  isRecoveryIssueOriginKind,
+  isRecoveryIssueTitle,
+  type RecoveryOriginKind,
+};
 
 export const RECOVERY_REASON_KINDS = {
   runLivenessContinuation: "run_liveness_continuation",
@@ -14,7 +27,6 @@ export const RECOVERY_KEY_PREFIXES = {
   issueGraphLivenessLeaf: "harness_liveness_leaf",
 } as const;
 
-export type RecoveryOriginKind = typeof RECOVERY_ORIGIN_KINDS[keyof typeof RECOVERY_ORIGIN_KINDS];
 export type RecoveryReasonKind = typeof RECOVERY_REASON_KINDS[keyof typeof RECOVERY_REASON_KINDS];
 export type RecoveryKeyPrefix = typeof RECOVERY_KEY_PREFIXES[keyof typeof RECOVERY_KEY_PREFIXES];
 

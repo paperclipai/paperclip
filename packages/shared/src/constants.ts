@@ -265,6 +265,45 @@ export const ISSUE_ORIGIN_KINDS = [
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
 export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
+
+export const RECOVERY_ORIGIN_KINDS = {
+  issueGraphLivenessEscalation: "harness_liveness_escalation",
+  issueProductivityReview: "issue_productivity_review",
+  strandedIssueRecovery: "stranded_issue_recovery",
+  staleActiveRunEvaluation: "stale_active_run_evaluation",
+} as const;
+
+export const RECOVERY_ISSUE_ORIGIN_KINDS = [
+  RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+  RECOVERY_ORIGIN_KINDS.issueProductivityReview,
+  RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
+  RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation,
+] as const;
+
+export const RECOVERY_ISSUE_TITLE_PREFIXES = [
+  "Supervisor recovery:",
+  "Recover missing next step",
+  "Review productivity for",
+] as const;
+
+export type RecoveryOriginKind = typeof RECOVERY_ORIGIN_KINDS[keyof typeof RECOVERY_ORIGIN_KINDS];
+
+export function isRecoveryIssueOriginKind(originKind: string | null | undefined) {
+  return RECOVERY_ISSUE_ORIGIN_KINDS.includes(originKind as typeof RECOVERY_ISSUE_ORIGIN_KINDS[number]);
+}
+
+export function isRecoveryIssueTitle(title: string | null | undefined) {
+  const normalized = title?.trim() ?? "";
+  return RECOVERY_ISSUE_TITLE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+export function isRecoveryIssueLike(input: {
+  originKind?: string | null;
+  title?: string | null;
+}) {
+  return isRecoveryIssueOriginKind(input.originKind) || isRecoveryIssueTitle(input.title);
+}
+
 export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
 export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
 

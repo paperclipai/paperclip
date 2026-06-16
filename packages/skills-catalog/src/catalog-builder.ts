@@ -529,7 +529,7 @@ async function fetchGitHubTree(
 ): Promise<GitHubTreeEntry[]> {
   const url = `${githubApiBase(source.hostname)}/repos/${source.owner}/${source.repo}/git/trees/${source.commit}?recursive=1`;
   try {
-    const response = await fetch(url, { headers: { accept: "application/vnd.github+json" } });
+    const response = await fetch(url, { headers: githubApiHeaders(source.hostname) });
     if (!response.ok) {
       errors.push(`${prefix} failed to fetch GitHub tree: HTTP ${response.status}.`);
       return [];
@@ -541,6 +541,16 @@ async function fetchGitHubTree(
     errors.push(`${prefix} failed to fetch GitHub tree: ${errorMessage(error)}.`);
     return [];
   }
+}
+
+function githubApiHeaders(hostname: string) {
+  const headers: Record<string, string> = { accept: "application/vnd.github+json" };
+  const normalized = hostname.trim().toLowerCase();
+  const token = process.env.GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim();
+  if ((normalized === "github.com" || normalized === "www.github.com") && token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  return headers;
 }
 
 async function readReferencedFileText(

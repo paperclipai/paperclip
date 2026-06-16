@@ -14,6 +14,7 @@ describe("skills catalog manifest", () => {
   afterEach(async () => {
     await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("builds stable manifest entries from catalog skill directories", async () => {
@@ -133,6 +134,151 @@ describe("skills catalog manifest", () => {
       "scripts/run.py",
     ]);
     expect(result.manifest.skills[0]!.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+  });
+
+  it("uses GitHub API token for referenced skill tree fetches when configured", async () => {
+    const packageDir = await createCatalogPackage();
+    const skillMarkdown = [
+      "---",
+      "name: Remote Research",
+      "description: Research recent discussion from a pinned upstream skill.",
+      "---",
+      "",
+      "Use this skill.",
+      "",
+    ].join("\n");
+    await writeReference(packageDir, "optional", "research", "remote-research", {
+      source: {
+        type: "github",
+        hostname: "github.com",
+        owner: "example",
+        repo: "remote-skill",
+        ref: "v1.0.0",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        path: "skills/remote-research",
+      },
+      files: ["SKILL.md"],
+    });
+    vi.stubEnv("GITHUB_TOKEN", "test-token");
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/git/trees/")) {
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer test-token");
+        return new Response(JSON.stringify({
+          tree: [
+            { path: "skills/remote-research/SKILL.md", type: "blob", size: Buffer.byteLength(skillMarkdown) },
+          ],
+        }), { status: 200 });
+      }
+      if (url.endsWith("/skills/remote-research/SKILL.md")) {
+        return new Response(skillMarkdown, { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await buildCatalogManifest({
+      packageDir,
+      generatedAt: "2026-05-26T00:00:00.000Z",
+    });
+
+    expect(result.errors).toEqual([]);
+  });
+
+  it("uses GH_TOKEN as a fallback for referenced skill tree fetches", async () => {
+    const packageDir = await createCatalogPackage();
+    const skillMarkdown = [
+      "---",
+      "name: Remote Research",
+      "description: Research recent discussion from a pinned upstream skill.",
+      "---",
+      "",
+      "Use this skill.",
+      "",
+    ].join("\n");
+    await writeReference(packageDir, "optional", "research", "remote-research", {
+      source: {
+        type: "github",
+        hostname: "github.com",
+        owner: "example",
+        repo: "remote-skill",
+        ref: "v1.0.0",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        path: "skills/remote-research",
+      },
+      files: ["SKILL.md"],
+    });
+    vi.stubEnv("GITHUB_TOKEN", "");
+    vi.stubEnv("GH_TOKEN", "fallback-token");
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/git/trees/")) {
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fallback-token");
+        return new Response(JSON.stringify({
+          tree: [
+            { path: "skills/remote-research/SKILL.md", type: "blob", size: Buffer.byteLength(skillMarkdown) },
+          ],
+        }), { status: 200 });
+      }
+      if (url.endsWith("/skills/remote-research/SKILL.md")) {
+        return new Response(skillMarkdown, { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await buildCatalogManifest({
+      packageDir,
+      generatedAt: "2026-05-26T00:00:00.000Z",
+    });
+
+    expect(result.errors).toEqual([]);
+  });
+
+  it("does not send GitHub API tokens to non-github.com reference hosts", async () => {
+    const packageDir = await createCatalogPackage();
+    const skillMarkdown = [
+      "---",
+      "name: Remote Research",
+      "description: Research recent discussion from a pinned upstream skill.",
+      "---",
+      "",
+      "Use this skill.",
+      "",
+    ].join("\n");
+    await writeReference(packageDir, "optional", "research", "remote-research", {
+      source: {
+        type: "github",
+        hostname: "github.enterprise.test",
+        owner: "example",
+        repo: "remote-skill",
+        ref: "v1.0.0",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        path: "skills/remote-research",
+      },
+      files: ["SKILL.md"],
+    });
+    vi.stubEnv("GITHUB_TOKEN", "test-token");
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/git/trees/")) {
+        expect(new Headers(init?.headers).get("authorization")).toBeNull();
+        return new Response(JSON.stringify({
+          tree: [
+            { path: "skills/remote-research/SKILL.md", type: "blob", size: Buffer.byteLength(skillMarkdown) },
+          ],
+        }), { status: 200 });
+      }
+      if (url.endsWith("/skills/remote-research/SKILL.md")) {
+        return new Response(skillMarkdown, { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await buildCatalogManifest({
+      packageDir,
+      generatedAt: "2026-05-26T00:00:00.000Z",
+    });
+
+    expect(result.errors).toEqual([]);
   });
 
   it("reports frontmatter, directory, uniqueness, and inventory errors together", async () => {

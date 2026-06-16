@@ -1,9 +1,14 @@
 export {
+  RECOVERY_ISSUE_ORIGIN_KINDS,
+  RECOVERY_ISSUE_TITLE_PREFIXES,
   RECOVERY_KEY_PREFIXES,
   RECOVERY_ORIGIN_KINDS,
   RECOVERY_REASON_KINDS,
+  isRecoveryIssueLike,
   buildIssueGraphLivenessIncidentKey,
   buildIssueGraphLivenessLeafKey,
+  isRecoveryIssueOriginKind,
+  isRecoveryIssueTitle,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
