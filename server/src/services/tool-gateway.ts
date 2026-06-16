@@ -162,7 +162,6 @@ type HeaderPolicyConfig = {
   staticHeaders: Array<{ name: string; value: string }>;
   passthroughAllowlist: string[];
   metadataHeaders: Array<"company_id" | "agent_id" | "issue_id" | "project_id" | "run_id" | "gateway_session_id" | "correlation_id">;
-  allowManagedCredentialOverride: boolean;
 };
 
 type HeaderPolicySummary = {
@@ -182,6 +181,21 @@ type RemoteHttpExecutionResult = {
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+const sensitivePassthroughHeaderPattern = /(^|[-_])(auth|authorization|cookie|secret|session|token)([-_]|$)|(^|[-_])api[-_]?key([-_]|$)/i;
+const sensitivePassthroughHeaderNames = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "x-paperclip-tool-gateway-token",
+]);
+
+function isSensitivePassthroughHeader(name: string) {
+  return name.startsWith("x-paperclip-")
+    || sensitivePassthroughHeaderNames.has(name)
+    || sensitivePassthroughHeaderPattern.test(name);
 }
 
 function stringValue(value: unknown): string | null {
@@ -1580,7 +1594,8 @@ export function createToolGatewayService(
       ...stringArray(rawPolicy.allowedPassthroughHeaders),
     ]
       .map(headerName)
-      .filter((name): name is string => Boolean(name));
+      .filter((name): name is string => Boolean(name))
+      .filter((name) => !isSensitivePassthroughHeader(name));
 
     const metadata = asRecord(rawPolicy.metadata) ?? {};
     const metadataHeaders = [
@@ -1601,9 +1616,6 @@ export function createToolGatewayService(
       staticHeaders: parsedStaticHeaders,
       passthroughAllowlist: [...new Set(passthroughAllowlist)],
       metadataHeaders: [...new Set(metadataHeaders)],
-      allowManagedCredentialOverride:
-        rawPolicy.allowManagedCredentialOverride === true
-        || passthrough.allowManagedCredentialOverride === true,
     };
   }
 
@@ -1679,13 +1691,18 @@ export function createToolGatewayService(
         summary.collisionRules.push({ header: name, source: "caller", action: "dropped_reserved_header" });
         continue;
       }
-      if (!policy.passthroughAllowlist.includes(name)) {
-        summary.droppedPassthroughHeaderNames.push(name);
-        continue;
-      }
-      if (managedCredentialHeaders.has(name) && !policy.allowManagedCredentialOverride) {
+      if (managedCredentialHeaders.has(name)) {
         summary.droppedPassthroughHeaderNames.push(name);
         summary.collisionRules.push({ header: name, source: "caller", action: "kept_managed_credential" });
+        continue;
+      }
+      if (isSensitivePassthroughHeader(name)) {
+        summary.droppedPassthroughHeaderNames.push(name);
+        summary.collisionRules.push({ header: name, source: "caller", action: "dropped_sensitive_header" });
+        continue;
+      }
+      if (!policy.passthroughAllowlist.includes(name)) {
+        summary.droppedPassthroughHeaderNames.push(name);
         continue;
       }
       headers[name] = value;
@@ -1722,21 +1739,11 @@ export function createToolGatewayService(
       summary.metadataHeaderNames.push(name);
     }
 
-    if (policy.allowManagedCredentialOverride) {
-      for (const [name, value] of Object.entries(credentialHeaders)) {
-        if (headers[name] !== undefined) {
-          summary.collisionRules.push({ header: name, source: "credential", action: "caller_override_permitted" });
-          continue;
-        }
-        headers[name] = value;
+    for (const [name, value] of Object.entries(credentialHeaders)) {
+      if (headers[name] !== undefined) {
+        summary.collisionRules.push({ header: name, source: "credential", action: "overrode_previous_header" });
       }
-    } else {
-      for (const [name, value] of Object.entries(credentialHeaders)) {
-        if (headers[name] !== undefined) {
-          summary.collisionRules.push({ header: name, source: "credential", action: "overrode_previous_header" });
-        }
-        headers[name] = value;
-      }
+      headers[name] = value;
     }
 
     summary.staticHeaderNames.sort();
