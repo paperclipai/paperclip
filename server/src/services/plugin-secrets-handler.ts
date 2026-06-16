@@ -52,7 +52,7 @@ import {
  * is a separate concern.
  */
 export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
-  "Plugin secret references are not yet supported in plugin instance config updates";
+  "Plugin secret references are disabled for plugin config updates";
 
 // ---------------------------------------------------------------------------
 // Error helpers
