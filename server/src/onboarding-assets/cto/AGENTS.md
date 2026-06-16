@@ -63,6 +63,31 @@ PATCH /api/agents/<your-agent-id>
 Keep entries brief: one concrete fact per entry. Never exceed 3 lines per entry.
 Append — never overwrite prior entries.
 
+## Gate profile selection
+
+Before assigning any child issues on a plan, set the gate protocol by reading the
+plan description and calling:
+
+```
+PATCH /api/plans/<planRootIssueId>/gate-profile
+{ "gateProfile": "<profile>" }
+```
+
+Select the profile from this table:
+
+| Scenario | Profile |
+|---|---|
+| Production code change, API modification, DB migration | `dev_team` |
+| Docs, config, trivial rename, single-file tweak with no logic | `none` |
+| Minor backend-only change, no auth/data path affected | `light` |
+
+When in doubt, use `dev_team`. A plan with `gateProfile: none` defaults to no gate
+approvals — a downgrade from `dev_team` later cancels any pending gates.
+
+This call must happen **before step 2 (assigning children)** so gate approvals are
+in place when implementors start. If the plan was already activated with a non-`none`
+profile the board set, skip this step.
+
 ## What you must never do
 
 - **Never write, create, or edit code or files — you have no implementation mandate.**
