@@ -833,6 +833,181 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
+  it("does not reopen a finished issue when a stale board-sentinel comment (agent verdict/handoff posted via local-board) promotes after completion", async () => {
+    // Regression for the done -> todo disposition flap. An agent verdict/handoff
+    // comment posted through the local-board loopback is recorded as
+    // authorType:"user", authorUserId:"local-board", createdByRunId:null -- so the
+    // self-authored guard (createdByRunId === run.id) cannot catch it and the
+    // user-actor reopen gate would fire. Because the comment predates completion it
+    // is the issue's own closing artifact, not new external input, and must NOT
+    // bounce the freshly-`done` ticket back to `todo`. Contrast with the
+    // "promotes deferred comment wakes after the active run closes the issue" test
+    // above, where a DISTINCT human user ("user-1") in the same stale/deferred shape
+    // still reopens -- that is the liveness invariant this guard preserves.
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Stale board-sentinel must not reopen",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+
+      // The agent's own verdict/handoff, posted via the local-board loopback while
+      // the run is still active: authorType "user", authorUserId "local-board", and
+      // no createdByRunId linkage -- exactly the NDA-789 / NDA-791 shape.
+      const boardSentinelComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "local-board",
+          authorType: "user",
+          body: "**Verdict: PASS** — re-closing done.",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const deferredRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: boardSentinelComment.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: boardSentinelComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      });
+
+      expect(deferredRun).toBeNull();
+
+      await waitFor(async () => {
+        const deferred = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return Boolean(deferred);
+      });
+
+      // The run completes the issue AFTER the deferred wake was seeded -- the stale
+      // pre-completion ordering that produced the live flap.
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      gateway.releaseFirstWait();
+
+      // The deferred wake still PROMOTES (the agent is re-woken to read the comment),
+      // but it must not REOPEN the terminal issue.
+      await waitFor(() => gateway.getAgentPayloads().length >= 2, 90_000);
+      await waitFor(async () => {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId));
+        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+      }, 90_000);
+
+      const issueAfterPromotion = await db
+        .select({
+          status: issues.status,
+          completedAt: issues.completedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(issueAfterPromotion).toMatchObject({
+        status: "done",
+      });
+      expect(issueAfterPromotion?.completedAt).not.toBeNull();
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
   it("does not reopen a finished issue when the deferred comment wake came from another agent", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();

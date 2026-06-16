@@ -223,6 +223,12 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
+// Board/loopback principal sentinel. Canonical definition lives in board-claim.ts;
+// duplicated here (as in index.ts) to gate the deferred-comment-wake reopen race
+// without taking a cross-module import. Used to tell a board-sentinel comment
+// (which includes agent verdict/handoff comments posted through the local-board
+// loopback) apart from a distinct human user's comment.
+const LOCAL_BOARD_USER_ID = "local-board";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
@@ -9776,9 +9782,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Suppress reopen only when every referenced comment came from this run;
         // mixed batches must still reopen because they contain a real follow-up.
         let deferredCommentWakeIsSelfAuthored = false;
+        let deferredCommentWakeIsStaleBoardSelfClose = false;
         if (deferredCommentIds.length > 0) {
           const deferredComments = await tx
-            .select({ createdByRunId: issueComments.createdByRunId })
+            .select({
+              createdByRunId: issueComments.createdByRunId,
+              authorUserId: issueComments.authorUserId,
+            })
             .from(issueComments)
             .where(
               and(
@@ -9791,12 +9801,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           deferredCommentWakeIsSelfAuthored =
             deferredComments.length > 0 &&
             deferredComments.every((comment) => comment.createdByRunId === run.id);
+
+          // Disposition-flap guard (done -> todo). Agent verdict/handoff comments
+          // posted through the local-board loopback are recorded as authorType:"user",
+          // authorUserId:"local-board", createdByRunId:null -- metadata-identical to a
+          // genuine board directive, so the self-authored guard above
+          // (createdByRunId === run.id) can never match (null) and the user-actor reopen
+          // gate fires. When such a board-sentinel comment was created BEFORE the issue
+          // completed, it is the issue's own closing artifact (the verdict/handoff that
+          // accompanied the close), not new external input; reviving on it bounces a
+          // freshly-`done`/`cancelled` ticket back to `todo`. Suppress the reopen only
+          // when EVERY reviving comment is board-sentinel-authored AND the wake is not
+          // newer than completion. A genuine post-completion board directive
+          // (requestedAt > terminalAt -> fresh) or any distinct human user's comment
+          // still reopens, preserving the liveness invariants.
+          const terminalAt =
+            issue.status === "done"
+              ? issue.completedAt
+              : issue.status === "cancelled"
+                ? issue.cancelledAt
+                : null;
+          const reopenSignalPredatesCompletion =
+            terminalAt != null &&
+            deferred.requestedAt != null &&
+            deferred.requestedAt.getTime() <= terminalAt.getTime();
+          const reopenSignalIsBoardSentinelOnly =
+            deferredComments.length > 0 &&
+            deferredComments.every(
+              (comment) => comment.authorUserId === LOCAL_BOARD_USER_ID,
+            );
+          deferredCommentWakeIsStaleBoardSelfClose =
+            reopenSignalPredatesCompletion && reopenSignalIsBoardSentinelOnly;
         }
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           !deferredCommentWakeIsSelfAuthored &&
+          !deferredCommentWakeIsStaleBoardSelfClose &&
           (issue.status === "done" || issue.status === "cancelled") &&
           (
             deferred.requestedByActorType === "user" ||
