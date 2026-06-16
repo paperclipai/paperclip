@@ -103,4 +103,9 @@ describe("stripThinkBlocks", () => {
     const input = "<think>A</think>KEEP<think>B</think>";
     expect(stripThinkBlocks(input)).toBe("KEEP");
   });
+
+  it("leaves an unclosed think tag intact (does not truncate real output)", () => {
+    const input = "<think>partial reasoning without closing tag\nActual answer.";
+    expect(stripThinkBlocks(input)).toBe(input);
+  });
 });

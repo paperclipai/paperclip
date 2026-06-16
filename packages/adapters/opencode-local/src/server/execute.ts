@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  type AdapterExecutionTarget,
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetPaperclipApiUrl,
   adapterExecutionTargetRemoteCwd,
@@ -52,6 +53,40 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 // Non-greedy, dotall (s flag), case-sensitive. Exported for unit tests.
 export function stripThinkBlocks(text: string): string {
   return text.replace(/<think>.*?<\/think>/gs, "").trim();
+}
+
+// Remote-execution-target-aware model availability guard. Unlike the local
+// variant (ensureOpenCodeModelConfiguredAndAvailable in models.ts), this one
+// honours OPENCODE_ALLOW_ALL_MODELS so that gateway-routed models (e.g.
+// anthropic/<gateway>/<model> via Bifrost) that never appear in `opencode
+// models` output can still be used on remote/sandbox targets.
+// Format validation (non-empty, provider/model) always runs — the bypass only
+// skips the availability probe.
+// Exported for unit tests.
+export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
+  runId: string;
+  executionTarget: AdapterExecutionTarget;
+  command: string;
+  model: string;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+}): Promise<void> {
+  const model = input.model.trim();
+  if (!model) {
+    throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
+  }
+  const allowAllModels =
+    (input.env.OPENCODE_ALLOW_ALL_MODELS?.trim().length ?? 0) > 0 ||
+    (process.env.OPENCODE_ALLOW_ALL_MODELS?.trim().length ?? 0) > 0;
+  if (allowAllModels) return;
+  await ensureOpenCodeModelConfiguredAndAvailable({
+    model: input.model,
+    command: input.command,
+    cwd: input.cwd,
+    env: input.env,
+  });
 }
 
 function firstNonEmptyLine(text: string): string {
