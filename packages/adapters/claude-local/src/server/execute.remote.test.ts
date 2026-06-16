@@ -213,6 +213,75 @@ describe("claude remote execution", () => {
     }));
   });
 
+  it("skips the Paperclip callback bridge when disablePaperclipBridge is set and points Claude at the env API URL", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-nobridge-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const instructionsPath = path.join(rootDir, "instructions.md");
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(instructionsPath, "Use the remote workspace.\n", "utf8");
+
+    await execute({
+      runId: "run-2",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "claude",
+        instructionsFilePath: instructionsPath,
+        disablePaperclipBridge: true,
+        env: {
+          PAPERCLIP_API_URL: "http://control-plane.example:3100",
+        },
+      },
+      authToken: "direct-agent-token",
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+          workspaceId: "workspace-1",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+          repoRef: "main",
+          worktreePath: workspaceDir,
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { env: Record<string, string> }]
+      | undefined;
+    // Bridge skipped: Claude keeps the operator-provided control-plane URL and
+    // the real agent token, with no queue bridge mode injected.
+    expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://control-plane.example:3100");
+    expect(call?.[3].env.PAPERCLIP_API_KEY).toBe("direct-agent-token");
+    expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBeUndefined();
+  });
+
   it("does not resume saved Claude sessions for remote SSH execution without a matching remote identity", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-resume-"));
     cleanupDirs.push(rootDir);

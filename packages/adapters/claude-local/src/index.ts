@@ -45,6 +45,7 @@ Core fields:
 - dangerouslySkipPermissions (boolean, optional, default true): pass --dangerously-skip-permissions to claude; defaults to true because Paperclip runs Claude in headless --print mode where interactive permission prompts cannot be answered
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
+- disablePaperclipBridge (boolean, optional, default false): for remote execution targets, skip the sandbox callback bridge and let Claude reach the Paperclip control plane directly. Only enable when the remote can reach the control plane URL itself; set PAPERCLIP_API_URL in `env` accordingly
 - env (object, optional): KEY=VALUE environment variables
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats

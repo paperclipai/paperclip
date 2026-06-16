@@ -379,6 +379,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  // When the remote execution target can reach the Paperclip control plane
+  // directly (e.g. a trusted host on the same private network/VPN), the sandbox
+  // callback bridge is unnecessary overhead and its launch/readiness handshake
+  // can be fragile on some remote shells. Operators can opt out per agent and
+  // instead point Claude at the control plane via PAPERCLIP_API_URL in `env`.
+  const disablePaperclipBridge = asBoolean(config.disablePaperclipBridge, false);
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -568,7 +574,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
   }
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
-  if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
+  if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget) && !disablePaperclipBridge) {
     paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
       runId,
       target: runtimeExecutionTarget,
