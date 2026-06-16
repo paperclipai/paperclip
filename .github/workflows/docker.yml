@@ -20,7 +20,7 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: self-hosted
+    runs-on: arc-deploy
     timeout-minutes: 90
     concurrency:
       group: docker-${{ github.ref }}
@@ -140,7 +140,7 @@ jobs:
 
   deploy:
     needs: build-and-push
-    runs-on: self-hosted
+    runs-on: arc-deploy
     if: ${{ vars.PAPERCLIP_CI_DEPLOY == 'true' && github.ref == 'refs/heads/master' }}
     timeout-minutes: 15
     concurrency:

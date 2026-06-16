@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
+const dockerWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/docker.yml"), "utf8");
+const dockerAgentWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/docker-agent.yml"), "utf8");
 
 describe("production Dockerfile k8s adapter runtime pins", () => {
   it("pins opencode-ai and asserts the installed version", () => {
@@ -28,5 +30,12 @@ describe("production Dockerfile k8s adapter runtime pins", () => {
     expect(dockerfile).toContain("EACCES mkdir '/runtime-cache'");
     expect(dockerfile).toContain("preserve headers when translating Claude-style");
     expect(dockerfile).toContain("Bearer-protected gbrain connects");
+  });
+
+  it("routes Paperclip Docker deploy builds through the dedicated deploy runner pool", () => {
+    expect(dockerWorkflow.match(/runs-on: arc-deploy/g)).toHaveLength(2);
+    expect(dockerAgentWorkflow.match(/runs-on: arc-deploy/g)).toHaveLength(1);
+    expect(dockerWorkflow).not.toContain("runs-on: self-hosted");
+    expect(dockerAgentWorkflow).not.toContain("runs-on: self-hosted");
   });
 });
