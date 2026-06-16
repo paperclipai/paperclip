@@ -23,7 +23,7 @@ permissions:
 jobs:
   build-and-push:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: self-hosted
+    runs-on: arc-deploy
     timeout-minutes: 30
     concurrency:
       group: docker-agent-${{ github.ref }}
