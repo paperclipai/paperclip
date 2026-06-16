@@ -5077,6 +5077,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
+      runCheckoutActivity,
+      runPatchActivity,
     ] = await Promise.all([
       issue
         ? db
@@ -5216,6 +5218,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: activityLog.id })
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.companyId, run.companyId),
+              eq(activityLog.runId, run.id),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, issue.id),
+              inArray(activityLog.action, ["issue.checked_out", "issue.checkout_lock_adopted"]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: activityLog.id })
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.companyId, run.companyId),
+              eq(activityLog.runId, run.id),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, issue.id),
+              eq(activityLog.action, "issue.updated"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -5234,6 +5268,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
+      runEngagedIssue: Boolean(runCheckoutActivity),
+      runEmittedIssuePatch: Boolean(runPatchActivity),
     });
 
     if (decision.kind !== "enqueue" || !issue) return;
