@@ -110,7 +110,10 @@ WORKDIR /vendor
 # (PR kkroo/paperclip-adapter-opencode-k8s#21, BLO-10267) so opencode_k8s
 # agents with an external bundle can read $AGENT_HOME/{HEARTBEAT,SOUL,TOOLS}.md
 # + skills/*.md instead of 100%-failing with File-not-found.
-ARG CLAUDE_K8S_REF=1d6a08f7c814208caa3bf2333dd7c35ca50b95ae
+# Bumped 2026-06-16 to 6a7b9d5: always materialize the shared MCP baseline
+# into claude_k8s Job pods, even when an agent has no adapterConfig.mcpServers.
+# Fixes BackendEngineerGo/Ally missing paperclip/hindsight/gbrain/linear/etc.
+ARG CLAUDE_K8S_REF=6a7b9d532c8818c3bbd8777874dba9a7104e8fbf
 # Re-pinned 2026-06-14 to kkroo/paperclip-adapter-opencode-k8s master a533d11
 # (was 168688e): BLO-10448 — a transient k8s status-read error during the
 # completion poll was mislabeled as a deadline, surfacing as the bogus
@@ -130,7 +133,9 @@ ARG CLAUDE_K8S_REF=1d6a08f7c814208caa3bf2333dd7c35ca50b95ae
 # step_finish reason=stop) is no longer marked adapter_failed just because an
 # in-session tool call errored (e.g. a `read` on a missing /docs/*-template.md).
 # Stops discarding completed work and re-billing redundant retries.
-ARG OPENCODE_K8S_REF=f1ec78be33cca917d038579034078448156734da
+# Bumped 2026-06-16 to 5d43c07: preserve headers when translating Claude-style
+# remote MCP entries into OpenCode config, so Bearer-protected gbrain connects.
+ARG OPENCODE_K8S_REF=5d43c076e0232d9d11cdb2a9f0fce7aad7cfbdab
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
