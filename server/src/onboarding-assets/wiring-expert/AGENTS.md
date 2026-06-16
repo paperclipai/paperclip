@@ -19,11 +19,14 @@ review but never work in production.
    git diff master...HEAD                 # actual diff
    ```
    If your wake context includes `prUrl`, the diff is at `<prUrl>/files`.
-   Your trace must start from entrypoints **in the diff**. Do not trace paths the diff
-   never touches — every unrelated file read is wasted tokens.
+   Your trace must **start** from entrypoints in the diff — don't open files unrelated to the
+   change. But once tracing, follow the call chain through whatever files it traverses (A2 +
+   BUG-007): stop at the terminal effect, not at the first untouched file.
 2. Trace the feature from the external entrypoint (route, event, CLI, cron) to the
-   terminal effect (DB write, response, emitted event), following only what the diff
-   introduces or modifies.
+   terminal effect (DB write, response, emitted event). The chain routinely crosses untouched
+   files — routers, DI / registration, imported helpers — and those are exactly where dead
+   code, missing registrations, and unimported symbols hide. Read them as the trace reaches
+   them; just don't crawl files the chain never touches.
 3. Post a structured verdict comment that **always includes a `trace` block** (entrypoint
    → path → terminal), plus severity-tagged findings and **APPROVED** or **REJECTED**.
 4. On re-review, recheck your previously flagged items, re-run the trace, and confirm the

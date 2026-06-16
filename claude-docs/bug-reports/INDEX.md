@@ -17,12 +17,13 @@ against the real source before any fix.
 | [BUG-004](BUG-004-a5-preview-install-divergence.md) | A5 | MEDIUM | Catalog import preview diverges from install (omits adapter/model defaults) | Fixed | `48801684` |
 | [BUG-005](BUG-005-a1b-cold-rotation-comment-and-test-gap.md) | A1b/A1a | LOW | Cold-rotation comment contradicts outer threshold guard; missing rotation test coverage | Fixed | `d53332b7` (comment, concurrent) + `cd38b1e3` (tests) |
 | [BUG-006](BUG-006-b4-test-slice-vacuous-assertions.md) | B4 | MEDIUM | Plan-gate criteria test slices to EOF — section assertions pass vacuously | Fixed | `a4aa4022` (concurrent session) |
-| [BUG-007](BUG-007-a2-diff-only-reviewer-blind-spot.md) | A2 | LOW | Diff-only reviewer scope creates cross-file auth/concurrency blind spot | Not started | — |
+| [BUG-007](BUG-007-a2-diff-only-reviewer-blind-spot.md) | A2 | LOW | Diff-only reviewer scope creates cross-file auth/concurrency blind spot | Fixed | `2a5de007` (code-reviewer, concurrent) + this commit (wiring-expert) |
 
 > **Concurrent activity:** a second session was committing the same BUG-00x fixes to
-> `pilot/b1-dogfood` during this work (BUG-005 comment and all of BUG-006). Their edits were
-> byte-identical to the prescribed fixes, so they are accepted and credited above. BUG-007 paused
-> pending coordination to avoid colliding on the reviewer AGENTS.md prompts.
+> `pilot/b1-dogfood` during this work (BUG-005 comment, all of BUG-006, and the code-reviewer half of
+> BUG-007). Their edits were byte-identical to the prescribed fixes, so they are accepted and credited
+> above. This session completed the wiring-expert half of BUG-007, which the concurrent session left
+> unfixed.
 
 ## Not fixed — working as intended
 

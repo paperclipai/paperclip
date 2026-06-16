@@ -5,9 +5,9 @@
 | **Severity** | LOW |
 | **Backlog item** | A2 — diff-first code review scope |
 | **Origin commit** | `37ea5bcb` feat(agents): A2 diff-first code review scope |
-| **File** | `server/src/onboarding-assets/code-reviewer/AGENTS.md` |
+| **Files** | `server/src/onboarding-assets/code-reviewer/AGENTS.md`, `server/src/onboarding-assets/wiring-expert/AGENTS.md` |
 | **Category** | Testing Gaps / Instruction gap |
-| **Status** | Fixed |
+| **Status** | Fixed (two sessions — see Wiring-expert section) |
 
 ## Summary
 
@@ -36,6 +36,20 @@ Added a scoped cross-file exception after step 2:
 > reveal. Cap the trace at one hop — do not crawl the full codebase.
 
 The one-hop cap preserves the intent of A2 (token discipline) while covering the structural gap.
+
+## Wiring-expert side (added separately)
+
+The code-reviewer fix above was authored by a concurrent session (`2a5de007`). It left the
+**wiring-expert** prompt with the same over-restriction, which is worse there because cross-file
+tracing *is* the wiring-expert's job: "Do not trace paths the diff never touches … following only
+what the diff introduces or modifies" breaks the import-completeness and dead-code checks, since a
+trace to the terminal effect routinely crosses untouched routers, DI/registration, and imported
+helpers.
+
+Reworded `wiring-expert/AGENTS.md` step 1–2 so the trace **starts** in the diff but then follows the
+call chain through whatever files it traverses, stopping at the terminal effect — not at the first
+untouched file. Unrelated files are still not crawled. Verified: `default-agent-instructions`,
+`gate-instruction-backfill`, `review-gate-lens` tests → 27 passed.
 
 ## Notes
 
