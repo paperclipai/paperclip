@@ -6,6 +6,7 @@ import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import { parseCmdWrapperContent } from "./cmd-wrapper-resolution.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -1298,30 +1299,17 @@ async function resolveSpawnTarget(
     //   "%~dp0\node_modules\<pkg>\bin\<name>.exe" %*   (direct %~dp0)
     try {
       const content = await fs.readFile(executable, "utf8");
-      const exeMatch =
-        content.match(/"%dp0%\\(.+?\.exe)"/i)
-        ?? content.match(/%dp0%\\(.+?\.exe)/i)
-        ?? content.match(/"%~dp0\\(.+?\.exe)"/i)
-        ?? content.match(/%~dp0\\(.+?\.exe)/i);
-      if (exeMatch) {
+      const { exeRelativePath, envOverrides } = parseCmdWrapperContent(content);
+      if (exeRelativePath) {
         const dir = path.dirname(executable);
-        const resolvedExe = path.resolve(dir, exeMatch[1]);
+        const resolvedExe = path.resolve(dir, exeRelativePath);
         try {
           await fs.access(resolvedExe);
-          // Apply any SET commands from the wrapper as env overrides.
-          // Most npm wrappers only SET dp0 which is ephemeral and not needed,
-          // but some adapters may SET NODE_ENV or PATH which the exe requires.
-          const envOverride: Record<string, string> = {};
-          const setRegex = /^\s*SET\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$/gim;
-          let setMatch;
-          while ((setMatch = setRegex.exec(content)) !== null) {
-            const key = setMatch[1];
-            if (key.toLowerCase() !== "dp0") {
-              envOverride[key] = setMatch[2].trim();
-            }
-          }
-          const mergedEnv = Object.keys(envOverride).length > 0
-            ? { ...process.env, ...envOverride }
+          // Merge SET-based env overrides on top of the caller's sanitized env.
+          // Uses `env` (the already-sanitized caller env) instead of process.env
+          // to preserve inherited-env sanitization and Claude nesting cleanup.
+          const mergedEnv = Object.keys(envOverrides).length > 0
+            ? { ...env, ...envOverrides }
             : undefined;
           return { command: resolvedExe, args, env: mergedEnv };
         } catch {

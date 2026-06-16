@@ -1,7 +1,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import {
+  parseCmdWrapperContent,
+  DP0_PATTERN_NPM,
+  DP0_PATTERN_DIRECT,
+  TILDE_PATTERN_NPM,
+  TILDE_PATTERN_DIRECT,
+  SET_PATTERN,
+} from "./cmd-wrapper-resolution.js";
 
 /**
  * Tests for the .cmd wrapper resolution logic used in resolveSpawnTarget.
@@ -10,38 +18,6 @@ import { afterEach, describe, expect, it } from "vitest";
  * This test verifies the regex patterns and SET-command parsing that allow
  * Paperclip to resolve the real executable from npm .cmd wrappers.
  */
-
-const DP0_PATTERN_NPM = /"%dp0%\\(.+?\.exe)"/i;
-const DP0_PATTERN_DIRECT = /%dp0%\\(.+?\.exe)/i;
-const TILDE_PATTERN_NPM = /"%~dp0\\(.+?\.exe)"/i;
-const TILDE_PATTERN_DIRECT = /%~dp0\\(.+?\.exe)/i;
-const SET_PATTERN = /^\s*SET\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$/gim;
-
-function parseCmdWrapperContent(content: string): {
-  exeRelativePath: string | null;
-  envOverrides: Record<string, string>;
-} {
-  const exeMatch =
-    content.match(DP0_PATTERN_NPM) ??
-    content.match(DP0_PATTERN_DIRECT) ??
-    content.match(TILDE_PATTERN_NPM) ??
-    content.match(TILDE_PATTERN_DIRECT);
-
-  const envOverrides: Record<string, string> = {};
-  let setMatch;
-  const setRegex = new RegExp(SET_PATTERN.source, SET_PATTERN.flags);
-  while ((setMatch = setRegex.exec(content)) !== null) {
-    const key = setMatch[1];
-    if (key.toLowerCase() !== "dp0") {
-      envOverrides[key] = setMatch[2].trim();
-    }
-  }
-
-  return {
-    exeRelativePath: exeMatch ? exeMatch[1] : null,
-    envOverrides,
-  };
-}
 
 // Real-world npm .cmd wrapper patterns
 const NPM_GENERATED_CMD = `@ECHO off
@@ -117,6 +93,14 @@ describe(".cmd wrapper resolution", () => {
     expect(result.envOverrides).toEqual({
       NODE_ENV: "development",
     });
+  });
+
+  it("skips SET assignment lines when matching exe paths (NPM_GENERATED_CMD)", () => {
+    // SET "NODE_EXE=%~dp0\node.exe" looks like a %~dp0 exe match
+    // but is just a variable assignment. The parser must skip it and
+    // return null since no real exe invocation is present.
+    const result = parseCmdWrapperContent(NPM_GENERATED_CMD);
+    expect(result.exeRelativePath).toBeNull();
   });
 
   it("returns null exeRelativePath for non-matching .cmd content", () => {
