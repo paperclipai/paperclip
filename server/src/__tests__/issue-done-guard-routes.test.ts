@@ -758,4 +758,56 @@ describe("Done transition guard", () => {
     expect(res.status).toBe(422);
     expect(res.body.error).toContain("Linked implementation PR/work product is required");
   });
+
+  it("blocks transition to done when QA title contains remediation keyword (no plan/run) and no PR", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      title: "QA: Fix DB migration issue",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockDocumentService.listIssueDocuments.mockResolvedValue([]);
+    mockIssueService.listComments.mockResolvedValue([]);
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Linked implementation PR/work product is required");
+  });
+
+  it("blocks agent from mutating forbidden issue fields", async () => {
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const app = createApp();
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+
+    const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+      import("../routes/issues.js"),
+      import("../middleware/index.js"),
+    ]);
+    app.use("/api", issueRoutes(mockDb as any, {} as any));
+    app.use(errorHandler);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ title: "New Spoofed Title" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Agents are not authorized to mutate the following issue fields");
+  });
 });

@@ -1752,6 +1752,9 @@ export function issueRoutes(
       /\b(finding|evidence)\b/i.test(existing.title || "") ||
       /\b(finding|evidence)\b/i.test(existing.description || "");
 
+    const isRemediationTitleOrDesc = /fix\b|remediat|resolve|patch|bug\b|issue\b|error\b|fail|miss|broken|correct/i.test(existing.title || "") ||
+      /fix\b|remediat|resolve|patch|bug\b|issue\b|error\b|fail|miss|broken|correct/i.test(existing.description || "");
+
     const hasEvidenceRecordLabel = labelNames.some((name: string) => /evidence-record|finding-record/i.test(name));
     const hasEvidenceRecordComment = comments.some((c: any) =>
       c.authorType === "user" &&
@@ -1772,7 +1775,7 @@ export function issueRoutes(
         isQaOrReportOnly = true;
       } else if (isFindingCard) {
         // Finding cards must be explicitly labelled/commented as evidence records to be bypassed
-      } else if (isQaTitleOrDesc || isQaLabel) {
+      } else if ((isQaTitleOrDesc || isQaLabel) && !isRemediationTitleOrDesc) {
         isQaOrReportOnly = true;
       }
     }
@@ -1855,7 +1858,7 @@ export function issueRoutes(
       if (!hasNoMistakesPass && headSha) {
         hasNoMistakesPass = comments.some((c: any) =>
           c.body?.includes(headSha!) &&
-          c.authorType !== "agent" &&
+          c.authorType === "user" &&
           (c.body?.toLowerCase().includes("no mistakes pass") ||
            c.body?.toLowerCase().includes("no_mistakes_pass") ||
            c.body?.toLowerCase().includes("gate_result:no_mistakes") && c.body?.includes("PASS"))
@@ -5031,6 +5034,16 @@ export function issueRoutes(
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (req.actor.type === "agent") {
+      const forbiddenFields = ["title", "description", "labelIds", "projectId", "goalId", "parentId"];
+      const attemptedFields = forbiddenFields.filter((field) => req.body[field] !== undefined);
+      if (attemptedFields.length > 0) {
+        res.status(403).json({
+          error: `Agents are not authorized to mutate the following issue fields: ${attemptedFields.join(", ")}`,
+        });
+        return;
+      }
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
