@@ -54,6 +54,9 @@ RUN node scripts/patch-sink-dink-gemini-bridge.mjs
 # Safe one-shot source patch: mounts the SINK DINK media output route before TypeScript build.
 # This script is idempotent and does not execute any external API call.
 RUN node scripts/patch-sink-dink-media-output.mjs
+# Safe one-shot source patch: lowers ffmpeg render cost for Render/free-tier stability.
+# This script is idempotent and does not execute any external API call.
+RUN node scripts/patch-media-output-low-resource.mjs
 # NOTE: Gemini direct API patch script is intentionally not executed here.
 # The previous build hook broke Docker deploy due nested generated template strings.
 # Keep the script in the repo for future repair, but do not run it during production build.
@@ -78,22 +81,9 @@ COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
-  HOME=/paperclip \
-  HOST=0.0.0.0 \
-  PORT=3100 \
-  SERVE_UI=true \
-  PAPERCLIP_HOME=/paperclip \
-  PAPERCLIP_INSTANCE_ID=default \
-  USER_UID=${USER_UID} \
-  USER_GID=${USER_GID} \
-  PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
-  PAPERCLIP_DEPLOYMENT_MODE=authenticated \
-  PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-  OPENCODE_ALLOW_ALL_MODELS=true \
-  GEMINI_SANDBOX=false
-
-VOLUME ["/paperclip"]
-EXPOSE 3100
-
-ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+    SERVER_HOST=0.0.0.0 \
+    PATH="/app/cli/bin:/app/node_modules/.bin:${PATH}"
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+USER node
+EXPOSE 8080
+CMD ["node", "/app/server/dist/index.js"]
