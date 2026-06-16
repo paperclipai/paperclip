@@ -2360,15 +2360,6 @@ export function agentRoutes(
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
-    const agentEnv = asRecord(agent.adapterConfig)?.env;
-    if (agentEnv) {
-      await secretsSvc.syncEnvBindingsForTarget?.(
-        companyId,
-        { targetType: "agent", targetId: agent.id },
-        agentEnv,
-      );
-    }
     const normalizedCreatedAdapterConfig = normalizeMiniMaxLocalAdapterConfigForAgent(
       createdAgent.id,
       createdAgent.adapterType,
@@ -2826,12 +2817,6 @@ export function agentRoutes(
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
-      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
-      const normalizedEffectiveAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
-        existing.companyId,
-        effectiveAdapterConfig,
-        { strictMode: strictSecretsMode },
-      );
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(
         existing,
         normalizeMiniMaxLocalAdapterConfigForAgent(
