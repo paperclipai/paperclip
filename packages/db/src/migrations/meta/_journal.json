@@ -666,6 +666,13 @@
       "when": 1781529706684,
       "tag": "0094_clean_giant_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1781572941963,
+      "tag": "0095_parallel_blizzard",
+      "breakpoints": true
     }
   ]
 }
