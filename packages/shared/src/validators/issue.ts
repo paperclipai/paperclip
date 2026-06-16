@@ -433,6 +433,7 @@ export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+  monitorNextCheckAt: z.string().datetime().optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
   reviewRequest: issueReviewRequestSchema.optional().nullable(),
   reopen: z.boolean().optional(),

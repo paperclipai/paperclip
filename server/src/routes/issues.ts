@@ -5005,12 +5005,19 @@ export function issueRoutes(
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
+    const directMonitorNextCheckAtProvided = req.body.monitorNextCheckAt !== undefined;
+    const directMonitorNextCheckAt = directMonitorNextCheckAtProvided
+      ? (req.body.monitorNextCheckAt === null ? null : new Date(req.body.monitorNextCheckAt as string))
+      : undefined;
+    const directMonitorChanged =
+      directMonitorNextCheckAtProvided &&
+      (existing.monitorNextCheckAt?.getTime() ?? null) !== (directMonitorNextCheckAt?.getTime() ?? null);
     await assertCanManageIssueMonitor(
       access,
       req,
       existing.companyId,
       existing.assigneeAgentId,
-      req.body.executionPolicy !== undefined && monitorChanged,
+      (req.body.executionPolicy !== undefined && monitorChanged) || directMonitorChanged,
     );
 
     const transition = applyIssueExecutionPolicyTransition({
@@ -5043,6 +5050,14 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    // Direct monitorNextCheckAt write: a first-class PATCH field takes precedence over the
+    // executionPolicy-derived value and is persisted to the monitor_next_check_at column. Convert
+    // the validated ISO string to a Date so svc.update writes a proper timestamp. Applied after the
+    // transition merge so the explicit field wins, and before the in_review review-path check so the
+    // scheduled monitor is recognized as a valid disposition path.
+    if (directMonitorNextCheckAtProvided) {
+      updateFields.monitorNextCheckAt = directMonitorNextCheckAt;
+    }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
