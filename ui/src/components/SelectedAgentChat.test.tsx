@@ -91,6 +91,10 @@ describe("SelectedAgentChatView", () => {
     flushSync(() => root.render(node));
   }
 
+  function countText(text: string, needle: string): number {
+    return text.split(needle).length - 1;
+  }
+
   it("renders the real selected-agent identity in the header", () => {
     render(
       <SelectedAgentChatView
@@ -104,6 +108,46 @@ describe("SelectedAgentChatView", () => {
     expect(container.textContent).toContain("CEO");
     // No board-concierge persona leaks into the surface.
     expect(container.textContent?.toLowerCase()).not.toContain("concierge");
+  });
+
+  it("uses the left-side selector as the selected-agent identity without repeating the role", () => {
+    render(
+      <SelectedAgentChatView
+        agents={[ceo, eng]}
+        targetAgentId={ceo.id}
+        comments={[]}
+        onSend={async () => {}}
+        onTargetAgentChange={() => {}}
+      />,
+    );
+
+    const header = container.querySelector(
+      '[data-testid="selected-agent-chat-header"]',
+    ) as HTMLDivElement | null;
+    const switcher = header?.querySelector('[aria-label="Choose chat agent"]');
+    expect(switcher).not.toBeNull();
+    expect(switcher?.textContent).toContain("Sarah");
+    expect(countText(switcher?.textContent ?? "", "CEO")).toBe(1);
+    expect(header?.textContent).toBe(switcher?.textContent);
+  });
+
+  it("pads the chat body to align with the selected-agent header", () => {
+    render(
+      <SelectedAgentChatView
+        agents={[ceo]}
+        targetAgentId={ceo.id}
+        comments={[]}
+        onSend={async () => {}}
+      />,
+    );
+
+    const body = container.querySelector(
+      '[data-testid="selected-agent-chat-body"]',
+    ) as HTMLDivElement | null;
+    expect(body).not.toBeNull();
+    expect(body?.className).toContain("px-4");
+    expect(body?.className).toContain("pt-3");
+    expect(body?.className).toContain("pb-4");
   });
 
   it("shows a loading indicator while the first fetch is in flight", () => {

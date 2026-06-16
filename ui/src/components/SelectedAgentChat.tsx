@@ -184,28 +184,14 @@ export function SelectedAgentChatView({
   return (
     <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", className)}>
       {/* Identity header — real selected agent (no board-concierge persona). */}
-      <div className="relative flex shrink-0 items-center justify-between gap-2 px-4 py-3">
+      <div
+        data-testid="selected-agent-chat-header"
+        className="relative flex shrink-0 items-center gap-2 px-4 py-3"
+      >
         <div
           className="pointer-events-none absolute bottom-0 left-0 right-0 h-px bg-border"
           aria-hidden
         />
-        <div className="flex min-w-0 items-center gap-2">
-          <Avatar size="sm" className="shrink-0">
-            <AvatarFallback>
-              {targetAgent?.icon ? (
-                <AgentIcon icon={targetAgent.icon} className="h-3.5 w-3.5" />
-              ) : (
-                agentInitials(targetName)
-              )}
-            </AvatarFallback>
-          </Avatar>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-foreground">{targetName}</div>
-            {targetRole ? (
-              <div className="truncate text-xs text-muted-foreground">{targetRole}</div>
-            ) : null}
-          </div>
-        </div>
         {canSwitch ? (
           <Select
             value={targetAgentId ?? undefined}
@@ -213,12 +199,12 @@ export function SelectedAgentChatView({
           >
             <SelectTrigger
               size="sm"
-              className="w-auto min-w-[9rem] gap-2"
+              className="h-auto w-auto min-w-0 max-w-full gap-2 px-2 py-1.5"
               aria-label="Choose chat agent"
             >
               <SelectValue placeholder="Choose agent" />
             </SelectTrigger>
-            <SelectContent align="end">
+            <SelectContent align="start">
               {invokableAgents.map((a) => (
                 <SelectItem key={a.id} value={a.id}>
                   <span className="flex items-center gap-2">
@@ -232,7 +218,25 @@ export function SelectedAgentChatView({
               ))}
             </SelectContent>
           </Select>
-        ) : null}
+        ) : (
+          <div className="flex min-w-0 items-center gap-2">
+            <Avatar size="sm" className="shrink-0">
+              <AvatarFallback>
+                {targetAgent?.icon ? (
+                  <AgentIcon icon={targetAgent.icon} className="h-3.5 w-3.5" />
+                ) : (
+                  agentInitials(targetName)
+                )}
+              </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-foreground">{targetName}</div>
+              {targetRole ? (
+                <div className="truncate text-xs text-muted-foreground">{targetRole}</div>
+              ) : null}
+            </div>
+          </div>
+        )}
       </div>
 
       {errorText ? (
@@ -266,30 +270,35 @@ export function SelectedAgentChatView({
           <Loader2 className="h-5 w-5 animate-spin" aria-label="Loading conversation" />
         </div>
       ) : (
-        <IssueChatThread
-          variant="full"
-          comments={comments}
-          interactions={interactions}
-          liveRuns={liveRuns}
-          activeRun={activeRun}
-          feedbackVotes={feedbackVotes}
-          issueId={issueId}
-          companyId={companyId}
-          projectId={projectId}
-          agentMap={agentMap}
-          currentUserId={currentUserId}
-          mentions={mentions}
-          emptyMessage={
-            emptyMessage ?? `Send ${targetName} a message to start the conversation.`
-          }
-          onAdd={handleAdd}
-          onStopRun={onStopRun}
-          onVote={onVote}
-          onAcceptInteraction={onAcceptInteraction}
-          onRejectInteraction={onRejectInteraction}
-          onSubmitInteractionAnswers={onSubmitInteractionAnswers}
-          onCancelInteraction={onCancelInteraction}
-        />
+        <div
+          data-testid="selected-agent-chat-body"
+          className="min-w-0 px-4 pb-4 pt-3"
+        >
+          <IssueChatThread
+            variant="full"
+            comments={comments}
+            interactions={interactions}
+            liveRuns={liveRuns}
+            activeRun={activeRun}
+            feedbackVotes={feedbackVotes}
+            issueId={issueId}
+            companyId={companyId}
+            projectId={projectId}
+            agentMap={agentMap}
+            currentUserId={currentUserId}
+            mentions={mentions}
+            emptyMessage={
+              emptyMessage ?? `Send ${targetName} a message to start the conversation.`
+            }
+            onAdd={handleAdd}
+            onStopRun={onStopRun}
+            onVote={onVote}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+            onCancelInteraction={onCancelInteraction}
+          />
+        </div>
       )}
     </div>
   );
