@@ -43,6 +43,10 @@ export const databaseConfigSchema = z.object({
 export const loggingConfigSchema = z.object({
   mode: z.enum(["file", "cloud"]),
   logDir: z.string().default("~/.paperclip/instances/default/logs"),
+  // Controls how verbose the server log is. "info" is the default and keeps
+  // DEBUG lines (~20% of volume) off disk. Set to "debug" to re-enable verbose
+  // logging; the PAPERCLIP_LOG_LEVEL env var overrides this at runtime.
+  level: z.enum(["info", "debug", "warn"]).default("info"),
 });
 
 export const serverConfigSchema = z.object({

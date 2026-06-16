@@ -6,6 +6,7 @@ import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 import { redactSensitive } from "./redact-sensitive.js";
+import { resolveLogLevel, serializeHttpRequest } from "./log-config.js";
 
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
@@ -22,6 +23,8 @@ fs.mkdirSync(logDir, { recursive: true });
 
 const logFile = path.join(logDir, "server.log");
 
+const logLevel = resolveLogLevel(readConfigFile()?.logging.level);
+
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
   ignore: "pid,hostname",
@@ -29,8 +32,14 @@ const sharedOpts = {
 };
 
 export const logger = pino({
-  level: "debug",
-  redact: ["req.headers.authorization"],
+  level: logLevel,
+  // Defense-in-depth: even though serializeHttpRequest drops headers, redact any
+  // auth/session secrets if some other call path logs req.headers directly.
+  redact: [
+    "req.headers.authorization",
+    "req.headers.cookie",
+    'req.headers["cf-access-jwt-assertion"]',
+  ],
 }, pino.transport({
   targets: [
     {
@@ -41,13 +50,19 @@ export const logger = pino({
     {
       target: "pino-pretty",
       options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
-      level: "debug",
+      level: logLevel,
     },
   ],
 }));
 
 export const httpLogger = pinoHttp({
   logger,
+  serializers: {
+    // Override the default req serializer (which dumps the full header block,
+    // leaking session cookie + cf-access-jwt-assertion on 4xx/5xx) with one
+    // that logs method/path/ip only.
+    req: serializeHttpRequest,
+  },
   customLogLevel(_req, res, err) {
     if (shouldSilenceHttpSuccessLog(_req.method, _req.url, res.statusCode)) {
       return "silent";
