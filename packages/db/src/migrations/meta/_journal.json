@@ -771,6 +771,13 @@
       "when": 1781481600000,
       "tag": "0109_tool_invocation_connected_mcp_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1781568000000,
+      "tag": "0110_named_mcp_gateways",
+      "breakpoints": true
     }
   ]
 }

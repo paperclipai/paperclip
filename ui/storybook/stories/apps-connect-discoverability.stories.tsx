@@ -145,6 +145,7 @@ const REMOTE_PREVIEW: McpJsonImportPreview = {
       status: "draft",
       config: { url: "http://127.0.0.1:8848/mcp" },
       credentialRefs: [],
+      credentialFields: [],
       warnings: [],
     },
   ],
@@ -160,6 +161,14 @@ const MIXED_PREVIEW: McpJsonImportPreview = {
       credentialRefs: [
         { name: "LINEAR_API_KEY", secretId: "draft-1", placement: "header", key: "LINEAR_API_KEY" },
       ],
+      credentialFields: [{
+        configPath: "headers.LINEAR_API_KEY",
+        label: "LINEAR_API_KEY",
+        placement: "header",
+        key: "LINEAR_API_KEY",
+        prefix: null,
+        required: true,
+      }],
       warnings: [],
     },
     {
@@ -170,6 +179,7 @@ const MIXED_PREVIEW: McpJsonImportPreview = {
       credentialRefs: [
         { name: "GITHUB_TOKEN", secretId: "draft-2", placement: "env", key: "GITHUB_TOKEN" },
       ],
+      credentialFields: [],
       warnings: ["Imported stdio commands stay draft-only unless mapped to an approved Paperclip template."],
     },
   ],
@@ -185,13 +195,14 @@ const STDIO_PREVIEW: McpJsonImportPreview = {
       credentialRefs: [
         { name: "GITHUB_TOKEN", secretId: "draft-3", placement: "env", key: "GITHUB_TOKEN" },
       ],
+      credentialFields: [],
       warnings: ["Imported stdio commands stay draft-only unless mapped to an approved Paperclip template."],
     },
   ],
 };
 
 export const PasteConfigPreviewRemote: Story = {
-  name: "Paste a config — remote draft (Continue)",
+  name: "Paste a config — remote draft (check actions)",
   render: () => (
     <PreviewHost
       preview={REMOTE_PREVIEW}
@@ -211,7 +222,7 @@ export const PasteConfigPreviewMixed: Story = {
 };
 
 export const PasteConfigPreviewStdioOnly: Story = {
-  name: "Paste a config — stdio only (draft, no Continue)",
+  name: "Paste a config — stdio only (draft, no activation)",
   render: () => (
     <PreviewHost
       preview={STDIO_PREVIEW}

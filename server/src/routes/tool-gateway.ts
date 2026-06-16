@@ -3,6 +3,11 @@ import { and, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, toolApplications, toolConnections, toolInvocations } from "@paperclipai/db";
 import { humanizeConnectionDisplayName, type PermissionKey } from "@paperclipai/shared";
+import {
+  createToolMcpGatewaySchema,
+  createToolMcpGatewayTokenSchema,
+  updateToolMcpGatewaySchema,
+} from "@paperclipai/shared/validators/tool-access";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";
@@ -31,6 +36,21 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}
 
 function gatewayToken(req: { header(name: string): string | undefined }) {
   return req.header("x-paperclip-tool-gateway-token")?.trim() || null;
+}
+
+function bearerToken(req: { header(name: string): string | undefined }) {
+  const value = req.header("authorization")?.trim() ?? "";
+  const match = value.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || null;
+}
+
+function callerHeaders(req: { headers: Record<string, string | string[] | undefined> }): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (typeof value === "string") headers[name] = value;
+    else if (Array.isArray(value)) headers[name] = value.join(", ");
+  }
+  return headers;
 }
 
 function detailString(details: Record<string, unknown> | null | undefined, key: string): string | null {
@@ -126,6 +146,191 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     throw forbidden(`Missing permission: ${permissionKey}`);
   }
 
+  router.get("/companies/:companyId/tools/gateways", async (req, res) => {
+    try {
+      await assertBoardPermission(req, req.params.companyId, "tools:admin");
+      res.json({ gateways: await toolGateway.listNamedGateways(req.params.companyId) });
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
+  });
+
+  router.post("/companies/:companyId/tools/gateways", async (req, res) => {
+    try {
+      await assertBoardPermission(req, req.params.companyId, "tools:admin");
+      const parsed = createToolMcpGatewaySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(422).json({ error: "Invalid gateway payload", issues: parsed.error.issues });
+        return;
+      }
+      const actor = getActorInfo(req);
+      const gateway = await toolGateway.createNamedGateway({
+        companyId: req.params.companyId,
+        body: parsed.data,
+        actor: { agentId: actor.agentId, userId: req.actor.type === "board" ? req.actor.userId : null },
+      });
+      res.status(201).json(gateway);
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
+  });
+
+  router.patch("/tool-gateway/gateways/:gatewayId", async (req, res) => {
+    try {
+      assertBoard(req);
+      const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
+      if (!companyId) {
+        res.status(400).json({ error: "companyId is required" });
+        return;
+      }
+      await assertBoardPermission(req, companyId, "tools:admin");
+      const parsed = updateToolMcpGatewaySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(422).json({ error: "Invalid gateway payload", issues: parsed.error.issues });
+        return;
+      }
+      const { companyId: _companyId, ...body } = parsed.data as typeof parsed.data & { companyId?: string };
+      res.json(await toolGateway.updateNamedGateway({ companyId, gatewayId: req.params.gatewayId, body }));
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
+  });
+
+  router.post("/tool-gateway/gateways/:gatewayId/tokens", async (req, res) => {
+    try {
+      assertBoard(req);
+      const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
+      if (!companyId) {
+        res.status(400).json({ error: "companyId is required" });
+        return;
+      }
+      await assertBoardPermission(req, companyId, "tools:admin");
+      const parsed = createToolMcpGatewayTokenSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(422).json({ error: "Invalid gateway token payload", issues: parsed.error.issues });
+        return;
+      }
+      const actor = getActorInfo(req);
+      res.status(201).json(await toolGateway.createNamedGatewayToken({
+        companyId,
+        gatewayId: req.params.gatewayId,
+        body: parsed.data,
+        actor: { agentId: actor.agentId, userId: req.actor.type === "board" ? req.actor.userId : null },
+      }));
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
+  });
+
+  router.post("/tool-gateway/gateway-tokens/:tokenId/revoke", async (req, res) => {
+    try {
+      assertBoard(req);
+      const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
+      if (!companyId) {
+        res.status(400).json({ error: "companyId is required" });
+        return;
+      }
+      await assertBoardPermission(req, companyId, "tools:admin");
+      res.json(await toolGateway.revokeNamedGatewayToken({ companyId, tokenId: req.params.tokenId }));
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
+  });
+
+  router.get("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
+    res.json({
+      transport: "streamable_http",
+      endpoint: `/api/tool-gateway/gateways/${req.params.gatewayId}/mcp`,
+      authentication: "bearer",
+    });
+  });
+
+  router.post("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
+    try {
+      const token = bearerToken(req);
+      if (!token) {
+        res.status(401).json({ error: "Bearer token is required" });
+        return;
+      }
+      const body = (req.body ?? {}) as { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
+      const id = body.id ?? null;
+      if (body.method === "initialize") {
+        res.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: { tools: {} },
+            serverInfo: { name: "Paperclip MCP Gateway", version: "1.0.0" },
+          },
+        });
+        return;
+      }
+      if (body.method === "notifications/initialized") {
+        res.status(202).end();
+        return;
+      }
+      if (body.method === "tools/list") {
+        const tools = await toolGateway.listToolsForNamedGateway({ gatewayId: req.params.gatewayId, bearerToken: token });
+        res.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            tools: tools.map((tool) => ({
+              name: tool.name,
+              title: tool.displayName,
+              description: tool.description,
+              inputSchema: tool.parametersSchema ?? { type: "object", properties: {} },
+            })),
+          },
+        });
+        return;
+      }
+      if (body.method === "tools/call") {
+        const params = body.params ?? {};
+        const name = typeof params.name === "string" ? params.name : "";
+        if (!name) {
+          res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32602, message: "params.name is required" } });
+          return;
+        }
+        const result = await toolGateway.executeTool({
+          sessionToken: token,
+          tool: name,
+          parameters: params.arguments ?? {},
+          callerHeaders: req.headers,
+        });
+        const resultRecord = result.result && typeof result.result === "object" && !Array.isArray(result.result)
+          ? result.result as Record<string, unknown>
+          : null;
+        const contentText = typeof resultRecord?.content === "string"
+          ? resultRecord.content
+          : JSON.stringify(resultRecord?.data ?? result.result ?? null);
+        res.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [{ type: "text", text: contentText }],
+            structuredContent: resultRecord?.data ?? null,
+            isError: false,
+          },
+        });
+        return;
+      }
+      res.status(404).json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+    } catch (err) {
+      if (err instanceof ToolGatewayHttpError) {
+        const id = (req.body as { id?: unknown } | undefined)?.id ?? null;
+        res.status(err.status).json({
+          jsonrpc: "2.0",
+          id,
+          error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...err.details } },
+        });
+        return;
+      }
+      sendGatewayError(res, err);
+    }
+  });
+
   router.post("/tool-gateway/sessions", async (req, res) => {
     try {
       assertBoardOrAgent(req);
@@ -211,6 +416,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         approvedActionRequestId:
           typeof body.approvedActionRequestId === "string" ? body.approvedActionRequestId : null,
         idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : null,
+        callerHeaders: callerHeaders(req),
       });
       res.json(result);
     } catch (err) {

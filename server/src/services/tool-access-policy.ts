@@ -33,12 +33,14 @@ import type {
   ReorderToolPolicies,
   RevokeToolTrustRule,
   ToolPolicyDecision,
+  ToolPolicyConditions,
   UpdateToolPolicy,
   ToolRateLimitRule,
   ToolRedactedValueSummary,
   ToolTrustRuleArgumentFilters,
   ToolRiskLevel,
 } from "@paperclipai/shared";
+import { toolPolicyConditionsSchema } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 
 type ToolAccessContext = {
@@ -50,6 +52,7 @@ type ToolAccessContext = {
   issueId: string | null;
   projectId: string | null;
   routineId: string | null;
+  gatewayId: string | null;
   applicationId: string | null;
   connectionId: string | null;
   catalogEntryId: string | null;
@@ -68,6 +71,13 @@ type ToolAccessContext = {
 type RedactionResult = {
   summary: ToolRedactedValueSummary;
   redactionPlan: { redactedFieldCount: number; redactedFields: string[] };
+};
+
+type PolicyConditionEvaluation = {
+  matched: boolean;
+  matchedGroups: string[];
+  failedGroup?: string;
+  reason?: string;
 };
 
 type TrustRuleConfig = {
@@ -151,7 +161,42 @@ function argumentFiltersMatch(filters: ToolTrustRuleArgumentFilters | null | und
       if (stableStringify(readPath(ctx.arguments, path)) !== stableStringify(expected)) return false;
     }
   }
-  return Boolean(filters.exactHash || filters.allowedHashes?.length || filters.fieldEquals);
+  if (filters.fieldNotEquals) {
+    for (const [path, expected] of Object.entries(filters.fieldNotEquals)) {
+      if (stableStringify(readPath(ctx.arguments, path)) === stableStringify(expected)) return false;
+    }
+  }
+  if (filters.fieldIn) {
+    for (const [path, allowedValues] of Object.entries(filters.fieldIn)) {
+      const actual = stableStringify(readPath(ctx.arguments, path));
+      if (!allowedValues.some((expected) => stableStringify(expected) === actual)) return false;
+    }
+  }
+  if (filters.fieldMatches) {
+    for (const [path, pattern] of Object.entries(filters.fieldMatches)) {
+      const actual = readPath(ctx.arguments, path);
+      if (typeof actual !== "string") return false;
+      let re: RegExp;
+      try {
+        re = new RegExp(pattern);
+      } catch {
+        return false;
+      }
+      if (!re.test(actual)) return false;
+    }
+  }
+  if (filters.fieldExists?.some((path) => readPath(ctx.arguments, path) === undefined)) return false;
+  if (filters.fieldAbsent?.some((path) => readPath(ctx.arguments, path) !== undefined)) return false;
+  return Boolean(
+    filters.exactHash
+    || filters.allowedHashes?.length
+    || filters.fieldEquals
+    || filters.fieldNotEquals
+    || filters.fieldIn
+    || filters.fieldMatches
+    || filters.fieldExists?.length
+    || filters.fieldAbsent?.length,
+  );
 }
 
 function trustRuleNeedsReview(policy: typeof toolPolicies.$inferSelect, ctx: ToolAccessContext): boolean {
@@ -293,15 +338,191 @@ function selectorMatches(selector: ToolAccessSelector | Record<string, unknown> 
     match("projectId", "projectIds", ctx.projectId) &&
     match("routineId", "routineIds", ctx.routineId) &&
     match("issueId", "issueIds", ctx.issueId) &&
+    match("gatewayId", "gatewayIds", ctx.gatewayId) &&
     match("applicationId", "applicationIds", ctx.applicationId) &&
     match("connectionId", "connectionIds", ctx.connectionId) &&
     match("catalogEntryId", "catalogEntryIds", ctx.catalogEntryId) &&
+    match("applicationKey", "applicationKeys", ctx.applicationKey) &&
+    match("providerType", "providerTypes", ctx.providerType) &&
     match("toolName", "toolNames", ctx.toolName) &&
     match("riskLevel", "riskLevels", ctx.riskLevel)
   );
 }
 
+function conditionRecord(value: unknown): Record<string, unknown> | null {
+  return isRecord(value) && Object.keys(value).length > 0 ? value : null;
+}
+
+function argumentConditionMatches(condition: Record<string, unknown>, ctx: ToolAccessContext): boolean {
+  const filters: ToolTrustRuleArgumentFilters = {
+    fieldEquals: conditionRecord(condition.fieldEquals) ?? undefined,
+    fieldNotEquals: conditionRecord(condition.fieldNotEquals) ?? undefined,
+    fieldIn: conditionRecord(condition.fieldIn) as Record<string, unknown[]> | undefined,
+    fieldMatches: conditionRecord(condition.fieldMatches) as Record<string, string> | undefined,
+    fieldExists: listValues(condition.fieldExists),
+    fieldAbsent: listValues(condition.fieldAbsent),
+  };
+  return argumentFiltersMatch(filters, ctx);
+}
+
+function riskRank(value: ToolRiskLevel | null): number {
+  if (value === "read" || value === "low") return 1;
+  if (value === "write" || value === "medium") return 2;
+  if (value === "destructive" || value === "high") return 3;
+  if (value === "critical") return 4;
+  return 0;
+}
+
+function boolCondition(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function timeWindowMatches(condition: Record<string, unknown>, now: Date): boolean {
+  const startAt = isoDateOrNull(condition.startAt);
+  const endAt = isoDateOrNull(condition.endAt);
+  if (startAt && now.getTime() < new Date(startAt).getTime()) return false;
+  if (endAt && now.getTime() > new Date(endAt).getTime()) return false;
+
+  const days = Array.isArray(condition.daysOfWeekUtc)
+    ? condition.daysOfWeekUtc.filter((day): day is number => Number.isInteger(day) && day >= 0 && day <= 6)
+    : [];
+  if (days.length > 0 && !days.includes(now.getUTCDay())) return false;
+
+  const startHour = typeof condition.startHourUtc === "number" ? condition.startHourUtc : null;
+  const endHour = typeof condition.endHourUtc === "number" ? condition.endHourUtc : null;
+  if (startHour !== null || endHour !== null) {
+    const hour = now.getUTCHours();
+    const start = startHour ?? 0;
+    const end = endHour ?? 24;
+    if (start === end) return false;
+    if (start < end) {
+      if (hour < start || hour >= end) return false;
+    } else if (hour < start && hour >= end) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function policyConditions(policy: typeof toolPolicies.$inferSelect): ToolPolicyConditions | null {
+  return isRecord(policy.conditions) && Object.keys(policy.conditions).length > 0
+    ? policy.conditions as ToolPolicyConditions
+    : null;
+}
+
+function conditionGroupFail(group: string, reason: string): PolicyConditionEvaluation {
+  return { matched: false, matchedGroups: [], failedGroup: group, reason };
+}
+
+function evaluatePolicyConditions(
+  conditions: ToolPolicyConditions | null | undefined,
+  ctx: ToolAccessContext,
+  now = new Date(),
+): PolicyConditionEvaluation {
+  if (!conditions || Object.keys(conditions).length === 0) return { matched: true, matchedGroups: [] };
+  const matchedGroups: string[] = [];
+
+  const argumentCondition = conditionRecord(conditions.arguments ?? conditions.args);
+  if (argumentCondition) {
+    if (!argumentConditionMatches(argumentCondition, ctx)) {
+      return conditionGroupFail("arguments", "Tool arguments did not satisfy the policy condition.");
+    }
+    matchedGroups.push("arguments");
+  }
+
+  if (conditions.actor) {
+    if (!selectorMatches(conditions.actor, ctx)) {
+      return conditionGroupFail("actor", "Actor did not satisfy the policy condition.");
+    }
+    matchedGroups.push("actor");
+  }
+
+  if (conditions.context) {
+    const context = conditions.context as Record<string, unknown>;
+    if (boolCondition(context.requireIssue) === true && !ctx.issueId) {
+      return conditionGroupFail("context", "Policy condition requires issue context.");
+    }
+    if (boolCondition(context.requireProject) === true && !ctx.projectId) {
+      return conditionGroupFail("context", "Policy condition requires project context.");
+    }
+    if (boolCondition(context.requireRoutine) === true && !ctx.routineId) {
+      return conditionGroupFail("context", "Policy condition requires routine context.");
+    }
+    if (!selectorMatches(context, ctx)) {
+      return conditionGroupFail("context", "Issue, project, or routine context did not satisfy the policy condition.");
+    }
+    matchedGroups.push("context");
+  }
+
+  if (conditions.risk) {
+    const risk = conditions.risk as Record<string, unknown>;
+    const levels = listValues(risk.levels).map(asToolRiskLevel).filter((level): level is ToolRiskLevel => Boolean(level));
+    const max = asToolRiskLevel(risk.max);
+    const isWrite = boolCondition(risk.isWrite);
+    const isDestructive = boolCondition(risk.isDestructive);
+    if (levels.length > 0 && (!ctx.riskLevel || !levels.includes(ctx.riskLevel))) {
+      return conditionGroupFail("risk", "Tool risk level did not satisfy the policy condition.");
+    }
+    if (max && riskRank(ctx.riskLevel) > riskRank(max)) {
+      return conditionGroupFail("risk", "Tool risk level is above the policy condition limit.");
+    }
+    if (isWrite !== null && ((ctx.riskLevel === "write" || ctx.riskLevel === "destructive" || ctx.riskLevel === "medium" || ctx.riskLevel === "high" || ctx.riskLevel === "critical") !== isWrite)) {
+      return conditionGroupFail("risk", "Tool write capability did not satisfy the policy condition.");
+    }
+    if (isDestructive !== null && ((ctx.riskLevel === "destructive" || ctx.riskLevel === "high" || ctx.riskLevel === "critical") !== isDestructive)) {
+      return conditionGroupFail("risk", "Tool destructive capability did not satisfy the policy condition.");
+    }
+    matchedGroups.push("risk");
+  }
+
+  if (conditions.credentialScope) {
+    const scope = conditions.credentialScope as Record<string, unknown>;
+    if (!selectorMatches(scope, ctx)) {
+      return conditionGroupFail("credentialScope", "Credential scope did not satisfy the policy condition.");
+    }
+    if (!selectorMatches({
+      applicationKey: scope.applicationKey,
+      applicationKeys: scope.applicationKeys,
+      providerType: scope.providerType,
+      providerTypes: scope.providerTypes,
+    }, ctx)) {
+      return conditionGroupFail("credentialScope", "Credential provider did not satisfy the policy condition.");
+    }
+    matchedGroups.push("credentialScope");
+  }
+
+  if (conditions.trustBoundary) {
+    const boundary = conditions.trustBoundary as Record<string, unknown>;
+    if (!selectorMatches({
+      applicationKey: boundary.applicationKey,
+      applicationKeys: boundary.applicationKeys,
+      providerType: boundary.providerType,
+      providerTypes: boundary.providerTypes,
+    }, ctx)) {
+      return conditionGroupFail("trustBoundary", "Trust boundary did not satisfy the policy condition.");
+    }
+    if (boolCondition(boundary.remoteHttpOnly) === true && ctx.providerType !== "mcp_remote_http") {
+      return conditionGroupFail("trustBoundary", "Policy condition requires a remote HTTP MCP tool.");
+    }
+    if (boolCondition(boundary.paperclipSelfOnly) === true && ctx.providerType !== "paperclip_self") {
+      return conditionGroupFail("trustBoundary", "Policy condition requires a Paperclip self tool.");
+    }
+    matchedGroups.push("trustBoundary");
+  }
+
+  if (conditions.timeWindow) {
+    if (!timeWindowMatches(conditions.timeWindow as Record<string, unknown>, now)) {
+      return conditionGroupFail("timeWindow", "Current UTC time is outside the policy condition window.");
+    }
+    matchedGroups.push("timeWindow");
+  }
+
+  return { matched: true, matchedGroups };
+}
+
 function profileEntryMatches(entry: typeof toolProfileEntries.$inferSelect, ctx: ToolAccessContext): boolean {
+  const conditions = isRecord(entry.conditions) ? entry.conditions as ToolPolicyConditions : null;
+  if (!evaluatePolicyConditions(conditions, ctx).matched) return false;
   if (entry.selectorType === "application") return entry.applicationId === ctx.applicationId;
   if (entry.selectorType === "connection") return entry.connectionId === ctx.connectionId;
   if (entry.selectorType === "catalog_entry") return entry.catalogEntryId === ctx.catalogEntryId;
@@ -316,6 +537,7 @@ function targetMatches(binding: typeof toolProfileBindings.$inferSelect, ctx: To
   if (binding.targetType === "project") return binding.targetId === ctx.projectId;
   if (binding.targetType === "routine") return binding.targetId === ctx.routineId;
   if (binding.targetType === "issue") return binding.targetId === ctx.issueId;
+  if (binding.targetType === "gateway") return binding.targetId === ctx.gatewayId;
   return false;
 }
 
@@ -343,9 +565,16 @@ function assertGenericPolicyType(policyType: string) {
   }
 }
 
-function assertNoUnsupportedPolicyConditions(conditions: Record<string, unknown> | null | undefined) {
-  if (conditions && Object.keys(conditions).length > 0) {
-    throw unprocessable("Tool policy conditions are not supported at runtime");
+function assertSupportedPolicyConditions(conditions: Record<string, unknown> | null | undefined) {
+  if (!conditions || Object.keys(conditions).length === 0) return;
+  const parsed = toolPolicyConditionsSchema.safeParse(conditions);
+  if (!parsed.success) {
+    throw unprocessable("Tool policy conditions include unsupported runtime semantics", {
+      issues: parsed.error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message,
+      })),
+    });
   }
 }
 
@@ -363,7 +592,7 @@ function assertSupportedGenericPolicyShape(
   config: Record<string, unknown> | null | undefined,
 ) {
   assertGenericPolicyType(policyType);
-  assertNoUnsupportedPolicyConditions(conditions);
+  assertSupportedPolicyConditions(conditions);
   if (policyType !== "rate_limit" && hasConfig(config)) {
     throw unprocessable(`Tool policy type '${policyType}' does not support config`);
   }
@@ -591,6 +820,7 @@ export function toolAccessPolicyService(db: Db) {
     let issueId = input.runContext?.issueId ?? null;
     let projectId = input.runContext?.projectId ?? null;
     let routineId = input.runContext?.routineId ?? null;
+    const gatewayId = input.runContext?.gatewayId ?? null;
 
     if (input.actor.actorType === "agent") {
       const [agent] = await db.select().from(agents).where(and(eq(agents.id, agentId ?? ""), eq(agents.companyId, input.companyId)));
@@ -724,6 +954,7 @@ export function toolAccessPolicyService(db: Db) {
         issueId,
         projectId,
         routineId,
+        gatewayId,
         applicationId,
         connectionId,
         catalogEntryId,
@@ -876,20 +1107,55 @@ export function toolAccessPolicyService(db: Db) {
     const profileState = await effectiveProfiles(ctx);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
     const policies = await db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt));
-    const matchingPolicies = policies.filter((policy) => selectorMatches(policy.selectors, ctx));
-    for (const policy of matchingPolicies) {
-      if (unsupportedRuntimePolicyType(policy.policyType) || Object.keys(policy.conditions ?? {}).length > 0) {
+    for (const policy of policies) {
+      const conditions = policyConditions(policy);
+      if (conditions && selectorMatches(policy.selectors, ctx)) {
+        const parsed = toolPolicyConditionsSchema.safeParse(conditions);
+        if (!parsed.success) {
+          return decision(
+            "deny",
+            "deny_policy_block",
+            "Tool access denied because a matching policy uses unsupported runtime conditions.",
+            effectiveProfileIds,
+            [policy.id],
+            {
+              redactionPlan: redaction.redactionPlan,
+              policyExplanation: {
+                policyId: policy.id,
+                policyType: policy.policyType,
+                selectorMatched: true,
+                conditionsError: parsed.error.issues.map((issue) => ({
+                  path: issue.path.join("."),
+                  message: issue.message,
+                })),
+              },
+            },
+          );
+        }
+      }
+    }
+    const matchingPolicies = policies
+      .map((policy) => ({ policy, conditionEvaluation: evaluatePolicyConditions(policyConditions(policy), ctx) }))
+      .filter(({ policy, conditionEvaluation }) => selectorMatches(policy.selectors, ctx) && conditionEvaluation.matched);
+    for (const { policy, conditionEvaluation } of matchingPolicies) {
+      const policyExplanation = {
+        policyId: policy.id,
+        policyType: policy.policyType,
+        selectorMatched: true,
+        conditionsMatched: conditionEvaluation.matchedGroups,
+      };
+      if (unsupportedRuntimePolicyType(policy.policyType)) {
         return decision(
           "deny",
           "deny_policy_block",
           "Tool access denied because a matching policy uses unsupported runtime semantics.",
           effectiveProfileIds,
           [policy.id],
-          { redactionPlan: redaction.redactionPlan },
+          { redactionPlan: redaction.redactionPlan, policyExplanation },
         );
       }
       if (policy.policyType === "block") {
-        return decision("deny", "deny_policy_block", policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan });
+        return decision("deny", "deny_policy_block", policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
       if (policy.policyType === "rate_limit") {
         if (!rateLimitRule(policy)) {
@@ -899,12 +1165,12 @@ export function toolAccessPolicyService(db: Db) {
             "Tool access denied because a matching rate-limit policy has invalid runtime config.",
             effectiveProfileIds,
             [policy.id],
-            { redactionPlan: redaction.redactionPlan },
+            { redactionPlan: redaction.redactionPlan, policyExplanation },
           );
         }
         const state = await enforceRateLimit(policy, ctx, input.consumeRateLimit === true);
         if (state?.limited) {
-          return decision("rate_limited", "rate_limited", "Tool access rate limit exceeded.", effectiveProfileIds, [policy.id], { rateLimitState: state, redactionPlan: redaction.redactionPlan });
+          return decision("rate_limited", "rate_limited", "Tool access rate limit exceeded.", effectiveProfileIds, [policy.id], { rateLimitState: state, redactionPlan: redaction.redactionPlan, policyExplanation });
         }
         continue;
       }
@@ -919,19 +1185,19 @@ export function toolAccessPolicyService(db: Db) {
             "Tool definition changed or was quarantined after this trust rule was created; review is required.",
             effectiveProfileIds,
             [policy.id],
-            { redactionPlan: redaction.redactionPlan },
+            { redactionPlan: redaction.redactionPlan, policyExplanation },
           );
         }
         if (input.consumeRateLimit === true) {
           await recordTrustRuleHit(policy, ctx, redaction);
         }
-        return decision("allow", "allow_trust_rule", policy.description ?? "Tool access allowed by trust rule.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan });
+        return decision("allow", "allow_trust_rule", policy.description ?? "Tool access allowed by trust rule.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
       if (policy.policyType === "require_approval") {
-        return decision("require_approval", "requires_approval_policy", policy.description ?? "Tool access requires approval.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan });
+        return decision("require_approval", "requires_approval_policy", policy.description ?? "Tool access requires approval.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
       if (policy.policyType === "allow") {
-        return decision("allow", "allow_policy", "Tool access allowed by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan });
+        return decision("allow", "allow_policy", "Tool access allowed by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
     }
     if (await explicitGrant(ctx)) {
@@ -969,6 +1235,7 @@ export function toolAccessPolicyService(db: Db) {
       actorId: input.actor.actorId,
       agentId: input.actor.agentId ?? null,
       issueId: input.runContext?.issueId ?? null,
+      gatewayId: input.runContext?.gatewayId ?? null,
       runId: input.runContext?.heartbeatRunId ?? null,
       connectionId: input.request.connectionId ?? null,
       catalogEntryId: input.request.catalogEntryId ?? null,
@@ -1004,6 +1271,7 @@ export function toolAccessPolicyService(db: Db) {
         riskLevel: ctx.riskLevel,
         argumentsSummary: redaction.summary,
         redactionPlan: redaction.redactionPlan,
+        policyExplanation: accessDecision.policyExplanation ?? null,
         rateLimitState: accessDecision.rateLimitState ?? null,
       },
     }).returning();
@@ -1032,6 +1300,7 @@ export function toolAccessPolicyService(db: Db) {
         legacyAuditEventId: legacyAuditEvent.id,
         effectiveProfileIds: accessDecision.effectiveProfileIds,
         explanation: accessDecision.explanation,
+        policyExplanation: accessDecision.policyExplanation ?? null,
         providerType: ctx.providerType,
         applicationKey: ctx.applicationKey,
         upstreamToolName: ctx.upstreamToolName,
@@ -1154,6 +1423,7 @@ export function toolAccessPolicyService(db: Db) {
         issueId: invocation.issueId,
         projectId: invocation.issueId ? issueProjectById.get(invocation.issueId) ?? null : null,
         routineId: null,
+        gatewayId: null,
         applicationId: invocation.applicationId,
         connectionId: invocation.connectionId,
         catalogEntryId: invocation.catalogEntryId,

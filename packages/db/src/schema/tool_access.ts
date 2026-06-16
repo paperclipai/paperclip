@@ -253,6 +253,57 @@ export const toolProfileBindings = pgTable(
   ],
 );
 
+export const toolMcpGateways = pgTable(
+  "tool_mcp_gateways",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    description: text("description"),
+    status: text("status").$type<"active" | "disabled" | "archived">().notNull().default("active"),
+    profileId: uuid("profile_id").notNull().references(() => toolProfiles.id, { onDelete: "restrict" }),
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("tool_mcp_gateways_company_idx").on(table.companyId),
+    index("tool_mcp_gateways_company_status_idx").on(table.companyId, table.status),
+    index("tool_mcp_gateways_profile_idx").on(table.companyId, table.profileId),
+    uniqueIndex("tool_mcp_gateways_company_slug_uq").on(table.companyId, table.slug),
+    uniqueIndex("tool_mcp_gateways_company_name_uq").on(table.companyId, table.name),
+  ],
+);
+
+export const toolMcpGatewayTokens = pgTable(
+  "tool_mcp_gateway_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    gatewayId: uuid("gateway_id").notNull().references(() => toolMcpGateways.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("tool_mcp_gateway_tokens_token_hash_uq").on(table.tokenHash),
+    index("tool_mcp_gateway_tokens_gateway_idx").on(table.companyId, table.gatewayId),
+    index("tool_mcp_gateway_tokens_company_expires_idx").on(table.companyId, table.expiresAt),
+  ],
+);
+
 export const toolPolicies = pgTable(
   "tool_policies",
   {

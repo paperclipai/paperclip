@@ -737,11 +737,11 @@ describeEmbeddedPostgres("tool access policy service", () => {
       config: { schema: { required: ["body"] } },
     })).rejects.toThrow("Tool policy type 'validate' is not supported at runtime");
     await expect(svc.createPolicy(company.id, {
-      name: "Conditional policy",
+      name: "Malformed conditional policy",
       policyType: "allow",
       selectors: { toolName: "send_email" },
       conditions: { args: { body: "safe" } } as never,
-    })).rejects.toThrow("Tool policy conditions are not supported at runtime");
+    })).rejects.toThrow("Tool policy conditions include unsupported runtime semantics");
     await expect(svc.createPolicy(company.id, {
       name: "Ignored approval config",
       policyType: "require_approval",
@@ -758,7 +758,73 @@ describeEmbeddedPostgres("tool access policy service", () => {
       companyId: company.id,
       policyId: policy.id,
       body: { conditions: { args: { body: "safe" } } as never },
-    })).rejects.toThrow("Tool policy conditions are not supported at runtime");
+    })).rejects.toThrow("Tool policy conditions include unsupported runtime semantics");
+  });
+
+  it("allows a write policy only for a safe argument subset and blocks unsafe arguments", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const svc = toolAccessPolicyService(db);
+    const allowPolicy = await svc.createPolicy(company.id, {
+      name: "Allow safe destination",
+      policyType: "allow",
+      priority: 10,
+      selectors: { toolName: "send_email" },
+      conditions: {
+        arguments: {
+          fieldEquals: { to: "ops@example.com" },
+          fieldMatches: { body: "^[\\s\\S]{1,200}$" },
+        },
+        risk: { isWrite: true },
+      },
+    });
+    const blockPolicy = await svc.createPolicy(company.id, {
+      name: "Block external destination",
+      policyType: "block",
+      priority: 5,
+      selectors: { toolName: "send_email" },
+      conditions: {
+        arguments: {
+          fieldNotEquals: { to: "ops@example.com" },
+        },
+      },
+    });
+
+    await expect(svc.decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      request: {
+        connectionId: connection.id,
+        catalogEntryId: catalogEntry.id,
+        toolName: "send_email",
+        arguments: { to: "ops@example.com", body: "safe update" },
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_policy",
+      matchedPolicyIds: [allowPolicy.id],
+      policyExplanation: {
+        conditionsMatched: ["arguments", "risk"],
+      },
+    });
+
+    await expect(svc.decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      request: {
+        connectionId: connection.id,
+        catalogEntryId: catalogEntry.id,
+        toolName: "send_email",
+        arguments: { to: "outside@example.com", body: "exfiltrate" },
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_policy_block",
+      matchedPolicyIds: [blockPolicy.id],
+    });
   });
 
   it("fails closed for legacy unsupported redact and validate policies", async () => {

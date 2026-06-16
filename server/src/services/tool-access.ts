@@ -22,6 +22,7 @@ import {
   toolCallEvents,
   toolInvocations,
   toolPolicies,
+  toolMcpGateways,
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
@@ -102,6 +103,15 @@ type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
   sessionId?: string | null;
+};
+
+type OAuthProviderEndpoints = {
+  provider: string;
+  scopes: string[];
+  authorizationUrl: string;
+  tokenUrl: string;
+  grantType?: "authorization_code" | "client_credentials";
+  metadataUrl?: string | null;
 };
 
 type ToolAccessServiceOptions = {
@@ -951,8 +961,15 @@ function sanitizeHttpFailure(error: unknown): { status: ToolConnectionHealthStat
     if (code === "oauth_challenge") {
       return {
         status: "error",
-        message: "This app needs you to sign in - coming soon.",
+        message: "This app needs you to sign in.",
         code: "oauth_challenge",
+      };
+    }
+    if (code === "oauth_refresh_missing") {
+      return {
+        status: "error",
+        message: "OAuth credentials have expired and need to be reconnected.",
+        code: "oauth_refresh_missing",
       };
     }
     if (code === "binding_missing" || code === "secret_deleted" || code === "secret_inactive" || code === "version_missing") {
@@ -1514,6 +1531,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (targetType === "issue") {
       const [row] = await db.select({ id: issues.id }).from(issues).where(and(eq(issues.id, targetId), eq(issues.companyId, companyId)));
       if (!row) throw unprocessable("Tool profile issue binding target must belong to the same company");
+      return;
+    }
+    if (targetType === "gateway") {
+      const [row] = await db.select({ id: toolMcpGateways.id }).from(toolMcpGateways).where(and(eq(toolMcpGateways.id, targetId), eq(toolMcpGateways.companyId, companyId)));
+      if (!row) throw unprocessable("Tool profile gateway binding target must belong to the same company");
     }
   }
 
@@ -1782,18 +1804,70 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   async function resolveCredentialHeaders(connection: typeof toolConnections.$inferSelect): Promise<Record<string, string>> {
-    connection = await maybeRefreshOAuthCredentials(connection);
-    const headers: Record<string, string> = {};
-    for (const ref of connection.credentialRefs) {
-      const value = await secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.version ?? "latest", {
-        consumerType: "tool_connection",
-        consumerId: connection.id,
-        configPath: `credentials.${ref.name}`,
-        actorType: "system",
+    try {
+      connection = await maybeRefreshOAuthCredentials(connection);
+    } catch (error) {
+      const scope = credentialScope(connection);
+      await audit({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        action: "tool_connection.credential_resolution",
+        outcome: "failure",
+        reasonCode: error instanceof HttpError ? String(asRecord(error.details).code ?? "oauth_refresh_failed") : "oauth_refresh_failed",
+        details: {
+          credentialCount: connection.credentialRefs.length,
+          credentialSecretRefCount: connection.credentialSecretRefs.length,
+          credentialScopeType: scope.type,
+          credentialScopeHash: scope.hash,
+          setupUrl: connectionSetupUrl(connection),
+          reconnectUrl: connectionReconnectUrl(connection),
+        },
       });
+      throw error;
+    }
+    const headers: Record<string, string> = {};
+    const scope = credentialScope(connection);
+    for (const ref of connection.credentialRefs) {
+      let value: string;
+      try {
+        value = await secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.version ?? "latest", {
+          consumerType: "tool_connection",
+          consumerId: connection.id,
+          configPath: `credentials.${ref.name}`,
+          actorType: "system",
+        });
+      } catch (error) {
+        await audit({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          action: "tool_connection.credential_resolution",
+          outcome: "failure",
+          reasonCode: error instanceof HttpError ? String(asRecord(error.details).code ?? "secret_resolution_failed") : "secret_resolution_failed",
+          details: {
+            credentialCount: connection.credentialRefs.length,
+            credentialScopeType: scope.type,
+            credentialScopeHash: scope.hash,
+          },
+        });
+        throw error;
+      }
       if (ref.placement === "header") {
         headers[ref.key] = `${ref.prefix ?? ""}${value}`;
       }
+    }
+    if (connection.credentialRefs.length > 0 || connection.credentialSecretRefs.length > 0 || Object.keys(oauthConfig(connection)).length > 0) {
+      await audit({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        action: "tool_connection.credential_resolution",
+        outcome: "success",
+        details: {
+          credentialCount: connection.credentialRefs.length,
+          credentialSecretRefCount: connection.credentialSecretRefs.length,
+          credentialScopeType: scope.type,
+          credentialScopeHash: scope.hash,
+        },
+      });
     }
     return headers;
   }
@@ -1815,9 +1889,32 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (!response.ok) {
       const authenticate = response.headers.get("www-authenticate") ?? "";
       if (response.status === 401 && /bearer|oauth|authorization/i.test(authenticate)) {
-        throw new HttpError(502, "This app needs you to sign in - coming soon.", {
+        const endpoints = await discoverOAuthEndpoints(connection, authenticate);
+        if (endpoints) {
+          const nextConfig = {
+            ...connection.config,
+            oauth: {
+              ...oauthConfig(connection),
+              provider: endpoints.provider,
+              authorizationUrl: endpoints.authorizationUrl,
+              tokenUrl: endpoints.tokenUrl,
+              metadataUrl: endpoints.metadataUrl ?? null,
+              scopes: endpoints.scopes,
+              grantType: endpoints.grantType ?? "authorization_code",
+              discoveredAt: new Date().toISOString(),
+            },
+          };
+          await db
+            .update(toolConnections)
+            .set({ config: nextConfig, transportConfig: nextConfig, updatedAt: new Date() })
+            .where(eq(toolConnections.id, connection.id));
+        }
+        throw new HttpError(502, "This app needs you to sign in.", {
           code: "oauth_challenge",
           status: response.status,
+          setupUrl: connectionSetupUrl(connection),
+          reconnectUrl: connectionReconnectUrl(connection),
+          oauthSupported: Boolean(endpoints),
         });
       }
       throw new HttpError(502, "Remote app returned an error", { status: response.status });
@@ -1908,7 +2005,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         actor,
         details: { status: failure.status, transport: connection.transport },
       });
-      throw new HttpError(failure.status === "missing_secret" ? 422 : 502, failure.message, { code: failure.code, connection: toConnection(updated), runtimeSlot });
+      throw new HttpError(failure.status === "missing_secret" ? 422 : 502, failure.message, {
+        code: failure.code,
+        connection: toConnection(updated),
+        runtimeSlot,
+        setupUrl: connectionSetupUrl(connection),
+        reconnectUrl: connectionReconnectUrl(connection),
+      });
     }
   }
 
@@ -1930,7 +2033,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         details: { status: failure.status },
         actor,
       });
-      throw new HttpError(failure.status === "missing_secret" ? 422 : 502, failure.message, { code: failure.code });
+      throw new HttpError(failure.status === "missing_secret" ? 422 : 502, failure.message, {
+        code: failure.code,
+        setupUrl: connectionSetupUrl(connection),
+        reconnectUrl: connectionReconnectUrl(connection),
+      });
     }
 
     const existingRows = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connection.id));
@@ -2548,6 +2655,41 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
   }
 
+  function linkCredentialFields(credentialValues: Record<string, string>) {
+    const fields: Array<{
+      label: string;
+      configPath: string;
+      required: boolean;
+      placement: "header";
+      key: string;
+      prefix: string | null;
+    }> = [];
+    if (credentialValues["credentials.authorization"]?.trim()) {
+      fields.push({
+        label: "App key",
+        configPath: "credentials.authorization",
+        required: false,
+        placement: "header",
+        key: "Authorization",
+        prefix: "Bearer ",
+      });
+    }
+    for (const configPath of Object.keys(credentialValues).sort()) {
+      if (!configPath.startsWith("headers.")) continue;
+      const headerName = configPath.slice("headers.".length).trim();
+      if (!headerName) continue;
+      fields.push({
+        label: headerName,
+        configPath,
+        required: true,
+        placement: "header",
+        key: headerName,
+        prefix: null,
+      });
+    }
+    return fields;
+  }
+
   function actorForSecret(actor?: ActorInfo): { userId?: string | null; agentId?: string | null } | undefined {
     if (actor?.actorType === "user") return { userId: actor.actorId ?? null };
     if (actor?.actorType === "agent") return { agentId: actor.actorId ?? null };
@@ -2581,6 +2723,75 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return asRecord(connection.config).oauth ? asRecord(asRecord(connection.config).oauth) : {};
   }
 
+  function connectionSetupUrl(connection: typeof toolConnections.$inferSelect) {
+    return `/apps/${connection.id}/setup`;
+  }
+
+  function connectionReconnectUrl(connection: typeof toolConnections.$inferSelect) {
+    return `/apps/${connection.id}/advanced`;
+  }
+
+  function credentialScope(connection: typeof toolConnections.$inferSelect, actor?: ActorInfo) {
+    const configured = asRecord(oauthConfig(connection).credentialScope);
+    const type = typeof configured.type === "string"
+      ? configured.type
+      : typeof configured.targetType === "string"
+        ? configured.targetType
+        : actor?.actorType === "agent"
+          ? "agent"
+          : actor?.actorType === "user"
+            ? "user"
+            : "company";
+    const id = typeof configured.id === "string"
+      ? configured.id
+      : typeof configured.targetId === "string"
+        ? configured.targetId
+        : actor?.actorId ?? connection.companyId;
+    return {
+      type,
+      id,
+      hash: stableHash({ companyId: connection.companyId, connectionId: connection.id, type, id }),
+    };
+  }
+
+  function normalizeOauthScopes(value: unknown): string[] {
+    if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    if (typeof value === "string") return value.split(/\s+/).map((item) => item.trim()).filter(Boolean);
+    return [];
+  }
+
+  function oauthProviderForConnection(connection: typeof toolConnections.$inferSelect, metadataUrl?: string | null): string {
+    const oauth = oauthConfig(connection);
+    if (typeof oauth.provider === "string" && oauth.provider.trim()) return oauth.provider.trim();
+    const url = metadataUrl ?? remoteEndpoint(connection.config);
+    try {
+      return new URL(url).hostname.replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase() || "generic";
+    } catch {
+      return "generic";
+    }
+  }
+
+  function parseWwwAuthenticateParams(value: string): Record<string, string> {
+    const params: Record<string, string> = {};
+    const input = value.replace(/^\s*Bearer\s+/i, "");
+    const re = /([a-zA-Z_][a-zA-Z0-9_-]*)=(?:"([^"]*)"|([^,\s]+))/g;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(input))) {
+      params[match[1]!.toLowerCase()] = match[2] ?? match[3] ?? "";
+    }
+    return params;
+  }
+
+  function challengeOAuthHints(wwwAuthenticate: string) {
+    const params = parseWwwAuthenticateParams(wwwAuthenticate);
+    return {
+      metadataUrl: params.resource_metadata ?? params.resource_metadata_url ?? params.metadata_url ?? null,
+      authorizationUrl: params.authorization_uri ?? params.authorization_url ?? null,
+      tokenUrl: params.token_uri ?? params.token_url ?? null,
+      scope: params.scope ?? null,
+    };
+  }
+
   function oauthSecretRef(
     connection: typeof toolConnections.$inferSelect,
     configPath: "oauth.access_token" | "oauth.refresh_token",
@@ -2595,7 +2806,113 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return Number.isFinite(ms) ? ms : null;
   }
 
-  async function oauthProviderEndpoints(galleryEntry: NonNullable<ReturnType<typeof getToolAppGalleryEntry>>) {
+  async function fetchJsonRecord(url: string): Promise<Record<string, unknown> | null> {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      return asRecord(await response.json() as unknown) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function authServerMetadataUrls(metadata: Record<string, unknown>): Promise<string[]> {
+    const urls: string[] = [];
+    if (Array.isArray(metadata.authorization_servers)) {
+      for (const server of metadata.authorization_servers) {
+        if (typeof server === "string" && server.trim()) {
+          try {
+            urls.push(new URL("/.well-known/oauth-authorization-server", server).toString());
+          } catch {
+            // Ignore malformed advertised issuers. The caller will fail if no usable endpoints remain.
+          }
+        }
+      }
+    }
+    if (typeof metadata.issuer === "string" && metadata.issuer.trim()) {
+      try {
+        urls.push(new URL("/.well-known/oauth-authorization-server", metadata.issuer).toString());
+      } catch {
+        // Ignore malformed advertised issuers.
+      }
+    }
+    return [...new Set(urls)];
+  }
+
+  async function endpointsFromMetadataUrl(
+    connection: typeof toolConnections.$inferSelect,
+    metadataUrl: string,
+  ): Promise<OAuthProviderEndpoints | null> {
+    const metadata = await fetchJsonRecord(metadataUrl);
+    if (!metadata) return null;
+    let authorizationUrl = typeof metadata.authorization_endpoint === "string" ? metadata.authorization_endpoint : null;
+    let tokenUrl = typeof metadata.token_endpoint === "string" ? metadata.token_endpoint : null;
+    if (!authorizationUrl || !tokenUrl) {
+      for (const authMetadataUrl of await authServerMetadataUrls(metadata)) {
+        const authMetadata = await fetchJsonRecord(authMetadataUrl);
+        if (!authMetadata) continue;
+        authorizationUrl = authorizationUrl ?? (typeof authMetadata.authorization_endpoint === "string" ? authMetadata.authorization_endpoint : null);
+        tokenUrl = tokenUrl ?? (typeof authMetadata.token_endpoint === "string" ? authMetadata.token_endpoint : null);
+        if (authorizationUrl && tokenUrl) break;
+      }
+    }
+    if (!authorizationUrl || !tokenUrl) return null;
+    return {
+      provider: oauthProviderForConnection(connection, metadataUrl),
+      scopes: normalizeOauthScopes(metadata.scopes_supported),
+      authorizationUrl,
+      tokenUrl,
+      metadataUrl,
+    };
+  }
+
+  async function discoverOAuthEndpoints(
+    connection: typeof toolConnections.$inferSelect,
+    challenge?: string | null,
+  ): Promise<OAuthProviderEndpoints | null> {
+    const oauth = oauthConfig(connection);
+    const hints = challenge ? challengeOAuthHints(challenge) : null;
+    const configuredAuthorizationUrl =
+      typeof oauth.authorizationUrl === "string" ? oauth.authorizationUrl : hints?.authorizationUrl ?? null;
+    const configuredTokenUrl = typeof oauth.tokenUrl === "string" ? oauth.tokenUrl : hints?.tokenUrl ?? null;
+    const provider = oauthProviderForConnection(connection, typeof oauth.metadataUrl === "string" ? oauth.metadataUrl : hints?.metadataUrl);
+    const scopes = normalizeOauthScopes(oauth.scopes).length > 0
+      ? normalizeOauthScopes(oauth.scopes)
+      : normalizeOauthScopes(oauth.scope).length > 0
+        ? normalizeOauthScopes(oauth.scope)
+        : normalizeOauthScopes(hints?.scope);
+    const grantType = oauth.grantType === "client_credentials" || oauth.clientCredentials === true
+      ? "client_credentials" as const
+      : "authorization_code" as const;
+    if (configuredAuthorizationUrl && configuredTokenUrl) {
+      return {
+        provider,
+        scopes,
+        authorizationUrl: configuredAuthorizationUrl,
+        tokenUrl: configuredTokenUrl,
+        grantType,
+        metadataUrl: typeof oauth.metadataUrl === "string" ? oauth.metadataUrl : hints?.metadataUrl ?? null,
+      };
+    }
+
+    const metadataCandidates = [
+      typeof oauth.metadataUrl === "string" ? oauth.metadataUrl : null,
+      hints?.metadataUrl ?? null,
+    ].filter((value): value is string => Boolean(value));
+    if (metadataCandidates.length === 0) {
+      const endpoint = new URL(remoteEndpoint(connection.config));
+      metadataCandidates.push(new URL("/.well-known/oauth-protected-resource", endpoint.origin).toString());
+      metadataCandidates.push(new URL("/.well-known/oauth-authorization-server", endpoint.origin).toString());
+      metadataCandidates.push(new URL("/.well-known/openid-configuration", endpoint.origin).toString());
+    }
+    for (const metadataUrl of [...new Set(metadataCandidates)]) {
+      const endpoints = await endpointsFromMetadataUrl(connection, metadataUrl);
+      if (endpoints) return { ...endpoints, scopes: scopes.length > 0 ? scopes : endpoints.scopes, grantType };
+    }
+    return null;
+  }
+
+  async function oauthProviderEndpoints(galleryEntry: NonNullable<ReturnType<typeof getToolAppGalleryEntry>>): Promise<OAuthProviderEndpoints> {
     const oauth = galleryEntry.oauth;
     if (!oauth) throw unprocessable("This app does not support sign in");
     let authorizationUrl = oauth.authorizationUrl ?? null;
@@ -2610,7 +2927,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (!authorizationUrl || !tokenUrl) {
       throw unprocessable("OAuth provider endpoints are not configured for this app");
     }
-    return { provider: oauth.provider, scopes: oauth.scopes, authorizationUrl, tokenUrl };
+    return { provider: oauth.provider, scopes: oauth.scopes, authorizationUrl, tokenUrl, grantType: "authorization_code", metadataUrl: oauth.metadataUrl ?? null };
+  }
+
+  async function oauthEndpointsForConnection(
+    connection: typeof toolConnections.$inferSelect,
+    challenge?: string | null,
+  ): Promise<OAuthProviderEndpoints> {
+    const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
+    const galleryEntry = sourceTemplateKey ? getToolAppGalleryEntry(sourceTemplateKey) : null;
+    if (galleryEntry?.authKind === "oauth" && galleryEntry.oauth) return oauthProviderEndpoints(galleryEntry);
+    const discovered = await discoverOAuthEndpoints(connection, challenge);
+    if (!discovered) throw unprocessable("This app connection does not advertise OAuth sign in");
+    return discovered;
   }
 
   async function oauthGalleryEntryForConnection(connection: typeof toolConnections.$inferSelect) {
@@ -2656,13 +2985,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     tokenUrl: string;
     clientId: string;
     clientSecret?: string | null;
+    grantType?: "authorization_code" | "refresh_token" | "client_credentials";
+    scopes?: string[];
     redirectUri?: string | null;
     codeVerifier?: string | null;
     code?: string | null;
     refreshToken?: string | null;
   }) {
     const body = new URLSearchParams();
-    if (input.refreshToken) {
+    if (input.grantType === "client_credentials") {
+      body.set("grant_type", "client_credentials");
+      if (input.scopes && input.scopes.length > 0) body.set("scope", input.scopes.join(" "));
+    } else if (input.refreshToken) {
       body.set("grant_type", "refresh_token");
       body.set("refresh_token", input.refreshToken);
     } else {
@@ -2710,21 +3044,34 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (typeof oauth.tokenUrl !== "string" || typeof oauth.provider !== "string") return connection;
     const expiresAtMs = oauthExpiresAtMs(connection);
     if (expiresAtMs && expiresAtMs > Date.now() + 60_000) return connection;
+    const grantType = oauth.grantType === "client_credentials" || oauth.clientCredentials === true
+      ? "client_credentials" as const
+      : "refresh_token" as const;
     const refreshRef = oauthSecretRef(connection, "oauth.refresh_token");
-    if (!refreshRef) throw new HttpError(422, "OAuth credentials have expired and no refresh token is available", { code: "oauth_refresh_missing" });
+    if (grantType !== "client_credentials" && !refreshRef) {
+      throw new HttpError(422, "OAuth credentials have expired and no refresh token is available", {
+        code: "oauth_refresh_missing",
+        setupUrl: connectionSetupUrl(connection),
+        reconnectUrl: connectionReconnectUrl(connection),
+      });
+    }
     const client = oauthClientConfig(oauth.provider);
     if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${oauth.provider}`);
-    const refreshToken = await secrets.resolveSecretValue(connection.companyId, refreshRef.secretId, refreshRef.versionSelector ?? "latest", {
-      consumerType: "tool_connection",
-      consumerId: connection.id,
-      configPath: "oauth.refresh_token",
-      actorType: actor?.actorType ?? "system",
-      actorId: actor?.actorId ?? null,
-    });
+    const refreshToken = refreshRef
+      ? await secrets.resolveSecretValue(connection.companyId, refreshRef.secretId, refreshRef.versionSelector ?? "latest", {
+          consumerType: "tool_connection",
+          consumerId: connection.id,
+          configPath: "oauth.refresh_token",
+          actorType: actor?.actorType ?? "system",
+          actorId: actor?.actorId ?? null,
+        })
+      : null;
     const token = await exchangeOAuthToken({
       tokenUrl: oauth.tokenUrl,
       clientId: client.clientId,
       clientSecret: client.clientSecret,
+      grantType,
+      scopes: normalizeOauthScopes(oauth.scopes).length > 0 ? normalizeOauthScopes(oauth.scopes) : normalizeOauthScopes(oauth.scope),
       refreshToken,
     });
     const accessRef = await createOrRotateOAuthSecret({
@@ -2756,6 +3103,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       ...connection.config,
       oauth: {
         ...oauth,
+        grantType: grantType === "client_credentials" ? grantType : oauth.grantType ?? "authorization_code",
         expiresAt,
         scope: token.scope ?? oauth.scope ?? null,
         tokenType: token.tokenType,
@@ -2860,19 +3208,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = null;
 
     try {
-      const credentialFields = galleryEntry?.credentialFields ?? (
-        credentialValues["credentials.authorization"]?.trim()
-          ? [{
-              label: "App key",
-              configPath: "credentials.authorization",
-              helpUrl: "",
-              required: false,
-              placement: "header" as const,
-              key: "Authorization",
-              prefix: "Bearer ",
-            }]
-          : []
-      );
+      const credentialFields = galleryEntry?.credentialFields ?? linkCredentialFields(credentialValues);
       for (const field of credentialFields) {
         const value = credentialValues[field.configPath];
         if (!value && field.required !== false) {
@@ -2988,7 +3324,28 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         };
       }
 
-      await checkConnectionHealth(connectionRow.id, actor);
+      try {
+        await checkConnectionHealth(connectionRow.id, actor);
+      } catch (error) {
+        if (!galleryEntry && error instanceof HttpError && asRecord(error.details).code === "oauth_challenge") {
+          const [oauthConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionRow.id));
+          const endpoints = await discoverOAuthEndpoints(oauthConnection).catch(() => null);
+          if (!endpoints) throw error;
+          return {
+            connectionId: oauthConnection.id,
+            application: toApplication(applicationRow),
+            connection: toConnection(oauthConnection),
+            catalog: [],
+            actions: { readOnly: [], canMakeChanges: [] },
+            suggestedDefaults: {
+              access: "all_agents",
+              askFirstRiskLevels: ["write", "destructive"],
+            },
+            auth: { kind: "oauth", startUrl: null },
+          };
+        }
+        throw error;
+      }
       const refresh = await refreshCatalog(connectionRow.id, actor);
       const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationRow.id));
       return {
@@ -3394,8 +3751,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   ): Promise<ToolOAuthStartResult> {
     const connection = await getConnectionRow(connectionId, companyId);
     if (connection.status === "archived") throw conflict("Archived app connections cannot start sign in");
-    const galleryEntry = await oauthGalleryEntryForConnection(connection);
-    const endpoints = await oauthProviderEndpoints(galleryEntry);
+    const endpoints = await oauthEndpointsForConnection(connection);
+    if (endpoints.grantType === "client_credentials") {
+      throw unprocessable("This app uses shared machine credentials and does not need browser sign in");
+    }
     const client = oauthClientConfig(endpoints.provider);
     if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${endpoints.provider}`);
 
@@ -3435,9 +3794,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         provider: endpoints.provider,
         authorizationUrl: endpoints.authorizationUrl,
         tokenUrl: endpoints.tokenUrl,
+        metadataUrl: endpoints.metadataUrl ?? null,
         scopes: endpoints.scopes,
+        grantType: "authorization_code",
         clientIdEnv: client.clientIdEnv,
         clientSecretEnv: client.clientSecret ? client.clientSecretEnv : null,
+        credentialScope: credentialScope(connection, input.actor),
       },
     };
     await db
@@ -3483,8 +3845,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     await db.delete(toolOauthStates).where(eq(toolOauthStates.state, input.state));
 
     let connection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
-    const galleryEntry = await oauthGalleryEntryForConnection(connection);
-    const endpoints = await oauthProviderEndpoints(galleryEntry);
+    const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
+    const galleryEntry = sourceTemplateKey ? getToolAppGalleryEntry(sourceTemplateKey) : null;
+    const endpoints = await oauthEndpointsForConnection(connection);
     const client = oauthClientConfig(endpoints.provider);
     if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${endpoints.provider}`);
 
@@ -3529,9 +3892,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         provider: endpoints.provider,
         authorizationUrl: endpoints.authorizationUrl,
         tokenUrl: endpoints.tokenUrl,
+        metadataUrl: endpoints.metadataUrl ?? null,
         scopes: endpoints.scopes,
         clientIdEnv: client.clientIdEnv,
         clientSecretEnv: client.clientSecret ? client.clientSecretEnv : null,
+        credentialScope: credentialScope(connection, input.actor),
         expiresAt,
         scope: token.scope,
         tokenType: token.tokenType,
@@ -3581,7 +3946,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       connection: refresh.connection,
       catalog: refresh.catalog,
       actions: groupedActions(refresh.catalog),
-      suggestedDefaults: galleryEntry.recommendedDefaults,
+      suggestedDefaults: galleryEntry?.recommendedDefaults ?? {
+        access: "all_agents",
+        askFirstRiskLevels: ["write", "destructive"],
+      },
       auth: null,
     };
   }
@@ -4711,23 +5079,36 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     },
 
     previewMcpJsonImport: async (input: ImportMcpJson): Promise<McpJsonImportPreview> => {
-      const raw = typeof input.mcpJson === "string" ? JSON.parse(input.mcpJson) as unknown : input.mcpJson;
+      let raw: unknown;
+      try {
+        raw = typeof input.mcpJson === "string" ? JSON.parse(input.mcpJson) as unknown : input.mcpJson;
+      } catch {
+        throw badRequest("mcp.json must be valid JSON");
+      }
       const mcpServers = asRecord(asRecord(raw).mcpServers);
       const drafts = Object.entries(mcpServers).map(([name, rawServer]) => {
         const server = asRecord(rawServer);
         const warnings: string[] = [];
         if (typeof server.url === "string" || typeof server.endpoint === "string") {
           const headers = asRecord(server.headers);
-          const credentialRefs: McpConnectionCredentialRef[] = Object.keys(headers).flatMap((key) => {
-            warnings.push(`Header ${key} needs to be replaced with a Paperclip secret before activation.`);
-            return [];
+          const credentialFields = Object.keys(headers).sort().map((key) => {
+            warnings.push(`Header ${key} will be stored as a Paperclip secret before activation.`);
+            return {
+              configPath: `headers.${key}`,
+              label: key,
+              placement: "header" as const,
+              key,
+              prefix: null,
+              required: true,
+            };
           });
           return {
             name,
             transport: "remote_http" as const,
             status: "draft" as const,
             config: { url: server.url ?? server.endpoint },
-            credentialRefs,
+            credentialRefs: [] as McpConnectionCredentialRef[],
+            credentialFields,
             warnings,
           };
         }
@@ -4739,6 +5120,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             status: "draft" as const,
             config: { importedCommand: server.command, importedArgs: Array.isArray(server.args) ? server.args : [] },
             credentialRefs: [],
+            credentialFields: [],
             warnings,
           };
         }
@@ -4749,6 +5131,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           status: "draft" as const,
           config: {},
           credentialRefs: [],
+          credentialFields: [],
           warnings,
         };
       });

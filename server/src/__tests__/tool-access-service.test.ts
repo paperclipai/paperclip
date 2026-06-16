@@ -1065,6 +1065,88 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it("previews remote mcp.json headers as secret replacement fields without echoing values", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/mcp/import-json`)
+      .send({
+        mcpJson: {
+          mcpServers: {
+            secure: {
+              url: "https://secure.example/mcp",
+              headers: {
+                Authorization: "Bearer raw-token",
+                "X-API-Key": "raw-key",
+              },
+            },
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain("raw-token");
+    expect(JSON.stringify(res.body)).not.toContain("raw-key");
+    expect(res.body.drafts).toEqual([
+      expect.objectContaining({
+        name: "secure",
+        transport: "remote_http",
+        status: "draft",
+        config: { url: "https://secure.example/mcp" },
+        credentialFields: [
+          expect.objectContaining({ configPath: "headers.Authorization", key: "Authorization", placement: "header" }),
+          expect.objectContaining({ configPath: "headers.X-API-Key", key: "X-API-Key", placement: "header" }),
+        ],
+      }),
+    ]);
+  });
+
+  it("creates link-based MCP connections with imported header secrets before catalog review", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const headers = init?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe("Bearer imported-token");
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: {
+          tools: [
+            {
+              name: "kv_get",
+              description: "Read a value.",
+              inputSchema: { type: "object", properties: { key: { type: "string" } } },
+              annotations: { readOnlyHint: true },
+            },
+          ],
+        },
+      });
+    });
+
+    const result = await service.connectGalleryApp(company.id, {
+      link: "https://secure.example/mcp",
+      name: "Secure import",
+      credentialValues: { "headers.Authorization": "Bearer imported-token" },
+    }, { actorType: "user", actorId: "board" });
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(result.connection.status).toBe("draft");
+    expect(result.connection.credentialRefs).toEqual([
+      expect.objectContaining({
+        name: "headers.Authorization",
+        placement: "header",
+        key: "Authorization",
+        prefix: null,
+      }),
+    ]);
+    expect(result.connection.config).toMatchObject({ url: "https://secure.example/mcp" });
+    expect(JSON.stringify(result.connection.config)).not.toContain("imported-token");
+    expect(result.actions.readOnly).toEqual([
+      expect.objectContaining({ toolName: "kv_get", riskLevel: "read" }),
+    ]);
+  });
+
   it("rejects Google Sheets gallery connects that claim a spreadsheet bound to another company", async () => {
     const companyA = await createCompany(db);
     const companyB = await createCompany(db);
@@ -1484,6 +1566,144 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(mcpCalls.at(-1)?.[1]?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer new-access-token" }));
     const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connect.connectionId));
     expect(Date.parse(String((connection.config.oauth as { expiresAt: string }).expiresAt))).toBeGreaterThan(Date.now());
+  });
+
+  it("uses OAuth client credentials for shared machine-to-machine MCP connections", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_CLIENT_ID", "m2m-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_CLIENT_SECRET", "m2m-client-secret");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connection = await service.createConnection(company.id, {
+      name: "Machine OAuth",
+      transport: "remote_http",
+      config: {
+        url: "https://m2m.example.test/mcp",
+        oauth: {
+          provider: "m2m",
+          tokenUrl: "https://m2m.example.test/oauth/token",
+          grantType: "client_credentials",
+          scopes: ["tools.read"],
+        },
+      },
+      enabled: true,
+      status: "active",
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://m2m.example.test/oauth/token") {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("grant_type")).toBe("client_credentials");
+        expect(body.get("client_id")).toBe("m2m-client-id");
+        expect(body.get("client_secret")).toBe("m2m-client-secret");
+        expect(body.get("scope")).toBe("tools.read");
+        return {
+          ok: true,
+          json: async () => ({
+            access_token: "m2m-access-token",
+            expires_in: 3600,
+            token_type: "Bearer",
+          }),
+        } as Response;
+      }
+      if (href === "https://m2m.example.test/mcp") {
+        expect(init?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer m2m-access-token" }));
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "machine_read", annotations: { readOnlyHint: true } }] },
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const health = await service.checkHealth(connection.id, { actorType: "system", actorId: "health-check" });
+    expect(health.connection.healthStatus).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    expect(updated.credentialSecretRefs).toEqual([
+      expect.objectContaining({ configPath: "oauth.access_token", label: "OAuth access token" }),
+    ]);
+    expect(updated.credentialRefs).toEqual([
+      expect.objectContaining({ name: "oauth.access_token", key: "Authorization", prefix: "Bearer " }),
+    ]);
+    expect(JSON.stringify(updated.config)).not.toContain("m2m-access-token");
+  });
+
+  it("fails expired OAuth credentials without a refresh token and returns reconnect links", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack no refresh" });
+    const start = await service.startOAuth(company.id, connect.connectionId, {
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const state = new URL(start.authorizationUrl).searchParams.get("state")!;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            access_token: "access-without-refresh",
+            expires_in: 3600,
+            token_type: "Bearer",
+          }),
+        } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "search_messages", annotations: { readOnlyHint: true } }] },
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    await service.completeOAuthCallback({
+      state,
+      code: "oauth-code",
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const [connected] = await db.select().from(toolConnections).where(eq(toolConnections.id, connect.connectionId));
+    await db
+      .update(toolConnections)
+      .set({
+        config: {
+          ...connected.config,
+          oauth: {
+            ...(connected.config.oauth as Record<string, unknown>),
+            expiresAt: "2000-01-01T00:00:00.000Z",
+          },
+        },
+        credentialSecretRefs: connected.credentialSecretRefs.filter((ref) => ref.configPath !== "oauth.refresh_token"),
+      })
+      .where(eq(toolConnections.id, connect.connectionId));
+    fetchMock.mockClear();
+
+    await expect(service.checkHealth(connect.connectionId, { actorType: "user", actorId: "board" })).rejects.toMatchObject({
+      status: 502,
+      details: expect.objectContaining({
+        code: "oauth_refresh_missing",
+        setupUrl: `/apps/${connect.connectionId}/setup`,
+        reconnectUrl: `/apps/${connect.connectionId}/advanced`,
+      }),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const auditRows = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.action, "tool_connection.credential_resolution"));
+    const audit = auditRows.find((row) => row.outcome === "failure");
+    expect(audit).toMatchObject({
+      outcome: "failure",
+      reasonCode: "oauth_refresh_missing",
+    });
+    expect(JSON.stringify(audit)).not.toContain("access-without-refresh");
   });
 
   it("returns a callback error when the provider rejects sign-in", async () => {
@@ -2057,6 +2277,7 @@ describeEmbeddedPostgres("tool access service", () => {
       ok: false,
       status: 401,
       headers: { get: (name: string) => name.toLowerCase() === "www-authenticate" ? "Bearer realm=\"app\"" : null },
+      text: async () => JSON.stringify({ error: "unauthorized" }),
       json: async () => ({}),
     } as Response);
 
@@ -2066,11 +2287,122 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(res.status).toBe(502);
     expect(res.body).toMatchObject({
-      error: "This app needs you to sign in - coming soon.",
+      error: "This app needs you to sign in.",
       details: expect.objectContaining({ code: "oauth_challenge" }),
     });
     await expect(db.select().from(toolApplications)).resolves.toHaveLength(0);
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
+  });
+
+  it("discovers OAuth for pasted MCP links and completes sign-in without a gallery entry", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_GENERIC_EXAMPLE_TEST_CLIENT_ID", "generic-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_GENERIC_EXAMPLE_TEST_CLIENT_SECRET", "generic-client-secret");
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://generic.example.test/mcp") {
+        return {
+          ok: false,
+          status: 401,
+          headers: {
+            get: (name: string) => name.toLowerCase() === "www-authenticate"
+              ? "Bearer resource_metadata=\"https://generic.example.test/.well-known/oauth-protected-resource\""
+              : null,
+          },
+          text: async () => "",
+          json: async () => ({}),
+        } as Response;
+      }
+      if (href === "https://generic.example.test/.well-known/oauth-protected-resource") {
+        return {
+          ok: true,
+          json: async () => ({
+            authorization_endpoint: "https://generic.example.test/oauth/authorize",
+            token_endpoint: "https://generic.example.test/oauth/token",
+            scopes_supported: ["tools.read", "tools.write"],
+          }),
+        } as Response;
+      }
+      if (href === "https://generic.example.test/oauth/token") {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("grant_type")).toBe("authorization_code");
+        expect(body.get("client_id")).toBe("generic-client-id");
+        expect(body.get("client_secret")).toBe("generic-client-secret");
+        return {
+          ok: true,
+          json: async () => ({
+            access_token: "generic-access-token",
+            refresh_token: "generic-refresh-token",
+            expires_in: 3600,
+            token_type: "Bearer",
+            scope: "tools.read tools.write",
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ link: "https://generic.example.test/mcp", name: "Generic OAuth MCP" });
+
+    expect(connectRes.status).toBe(201);
+    expect(connectRes.body.auth).toMatchObject({ kind: "oauth" });
+    const startUrl = new URL(connectRes.body.auth.startUrl);
+    expect(`${startUrl.origin}${startUrl.pathname}`).toBe("https://generic.example.test/oauth/authorize");
+    expect(startUrl.searchParams.get("client_id")).toBe("generic-client-id");
+    expect(startUrl.searchParams.get("scope")).toBe("tools.read tools.write");
+    const state = startUrl.searchParams.get("state");
+    expect(state).toBeTruthy();
+    expect(connectRes.body.connection.config.oauth).toMatchObject({
+      provider: "generic_example_test",
+      tokenUrl: "https://generic.example.test/oauth/token",
+      grantType: "authorization_code",
+    });
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://generic.example.test/oauth/token") {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("code")).toBe("generic-code");
+        return {
+          ok: true,
+          json: async () => ({
+            access_token: "generic-access-token",
+            refresh_token: "generic-refresh-token",
+            expires_in: 3600,
+            token_type: "Bearer",
+          }),
+        } as Response;
+      }
+      if (href === "https://generic.example.test/mcp") {
+        expect(init?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer generic-access-token" }));
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "read_generic", annotations: { readOnlyHint: true } }] },
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const callbackRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .query({ state, code: "generic-code" });
+
+    expect(callbackRes.status).toBe(200);
+    expect(callbackRes.body.catalog).toEqual([
+      expect.objectContaining({ toolName: "read_generic", riskLevel: "read" }),
+    ]);
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectRes.body.connectionId));
+    expect(connection.config).toMatchObject({
+      oauth: expect.objectContaining({
+        provider: "generic_example_test",
+        credentialScope: expect.objectContaining({ type: "user" }),
+      }),
+    });
+    expect(JSON.stringify(connection.config)).not.toContain("generic-access-token");
   });
 
   it("connects gallery apps and finishes access profiles, bindings, and ask-first policies", async () => {
@@ -3308,7 +3640,10 @@ describeEmbeddedPostgres("tool access service", () => {
       details: expect.objectContaining({ code: "secret_missing" }),
     });
     const [updatedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
-    const [audit] = await db.select().from(toolAccessAuditEvents);
+    const [audit] = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.action, "tool_connection.health_check"));
 
     expect(updatedConnection).toMatchObject({
       healthStatus: "missing_secret",

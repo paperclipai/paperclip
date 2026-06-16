@@ -11,6 +11,9 @@ import {
   issueApprovals,
   issues,
   issueThreadInteractions,
+  toolApplications,
+  toolCatalogEntries,
+  toolConnections,
   toolAccessAuditEvents,
   toolActionRequests,
   toolCallEvents,
@@ -70,6 +73,41 @@ async function createRunFixture(db: ReturnType<typeof createDb>) {
   return { company, agent, issue, run };
 }
 
+async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, companyId: string) {
+  const application = await db.insert(toolApplications).values({
+    companyId,
+    applicationKey: `remote-${randomUUID().slice(0, 8)}`,
+    name: "Remote MCP",
+    type: "mcp_http",
+    status: "active",
+  }).returning().then((rows) => rows[0]!);
+  const connection = await db.insert(toolConnections).values({
+    companyId,
+    applicationId: application.id,
+    name: "Remote connection",
+    transport: "remote_http",
+    status: "active",
+    enabled: true,
+    healthStatus: "ok",
+    config: { url: "https://example.invalid/mcp" },
+  }).returning().then((rows) => rows[0]!);
+  const catalogEntry = await db.insert(toolCatalogEntries).values({
+    companyId,
+    applicationId: application.id,
+    connectionId: connection.id,
+    entryKind: "tool",
+    name: "needs_input",
+    toolName: "needs_input",
+    title: "Needs input",
+    riskLevel: "read",
+    isReadOnly: true,
+    status: "active",
+    versionHash: randomUUID(),
+    schemaHash: randomUUID(),
+  }).returning().then((rows) => rows[0]!);
+  return { application, connection, catalogEntry };
+}
+
 function fakePluginDispatcher(): PluginToolDispatcher {
   return {
     initialize: async () => {},
@@ -117,6 +155,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(issueApprovals);
     await db.delete(approvals);
     await db.delete(issueThreadInteractions);
+    await db.delete(toolCatalogEntries);
+    await db.delete(toolConnections);
+    await db.delete(toolApplications);
     await db.delete(toolPolicies);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -328,6 +369,142 @@ describeEmbeddedPostgres("tool gateway service", () => {
     });
     expect(result.status).toBe("completed");
     expect((result.result as { result?: { data?: { target?: string } } }).result?.data?.target).toBe("repo");
+  });
+
+  it("maps remote MCP elicitation to a durable issue interaction", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await createRemoteMcpToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow read tools",
+      policyType: "allow",
+      selectors: { riskLevel: "read" },
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "paperclip-tool-test",
+      result: {
+        _meta: {
+          elicitation: {
+            message: "Which workspace should be used?",
+            requestedSchema: {
+              type: "object",
+              required: ["workspace"],
+              properties: {
+                workspace: {
+                  title: "Workspace",
+                  enum: ["ops", "engineering"],
+                },
+              },
+            },
+          },
+        },
+        content: [],
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+      });
+      const tool = (await gateway.listToolsForSession(session.token))
+        .find((candidate) => candidate.providerType === "mcp_remote_http");
+      expect(tool).toBeTruthy();
+
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: tool!.name,
+        parameters: {},
+      })).rejects.toMatchObject({ reasonCode: "elicitation_required" });
+
+      const [interaction] = await db.select().from(issueThreadInteractions);
+      expect(interaction).toMatchObject({
+        kind: "ask_user_questions",
+        status: "pending",
+        issueId: session.issueId,
+      });
+      expect(interaction.payload).toMatchObject({
+        title: "Which workspace should be used?",
+        questions: [
+          {
+            id: "workspace",
+            prompt: "Workspace",
+            required: true,
+            options: [{ id: "ops", label: "ops" }, { id: "engineering", label: "engineering" }],
+          },
+        ],
+      });
+      const [invocation] = await db.select().from(toolInvocations);
+      expect(invocation).toMatchObject({
+        status: "awaiting_approval",
+        errorCode: "elicitation_required",
+      });
+      const [event] = await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "elicitation_required"));
+      expect(event).toMatchObject({
+        outcome: "pending",
+        decision: "defer_runtime",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("fails clearly when remote MCP elicitation has no issue interaction path", async () => {
+    const company = await db.insert(companies).values({
+      name: `Gateway ${randomUUID()}`,
+      issuePrefix: `TG${randomUUID().slice(0, 6).toUpperCase()}`,
+    }).returning().then((rows) => rows[0]!);
+    const agent = await db.insert(agents).values({
+      companyId: company.id,
+      name: `Gateway Agent ${randomUUID()}`,
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    }).returning().then((rows) => rows[0]!);
+    const run = await db.insert(heartbeatRuns).values({
+      companyId: company.id,
+      agentId: agent.id,
+      invocationSource: "manual",
+      status: "running",
+      contextSnapshot: {},
+    }).returning().then((rows) => rows[0]!);
+    await createRemoteMcpToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow read tools",
+      policyType: "allow",
+      selectors: { riskLevel: "read" },
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "paperclip-tool-test",
+      result: { elicitation: { message: "Need input" }, content: [] },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+      });
+      const tool = (await gateway.listToolsForSession(session.token))
+        .find((candidate) => candidate.providerType === "mcp_remote_http");
+      expect(tool).toBeTruthy();
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: tool!.name,
+        parameters: {},
+      })).rejects.toMatchObject({ reasonCode: "elicitation_not_supported" });
+      expect(await db.select().from(issueThreadInteractions)).toEqual([]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("blocks malicious plugin tool results before they reach the agent", async () => {

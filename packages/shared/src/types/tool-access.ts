@@ -51,12 +51,13 @@ export type {
 export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport = "remote_http" | "local_stdio";
 export type ToolConnectionStatus = "draft" | "active" | "disabled" | "archived";
+export type ToolCredentialPlacement = "header" | "env";
 
 export interface McpConnectionCredentialRef {
   name: string;
   secretId: string;
   version?: number | "latest";
-  placement: "header" | "env";
+  placement: ToolCredentialPlacement;
   key: string;
   prefix?: string | null;
 }
@@ -197,6 +198,57 @@ export interface ToolProfileBinding {
   createdByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type ToolMcpGatewayStatus = "active" | "disabled" | "archived";
+
+export interface ToolMcpGateway {
+  id: string;
+  companyId: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  status: ToolMcpGatewayStatus;
+  profileId: string;
+  agentId: string | null;
+  projectId: string | null;
+  issueId: string | null;
+  endpointPath: string;
+  metadata: Record<string, unknown> | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ToolMcpGatewayToken {
+  id: string;
+  companyId: string;
+  gatewayId: string;
+  name: string;
+  expiresAt: Date | string | null;
+  lastUsedAt: Date | string | null;
+  revokedAt: Date | string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface ToolMcpGatewayTokenCreated extends ToolMcpGatewayToken {
+  token: string;
+}
+
+export interface ToolMcpGatewayClientSnippet {
+  client: "cursor" | "claude_desktop" | "vscode" | "claude_code" | "opencode";
+  label: string;
+  config: Record<string, unknown>;
+  notes: string[];
+}
+
+export interface ToolMcpGatewayWithTokens extends ToolMcpGateway {
+  tokens: ToolMcpGatewayToken[];
+  clientSnippets: ToolMcpGatewayClientSnippet[];
 }
 
 export interface ToolProfileSummary {
@@ -605,6 +657,14 @@ export interface McpJsonImportDraft {
   status: ToolConnectionStatus;
   config: Record<string, unknown>;
   credentialRefs: McpConnectionCredentialRef[];
+  credentialFields: Array<{
+    configPath: string;
+    label: string;
+    placement: ToolCredentialPlacement;
+    key: string;
+    prefix: string | null;
+    required: boolean;
+  }>;
   warnings: string[];
 }
 
@@ -773,6 +833,8 @@ export interface ToolAccessSelector {
   routineIds?: string[];
   issueId?: string;
   issueIds?: string[];
+  gatewayId?: string;
+  gatewayIds?: string[];
   applicationId?: string;
   applicationIds?: string[];
   connectionId?: string;
@@ -796,6 +858,56 @@ export interface ToolTrustRuleArgumentFilters {
   exactHash?: string | null;
   allowedHashes?: string[];
   fieldEquals?: Record<string, unknown>;
+  fieldNotEquals?: Record<string, unknown>;
+  fieldIn?: Record<string, unknown[]>;
+  fieldMatches?: Record<string, string>;
+  fieldExists?: string[];
+  fieldAbsent?: string[];
+}
+
+export interface ToolPolicyConditions {
+  arguments?: {
+    fieldEquals?: Record<string, unknown>;
+    fieldNotEquals?: Record<string, unknown>;
+    fieldIn?: Record<string, unknown[]>;
+    fieldMatches?: Record<string, string>;
+    fieldExists?: string[];
+    fieldAbsent?: string[];
+  };
+  args?: ToolPolicyConditions["arguments"];
+  actor?: ToolAccessSelector;
+  context?: ToolAccessSelector & {
+    requireIssue?: boolean;
+    requireProject?: boolean;
+    requireRoutine?: boolean;
+  };
+  risk?: {
+    levels?: ToolRiskLevel[];
+    max?: ToolRiskLevel;
+    isWrite?: boolean;
+    isDestructive?: boolean;
+  };
+  credentialScope?: Pick<ToolAccessSelector, "applicationId" | "applicationIds" | "connectionId" | "connectionIds" | "catalogEntryId" | "catalogEntryIds"> & {
+    applicationKey?: string;
+    applicationKeys?: string[];
+    providerType?: string;
+    providerTypes?: string[];
+  };
+  trustBoundary?: {
+    providerType?: string;
+    providerTypes?: string[];
+    applicationKey?: string;
+    applicationKeys?: string[];
+    remoteHttpOnly?: boolean;
+    paperclipSelfOnly?: boolean;
+  };
+  timeWindow?: {
+    startAt?: string;
+    endAt?: string;
+    daysOfWeekUtc?: number[];
+    startHourUtc?: number;
+    endHourUtc?: number;
+  };
 }
 
 export interface ToolTrustRuleScopeInput {
@@ -843,6 +955,7 @@ export interface ToolAccessDecisionInput {
     issueId?: string | null;
     projectId?: string | null;
     routineId?: string | null;
+    gatewayId?: string | null;
   } | null;
   request: {
     applicationId?: string | null;
@@ -869,6 +982,7 @@ export interface ToolAccessDecision {
   effectiveProfileIds: string[];
   matchedPolicyIds: string[];
   redactionPlan?: Record<string, unknown> | null;
+  policyExplanation?: Record<string, unknown> | null;
   argumentsSummary?: ToolRedactedValueSummary | null;
   rateLimitState?: Record<string, unknown> | null;
   invocationId?: string | null;

@@ -831,6 +831,216 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("applies remote MCP header allowlists, metadata forwarding, and credential precedence", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const credentialValue = `managed-credential-${randomUUID()}`;
+    const secret = await secretService(db).create(company.id, {
+      name: `Header policy token ${randomUUID()}`,
+      key: `header_policy_token_${randomUUID().replace(/-/g, "")}`,
+      provider: "local_encrypted",
+      value: credentialValue,
+    });
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      expect(fakeRequest.headers.authorization).toBe(`Bearer ${credentialValue}`);
+      expect(fakeRequest.headers["x-client-request-id"]).toBe("caller-123");
+      expect(fakeRequest.headers["x-static-mode"]).toBe("canary");
+      expect(fakeRequest.headers["x-paperclip-agent-id"]).toBe(agent.id);
+      expect(fakeRequest.headers["x-paperclip-issue-id"]).toBe(issue.id);
+      expect(fakeRequest.headers["x-unlisted-header"]).toBeUndefined();
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body?.id,
+          result: { content: [{ type: "text", text: "headers ok" }] },
+        },
+      };
+    });
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "header-policy",
+        toolName: "kv_set",
+        url: fake.url,
+        credentialRefs: [{
+          name: "authorization",
+          secretId: secret.id,
+          version: "latest",
+          placement: "header",
+          key: "Authorization",
+          prefix: "Bearer ",
+        }],
+        credentialSecretRefs: [{
+          secretId: secret.id,
+          versionSelector: "latest",
+          configPath: "credentials.authorization",
+          required: true,
+          label: "Remote MCP token",
+        }],
+      });
+      await db.update(toolConnections)
+        .set({
+          config: {
+            url: fake.url,
+            headerPolicy: {
+              passthrough: { allowedHeaders: ["x-client-request-id", "authorization"] },
+              staticHeaders: [{ name: "x-static-mode", value: "canary" }],
+              metadata: { forward: ["agent_id", "issue_id"] },
+            },
+          },
+        })
+        .where(eq(toolConnections.id, remoteTool.connection.id));
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.connectionId === remoteTool.connection.id);
+      expect(connectedTool).toBeTruthy();
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha", value: "one" },
+        callerHeaders: {
+          authorization: "Bearer caller-must-not-win",
+          "x-client-request-id": "caller-123",
+          "x-unlisted-header": "drop-me",
+        },
+      });
+
+      const [activity] = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "tool_gateway.call_completed"));
+      expect(activity.details).toMatchObject({
+        headerSummary: {
+          credentialHeaderNames: "***REDACTED***",
+          passthroughHeaderNames: ["x-client-request-id"],
+          droppedPassthroughHeaderNames: expect.arrayContaining(["authorization", "x-unlisted-header"]),
+          staticHeaderNames: ["x-static-mode"],
+          metadataHeaderNames: ["x-paperclip-agent-id", "x-paperclip-issue-id"],
+          collisionRules: expect.arrayContaining([
+            { header: "authorization", source: "caller", action: "kept_managed_credential" },
+          ]),
+        },
+      });
+      const persisted = JSON.stringify({
+        activity: await db.select().from(activityLog),
+        events: await db.select().from(toolCallEvents),
+        invocations: await db.select().from(toolInvocations),
+      });
+      expect(persisted).not.toContain(credentialValue);
+      expect(persisted).not.toContain("caller-must-not-win");
+      expect(persisted).not.toContain("caller-123");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("uses virtual on-demand run_tool while applying target tool policy and audit metadata", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: {
+          content: [{ type: "text", text: "virtual ok" }],
+          structuredContent: { receivedArguments: (fakeRequest.body?.params as Record<string, unknown>).arguments },
+        },
+      },
+    }));
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "virtual-demo",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      await db.update(toolConnections)
+        .set({ config: { url: fake.url, onDemandTools: { enabled: true } } })
+        .where(eq(toolConnections.id, remoteTool.connection.id));
+      const targetToolName = expectedConnectedToolName({
+        applicationKey: remoteTool.application.applicationKey,
+        connectionId: remoteTool.connection.id,
+        toolName: remoteTool.catalogEntry.toolName,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [targetToolName]);
+
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const visibleTools = await gateway.listToolsForSession(session.token);
+      expect(visibleTools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["search_tools", "run_tool"]));
+      expect(visibleTools.map((tool) => tool.name)).not.toContain(targetToolName);
+
+      const search = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: "search_tools",
+        parameters: { query: "kv", limit: 5 },
+      });
+      expect(JSON.stringify(search.result)).toContain(targetToolName);
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: "run_tool",
+        parameters: {
+          tool: targetToolName,
+          arguments: { key: "virtual-key", value: "virtual-value" },
+        },
+      });
+      expect(result).toMatchObject({
+        status: "completed",
+        tool: "run_tool",
+        targetTool: targetToolName,
+      });
+      expect(fake.requests.at(-1)!.body).toMatchObject({
+        params: {
+          name: "kv_set",
+          arguments: { key: "virtual-key", value: "virtual-value" },
+        },
+      });
+
+      const [invocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.toolName, targetToolName));
+      expect(invocation).toMatchObject({
+        providerType: "mcp_remote_http",
+        connectionId: remoteTool.connection.id,
+        catalogEntryId: remoteTool.catalogEntry.id,
+        status: "succeeded",
+      });
+      const completedEvents = await db
+        .select()
+        .from(toolCallEvents)
+        .where(eq(toolCallEvents.eventType, "call_completed"));
+      expect(completedEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          toolName: targetToolName,
+          metadata: expect.objectContaining({
+            virtualToolName: "run_tool",
+            targetToolName,
+          }),
+        }),
+      ]));
+      const completedActivity = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "tool_gateway.call_completed"));
+      expect(completedActivity).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          details: expect.objectContaining({
+            virtualToolName: "run_tool",
+            targetToolName,
+            connectionId: remoteTool.connection.id,
+          }),
+        }),
+      ]));
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("decodes an SSE-framed tools/call response from a spec-compliant Streamable HTTP server", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

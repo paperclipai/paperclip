@@ -5,10 +5,14 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { McpJsonImportPreview } from "@paperclipai/shared";
+import type { ConnectToolAppResult, McpJsonImportPreview } from "@paperclipai/shared";
 import { PasteConfigTab } from "./PasteConfigTab";
 
-const toolsApiMock = vi.hoisted(() => ({ importMcpJson: vi.fn() }));
+const toolsApiMock = vi.hoisted(() => ({
+  importMcpJson: vi.fn(),
+  connectApp: vi.fn(),
+  finishApp: vi.fn(),
+}));
 const mockNavigate = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({ toolsApi: toolsApiMock }));
 // The tab uses `useNavigate` from the app router (PAP-11088 draft hand-off),
@@ -42,10 +46,79 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function buttonStartingWith(text: string): HTMLButtonElement | undefined {
   return Array.from(document.body.querySelectorAll("button")).find(
     (b) => b.textContent?.trim().startsWith(text),
   ) as HTMLButtonElement | undefined;
+}
+
+function connectResult(overrides: Partial<ConnectToolAppResult> = {}): ConnectToolAppResult {
+  return {
+    connectionId: "conn-1",
+    application: {
+      id: "app-1",
+      companyId: "company-1",
+      applicationKey: "app-gallery:link:test",
+      name: "kv-demo",
+      description: null,
+      type: "mcp_http",
+      status: "draft",
+      pluginId: null,
+      ownerAgentId: null,
+      ownerUserId: null,
+      metadata: null,
+      archivedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+    connection: {
+      id: "conn-1",
+      companyId: "company-1",
+      applicationId: "app-1",
+      name: "kv-demo",
+      connectionKind: "managed",
+      transport: "remote_http",
+      status: "draft",
+      enabled: false,
+      config: { url: "http://127.0.0.1:8848/mcp" },
+      transportConfig: { url: "http://127.0.0.1:8848/mcp" },
+      credentialRefs: [],
+      credentialSecretRefs: [],
+      healthStatus: "ok",
+      healthMessage: "ok",
+      healthCheckedAt: new Date(),
+      lastHealthAt: new Date(),
+      lastCatalogRefreshAt: new Date(),
+      lastError: null,
+      createdByAgentId: null,
+      createdByUserId: "board",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+    catalog: [],
+    actions: {
+      readOnly: [{
+        catalogEntryId: "cat-read",
+        toolName: "kv_get",
+        title: "Get value",
+        description: "Read a value.",
+        riskLevel: "read",
+        isReadOnly: true,
+        isWrite: false,
+        isDestructive: false,
+        status: "active",
+      }],
+      canMakeChanges: [],
+    },
+    suggestedDefaults: { access: "all_agents", askFirstRiskLevels: ["write", "destructive"] },
+    ...overrides,
+  };
 }
 
 describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
@@ -141,6 +214,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
             status: "draft",
             config: { url: "http://127.0.0.1:8848/mcp" },
             credentialRefs: [],
+            credentialFields: [],
             warnings: [],
           },
         ],
@@ -149,21 +223,71 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     );
 
     expect(container.textContent).toContain("We found 1 app in that config");
-    const continueButton = buttonStartingWith("Continue");
-    expect(continueButton).toBeTruthy();
+    const checkButton = buttonStartingWith("Check actions");
+    expect(checkButton).toBeTruthy();
 
+    toolsApiMock.connectApp.mockResolvedValue(connectResult());
     await act(async () => {
-      continueButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      checkButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    expect(mockNavigate).toHaveBeenCalledTimes(1);
-    const target = mockNavigate.mock.calls[0][0] as string;
-    expect(target).toContain("/apps/connect?");
-    expect(target).toContain(`link=${encodeURIComponent("http://127.0.0.1:8848/mcp")}`);
-    expect(target).toContain("name=kv-demo");
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(toolsApiMock.connectApp).toHaveBeenCalledWith("company-1", {
+      link: "http://127.0.0.1:8848/mcp",
+      name: "kv-demo",
+      credentialValues: {},
+    });
+    expect(container.textContent).toContain("Review actions for kv-demo");
     // The dead-end "Next, you'll add the keys" copy is gone.
     expect(container.textContent).not.toContain("Next, you'll add the keys");
+  });
+
+  it("collects imported headers as secret replacement fields before checking actions", async () => {
+    await pasteAndCheck(
+      {
+        drafts: [
+          {
+            name: "secure-demo",
+            transport: "remote_http",
+            status: "draft",
+            config: { url: "https://secure.example/mcp" },
+            credentialRefs: [],
+            credentialFields: [{
+              configPath: "headers.Authorization",
+              label: "Authorization",
+              placement: "header",
+              key: "Authorization",
+              prefix: null,
+              required: true,
+            }],
+            warnings: ["Header Authorization will be stored as a Paperclip secret before activation."],
+          },
+        ],
+      },
+      '{ "mcpServers": { "secure-demo": { "url": "https://secure.example/mcp", "headers": { "Authorization": "Bearer old" } } } }',
+    );
+
+    const checkButton = buttonStartingWith("Check actions")!;
+    expect(checkButton.disabled).toBe(true);
+    const input = container.querySelector('input[type="password"]') as HTMLInputElement;
+    await act(async () => setInputValue(input, "Bearer new"));
+    await flushReact();
+
+    expect(buttonStartingWith("Check actions")!.disabled).toBe(false);
+    toolsApiMock.connectApp.mockResolvedValue(connectResult({
+      application: { ...connectResult().application, name: "secure-demo" },
+    }));
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(toolsApiMock.connectApp).toHaveBeenCalledWith("company-1", {
+      link: "https://secure.example/mcp",
+      name: "secure-demo",
+      credentialValues: { "headers.Authorization": "Bearer new" },
+    });
   });
 
   it("does not offer Continue for a stdio draft (draft-only, no link to hand off)", async () => {
@@ -176,6 +300,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
             status: "draft",
             config: { importedCommand: "npx -y @modelcontextprotocol/server-github", importedArgs: [] },
             credentialRefs: [],
+            credentialFields: [],
             warnings: ["Imported stdio commands stay draft-only unless mapped to an approved Paperclip template."],
           },
         ],
@@ -184,7 +309,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     );
 
     expect(container.textContent).toContain("We found 1 app in that config");
-    expect(buttonStartingWith("Continue")).toBeFalsy();
+    expect(buttonStartingWith("Check actions")).toBeFalsy();
     expect(container.textContent).toContain("stay as drafts until an admin");
   });
 });

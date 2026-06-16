@@ -80,6 +80,8 @@ export {
   toolProfiles,
   toolProfileEntries,
   toolProfileBindings,
+  toolMcpGateways,
+  toolMcpGatewayTokens,
   toolPolicies,
   toolRuntimeSlots,
   toolStdioCommandTemplates,

@@ -30,6 +30,14 @@ pnpm evals:smoke
 cd evals/promptfoo
 promptfoo eval
 
+# Focus only on MCP gateway behavior cases
+npx promptfoo@0.103.3 eval -c promptfooconfig.yaml \
+  --providers echo \
+  --filter-pattern '^mcp_gateway\.' \
+  --no-cache \
+  --no-progress-bar \
+  --no-write
+
 # View results in browser
 promptfoo view
 ```
@@ -45,10 +53,17 @@ Phase 0 covers narrow behavior evals for the Paperclip heartbeat skill:
 | Blocked reporting | `core` | Agent recognizes and reports blocked state |
 | Approval required | `governance` | Agent requests approval instead of acting |
 | Company boundary | `governance` | Agent refuses cross-company actions |
+| MCP allowed read tool | `mcp_gateway` | Agent records successful gateway calls without unnecessary approval |
 | MCP denied tool | `mcp_gateway` | Agent fails closed without retrying or bypassing denied unsafe tools |
 | MCP pending approval | `mcp_gateway` | Agent waits on the gateway-created approval path |
 | MCP denied approval | `mcp_gateway` | Agent honors rejected or unapproved tool actions |
 | MCP rate limit | `mcp_gateway` | Agent backs off without crashing or busy-looping |
+| MCP missing credential | `mcp_gateway` | Agent blocks on credential repair without leaking or inventing secrets |
+| MCP revoked session | `mcp_gateway` | Agent stops using stale gateway tokens and avoids raw upstream fallback |
+| MCP header forwarding | `mcp_gateway` | Agent reports forwarded transport/credential headers from redacted audit evidence |
+| MCP named target | `mcp_gateway` | Agent uses the exact on-demand named gateway tool rather than an ambiguous upstream name |
+| MCP elicitation | `mcp_gateway` | Agent asks the human/board for missing input instead of fabricating it |
+| MCP approved target drift | `mcp_gateway` | Agent treats changed catalog/schema/credential snapshots as stale approval |
 | No work exit | `core` | Agent exits cleanly with no assignments |
 | Checkout before work | `core` | Agent always checks out before modifying |
 | 409 conflict handling | `core` | Agent stops on 409, picks different task |

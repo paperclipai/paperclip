@@ -326,6 +326,114 @@ export const unbindToolProfileBindingSchema = createToolProfileBindingForProfile
 
 export type UnbindToolProfileBinding = z.infer<typeof unbindToolProfileBindingSchema>;
 
+export const createToolMcpGatewaySchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  slug: z.string().trim().min(1).max(120).regex(safeKeyPattern).optional(),
+  description: z.string().max(4000).optional().nullable(),
+  profileId: z.string().uuid(),
+  agentId: z.string().uuid().optional().nullable(),
+  projectId: z.string().uuid().optional().nullable(),
+  issueId: z.string().uuid().optional().nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
+});
+
+export type CreateToolMcpGateway = z.infer<typeof createToolMcpGatewaySchema>;
+
+export const updateToolMcpGatewaySchema = createToolMcpGatewaySchema
+  .partial()
+  .extend({ status: z.enum(["active", "disabled", "archived"]).optional() })
+  .refine((value) => Object.keys(value).length > 0, { message: "At least one gateway field is required" });
+
+export type UpdateToolMcpGateway = z.infer<typeof updateToolMcpGatewaySchema>;
+
+export const createToolMcpGatewayTokenSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  expiresAt: z.coerce.date().optional().nullable(),
+});
+
+export type CreateToolMcpGatewayToken = z.infer<typeof createToolMcpGatewayTokenSchema>;
+
+const argumentConditionSchema = z.object({
+  fieldEquals: z.record(z.string().trim().min(1).max(120), z.unknown()).optional(),
+  fieldNotEquals: z.record(z.string().trim().min(1).max(120), z.unknown()).optional(),
+  fieldIn: z.record(z.string().trim().min(1).max(120), z.array(z.unknown()).min(1).max(100)).optional(),
+  fieldMatches: z.record(z.string().trim().min(1).max(120), z.string().trim().min(1).max(500)).optional(),
+  fieldExists: z.array(z.string().trim().min(1).max(120)).max(100).optional(),
+  fieldAbsent: z.array(z.string().trim().min(1).max(120)).max(100).optional(),
+}).strict().refine(
+  (value) => Object.values(value).some((nested) => Array.isArray(nested) ? nested.length > 0 : Boolean(nested && Object.keys(nested).length > 0)),
+  { message: "Argument conditions must include at least one field predicate" },
+);
+
+const timeWindowConditionSchema = z.object({
+  startAt: z.string().trim().datetime({ offset: true }).optional(),
+  endAt: z.string().trim().datetime({ offset: true }).optional(),
+  daysOfWeekUtc: z.array(z.number().int().min(0).max(6)).max(7).optional(),
+  startHourUtc: z.number().int().min(0).max(23).optional(),
+  endHourUtc: z.number().int().min(0).max(24).optional(),
+}).strict().refine(
+  (value) => value.startAt || value.endAt || value.daysOfWeekUtc?.length || value.startHourUtc !== undefined || value.endHourUtc !== undefined,
+  { message: "timeWindow must include at least one bound" },
+);
+
+const actorConditionSchema = z.object({
+  actorType: z.enum(["agent", "user", "system", "plugin"]).optional(),
+  actorTypes: z.array(z.enum(["agent", "user", "system", "plugin"])).max(20).optional(),
+  agentId: z.string().uuid().optional(),
+  agentIds: z.array(z.string().uuid()).max(100).optional(),
+}).strict();
+
+const contextConditionSchema = z.object({
+  projectId: z.string().uuid().optional(),
+  projectIds: z.array(z.string().uuid()).max(100).optional(),
+  routineId: z.string().uuid().optional(),
+  routineIds: z.array(z.string().uuid()).max(100).optional(),
+  issueId: z.string().uuid().optional(),
+  issueIds: z.array(z.string().uuid()).max(100).optional(),
+  requireIssue: z.boolean().optional(),
+  requireProject: z.boolean().optional(),
+  requireRoutine: z.boolean().optional(),
+}).strict();
+
+const credentialScopeConditionSchema = z.object({
+  applicationId: z.string().uuid().optional(),
+  applicationIds: z.array(z.string().uuid()).max(100).optional(),
+  connectionId: z.string().uuid().optional(),
+  connectionIds: z.array(z.string().uuid()).max(100).optional(),
+  catalogEntryId: z.string().uuid().optional(),
+  catalogEntryIds: z.array(z.string().uuid()).max(100).optional(),
+  applicationKey: z.string().trim().min(1).max(160).optional(),
+  applicationKeys: z.array(z.string().trim().min(1).max(160)).max(100).optional(),
+  providerType: z.string().trim().min(1).max(160).optional(),
+  providerTypes: z.array(z.string().trim().min(1).max(160)).max(100).optional(),
+}).strict();
+
+export const toolPolicyConditionsSchema = z.object({
+  arguments: argumentConditionSchema.optional(),
+  args: argumentConditionSchema.optional(),
+  actor: actorConditionSchema.optional(),
+  context: contextConditionSchema.optional(),
+  risk: z.object({
+    levels: z.array(toolRiskLevelSchema).max(20).optional(),
+    max: toolRiskLevelSchema.optional(),
+    isWrite: z.boolean().optional(),
+    isDestructive: z.boolean().optional(),
+  }).strict().optional(),
+  credentialScope: credentialScopeConditionSchema.optional(),
+  trustBoundary: z.object({
+    providerType: z.string().trim().min(1).max(160).optional(),
+    providerTypes: z.array(z.string().trim().min(1).max(160)).max(100).optional(),
+    applicationKey: z.string().trim().min(1).max(160).optional(),
+    applicationKeys: z.array(z.string().trim().min(1).max(160)).max(100).optional(),
+    remoteHttpOnly: z.boolean().optional(),
+    paperclipSelfOnly: z.boolean().optional(),
+  }).strict().optional(),
+  timeWindow: timeWindowConditionSchema.optional(),
+}).strict().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "Tool policy conditions must include at least one supported condition group" },
+);
+
 export const createToolPolicySchema = z.object({
   name: z.string().trim().min(1).max(160),
   description: z.string().max(4000).optional().nullable(),
@@ -333,7 +441,7 @@ export const createToolPolicySchema = z.object({
   priority: z.number().int().min(0).max(10000).default(100),
   enabled: z.boolean().default(true),
   selectors: z.record(z.string(), z.unknown()).default({}),
-  conditions: z.null().optional(),
+  conditions: toolPolicyConditionsSchema.optional().nullable(),
   config: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
@@ -423,12 +531,22 @@ export const toolTrustRuleArgumentFiltersSchema = z.object({
   exactHash: z.string().trim().regex(/^[a-f0-9]{64}$/i).optional().nullable(),
   allowedHashes: z.array(z.string().trim().regex(/^[a-f0-9]{64}$/i)).max(100).optional(),
   fieldEquals: z.record(z.string().trim().min(1).max(120), z.unknown()).optional(),
+  fieldNotEquals: z.record(z.string().trim().min(1).max(120), z.unknown()).optional(),
+  fieldIn: z.record(z.string().trim().min(1).max(120), z.array(z.unknown()).min(1).max(100)).optional(),
+  fieldMatches: z.record(z.string().trim().min(1).max(120), z.string().trim().min(1).max(500)).optional(),
+  fieldExists: z.array(z.string().trim().min(1).max(120)).max(100).optional(),
+  fieldAbsent: z.array(z.string().trim().min(1).max(120)).max(100).optional(),
 }).refine(
   (value) => value.allowAny === true
     || Boolean(value.exactHash)
     || Boolean(value.allowedHashes?.length)
-    || Boolean(value.fieldEquals && Object.keys(value.fieldEquals).length > 0),
-  { message: "Trust-rule argument filters must specify allowAny, exactHash, allowedHashes, or fieldEquals" },
+    || Boolean(value.fieldEquals && Object.keys(value.fieldEquals).length > 0)
+    || Boolean(value.fieldNotEquals && Object.keys(value.fieldNotEquals).length > 0)
+    || Boolean(value.fieldIn && Object.keys(value.fieldIn).length > 0)
+    || Boolean(value.fieldMatches && Object.keys(value.fieldMatches).length > 0)
+    || Boolean(value.fieldExists?.length)
+    || Boolean(value.fieldAbsent?.length),
+  { message: "Trust-rule argument filters must specify allowAny, a hash filter, or a field predicate" },
 );
 
 export const toolTrustRuleScopeSchema = z.object({
