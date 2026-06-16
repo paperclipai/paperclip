@@ -5793,6 +5793,8 @@ export function issueRoutes(
                   source: "issue.in_review.gate",
                   approvalId,
                   ...(lensKey != null ? { lensKey } : {}),
+                  // A2: give reviewer a direct diff pointer; avoids full-repo crawl.
+                  ...(issue.prUrl ? { prUrl: issue.prUrl } : {}),
                 },
               })
               .catch((err) =>
