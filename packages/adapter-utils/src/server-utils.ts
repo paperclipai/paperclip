@@ -7,9 +7,12 @@ import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import type {
+  AdapterAgent,
   AdapterSkillEntry,
   AdapterSkillSnapshot,
 } from "./types.js";
+
+export const DEFAULT_DENIED_WRITE_PATHS = ["/paperclip"];
 
 export interface RunProcessResult {
   exitCode: number | null;
@@ -110,6 +113,59 @@ export function resolvePaperclipInstanceRootForAdapter(input: {
   return path.resolve(homeDir, "instances", instanceId);
 }
 
+/**
+ * Validates if the given cwd is allowed for writing based on denied paths.
+ * Exempts the agent's own workspace cwd.
+ */
+export function validateDeniedWritePaths(
+  cwd: string,
+  deniedPaths: string[],
+  workspaceCwd?: string,
+): { allowed: true } | { allowed: false; errorMessage: string } {
+  for (const denied of deniedPaths) {
+    const relative = path.relative(denied, cwd);
+    const isUnderDenied =
+      relative === "" ||
+      (!relative.startsWith("..") && !path.isAbsolute(relative));
+
+    if (isUnderDenied) {
+      if (workspaceCwd) {
+        // Exempt if the denied path is exactly our workspace prefix.
+        if (path.resolve(denied) === path.resolve(workspaceCwd)) {
+          continue;
+        }
+        // Also exempt if the cwd is under our own workspace.
+        const relToWorkspace = path.relative(workspaceCwd, cwd);
+        const isUnderWorkspace =
+          relToWorkspace === "" ||
+          (!relToWorkspace.startsWith("..") && !path.isAbsolute(relToWorkspace));
+        if (isUnderWorkspace) {
+          continue;
+        }
+      }
+
+      return {
+        allowed: false,
+        errorMessage: `Write access to ${cwd} is denied (under ${denied}).`,
+      };
+    }
+  }
+  return { allowed: true };
+}
+
+/**
+ * Renders the "Denied Write Paths" section for the agent prompt.
+ */
+export function renderDeniedWritePathsNote(deniedPaths?: string[]): string {
+  if (!deniedPaths || deniedPaths.length === 0) return "";
+  return [
+    "Denied Write Paths:",
+    "The following paths are read-only. You MUST NOT attempt to modify, delete, or write any files under these prefixes:",
+    ...deniedPaths.map((p) => `- ${p}`),
+    "",
+  ].join("\n");
+}
+
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   "",
@@ -127,6 +183,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
+  "{{deniedWritePaths}}",
 ].join("\n");
 
 export interface PaperclipSkillEntry {
@@ -935,7 +992,11 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+export function buildPaperclipEnv(agent: {
+  id: string;
+  companyId: string;
+  deniedWritePaths?: string[];
+}): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -946,6 +1007,9 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     PAPERCLIP_AGENT_ID: agent.id,
     PAPERCLIP_COMPANY_ID: agent.companyId,
   };
+  if (agent.deniedWritePaths && agent.deniedWritePaths.length > 0) {
+    vars.PAPERCLIP_AGENT_DENIED_WRITE_PATHS = agent.deniedWritePaths.join(",");
+  }
   const runtimeHost = resolveHostForUrl(
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );

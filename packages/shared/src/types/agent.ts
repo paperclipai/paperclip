@@ -19,6 +19,7 @@ export interface AgentPermissions extends Record<string, unknown> {
   canCreateAgents: boolean;
   trustPreset?: TrustPreset;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  deniedWritePaths?: string[];
 }
 
 export interface AgentModelProfileConfig {
@@ -90,6 +91,7 @@ export interface Agent {
   capabilities: string | null;
   adapterType: AgentAdapterType;
   adapterConfig: Record<string, unknown>;
+  deniedWritePaths?: string[];
   runtimeConfig: AgentRuntimeConfig;
   defaultEnvironmentId?: string | null;
   budgetMonthlyCents: number;

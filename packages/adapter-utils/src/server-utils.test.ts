@@ -13,12 +13,14 @@ import {
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  renderDeniedWritePathsNote,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
+  validateDeniedWritePaths,
 } from "./server-utils.js";
 
 function isPidAlive(pid: number) {
@@ -1159,5 +1161,57 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("validateDeniedWritePaths", () => {
+  it("allows paths not in denied list", () => {
+    expect(validateDeniedWritePaths("/home/user", ["/paperclip"])).toEqual({ allowed: true });
+  });
+
+  it("denies paths under a denied prefix", () => {
+    expect(validateDeniedWritePaths("/paperclip/config.json", ["/paperclip"])).toEqual({
+      allowed: false,
+      errorMessage: "Write access to /paperclip/config.json is denied (under /paperclip).",
+    });
+  });
+
+  it("denies exact match of a denied prefix", () => {
+    expect(validateDeniedWritePaths("/paperclip", ["/paperclip"])).toEqual({
+      allowed: false,
+      errorMessage: "Write access to /paperclip is denied (under /paperclip).",
+    });
+  });
+
+  it("allows paths under agent workspace even if parent is denied", () => {
+    const workspaceCwd = "/paperclip/instances/default/workspaces/agent-1";
+    expect(validateDeniedWritePaths(workspaceCwd, ["/paperclip"], workspaceCwd)).toEqual({ allowed: true });
+    expect(validateDeniedWritePaths(workspaceCwd + "/src", ["/paperclip"], workspaceCwd)).toEqual({ allowed: true });
+  });
+
+  it("denies other paths under denied parent even if workspace is also under it", () => {
+    const workspaceCwd = "/paperclip/instances/default/workspaces/agent-1";
+    expect(validateDeniedWritePaths("/paperclip/instances/default/config.json", ["/paperclip"], workspaceCwd)).toEqual({
+      allowed: false,
+      errorMessage: "Write access to /paperclip/instances/default/config.json is denied (under /paperclip).",
+    });
+  });
+
+  it("denies paths in a differently named sibling directory", () => {
+    expect(validateDeniedWritePaths("/paperclip-backup", ["/paperclip"])).toEqual({ allowed: true });
+  });
+});
+
+describe("renderDeniedWritePathsNote", () => {
+  it("returns empty string for empty list", () => {
+    expect(renderDeniedWritePathsNote([])).toBe("");
+    expect(renderDeniedWritePathsNote(undefined)).toBe("");
+  });
+
+  it("renders a list of paths with header", () => {
+    const note = renderDeniedWritePathsNote(["/paperclip", "/etc"]);
+    expect(note).toContain("Denied Write Paths:");
+    expect(note).toContain("- /paperclip");
+    expect(note).toContain("- /etc");
   });
 });
