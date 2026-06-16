@@ -248,6 +248,7 @@ export interface IssueFilters {
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
   hasPlanDocument?: boolean;
+  gateProfile?: string;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
   q?: string;
   limit?: number;
@@ -2228,6 +2229,18 @@ function hasPlanDocumentCondition(companyId: string, hasPlanDocument: boolean): 
   return hasPlanDocument ? existsPlanDocument : sql<boolean>`NOT ${existsPlanDocument}`;
 }
 
+function gateProfileCondition(companyId: string, gateProfile: string): SQL {
+  return sql<boolean>`
+    EXISTS (
+      SELECT 1
+      FROM ${planDetails}
+      WHERE ${planDetails.companyId} = ${companyId}
+        AND ${planDetails.issueId} = ${issues.id}
+        AND ${planDetails.gateProfile} = ${gateProfile}
+    )
+  `;
+}
+
 function isoDate(value: Date | string | null | undefined): string | null {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -2983,6 +2996,9 @@ async function blockedInboxIssueConditions(
   if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
   if (filters?.hasPlanDocument !== undefined) {
     conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
+  }
+  if (filters?.gateProfile !== undefined) {
+    conditions.push(gateProfileCondition(companyId, filters.gateProfile));
   }
   if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
   if (filters?.labelId) {
@@ -3944,6 +3960,9 @@ export function issueService(db: Db) {
       if (filters?.hasPlanDocument !== undefined) {
         conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
       }
+      if (filters?.gateProfile !== undefined) {
+        conditions.push(gateProfileCondition(companyId, filters.gateProfile));
+      }
       if (!shouldIncludePluginOperationIssues(filters)) {
         conditions.push(nonPluginOperationIssueCondition());
       }
@@ -4109,6 +4128,9 @@ export function issueService(db: Db) {
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
       if (filters?.hasPlanDocument !== undefined) {
         conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
+      }
+      if (filters?.gateProfile !== undefined) {
+        conditions.push(gateProfileCondition(companyId, filters.gateProfile));
       }
       if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
       const [row] = await db
