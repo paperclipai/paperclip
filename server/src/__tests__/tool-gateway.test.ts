@@ -26,6 +26,8 @@ import {
   toolConnections,
   toolGatewaySessions,
   toolInvocations,
+  toolMcpGateways,
+  toolMcpGatewayTokens,
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
@@ -389,6 +391,8 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(toolInvocations);
     await db.delete(toolAccessAuditEvents);
     await db.delete(toolPolicies);
+    await db.delete(toolMcpGatewayTokens);
+    await db.delete(toolMcpGateways);
     await db.delete(toolProfileEntries);
     await db.delete(toolProfileBindings);
     await db.delete(toolProfiles);
@@ -410,6 +414,81 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("exposes a named gateway with scoped bearer-token auth and revocation", async () => {
+    const company = await createCompany(db);
+    const remote = await startFakeRemoteMcpServer(async () => ({
+      body: {
+        jsonrpc: "2.0",
+        id: "test",
+        result: { content: [{ type: "text", text: "read ok" }], structuredContent: { ok: true } },
+      },
+    }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url,
+        applicationKey: "named-gateway-app",
+        toolName: "read_note",
+        title: "Read note",
+        riskLevel: "read",
+      });
+      const gatewayToolName = expectedConnectedToolName({
+        applicationKey: application.applicationKey,
+        connectionId: connection.id,
+        toolName: catalogEntry.toolName,
+      });
+      const [profile] = await db.insert(toolProfiles).values({
+        companyId: company.id,
+        profileKey: `named-gateway-${randomUUID()}`,
+        name: `Named gateway ${randomUUID()}`,
+        defaultAction: "deny",
+      }).returning();
+      await db.insert(toolProfileEntries).values({
+        companyId: company.id,
+        profileId: profile.id,
+        selectorType: "tool_name",
+        effect: "include",
+        toolName: gatewayToolName,
+      });
+
+      const gateway = createTestToolGatewayService(db);
+      const created = await gateway.createNamedGateway({
+        companyId: company.id,
+        body: { name: "External reader", profileId: profile.id },
+      });
+      expect(created.endpointPath).toBe(`/api/tool-gateway/gateways/${created.id}/mcp`);
+      expect(created.clientSnippets.length).toBeGreaterThan(0);
+      const token = await gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: { name: "Cursor" },
+      });
+
+      const visible = await gateway.listToolsForNamedGateway({ gatewayId: created.id, bearerToken: token.token });
+      expect(visible.map((tool) => tool.name)).toContain(gatewayToolName);
+      expect(visible.map((tool) => tool.name)).not.toContain("mcp-remote-fixture:update_note");
+
+      const result = await gateway.executeTool({
+        sessionToken: token.token,
+        tool: gatewayToolName,
+        parameters: { key: "a", value: "b" },
+      });
+      expect(result.status).toBe("completed");
+      expect(result.result).toMatchObject({ content: "read ok" });
+
+      await expect(gateway.executeTool({
+        sessionToken: token.token,
+        tool: "mcp-remote-fixture:update_note",
+        parameters: { noteId: "n1", body: "blocked" },
+      })).rejects.toMatchObject({ status: 403, reasonCode: "deny_default" });
+
+      await gateway.revokeNamedGatewayToken({ companyId: company.id, tokenId: token.id });
+      await expect(gateway.listToolsForNamedGateway({ gatewayId: created.id, bearerToken: token.token }))
+        .rejects.toMatchObject({ status: 401, reasonCode: "gateway_token_revoked" });
+    } finally {
+      await remote.close();
+    }
   });
 
   it("hides and denies every external tool when an agent has no gateway profile", async () => {
