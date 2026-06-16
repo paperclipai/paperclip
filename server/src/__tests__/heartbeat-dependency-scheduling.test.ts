@@ -680,6 +680,105 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(blockedIssueAfter).toMatchObject({ status: "todo", executionRunId: null });
   });
 
+  it("voids the notification bypass when the approval requester IS the blocked issue's current assignee (NDA-959)", async () => {
+    // Greptile follow-up: the bypass must re-validate against the CURRENT assignee, not
+    // a persisted flag. The realistic failure is a reassignment that makes the wake
+    // target the assignee — e.g. the blocked issue is (re)assigned to the same agent the
+    // approval_approved wake targets. Even with an allowlisted reason, a wake whose
+    // target IS the current assignee is NOT a notification: it must fall back to the
+    // normal blocked-assignee gate (skipped / issue_dependencies_blocked), never
+    // delivered as notificationOnlyWake and never granted the execution lock.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Upstream blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked work issue",
+        status: "todo",
+        priority: "medium",
+        // The reassignment outcome: the approval requester is now the assignee.
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    // Allowlisted reason (approval_approved), but the target IS the current assignee —
+    // so isNotificationOnlyWakeForIssue returns false and the wake is suppressed.
+    const selfApprovalWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "approval_approved",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "approval_approved" },
+    });
+    expect(selfApprovalWake).toBeNull();
+
+    const suppressed = await waitForCondition(async () => {
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${blockedIssueId}`,
+          ),
+        )
+        .orderBy(agentWakeupRequests.requestedAt)
+        .then((rows) => rows[0] ?? null);
+      return Boolean(
+        wakeup && wakeup.status === "skipped" && wakeup.reason === "issue_dependencies_blocked",
+      );
+    });
+    expect(suppressed).toBe(true);
+
+    // No run was created, and the blocked issue is never adopted.
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+
+    const blockedIssueAfter = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blockedIssueAfter).toMatchObject({ status: "todo", executionRunId: null });
+  });
+
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
