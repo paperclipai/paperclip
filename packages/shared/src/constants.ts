@@ -151,6 +151,20 @@ export const ISSUE_WORK_MODES = ["standard", "planning"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
+/**
+ * Reserved label name that opts an issue out of the missing-disposition
+ * recovery flow. Lifetime-scoped tracking issues (e.g. per-relationship
+ * cadence sweeps) never reach `done`, can't use `in_review`, and don't
+ * carry a discrete unblock signal — `in_progress` is their steady state,
+ * so the standard "successful run missing disposition" handoff produces
+ * false-positive recovery actions on every cadence heartbeat.
+ *
+ * Companies opt in by creating a label with this exact name and applying
+ * it to the tracking issue. Match is case-insensitive on the trimmed
+ * label name.
+ */
+export const LIFETIME_SCOPED_TRACKING_LABEL = "lifetime-scoped";
+
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
 export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
 
