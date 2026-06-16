@@ -518,4 +518,65 @@ describe("issue graph liveness classifier", () => {
       recoveryIssueId: reviewIssueId,
     });
   });
+
+  it("does not flag a monitored in_review issue when the service projection carries monitor columns (BLO-8140)", () => {
+    // Regression: the issueRows SELECT in collectIssueGraphLivenessFindings() previously omitted
+    // monitorNextCheckAt/monitorAttemptCount/executionPolicy, causing hasScheduledMonitor() to
+    // return false for any validly-monitored in_review issue and spuriously emit
+    // invalid_review_participant findings.
+    const now = new Date("2026-06-01T00:00:00.000Z");
+    const reviewIssueId = "review-monitored-1";
+
+    // Mirror exactly what collectIssueGraphLivenessFindings() projects from the DB:
+    // a row that includes executionPolicy, monitorNextCheckAt, monitorAttemptCount.
+    const projectedIssue = {
+      id: reviewIssueId,
+      companyId,
+      identifier: "BLO-7934",
+      title: "Monitor trafficcontrol builder",
+      status: "in_review",
+      projectId: null,
+      goalId: null,
+      parentId: null,
+      assigneeAgentId: coderId,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionPolicy: {
+        monitor: {
+          timeoutAt: "2026-06-03T00:00:00.000Z",
+          maxAttempts: 3,
+        },
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: "stage-1",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "missing-agent" },
+        returnAssignee: { type: "agent", agentId: coderId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          timeoutAt: "2026-06-03T00:00:00.000Z",
+          attemptCount: 1,
+        },
+      },
+      lastActivityAt: new Date("2026-05-30T00:00:00.000Z"),
+      monitorNextCheckAt: new Date("2026-06-02T00:00:00.000Z"),
+      monitorAttemptCount: 1,
+    };
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [projectedIssue],
+      relations: [],
+      agents: [agent(), manager],
+      now,
+    });
+
+    expect(findings.filter((f) => f.state === "invalid_review_participant")).toEqual([]);
+    expect(findings).toEqual([]);
+  });
 });
+

@@ -3750,8 +3750,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           assigneeUserId: issues.assigneeUserId,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          executionPolicy: issues.executionPolicy,
           executionState: issues.executionState,
           lastActivityAt: issues.lastActivityAt,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
         })
         .from(issues)
         .where(
