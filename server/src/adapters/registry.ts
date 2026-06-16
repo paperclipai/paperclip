@@ -370,7 +370,6 @@ const geminiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
-<<<<<<< HEAD
 const grokLocalAdapter: ServerAdapterModule = {
   type: "grok_local",
   execute: grokExecute,
@@ -390,7 +389,6 @@ const grokLocalAdapter: ServerAdapterModule = {
     installCommand: null,
   }),
   agentConfigurationDoc: grokAgentConfigurationDoc,
-=======
 const minimaxLocalAdapter: ServerAdapterModule = {
   type: "minimax_local",
   execute: minimaxExecute,
@@ -401,7 +399,6 @@ const minimaxLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: minimaxAgentConfigurationDoc,
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
 };
 
 const openclawGatewayAdapter: ServerAdapterModule = {
@@ -541,11 +538,8 @@ function registerBuiltInAdapters() {
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
-<<<<<<< HEAD
     grokLocalAdapter,
-=======
     minimaxLocalAdapter,
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
     openclawGatewayAdapter,
     hermesLocalAdapter,
     processAdapter,

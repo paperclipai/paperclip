@@ -38,14 +38,11 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-<<<<<<< HEAD
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
-=======
 import {
   DEFAULT_MINIMAX_LOCAL_MODEL,
   DEFAULT_MINIMAX_SECRET_ID,
 } from "@paperclipai/adapter-minimax-local";
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],

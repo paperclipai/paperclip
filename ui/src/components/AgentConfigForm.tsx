@@ -573,7 +573,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           "modelReasoningEffort",
           String(config.modelReasoningEffort ?? config.reasoningEffort ?? ""),
         )
-<<<<<<< HEAD
       : adapterType === "acpx_local" && acpxAgent === "codex"
         ? eff(
             "adapterConfig",
@@ -586,7 +585,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? eff("adapterConfig", "variant", String(config.variant ?? ""))
             : eff("adapterConfig", "effort", String(config.effort ?? ""));
   const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "cursor_cloud";
-=======
       : adapterType === "cursor"
         ? eff("adapterConfig", "mode", String(config.mode ?? ""))
       : adapterType === "opencode_local"
@@ -594,7 +592,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : eff("adapterConfig", "effort", String(config.effort ?? ""));
   const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "minimax_local";
   const showCommandField = adapterType !== "minimax_local";
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -900,13 +897,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                             ? DEFAULT_CODEX_LOCAL_MODEL
                             : t === "gemini_local"
                               ? DEFAULT_GEMINI_LOCAL_MODEL
-<<<<<<< HEAD
                             : t === "opencode_local"
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
-=======
                             : t === "minimax_local"
                               ? DEFAULT_MINIMAX_LOCAL_MODEL
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
                               : "",

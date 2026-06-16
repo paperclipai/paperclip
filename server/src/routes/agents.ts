@@ -91,13 +91,10 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-<<<<<<< HEAD
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
-=======
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -1133,12 +1130,10 @@ export function agentRoutes(
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
-<<<<<<< HEAD
     if (adapterType === "opencode_local" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
-=======
     if (adapterType === "minimax_local") {
       if (!asNonEmptyString(next.model) && !asNonEmptyString(next.primaryModel)) {
         next.model = "MiniMax-M3";
@@ -1164,7 +1159,6 @@ export function agentRoutes(
       return ensureGatewayDeviceKey(adapterType, next);
     }
     // OpenCode requires explicit model selection — no default
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
     }
@@ -2366,7 +2360,6 @@ export function agentRoutes(
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-<<<<<<< HEAD
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
     const agentEnv = asRecord(agent.adapterConfig)?.env;
     if (agentEnv) {
@@ -2376,7 +2369,6 @@ export function agentRoutes(
         agentEnv,
       );
     }
-=======
     const normalizedCreatedAdapterConfig = normalizeMiniMaxLocalAdapterConfigForAgent(
       createdAgent.id,
       createdAgent.adapterType,
@@ -2393,7 +2385,6 @@ export function agentRoutes(
       createdAgentWithNormalizedAdapter,
       instructionsBundle,
     );
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2830,14 +2821,12 @@ export function agentRoutes(
         requestedAdapterType,
         rawEffectiveAdapterConfig,
       );
-<<<<<<< HEAD
       const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
-=======
       const normalizedEffectiveAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         existing.companyId,
         effectiveAdapterConfig,
@@ -2851,7 +2840,6 @@ export function agentRoutes(
           normalizedEffectiveAdapterConfig,
         ),
       );
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
     }
     if (requestedRuntimeConfig) {
       const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};

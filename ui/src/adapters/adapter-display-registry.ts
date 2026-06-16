@@ -78,15 +78,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Gemini agent",
     icon: Gem,
   },
-<<<<<<< HEAD
   grok_local: {
     label: "Grok Build",
     description: "Local Grok Build agent",
-=======
   minimax_local: {
     label: "MiniMax Local",
     description: "Direct MiniMax API adapter",
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
     icon: Bot,
   },
   opencode_local: {

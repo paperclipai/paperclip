@@ -40,11 +40,8 @@
     "@paperclipai/adapter-cursor-cloud": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",
     "@paperclipai/adapter-gemini-local": "workspace:*",
-<<<<<<< HEAD
     "@paperclipai/adapter-grok-local": "workspace:*",
-=======
     "@paperclipai/adapter-minimax-local": "workspace:*",
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
     "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-opencode-local": "workspace:*",
     "@paperclipai/adapter-pi-local": "workspace:*",

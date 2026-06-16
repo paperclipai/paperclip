@@ -5,11 +5,8 @@ import { codexLocalUIAdapter } from "./codex-local";
 import { cursorCloudUIAdapter } from "./cursor-cloud";
 import { cursorLocalUIAdapter } from "./cursor";
 import { geminiLocalUIAdapter } from "./gemini-local";
-<<<<<<< HEAD
 import { grokLocalUIAdapter } from "./grok-local";
-=======
 import { minimaxLocalUIAdapter } from "./minimax-local";
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
@@ -61,11 +58,8 @@ function registerBuiltInUIAdapters() {
     codexLocalUIAdapter,
     cursorCloudUIAdapter,
     geminiLocalUIAdapter,
-<<<<<<< HEAD
     grokLocalUIAdapter,
-=======
     minimaxLocalUIAdapter,
->>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
     hermesLocalUIAdapter,
     openCodeLocalUIAdapter,
     piLocalUIAdapter,
