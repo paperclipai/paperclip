@@ -52,6 +52,10 @@ const setBudgetCapsSchema = z
     message: "Provide budgetCapCents and/or budgetCapTokens",
   });
 
+const setGateProfileSchema = z.object({
+  gateProfile: z.enum(["none", "solo", "light", "dev_team"]),
+});
+
 export function planRoutes(
   db: Db,
   opts: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -167,6 +171,29 @@ export function planRoutes(
     assertCompanyAccess(req, existing.companyId);
     const updated = await plans.setBudgetCaps(req.params.issueId as string, parsed.data);
     res.json({ planDetails: updated });
+  });
+
+  // Change the gate protocol for a plan. On active plans: upgrade (none/solo →
+  // dev_team/light) creates missing pending approvals; downgrade (dev_team/light →
+  // none/solo) cancels all pending gate approvals on the plan's issues.
+  router.patch("/plans/:issueId/gate-profile", async (req, res) => {
+    const parsed = setGateProfileSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid gate-profile payload", details: parsed.error.flatten() });
+      return;
+    }
+    const existing = await issues.getById(req.params.issueId as string);
+    if (!existing) {
+      res.status(404).json({ error: "Plan not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const actor = getActorInfo(req);
+    const result = await plans.setGateProfile(req.params.issueId as string, parsed.data.gateProfile, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    res.json(result);
   });
 
   // Activate: materialize tier-1 tickets into the Open column (E9 guards empty).

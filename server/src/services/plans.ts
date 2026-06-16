@@ -465,6 +465,110 @@ export function planService(db: Db) {
       return ordered;
     },
 
+    setGateProfile: async (
+      issueId: string,
+      newProfile: PlanGateProfile,
+      actor: { agentId: string | null; userId: string | null },
+    ): Promise<{ planDetails: typeof planDetails.$inferSelect; createdApprovalIds: string[]; cancelledApprovalIds: string[] }> => {
+      const [details] = await db.select().from(planDetails).where(eq(planDetails.issueId, issueId));
+      if (!details) throw notFound("Plan not found");
+      if (details.gateProfile === newProfile) throw conflict(`Plan already has gateProfile '${newProfile}'`);
+
+      const oldProfile = details.gateProfile as PlanGateProfile;
+      const [updated] = await db
+        .update(planDetails)
+        .set({ gateProfile: newProfile, updatedAt: new Date() })
+        .where(eq(planDetails.issueId, issueId))
+        .returning();
+
+      let createdApprovalIds: string[] = [];
+      let cancelledApprovalIds: string[] = [];
+
+      if (details.state === "active") {
+        const tiers = normalizeTiers(details.tiers as unknown as PlanTier[]);
+        const leafIds = tiers.flatMap((t) => (t.childIssueIds ?? []) as string[]);
+        const planIssueIds = [issueId, ...leafIds];
+
+        const wasGated = oldProfile === "dev_team" || oldProfile === "light";
+        const willBeGated = newProfile === "dev_team" || newProfile === "light";
+
+        if (willBeGated && !wasGated && leafIds.length > 0) {
+          // Upgrade: create missing gate approvals (skip any that already exist as pending).
+          // Build full set of specs then dedup against existing pending approvals.
+          const urlKeys = Array.from(new Set(Object.values(GATE_DESIGNATED_URL_KEY)));
+          const designatedByUrlKey: Record<string, string | null> = {};
+          for (const urlKey of urlKeys) {
+            const { agent } = await agents_.resolveByReference(details.companyId, urlKey);
+            designatedByUrlKey[urlKey] = agent?.id ?? null;
+          }
+          const existingPendingKeys = new Set(
+            (await db
+              .select({ type: approvals.type, issueId: issueApprovals.issueId })
+              .from(issueApprovals)
+              .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+              .where(and(inArray(issueApprovals.issueId, planIssueIds), eq(approvals.status, "pending"))))
+              .map((r) => `${r.type}:${r.issueId}`),
+          );
+          const specs = buildGateApprovalsForActivation({
+            planRootIssueId: issueId,
+            leafIssueIds: leafIds,
+            designatedByUrlKey,
+            gateProfile: newProfile,
+          }).filter((s) => !existingPendingKeys.has(`${s.type}:${s.issueId}`));
+          for (const spec of specs) {
+            const [approval] = await db
+              .insert(approvals)
+              .values({
+                companyId: details.companyId,
+                type: spec.type,
+                status: "pending",
+                requestedByAgentId: actor.agentId,
+                requestedByUserId: actor.userId,
+                payload: {
+                  gate: true,
+                  planRootIssueId: issueId,
+                  designatedAgentId: spec.designatedAgentId,
+                  ...(spec.lensKey != null ? { lensKey: spec.lensKey } : {}),
+                },
+                decisionNote: null,
+                decidedByUserId: null,
+                decidedByAgentId: null,
+                decidedAt: null,
+                updatedAt: new Date(),
+              })
+              .returning();
+            await db.insert(issueApprovals).values({
+              companyId: details.companyId,
+              issueId: spec.issueId,
+              approvalId: approval.id,
+              linkedByAgentId: actor.agentId,
+              linkedByUserId: actor.userId,
+            });
+            createdApprovalIds.push(approval.id);
+          }
+        } else if (wasGated && !willBeGated && planIssueIds.length > 0) {
+          // Downgrade: cancel all pending gate approvals for this plan's issues.
+          const pendingGateLinks = await db
+            .select({ approvalId: issueApprovals.approvalId, type: approvals.type })
+            .from(issueApprovals)
+            .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+            .where(and(inArray(issueApprovals.issueId, planIssueIds), eq(approvals.status, "pending")));
+          const pendingGateIds = Array.from(
+            new Set(pendingGateLinks.filter((l) => isGateApprovalType(l.type)).map((l) => l.approvalId)),
+          );
+          if (pendingGateIds.length > 0) {
+            await db
+              .update(approvals)
+              .set({ status: "cancelled", updatedAt: new Date() })
+              .where(inArray(approvals.id, pendingGateIds));
+            cancelledApprovalIds = pendingGateIds;
+          }
+        }
+      }
+
+      return { planDetails: updated, createdApprovalIds, cancelledApprovalIds };
+    },
+
     setBudgetCaps: async (
       issueId: string,
       caps: { budgetCapCents?: number | null; budgetCapTokens?: number | null },
