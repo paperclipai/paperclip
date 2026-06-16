@@ -21,7 +21,7 @@ import type {
   CompanyPortabilitySource,
 } from "@paperclipai/shared";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
-import { parseFrontmatterMarkdown } from "@paperclipai/shared/frontmatter";
+import { asString, parseFrontmatterMarkdown } from "@paperclipai/shared/frontmatter";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
 import { companyPortabilityService } from "./company-portability.js";
@@ -688,6 +688,37 @@ function defaultSafeCatalogAdapterType() {
 }
 
 /**
+ * Maps short model aliases used in catalog AGENTS.md frontmatter (`model: opus`, `model: sonnet`)
+ * to canonical `claude_local` adapter model IDs. These are only injected when the default adapter
+ * type is `claude_local` — opencode_local uses a different model ID format.
+ */
+const CATALOG_MODEL_ALIAS: Record<string, string> = {
+  opus: "claude-opus-4-8",
+  sonnet: "claude-sonnet-4-6",
+};
+
+/**
+ * Reads the `model` frontmatter field from each agent's `AGENTS.md` in the catalog source files
+ * and resolves it to a `claude_local` model ID via `CATALOG_MODEL_ALIAS`. Slugs without a
+ * recognized alias are omitted from the result.
+ */
+function readCatalogAgentModelHints(
+  files: Record<string, CompanyPortabilityFileEntry>,
+  agentSlugs: string[],
+): Record<string, string> {
+  const hints: Record<string, string> = {};
+  for (const slug of agentSlugs) {
+    const content = files[`agents/${slug}/AGENTS.md`];
+    if (typeof content !== "string") continue;
+    const modelAlias = asString(parseFrontmatterMarkdown(content).frontmatter.model);
+    if (!modelAlias) continue;
+    const resolved = CATALOG_MODEL_ALIAS[modelAlias];
+    if (resolved) hints[slug] = resolved;
+  }
+  return hints;
+}
+
+/**
  * Bundled catalog agents declare no adapter in their `AGENTS.md` frontmatter, so
  * `parsePortableAgentFrontmatter` defaults them to `process` — which the
  * `agent_safe` importer rejects (see `IMPORT_FORBIDDEN_ADAPTER_TYPES` in
@@ -696,16 +727,24 @@ function defaultSafeCatalogAdapterType() {
  * install without manual adapter flags. Explicit caller overrides win and are
  * left untouched (both `adapterType` and `adapterConfig`). This is scoped to the
  * catalog install path; the generic portability fallback is unchanged.
+ *
+ * When `catalogModelHints` is supplied and the default adapter is `claude_local`,
+ * model IDs from the catalog's `AGENTS.md` frontmatter are included in the
+ * generated `adapterConfig` so each role runs on its declared model tier.
  */
 function withSafeCatalogAdapterDefaults(
   agentSlugs: string[],
   callerOverrides: CompanyPortabilityImport["adapterOverrides"],
   defaultAdapterType: string,
+  catalogModelHints: Record<string, string> = {},
 ): Record<string, CompanyPortabilityAdapterOverride> {
   const merged: Record<string, CompanyPortabilityAdapterOverride> = { ...(callerOverrides ?? {}) };
   for (const slug of agentSlugs) {
     if (merged[slug]) continue;
-    merged[slug] = { adapterType: defaultAdapterType };
+    const modelId = defaultAdapterType === "claude_local" ? catalogModelHints[slug] : undefined;
+    merged[slug] = modelId
+      ? { adapterType: defaultAdapterType, adapterConfig: { model: modelId } }
+      : { adapterType: defaultAdapterType };
   }
   return merged;
 }
@@ -910,12 +949,17 @@ export function teamsCatalogService(db: Db) {
     }
 
     const defaultAdapterType = defaultSafeCatalogAdapterType();
+    const catalogModelHints = readCatalogAgentModelHints(
+      prepared.source.files,
+      prepared.team.agentSlugs,
+    );
     const importInput: CompanyPortabilityImport = {
       ...buildPortabilityInput(companyId, prepared.source, options),
       adapterOverrides: withSafeCatalogAdapterDefaults(
         prepared.team.agentSlugs,
         options.adapterOverrides,
         defaultAdapterType,
+        catalogModelHints,
       ),
       secretValues: options.secretValues,
     };

@@ -338,6 +338,74 @@ describe("teamsCatalogService", () => {
     });
   });
 
+  describe("A5 — per-role model tiering via catalog AGENTS.md frontmatter", () => {
+    it("injects catalog model hints into adapterConfig when adapter is claude_local", async () => {
+      const svc = teamsCatalogService({} as any);
+
+      await svc.installCatalogTeam("company-1", "dev-team");
+
+      const [importInput] = mockCompanyPortabilityService.importBundle.mock.calls.at(-1)!;
+      const overrides = importInput.adapterOverrides as Record<string, { adapterType: string; adapterConfig?: { model?: string } }>;
+      // CTO has model: sonnet → claude-sonnet-4-6
+      expect(overrides["cto"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" } });
+      // architect has model: opus → claude-opus-4-8
+      expect(overrides["architect"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-opus-4-8" } });
+      // code-reviewer has model: sonnet → claude-sonnet-4-6
+      expect(overrides["code-reviewer"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" } });
+    });
+
+    it("catalog model hints are not injected for non-claude_local adapters", async () => {
+      const previousDefault = process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE;
+      process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE = "opencode_local";
+      try {
+        const svc = teamsCatalogService({} as any);
+
+        await svc.installCatalogTeam("company-1", "dev-team");
+
+        const [importInput] = mockCompanyPortabilityService.importBundle.mock.calls.at(-1)!;
+        const overrides = importInput.adapterOverrides as Record<string, { adapterType: string; adapterConfig?: unknown }>;
+        // opencode_local: no claude model IDs injected
+        expect(overrides["cto"]).toEqual({ adapterType: "opencode_local" });
+        expect(overrides["architect"]).toEqual({ adapterType: "opencode_local" });
+      } finally {
+        if (previousDefault === undefined) {
+          delete process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE;
+        } else {
+          process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE = previousDefault;
+        }
+      }
+    });
+
+    it("caller adapterOverride wins over catalog model hint", async () => {
+      const svc = teamsCatalogService({} as any);
+
+      await svc.installCatalogTeam("company-1", "dev-team", {
+        adapterOverrides: {
+          cto: { adapterType: "claude_local", adapterConfig: { model: "claude-opus-4-8" } },
+        },
+      });
+
+      const [importInput] = mockCompanyPortabilityService.importBundle.mock.calls.at(-1)!;
+      const overrides = importInput.adapterOverrides as Record<string, { adapterType: string; adapterConfig?: { model?: string } }>;
+      // Caller explicitly set opus — catalog sonnet hint must not override it
+      expect(overrides["cto"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-opus-4-8" } });
+      // Other agents still get their catalog hints
+      expect(overrides["architect"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-opus-4-8" } });
+    });
+
+    it("agents without a recognized model alias in catalog AGENTS.md get no adapterConfig", async () => {
+      const svc = teamsCatalogService({} as any);
+
+      await svc.installCatalogTeam("company-1", "core-exec-team");
+
+      const [importInput] = mockCompanyPortabilityService.importBundle.mock.calls.at(-1)!;
+      const overrides = importInput.adapterOverrides as Record<string, { adapterType: string; adapterConfig?: unknown }>;
+      // core-exec-team agents have no model field → no adapterConfig
+      expect(overrides["ceo"]).toEqual({ adapterType: "claude_local" });
+      expect(overrides["cto"]).toEqual({ adapterType: "claude_local" });
+    });
+  });
+
   it("omits the default-adapter warning when every agent has an explicit override", async () => {
     const svc = teamsCatalogService({} as any);
 

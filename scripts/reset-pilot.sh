@@ -197,13 +197,16 @@ else
   echo "  CTO status: $STATUS"
 
   # -------------------------------------------------------------------------
-  # 6. Ensure heartbeat enabled, maxConcurrentRuns=1
+  # 6. Ensure heartbeat enabled, maxConcurrentRuns=1, and model=sonnet (A5)
   # -------------------------------------------------------------------------
-  echo "▶ Ensuring CTO heartbeat config…"
+  echo "▶ Ensuring CTO heartbeat config and model tier…"
   curl -fsS -X PATCH "$API_BASE/agents/$CTO_ID" \
     -H 'Content-Type: application/json' \
     -d '{"runtimeConfig":{"heartbeat":{"enabled":true,"maxConcurrentRuns":1}}}' > /dev/null
-  echo "  heartbeat.enabled=true  maxConcurrentRuns=1"
+  curl -fsS -X PATCH "$API_BASE/agents/$CTO_ID" \
+    -H 'Content-Type: application/json' \
+    -d '{"adapterConfig":{"model":"claude-sonnet-4-6"}}' > /dev/null
+  echo "  heartbeat.enabled=true  maxConcurrentRuns=1  model=claude-sonnet-4-6"
 fi
 
 # ---------------------------------------------------------------------------
