@@ -606,7 +606,12 @@ export function secretService(db: Db) {
           .update(companySecrets)
           .set({ lastResolvedAt: new Date(), updatedAt: new Date() })
           .where(eq(companySecrets.id, secret.id))
-          .catch(() => undefined),
+          .catch((err) => {
+            logger.warn(
+              { err, companyId, secretId: secret.id },
+              "Failed to update companySecrets.lastResolvedAt",
+            );
+          }),
         recordAccessEvent({
           companyId,
           secretId: secret.id,
