@@ -57,9 +57,21 @@ const agentModelProfileConfigSchema = z.object({
   adapterConfig: adapterConfigSchema,
 }).strict();
 
+const agentRuntimeRouteConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  label: z.string().trim().min(1).optional(),
+  adapterType: z.string().trim().min(1).optional(),
+  adapterConfig: adapterConfigSchema.optional(),
+  credentialIds: z.array(z.string().uuid()).optional(),
+}).strict();
+
 export const agentRuntimeConfigSchema = z.object({
   modelProfiles: z.object({
     cheap: agentModelProfileConfigSchema.optional(),
+  }).strict().optional(),
+  routes: z.object({
+    cheap: agentRuntimeRouteConfigSchema.optional(),
+    backup: agentRuntimeRouteConfigSchema.optional(),
   }).strict().optional(),
 }).catchall(z.unknown());
 

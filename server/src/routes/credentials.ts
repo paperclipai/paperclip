@@ -9,7 +9,8 @@ import {
   createProviderCredentialSchema,
   updateProviderCredentialSchema,
 } from "@paperclipai/shared";
-import { runCodexLogin } from "@paperclipai/adapter-codex-local/server";
+import { fetchClaudeQuota } from "@paperclipai/adapter-claude-local/server";
+import { fetchCodexQuota, runCodexLogin } from "@paperclipai/adapter-codex-local/server";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
@@ -52,6 +53,69 @@ export function credentialRoutes(db: Db) {
     const days = Number.isFinite(daysRaw) ? Math.min(365, Math.max(1, daysRaw)) : 30;
     const usage = await svc.usageByCredential(companyId, days * 24 * 60 * 60 * 1000);
     res.json({ days, usage });
+  });
+
+  router.get("/companies/:companyId/credentials/quota-windows", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rows = await svc.list(companyId);
+    const sampledAt = new Date().toISOString();
+    const results = await Promise.all(rows.map(async (credential) => {
+      const base = {
+        credentialId: credential.id,
+        name: credential.name,
+        type: credential.type,
+        cooldownUntil: credential.cooldownUntil ? credential.cooldownUntil.toISOString() : null,
+        cooldownReason: credential.cooldownReason ?? null,
+        disabledAt: credential.disabledAt ? credential.disabledAt.toISOString() : null,
+        sampledAt,
+      };
+      if (credential.type !== "claude_oauth" && credential.type !== "codex_oauth") {
+        return {
+          ...base,
+          supported: false,
+          ok: false,
+          quotaWindows: [],
+          source: null,
+          error: "live quota is only available for Claude OAuth and Codex OAuth credentials",
+        };
+      }
+      try {
+        const payload = await svc.getDecryptedPayload(credential.id);
+        const accessToken = typeof payload?.accessToken === "string" ? payload.accessToken : "";
+        if (!accessToken) throw new Error("credential has no accessToken");
+        if (credential.type === "claude_oauth") {
+          return {
+            ...base,
+            supported: true,
+            ok: true,
+            quotaWindows: await fetchClaudeQuota(accessToken),
+            source: "anthropic-oauth-usage",
+          };
+        }
+        const accountId = typeof payload?.accountId === "string" && payload.accountId.trim()
+          ? payload.accountId.trim()
+          : null;
+        return {
+          ...base,
+          supported: true,
+          ok: true,
+          quotaWindows: await fetchCodexQuota(accessToken, accountId),
+          source: "chatgpt-wham-usage",
+        };
+      } catch (error) {
+        return {
+          ...base,
+          supported: true,
+          ok: false,
+          quotaWindows: [],
+          source: credential.type === "claude_oauth" ? "anthropic-oauth-usage" : "chatgpt-wham-usage",
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }));
+    res.json(results);
   });
 
   // Create a credential

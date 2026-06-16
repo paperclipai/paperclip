@@ -1340,6 +1340,8 @@ export async function persistCodexRefreshedTokens(
 export async function resolveAllCredentialEnv(
   db: Db,
   agentId: string,
+  adapterTypeOverride?: string | null,
+  credentialIdAllowList?: string[] | null,
 ): Promise<{
   env: Record<string, string>;
   home?: string;
@@ -1349,11 +1351,14 @@ export async function resolveAllCredentialEnv(
   // adapterType decides how some credentials resolve (e.g. a deepseek_api_key on
   // a Claude Code agent routes the CLI through DeepSeek's Anthropic endpoint).
   const [agentRow] = await db
-    .select({ credentialId: agents.credentialId, adapterType: agents.adapterType })
+    .select({ credentialId: agents.credentialId, adapterType: agents.adapterType, companyId: agents.companyId })
     .from(agents)
     .where(eq(agents.id, agentId))
     .limit(1);
-  const adapterType = agentRow?.adapterType ?? undefined;
+  const adapterType = adapterTypeOverride ?? agentRow?.adapterType ?? undefined;
+  const allowedCredentialIds = credentialIdAllowList && credentialIdAllowList.length > 0
+    ? new Set(credentialIdAllowList)
+    : null;
 
   // Disabled credentials (auto-disabled after repeated failures, or manually)
   // are excluded from the rotation pool entirely — the picker never selects
@@ -1381,10 +1386,26 @@ export async function resolveAllCredentialEnv(
       .from(agentCredentials)
       .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
       .where(and(eq(agentCredentials.agentId, agentId), isNull(providerCredentials.disabledAt)));
+    const routeRows = allowedCredentialIds && agentRow?.companyId
+      ? await tx
+          .select({
+            credentialId: providerCredentials.id,
+            type: providerCredentials.type,
+            cooldownUntil: providerCredentials.cooldownUntil,
+            lastUsedAt: providerCredentials.lastUsedAt,
+          })
+          .from(providerCredentials)
+          .where(and(
+            eq(providerCredentials.companyId, agentRow.companyId),
+            inArray(providerCredentials.id, Array.from(allowedCredentialIds)),
+            isNull(providerCredentials.disabledAt),
+          ))
+      : [];
 
     const nowMs = Date.now();
     const byType = new Map<string, RotationCandidate[]>();
-    for (const row of joinRows) {
+    for (const row of [...joinRows, ...routeRows]) {
+      if (allowedCredentialIds && !allowedCredentialIds.has(row.credentialId)) continue;
       const list = byType.get(row.type) ?? [];
       list.push(row);
       byType.set(row.type, list);

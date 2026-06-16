@@ -480,6 +480,14 @@ export interface CreateConfigValues {
    */
   cheapModel?: string;
   cheapModelEnabled?: boolean;
+  cheapRouteEnabled?: boolean;
+  cheapRouteAdapterType?: string;
+  cheapRouteModel?: string;
+  cheapRouteCredentialIds?: string[];
+  backupRouteEnabled?: boolean;
+  backupRouteAdapterType?: string;
+  backupRouteModel?: string;
+  backupRouteCredentialIds?: string[];
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
   search: boolean;

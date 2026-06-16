@@ -158,6 +158,7 @@ export const queryKeys = {
   },
   credentials: {
     list: (companyId: string) => ["credentials", companyId] as const,
+    quotaWindows: (companyId: string) => ["credentials", companyId, "quota-windows"] as const,
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   userProfile: (companyId: string, userSlug: string) =>

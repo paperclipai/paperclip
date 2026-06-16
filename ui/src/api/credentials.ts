@@ -1,4 +1,4 @@
-import type { CredentialType } from "@paperclipai/shared";
+import type { CredentialType, ProviderCredentialQuota } from "@paperclipai/shared";
 import { api } from "./client";
 
 export interface ProviderCredential {
@@ -79,6 +79,8 @@ export const credentialsApi = {
     api.get<{ days: number; usage: CredentialUsage[] }>(
       `/companies/${companyId}/credentials/usage?days=${days}`,
     ),
+  quotaWindows: (companyId: string) =>
+    api.get<ProviderCredentialQuota[]>(`/companies/${companyId}/credentials/quota-windows`),
   test: (id: string) =>
     api.post<{ ok: boolean; message: string }>(`/credentials/${id}/test`, {}),
   reenable: (id: string) => api.post<ProviderCredential>(`/credentials/${id}/reenable`, {}),

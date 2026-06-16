@@ -947,11 +947,20 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     queryKey: ["credentials", "usage", companyId],
     queryFn: () => credentialsApi.usage(companyId),
   });
+  const { data: quotaRows = [] } = useQuery({
+    queryKey: queryKeys.credentials.quotaWindows(companyId),
+    queryFn: () => credentialsApi.quotaWindows(companyId),
+    refetchInterval: 60_000,
+  });
   const usageByCredential = useMemo(() => {
     const map = new Map<string, CredentialUsage>();
     for (const u of usageResp?.usage ?? []) map.set(u.credentialId, u);
     return map;
   }, [usageResp]);
+  const quotaByCredential = useMemo(() => {
+    const map = new Map(quotaRows.map((row) => [row.credentialId, row]));
+    return map;
+  }, [quotaRows]);
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [addName, setAddName] = useState("");
@@ -1396,6 +1405,39 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                             title={`${u.events} run(s) · ${u.inputTokens.toLocaleString()} in / ${u.outputTokens.toLocaleString()} out tokens · $${(u.costCents / 100).toFixed(2)} (last 30 days)`}
                           >
                             {formatTokenCount(tokens)} tok · ${(u.costCents / 100).toFixed(2)}
+                          </span>
+                        );
+                      })()}
+                      {(() => {
+                        const quota = quotaByCredential.get(cred.id);
+                        if (!quota) return null;
+                        if (!quota.supported) {
+                          return (
+                            <span className="shrink-0 text-[10px] text-muted-foreground">
+                              quota n/a
+                            </span>
+                          );
+                        }
+                        if (!quota.ok) {
+                          return (
+                            <span
+                              className="shrink-0 text-[10px] text-amber-600"
+                              title={quota.error ?? "Quota unavailable"}
+                            >
+                              quota unavailable
+                            </span>
+                          );
+                        }
+                        const window = quota.quotaWindows.find((entry) => entry.usedPercent != null) ?? quota.quotaWindows[0];
+                        if (!window) return null;
+                        return (
+                          <span
+                            className="shrink-0 text-[10px] text-muted-foreground"
+                            title={quota.quotaWindows
+                              .map((entry) => `${entry.label}: ${entry.usedPercent != null ? `${Math.round(entry.usedPercent)}% used` : entry.valueLabel ?? "reported"}`)
+                              .join(" · ")}
+                          >
+                            {window.label}: {window.usedPercent != null ? `${Math.round(100 - window.usedPercent)}% left` : window.valueLabel ?? "quota ok"}
                           </span>
                         );
                       })()}

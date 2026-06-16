@@ -7,6 +7,7 @@ import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { credentialsApi } from "../api/credentials";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -20,7 +21,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents, formatTokens } from "../lib/utils";
-import { Bot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Eye } from "lucide-react";
+import { Bot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Eye, KeyRound } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { AnimatedNumber, DotMatrixText } from "../components/NothingAesthetic";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -101,6 +102,15 @@ export function Dashboard() {
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const { data: credentialQuota = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.credentials.quotaWindows(selectedCompanyId)
+      : ["credentials", "none", "quota-windows"],
+    queryFn: () => credentialsApi.quotaWindows(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 60_000,
   });
 
   const { data: companyMembers } = useQuery({
@@ -297,6 +307,49 @@ export function Dashboard() {
               </Link>
             </div>
           ) : null}
+
+          {credentialQuota.length > 0 && (
+            <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm px-5 py-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <KeyRound className="h-4 w-4 text-muted-foreground" />
+                  <h3 className="text-sm font-medium">Credential quota</h3>
+                </div>
+                <Link to="/settings" className="text-xs text-muted-foreground hover:text-foreground">
+                  Manage
+                </Link>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {credentialQuota.slice(0, 6).map((row) => {
+                  const window = row.quotaWindows.find((entry) => entry.usedPercent != null) ?? row.quotaWindows[0];
+                  const remaining =
+                    window?.usedPercent != null
+                      ? `${Math.max(0, Math.round(100 - window.usedPercent))}% left`
+                      : window?.valueLabel ?? (row.supported ? "quota ok" : "quota n/a");
+                  return (
+                    <div key={row.credentialId} className="rounded-xl border border-border/60 bg-muted/20 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-xs font-medium">{row.name}</span>
+                        <span className={cn(
+                          "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
+                          row.disabledAt
+                            ? "bg-destructive/10 text-destructive"
+                            : row.cooldownUntil
+                              ? "bg-sky-500/10 text-sky-600"
+                              : "bg-muted text-muted-foreground",
+                        )}>
+                          {row.disabledAt ? "disabled" : row.cooldownUntil ? "cooling" : row.type}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {row.ok ? `${window?.label ?? "quota"} · ${remaining}` : row.supported ? row.error ?? "quota unavailable" : "quota unavailable"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {(() => {
             const costsPercent =
