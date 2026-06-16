@@ -99,13 +99,29 @@ echo "✓ $AGENT_COUNT agents present (CTO id=$CTO_ID)"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "▶ Creating pilot project with git_worktree isolation (repo=$REPO_ROOT)…"
 
-# Check if company already has a project (idempotent on re-run).
-EXISTING_PROJECTS="$(curl -fsS "$API_BASE/companies/$COMPANY_ID/projects" 2>/dev/null || echo '[]')"
+# The project's workspace cwd is $REPO_ROOT — a path on THIS machine. It only
+# resolves if the server shares this filesystem. Warn when API_BASE is remote.
+case "$API_BASE" in
+  *127.0.0.1*|*localhost*) ;;
+  *)
+    echo "  warning: API_BASE ($API_BASE) is not local — the worktree cwd '$REPO_ROOT'" >&2
+    echo "  must exist on the SERVER's filesystem, or worktree provisioning will fail." >&2
+    ;;
+esac
+
+# Check if company already has the pilot project (idempotent on re-run). Match by
+# name so a pre-existing unrelated project is never wired in by accident (picking
+# list[0] blindly could select the wrong project).
+EXISTING_PROJECTS="$(curl -fsS "$API_BASE/companies/$COMPANY_ID/projects")" || {
+  echo "✗ could not list existing projects for company $COMPANY_ID (server unreachable or rejected)." >&2
+  exit 1
+}
 PROJECT_ID="$(printf '%s' "$EXISTING_PROJECTS" | node -e '
   try {
     const p = JSON.parse(require("fs").readFileSync(0, "utf8"));
     const list = Array.isArray(p) ? p : (p.projects ?? []);
-    process.stdout.write(list[0]?.id ?? "");
+    const pilot = list.find((x) => x && x.name === "Pilot") ?? null;
+    process.stdout.write(pilot?.id ?? "");
   } catch (e) { process.stdout.write(""); }
 ')"
 

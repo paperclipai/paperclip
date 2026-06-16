@@ -96,7 +96,9 @@ if [[ -z "$PROJECT_ID" ]]; then
     try {
       const p = JSON.parse(require("fs").readFileSync(0, "utf8"));
       const list = Array.isArray(p) ? p : (p.projects ?? []);
-      process.stdout.write(list[0]?.id ?? "");
+      // Prefer the named pilot project; fall back to the sole project for back-compat.
+      const pilot = list.find((x) => x && x.name === "Pilot") ?? list[0] ?? null;
+      process.stdout.write(pilot?.id ?? "");
     } catch (e) { process.stdout.write(""); }
   ')"
 fi
