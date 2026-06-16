@@ -1,0 +1,46 @@
+# CodeRabbit — primary AI PR reviewer for ValAdrien OS.
+# Replaces the OS's internal "Korije" reviewer (its auto-review routine is retired).
+# Docs: https://docs.coderabbit.ai/configure-coderabbit
+language: en-US
+early_access: false
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - rebrand/valadrien-os
+  path_filters:
+    - "!**/dist/**"
+    - "!**/*.min.js"
+    - "!**/pnpm-lock.yaml"
+    - "!**/*.snap"
+  path_instructions:
+    - path: "server/src/**"
+      instructions: >-
+        Backend: Express + Drizzle on Postgres, multi-tenant by company_id.
+        Flag any data route that takes a companyId from query/body without
+        calling assertCompanyAccess(req, companyId). Flag SQL built without
+        company_id scoping. Flag provider-key / secret handling that bypasses
+        the per-company secret store (company_secrets / resolveProviderKeyOverrides).
+        Flag changes to the heartbeat scheduler that could break per-agent
+        locking or the fairness caps.
+    - path: "packages/db/src/migrations/**"
+      instructions: >-
+        Migrations are applied manually and numbered sequentially. Flag any
+        destructive change (DROP / data loss) and any migration that is not the
+        next sequential number.
+    - path: "ui/src/**"
+      instructions: >-
+        React + Vite UI (GLASSHOUSE design system). Flag accessibility
+        regressions, missing memoization on expensive renders, and any secret
+        baked into the client bundle that is not a VITE_PUBLIC_* value.
+
+chat:
+  auto_reply: true
