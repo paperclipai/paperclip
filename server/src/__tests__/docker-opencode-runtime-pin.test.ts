@@ -14,9 +14,11 @@ describe("production Dockerfile OpenCode runtime pin", () => {
     expect(dockerfile).not.toMatch(/npm install[^\n]*\sopencode-ai(?:\s|\\)/);
   });
 
-  it("vendors the opencode_k8s adapter commit with response-type crash classification", () => {
-    expect(dockerfile).toContain("ARG OPENCODE_K8S_REF=82c3cb25e9112c8197f7001a84d0c6cbf6f386ff");
+  it("vendors the opencode_k8s adapter commit with crash and runtime-cache fixes", () => {
+    expect(dockerfile).toContain("ARG OPENCODE_K8S_REF=e38117bdf54d760685ab002a94ffa810c7412273");
     expect(dockerfile).toContain("type-crash");
     expect(dockerfile).toContain("5-strike adapter crashloop circuit-breaker");
+    expect(dockerfile).toContain("writable home (/paperclip/.runtime-cache)");
+    expect(dockerfile).toContain("EACCES mkdir '/runtime-cache'");
   });
 });

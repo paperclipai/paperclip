@@ -3,7 +3,7 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 
 import { errorHandler } from "../middleware/error-handler.js";
-import { ccrotateRoutes, parseWhenOutput } from "../routes/ccrotate.js";
+import { ccrotateRoutes, parseWhenOutput, statusFromStateSnapshot } from "../routes/ccrotate.js";
 
 describe("parseWhenOutput (BLO-4938)", () => {
   it("classifies a codex near_limit line as usableNow (BLO-4938)", () => {
@@ -83,6 +83,86 @@ describe("parseWhenOutput (BLO-4938)", () => {
     const result = parseWhenOutput(sample);
     expect(result.usableNow).toHaveLength(2);
     expect(result.degraded).toBe(true);
+  });
+});
+
+describe("statusFromStateSnapshot", () => {
+  it("reports nonzero Claude usable accounts from state-server tier-cache without local ccrotate", () => {
+    const nowMs = Date.parse("2026-06-16T17:00:00Z");
+
+    const result = statusFromStateSnapshot({
+      target: "claude",
+      activeEmail: "bot3@blockcast.net",
+      nowMs,
+      profiles: {
+        "bot3@blockcast.net": {
+          credentials: { claudeAiOauth: { accessToken: "redacted" } },
+        },
+        "disabled@blockcast.net": {
+          stale: true,
+          staleReason: "organization_disabled",
+        },
+      },
+      tierCache: {
+        updatedAt: new Date(nowMs).toISOString(),
+        accounts: [
+          {
+            email: "bot3@blockcast.net",
+            serviceTier: "base",
+            rateLimits: { utilization5h: 12, utilization7d: 20 },
+          },
+          {
+            email: "ssh-users+1@blockcast.net",
+            serviceTier: "base",
+            rateLimits: { utilization5h: 40, utilization7d: 41 },
+          },
+        ],
+      },
+    });
+
+    expect(result.active).toBe("bot3@blockcast.net");
+    expect(result.usableNow.sort()).toEqual([
+      "bot3@blockcast.net",
+      "ssh-users+1@blockcast.net",
+    ]);
+    expect(result.stale).toEqual(["disabled@blockcast.net"]);
+    expect(result.total).toBe(3);
+  });
+
+  it("treats Codex near_limit accounts with remaining quota as usable", () => {
+    const nowMs = Date.parse("2026-06-16T17:00:00Z");
+
+    const result = statusFromStateSnapshot({
+      target: "codex",
+      nowMs,
+      profiles: {
+        "bot5@blockcast.net": { auth: { tokens: {} } },
+        "bot6@blockcast.net": { auth: { tokens: {} } },
+      },
+      tierCache: {
+        accounts: [
+          {
+            email: "bot5@blockcast.net",
+            serviceTier: "near_limit",
+            rateLimits: { remaining5h: 5, remaining7d: 1 },
+          },
+          {
+            email: "bot6@blockcast.net",
+            serviceTier: "exhausted",
+            rateLimits: { remaining5h: 0, reset5h: Math.floor((nowMs + 60_000) / 1000) },
+          },
+        ],
+      },
+    });
+
+    expect(result.usableNow).toEqual(["bot5@blockcast.net"]);
+    expect(result.exhausted).toHaveLength(1);
+    expect(result.exhausted[0]).toMatchObject({
+      email: "bot6@blockcast.net",
+      resumesAt: new Date(nowMs + 60_000).toISOString(),
+      resumesInSec: 60,
+    });
+    expect(result.total).toBe(2);
   });
 });
 
