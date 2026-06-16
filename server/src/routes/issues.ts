@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { promises as fsPromises } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -1688,9 +1688,10 @@ export function issueRoutes(
       ? resolve(process.env.DARK_FACTORY_RUN_DIR)
       : (process.env.FACTORY_RUNS_DIR
           ? resolve(process.env.FACTORY_RUNS_DIR)
-          : resolve(fileURLToPath(import.meta.url), "../../../../../paperclip-data/factory-runs"));
+          : resolve(dirname(fileURLToPath(import.meta.url)), "../../../../paperclip-data/factory-runs"));
     let hasForemanRun = false;
     let latestRunManifest: any = null;
+    let latestRunDir: string | null = null;
     if (existing.identifier) {
       const runsDirExists = await fsPromises.access(runsDir).then(() => true).catch(() => false);
       if (runsDirExists) {
@@ -1717,6 +1718,7 @@ export function issueRoutes(
           if (list.length > 0) {
             hasForemanRun = true;
             latestRunManifest = list[0].manifest;
+            latestRunDir = list[0].dir;
           }
         } catch {}
       }
@@ -1724,20 +1726,23 @@ export function issueRoutes(
 
     const workProducts = await workProductsSvc.listForIssue(issueId);
     const prProducts = workProducts.filter((wp: any) => wp.type === "pull_request" || wp.url?.includes("/pull/"));
-    let prUrl: string | null = null;
-    if (prProducts.length > 0 && prProducts[0].url) {
-      prUrl = prProducts[0].url;
-    } else {
-      const text = [
-        existing.description || "",
-        ...comments.map((c: any) => c.body || "")
-      ].join("\n");
-      const match = text.match(/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/);
-      if (match) {
-        prUrl = match[0];
+    
+    const prCandidates = new Set<string>();
+    for (const wp of prProducts) {
+      if (wp.url) {
+        prCandidates.add(wp.url);
       }
     }
-    const hasLinkedPr = !!prUrl;
+
+    const text = [
+      existing.description || "",
+      ...comments.map((c: any) => c.body || "")
+    ].join("\n");
+    const prRegex = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g;
+    let match;
+    while ((match = prRegex.exec(text)) !== null) {
+      prCandidates.add(match[0]);
+    }
 
     const isQaTitleOrDesc = /qa\b|audit|report-only/i.test(existing.title || "") ||
       /qa\b|audit|report-only/i.test(existing.description || "");
@@ -1794,63 +1799,79 @@ export function issueRoutes(
       return;
     }
 
-    if (!prUrl) {
+    if (prCandidates.size === 0) {
       throw unprocessable("Linked implementation PR/work product is required for code-changing or remediation tasks.");
     }
 
-    let headSha: string | null = null;
-    let prMerged = false;
-    try {
-      const { stdout } = await execFileAsync(
-        "gh",
-        ["pr", "view", prUrl, "--json", "state,mergedAt,headRefOid"],
-        { timeout: 15000 }
-      );
-      const prData = JSON.parse(stdout);
-      headSha = prData.headRefOid || null;
-      prMerged = prData.state === "MERGED" || !!prData.mergedAt;
-    } catch (err: any) {
-      console.error(`Error viewing PR ${prUrl}:`, err);
-      throw unprocessable(`Failed to verify pull request status via GitHub CLI: ${err.message || err}`);
-    }
+    let lastError: HttpError | null = null;
+    let passed = false;
 
-    if (!prMerged) {
-      throw unprocessable("Linked implementation PR must be merged before transitioning to done.");
-    }
+    for (const prUrl of prCandidates) {
+      let headSha: string | null = null;
+      let prMerged = false;
+      try {
+        const { stdout } = await execFileAsync(
+          "gh",
+          ["pr", "view", prUrl, "--json", "state,mergedAt,headRefOid"],
+          { timeout: 15000 }
+        );
+        const prData = JSON.parse(stdout);
+        headSha = prData.headRefOid || null;
+        prMerged = prData.state === "MERGED" || !!prData.mergedAt;
+      } catch (err: any) {
+        console.error(`Error viewing PR ${prUrl}:`, err);
+        lastError = unprocessable(`Failed to verify pull request status via GitHub CLI: ${err.message || err}`);
+        continue;
+      }
 
-    if (!headSha && latestRunManifest) {
-      headSha = latestRunManifest.repo?.headSha || latestRunManifest.repo?.head_sha || null;
-    }
+      if (!prMerged) {
+        lastError = unprocessable("Linked implementation PR must be merged before transitioning to done.");
+        continue;
+      }
 
-    let hasNoMistakesPass = false;
-    if (headSha && latestRunManifest) {
-      const gatePath = latestRunManifest.gates?.no_mistakes?.path;
-      if (gatePath) {
-        const gatePathExists = await fsPromises.access(gatePath).then(() => true).catch(() => false);
-        if (gatePathExists) {
-          try {
-            const gateContent = await fsPromises.readFile(gatePath, "utf8");
-            const gate = JSON.parse(gateContent);
-            const gateHead = gate.details?.headAfter || gate.details?.head || null;
-            if (gate.verdict === "PASS" && gateHead === headSha) {
-              hasNoMistakesPass = true;
-            }
-          } catch {}
+      if (!headSha && latestRunManifest) {
+        headSha = latestRunManifest.repo?.headSha || latestRunManifest.repo?.head_sha || null;
+      }
+
+      let hasNoMistakesPass = false;
+      if (headSha && latestRunManifest) {
+        const gatePath = latestRunManifest.gates?.no_mistakes?.path;
+        if (gatePath) {
+          const resolvedGatePath = latestRunDir && !isAbsolute(gatePath) ? resolve(latestRunDir, gatePath) : resolve(gatePath);
+          const gatePathExists = await fsPromises.access(resolvedGatePath).then(() => true).catch(() => false);
+          if (gatePathExists) {
+            try {
+              const gateContent = await fsPromises.readFile(resolvedGatePath, "utf8");
+              const gate = JSON.parse(gateContent);
+              const gateHead = gate.details?.headAfter || gate.details?.head || null;
+              if (gate.verdict === "PASS" && gateHead === headSha) {
+                hasNoMistakesPass = true;
+              }
+            } catch {}
+          }
         }
       }
+
+      if (!hasNoMistakesPass && headSha) {
+        hasNoMistakesPass = comments.some((c: any) =>
+          c.body?.includes(headSha!) &&
+          (c.body?.toLowerCase().includes("no mistakes pass") ||
+           c.body?.toLowerCase().includes("no_mistakes_pass") ||
+           c.body?.toLowerCase().includes("gate_result:no_mistakes") && c.body?.includes("PASS"))
+        );
+      }
+
+      if (!hasNoMistakesPass) {
+        lastError = unprocessable(`No Mistakes gate proof is missing or does not match the PR head commit ${headSha || "(unknown)"}.`);
+        continue;
+      }
+
+      passed = true;
+      break;
     }
 
-    if (!hasNoMistakesPass && headSha) {
-      hasNoMistakesPass = comments.some((c: any) =>
-        c.body?.includes(headSha!) &&
-        (c.body?.toLowerCase().includes("no mistakes pass") ||
-         c.body?.toLowerCase().includes("no_mistakes_pass") ||
-         c.body?.toLowerCase().includes("gate_result:no_mistakes") && c.body?.includes("PASS"))
-      );
-    }
-
-    if (!hasNoMistakesPass) {
-      throw unprocessable(`No Mistakes gate proof is missing or does not match the PR head commit ${headSha || "(unknown)"}.`);
+    if (!passed) {
+      throw lastError || unprocessable("No Mistakes gate proof is missing or does not match.");
     }
   }
 

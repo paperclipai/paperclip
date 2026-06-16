@@ -255,6 +255,7 @@ function makeIssue(status: "todo" | "done" | "in_progress" = "in_progress") {
 describe("Done transition guard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDocumentService.listIssueDocuments.mockResolvedValue([]);
     mockAccessService.decide.mockReturnValue({ allowed: true });
     mockExistsSync.mockReturnValue(true);
     mockReaddirSync.mockReturnValue(["PAP-580-run"]);
@@ -582,6 +583,119 @@ describe("Done transition guard", () => {
     mockIssueService.update.mockResolvedValue({
       ...issue,
       status: "done"
+    });
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("done");
+  });
+
+  it("allows transition to done when PR is not the first work product but a subsequent one is merged and has No Mistakes pass", async () => {
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+    // Two PRs, first one is not merged, second one is merged and has gate pass
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "https://github.com/org/repo/pull/123" },
+      { body: "https://github.com/org/repo/pull/124" }
+    ]);
+    mockIssueService.update.mockResolvedValue({
+      ...issue,
+      status: "done"
+    });
+
+    mockExecFilePromise.mockImplementation(async (file, args) => {
+      const prUrl = args[2];
+      if (prUrl.endsWith("/123")) {
+        return {
+          stdout: JSON.stringify({
+            state: "OPEN",
+            mergedAt: null,
+            headRefOid: "stalehead123",
+          }),
+          stderr: "",
+        };
+      }
+      return {
+        stdout: JSON.stringify({
+          state: "MERGED",
+          mergedAt: "2026-06-16T12:00:00Z",
+          headRefOid: "abcdef1234567890",
+        }),
+        stderr: "",
+      };
+    });
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("done");
+  });
+
+  it("blocks transition to done when none of the multiple PR candidates are merged/passed", async () => {
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "https://github.com/org/repo/pull/123" },
+      { body: "https://github.com/org/repo/pull/124" }
+    ]);
+
+    mockExecFilePromise.mockResolvedValue({
+      stdout: JSON.stringify({
+        state: "OPEN",
+        mergedAt: null,
+        headRefOid: "somehead",
+      }),
+      stderr: "",
+    });
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Linked implementation PR must be merged before transitioning to done.");
+  });
+
+  it("correctly resolves relative gate path relative to the latest run directory", async () => {
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "https://github.com/org/repo/pull/123" }
+    ]);
+    mockIssueService.update.mockResolvedValue({
+      ...issue,
+      status: "done"
+    });
+
+    mockReadFileSync.mockImplementation((path: string) => {
+      // Expect resolved path relative to run directory, e.g. includes PAP-580-run
+      if (path.includes("run-manifest.json")) {
+        return JSON.stringify({
+          taskRoute: { prBacked: true },
+          gates: { no_mistakes: { verdict: "PASS", path: "sub/no_mistakes.json" } }
+        });
+      }
+      if (path.includes("PAP-580-run") && path.includes("sub/no_mistakes.json")) {
+        return JSON.stringify({
+          verdict: "PASS",
+          details: { head: "abcdef1234567890" }
+        });
+      }
+      return "{}";
     });
 
     const app = createApp();
