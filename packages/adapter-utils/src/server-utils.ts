@@ -11,6 +11,20 @@ import type {
   AdapterSkillSnapshot,
 } from "./types.js";
 
+export interface ProcessHandle {
+  runId: string;
+  pid: number;
+  processGroupId: number | null;
+  child: ChildProcess;
+  graceSec: number;
+  startedAt: string;
+  lastActivity: number;
+  adapterType: string;
+  command: string;
+  args: string[];
+  cwd: string;
+}
+
 export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
@@ -53,6 +67,19 @@ type ChildProcessWithEvents = ChildProcess & {
   ): ChildProcess;
 };
 
+export interface OrphanedProcess {
+  pid: number;
+  processGroupId: number | null;
+  adapterType: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  startedAt: string;
+  lastActivity: number;
+  graceMs: number;
+  runId?: string;
+}
+
 function resolveProcessGroupId(child: ChildProcess) {
   if (process.platform === "win32") return null;
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
@@ -76,6 +103,8 @@ function signalRunningProcess(
 }
 
 export const runningProcesses = new Map<string, RunningProcess>();
+export const processHandles = new Map<string, ProcessHandle>();
+export const orphanedProcesses = new Map<number, OrphanedProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
@@ -90,6 +119,8 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
 const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
 const MATERIALIZED_SKILL_LOCK_OWNER = "owner.json";
 const MATERIALIZED_SKILL_LOCK_STALE_MS = 30_000;
+export const PROCESS_HANDLE_GRACE_MS = 30_000;
+const ORPHAN_REAPER_INTERVAL_MS = 60_000;
 
 function expandHomePrefix(value: string): string {
   if (value === "~") return os.homedir();
@@ -2196,6 +2227,25 @@ export async function runChildProcess(
 
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
+        const processHandle: ProcessHandle = {
+          runId,
+          pid: child.pid ?? 0,
+          processGroupId,
+          child,
+          graceSec: opts.graceSec,
+          startedAt,
+          lastActivity: Date.now(),
+          adapterType: opts.remoteExecution ? "remote" : "local",
+          command,
+          args,
+          cwd: opts.cwd,
+        };
+        processHandles.set(runId, processHandle);
+
+        if (child.pid) {
+          orphanedProcesses.delete(child.pid);
+        }
+
         let timedOut = false;
         let stdout = "";
         let stderr = "";
@@ -2306,6 +2356,7 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
+          removeProcessHandle(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
@@ -2324,6 +2375,7 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
+          removeProcessHandle(runId);
           void logChain.finally(() => {
             void Promise.resolve()
               .then(() => target.cleanup?.())
@@ -2343,4 +2395,156 @@ export async function runChildProcess(
       })
       .catch(reject);
   });
+}
+
+export function getTrackedProcessHandles(): ProcessHandle[] {
+  return Array.from(processHandles.values());
+}
+
+export function getOrphanedProcesses(): OrphanedProcess[] {
+  return Array.from(orphanedProcesses.values());
+}
+
+export function getProcessHandle(runId: string): ProcessHandle | undefined {
+  return processHandles.get(runId);
+}
+
+export function getProcessHandleByPid(pid: number): ProcessHandle | undefined {
+  return Array.from(processHandles.values()).find(handle => handle.pid === pid);
+}
+
+export async function terminateOrphanedProcesses(): Promise<{ terminated: number; remaining: number }> {
+  const now = Date.now();
+  let terminated = 0;
+  let remaining = 0;
+
+  for (const [pid, orphaned] of orphanedProcesses.entries()) {
+    const ageMs = now - orphaned.lastActivity;
+    if (ageMs >= orphaned.graceMs) {
+      try {
+        signalRunningProcess(
+          {
+            child: {} as ChildProcess,
+            processGroupId: orphaned.processGroupId,
+          },
+          "SIGKILL",
+        );
+        orphanedProcesses.delete(pid);
+        terminated++;
+      } catch (err) {
+        console.warn(
+          `[paperclip] Failed to terminate orphaned process ${pid}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    } else {
+      remaining++;
+    }
+  }
+
+  return { terminated, remaining };
+}
+
+export function scheduleOrphanReaper(onOrphaned: (orphaned: OrphanedProcess) => void): NodeJS.Timeout {
+  return setInterval(async () => {
+    const now = Date.now();
+    let orphanedCount = 0;
+
+    for (const [pid, orphaned] of orphanedProcesses.entries()) {
+      const ageMs = now - orphaned.lastActivity;
+      if (ageMs >= orphaned.graceMs) {
+        onOrphaned(orphaned);
+        try {
+          signalRunningProcess(
+            {
+              child: {} as ChildProcess,
+              processGroupId: orphaned.processGroupId,
+            },
+            "SIGKILL",
+          );
+        } catch (err) {
+          console.warn(
+            `[paperclip] Failed to terminate orphaned process ${pid}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        orphanedProcesses.delete(pid);
+        orphanedCount++;
+      }
+    }
+
+    if (orphanedCount > 0) {
+      console.log(
+        `[paperclip] Orphan reaper terminated ${orphanedCount} orphaned processes`,
+      );
+    }
+  }, ORPHAN_REAPER_INTERVAL_MS);
+}
+
+export function updateProcessActivity(runId: string): void {
+  const handle = processHandles.get(runId);
+  if (handle) {
+    handle.lastActivity = Date.now();
+  }
+}
+
+export function removeProcessHandle(runId: string): void {
+  const handle = processHandles.get(runId);
+  if (handle) {
+    processHandles.delete(runId);
+    if (handle.pid) {
+      orphanedProcesses.delete(handle.pid);
+    }
+  }
+}
+
+export function markProcessAsOrphaned(runId: string, reason: string): void {
+  const handle = processHandles.get(runId);
+  if (handle && handle.pid) {
+    const orphaned: OrphanedProcess = {
+      pid: handle.pid,
+      processGroupId: handle.processGroupId,
+      adapterType: handle.adapterType,
+      command: handle.command,
+      args: handle.args,
+      cwd: handle.cwd,
+      startedAt: handle.startedAt,
+      lastActivity: Date.now(),
+      graceMs: PROCESS_HANDLE_GRACE_MS,
+      runId,
+    };
+    orphanedProcesses.set(handle.pid, orphaned);
+    console.warn(
+      `[paperclip] Lost in-memory process handle for runId ${runId}, pid ${handle.pid} (${reason}). Process is now orphaned and will be terminated after ${PROCESS_HANDLE_GRACE_MS / 1000}s.`,
+    );
+  }
+}
+
+export function updateOrphanedProcessActivity(pid: number): void {
+  const orphaned = orphanedProcesses.get(pid);
+  if (orphaned) {
+    orphaned.lastActivity = Date.now();
+  }
+}
+
+export function scheduleProcessHandleMonitoring(onOrphaned: (handle: ProcessHandle) => void): NodeJS.Timeout {
+  return setInterval(() => {
+    const now = Date.now();
+    let orphanedCount = 0;
+
+    for (const [runId, handle] of processHandles.entries()) {
+      if (!handle.pid) continue;
+
+      const ageMs = now - handle.lastActivity;
+      if (ageMs >= PROCESS_HANDLE_GRACE_MS) {
+        onOrphaned(handle);
+        markProcessAsOrphaned(runId, "process handle lost");
+        orphanedCount++;
+      }
+    }
+
+    if (orphanedCount > 0) {
+      console.log(
+        `[paperclip] Process handle monitor detected ${orphanedCount} orphaned processes`,
+      );
+    }
+  }, ORPHAN_REAPER_INTERVAL_MS);
 }

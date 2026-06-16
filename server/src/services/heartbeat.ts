@@ -226,6 +226,10 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+// After this grace period, a process that was already flagged as detached will be
+// terminated rather than left running indefinitely. Shorter than the 4 h stale-run
+// threshold so that the stale-run evaluator never fires for a handle-loss scenario.
+const DETACHED_PROCESS_REAP_GRACE_MS = 2 * 60 * 60 * 1000; // 2 hours
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -7443,6 +7447,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
+          // First detection: log the warning and mark as detached. Give the
+          // process a grace period to self-report before we kill it.
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
             error: detachedMessage,
@@ -7459,8 +7465,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+          continue;
         }
-        continue;
+        // Already flagged as detached on a prior heartbeat. If the grace
+        // period has elapsed the process will never self-report, so kill it
+        // and fall through to the normal process-loss path below.
+        const detachedAt = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        if (now.getTime() - detachedAt < DETACHED_PROCESS_REAP_GRACE_MS) {
+          continue;
+        }
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+        // Fall through to fail the run.
       }
 
       let descendantOnlyCleanup = false;
