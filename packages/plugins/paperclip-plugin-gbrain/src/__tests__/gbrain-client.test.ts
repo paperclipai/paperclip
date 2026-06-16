@@ -168,6 +168,21 @@ describe("GbrainClient", () => {
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer tok-abc");
   });
 
+  it("does not send an anonymous request when authProvider cannot issue a token", async () => {
+    const authed = new GbrainClient({
+      url: "http://gbrain.test/mcp",
+      fetch: fetchMock as unknown as typeof fetch,
+      authProvider: async () => {
+        throw new Error("gbrain OAuth: no client configured for agentId agent-1");
+      },
+    });
+
+    await expect(authed.call("put_page", {})).rejects.toThrow(
+      "gbrain OAuth: no client configured for agentId agent-1",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("on 401 invokes onAuthFailure and retries once with a fresh token", async () => {
     // First call returns 401, second returns success.
     fetchMock

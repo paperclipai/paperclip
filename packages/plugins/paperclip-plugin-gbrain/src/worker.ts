@@ -20,6 +20,7 @@ import {
   OAuthClientManager,
   loadClientsFromFile,
 } from "./oauth-client-manager.js";
+import { resolveGbrainUrlForAgent } from "./client-routing.js";
 import {
   buildCacheEntry,
   prefetchRunContext,
@@ -91,9 +92,12 @@ const plugin = definePlugin({
           onAuthFailure: () => oauth!.invalidate(agentId),
         });
       }
-      // No OAuth entry for this agent — fall back to anonymous.
-      // Helpful when adding a new agent before its OAuth client is seeded.
-      return new GbrainClient({ url: gbrainUrl });
+      // If OAuth is loaded, missing agent entries are a provisioning gap.
+      // Preserve the auth boundary by failing before any anonymous call.
+      return new GbrainClient({
+        url: resolveGbrainUrlForAgent(gbrainUrl),
+        authProvider: oauth ? () => oauth.getToken(agentId) : undefined,
+      });
     }
 
     // Pick the gbrain URL based on whether OAuth is available. The
