@@ -26,4 +26,9 @@ export PATH=/home/ubuntu/.nvm/versions/node/v24.16.0/bin:/home/ubuntu/.local/bin
 
 cd /home/ubuntu/paperclip
 
+case "$(pwd -P)" in
+  /home/ubuntu/paperclip) ;;
+  *) echo "Refusing to start from wrong checkout: $(pwd -P)" >&2; exit 1 ;;
+esac
+
 exec pnpm paperclipai run
