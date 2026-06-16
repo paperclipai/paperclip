@@ -1,3 +1,6 @@
+// Named `.test.js` (not `.test.mjs`) so the CI test-coverage gate detects it.
+// package.json is `"type": "module"`, so this file is still ESM and runs
+// unchanged under `node --test`.
 import assert from "node:assert/strict";
 import {
   linkSync,
