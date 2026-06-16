@@ -29,6 +29,8 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_API_KEY_FILE: ${MINIMAX_API_KEY_FILE:-}
     volumes:
       - paperclip-data:/paperclip
     depends_on:
