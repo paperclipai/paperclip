@@ -572,7 +572,7 @@ export function agentRoutes(
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...(options?.restricted ? redactForRestrictedAgentView(agent) : redactAgentSecrets(agent)),
       chainOfCommand,
       access: accessState,
     };
@@ -1130,10 +1130,6 @@ export function agentRoutes(
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
-    if (adapterType === "opencode_local" && !asNonEmptyString(next.model)) {
-      next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
-      return ensureGatewayDeviceKey(adapterType, next);
-    }
     if (adapterType === "minimax_local") {
       if (!asNonEmptyString(next.model) && !asNonEmptyString(next.primaryModel)) {
         next.model = "MiniMax-M3";
@@ -1422,6 +1418,19 @@ export function agentRoutes(
       ...agent,
       adapterConfig: {},
       runtimeConfig: {},
+    };
+  }
+
+  function redactAgentSecrets(agent: Awaited<ReturnType<typeof svc.getById>>) {
+    if (!agent) return null;
+    return {
+      ...agent,
+      adapterConfig: redactEventPayload(agent.adapterConfig),
+      runtimeConfig: redactEventPayload(agent.runtimeConfig),
+      metadata:
+        typeof agent.metadata === "object" && agent.metadata !== null
+          ? redactEventPayload(agent.metadata as Record<string, unknown>)
+          : agent.metadata,
     };
   }
 
@@ -1761,7 +1770,7 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => redactAgentSecrets(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -2817,6 +2826,14 @@ export function agentRoutes(
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
+      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(
+        existing,
+        normalizeMiniMaxLocalAdapterConfigForAgent(
+          existing.id,
+          requestedAdapterType,
+          normalizedEffectiveAdapterConfig,
+        ),
+      );
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(
         existing,
         normalizeMiniMaxLocalAdapterConfigForAgent(

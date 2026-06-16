@@ -26,6 +26,10 @@ import {
   DEFAULT_MINIMAX_SECRET_ID,
 } from "@paperclipai/adapter-minimax-local";
 import {
+  DEFAULT_MINIMAX_LOCAL_MODEL,
+  DEFAULT_MINIMAX_SECRET_ID,
+} from "@paperclipai/adapter-minimax-local";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -573,21 +577,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           "modelReasoningEffort",
           String(config.modelReasoningEffort ?? config.reasoningEffort ?? ""),
         )
-      : adapterType === "acpx_local" && acpxAgent === "codex"
-        ? eff(
-            "adapterConfig",
-            "modelReasoningEffort",
-            String(config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort ?? ""),
-          )
-        : adapterType === "cursor"
-          ? eff("adapterConfig", "mode", String(config.mode ?? ""))
-          : adapterType === "opencode_local"
-            ? eff("adapterConfig", "variant", String(config.variant ?? ""))
-            : eff("adapterConfig", "effort", String(config.effort ?? ""));
-  const showThinkingEffort =
-    adapterType !== "gemini_local" &&
-    adapterType !== "cursor_cloud" &&
-    adapterType !== "minimax_local";
+      : adapterType === "cursor"
+        ? eff("adapterConfig", "mode", String(config.mode ?? ""))
+      : adapterType === "opencode_local"
+        ? eff("adapterConfig", "variant", String(config.variant ?? ""))
+      : eff("adapterConfig", "effort", String(config.effort ?? ""));
+  const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "minimax_local";
   const showCommandField = adapterType !== "minimax_local";
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
@@ -894,8 +889,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                             ? DEFAULT_CODEX_LOCAL_MODEL
                             : t === "gemini_local"
                               ? DEFAULT_GEMINI_LOCAL_MODEL
-                            : t === "opencode_local"
-                              ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "minimax_local"
                               ? DEFAULT_MINIMAX_LOCAL_MODEL
                             : t === "cursor"

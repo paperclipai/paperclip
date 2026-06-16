@@ -43,7 +43,6 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import {
   DEFAULT_MINIMAX_LOCAL_MODEL,
   DEFAULT_MINIMAX_SECRET_ID,
@@ -781,6 +780,10 @@ export function OnboardingWizard() {
                             }
                             if (nextType === "opencode_local") {
                               setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                              return;
+                            }
+                            if (nextType === "minimax_local" && !model) {
+                              setModel(DEFAULT_MINIMAX_LOCAL_MODEL);
                               return;
                             }
                             if (nextType === "minimax_local" && !model) {

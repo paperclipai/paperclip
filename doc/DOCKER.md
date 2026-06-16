@@ -73,6 +73,12 @@ PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=../data/pc \
 
 **Note:** `PAPERCLIP_DATA_DIR` is resolved relative to the compose file (`docker/`), so `../data/pc` maps to `data/pc` in the project root.
 
+The quickstart compose path carries the committed seccomp artifact required for Firefox/WebKit user-namespace startup:
+
+- Artifact: `docker/seccomp/paperclip-server-firefox-userns.json`
+- Compose wiring: `docker/docker-compose.quickstart.yml` uses `security_opt: ["seccomp=./seccomp/paperclip-server-firefox-userns.json"]`
+- Path resolution: the seccomp path is relative to the compose file directory (`docker/`)
+
 If you change host port or use a non-local domain, set `PAPERCLIP_PUBLIC_URL` to the external URL you will use in browser/auth flows.
 
 Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
@@ -87,6 +93,17 @@ BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
 ```
 
 PostgreSQL data persists in a named Docker volume (`pgdata`). Paperclip data persists in `paperclip-data`.
+
+The full-stack compose path uses the same committed seccomp artifact on the `server` service:
+
+- Artifact: `docker/seccomp/paperclip-server-firefox-userns.json`
+- Compose wiring: `docker/docker-compose.yml` uses `security_opt: ["seccomp=./seccomp/paperclip-server-firefox-userns.json"]`
+
+Rollback for either compose path:
+
+1. Remove the `security_opt` seccomp line from the compose file to return to Docker's builtin default seccomp profile.
+2. Recreate the Paperclip server with `docker compose -f docker/docker-compose.yml up -d --force-recreate` or the matching quickstart command.
+3. Keep `seccomp=unconfined` out of steady-state config; use it only as a break-glass diagnostic override.
 
 ### Untrusted PR review
 

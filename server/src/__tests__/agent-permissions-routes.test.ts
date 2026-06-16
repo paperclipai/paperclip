@@ -1,15 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
-
-vi.mock("acpx/runtime", () => ({
-  createAcpRuntime: vi.fn(),
-  createAgentRegistry: vi.fn(),
-  createRuntimeStore: vi.fn(),
-  isAcpRuntimeError: vi.fn(() => false),
-}));
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -37,6 +29,29 @@ const baseAgent = {
   metadata: null,
   createdAt: new Date("2026-03-19T00:00:00.000Z"),
   updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+};
+
+const sensitiveAgent = {
+  ...baseAgent,
+  adapterConfig: {
+    apiKey: "sk_live_super_secret",
+    nested: {
+      authToken: "token-123",
+    },
+    secretRef: {
+      type: "secret_ref",
+      secretId: "secret-1",
+    },
+  },
+  runtimeConfig: {
+    env: {
+      API_KEY: "env-secret",
+      SAFE_VALUE: "present",
+    },
+    heartbeat: {
+      maxConcurrentRuns: 5,
+    },
+  },
 };
 
 const mockAgentService = vi.hoisted(() => ({
@@ -483,6 +498,104 @@ describe.sequential("agent permission routes", () => {
         id: agentId,
         adapterConfig: {},
         runtimeConfig: {},
+      }),
+    ]);
+  });
+
+  it("redacts secret material from the self agent detail route", async () => {
+    mockAgentService.getById.mockResolvedValue(sensitiveAgent);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me"));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toEqual({
+      apiKey: REDACTED_EVENT_VALUE,
+      nested: {
+        authToken: REDACTED_EVENT_VALUE,
+      },
+      secretRef: {
+        type: "secret_ref",
+        secretId: "secret-1",
+      },
+    });
+    expect(res.body.runtimeConfig).toEqual({
+      env: {
+        API_KEY: REDACTED_EVENT_VALUE,
+        SAFE_VALUE: "present",
+      },
+      heartbeat: {
+        maxConcurrentRuns: 5,
+      },
+    });
+  });
+
+  it("redacts secret material from elevated agent detail reads", async () => {
+    mockAgentService.getById.mockResolvedValue(sensitiveAgent);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.apiKey).toBe(REDACTED_EVENT_VALUE);
+    expect(res.body.adapterConfig.nested.authToken).toBe(REDACTED_EVENT_VALUE);
+    expect(res.body.runtimeConfig.env.API_KEY).toBe(REDACTED_EVENT_VALUE);
+    expect(res.body.adapterConfig.secretRef).toEqual({
+      type: "secret_ref",
+      secretId: "secret-1",
+    });
+  });
+
+  it("redacts secret material from elevated company agent list reads", async () => {
+    mockAgentService.list.mockResolvedValue([sensitiveAgent]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({
+        id: agentId,
+        adapterConfig: {
+          apiKey: REDACTED_EVENT_VALUE,
+          nested: {
+            authToken: REDACTED_EVENT_VALUE,
+          },
+          secretRef: {
+            type: "secret_ref",
+            secretId: "secret-1",
+          },
+        },
+        runtimeConfig: {
+          env: {
+            API_KEY: REDACTED_EVENT_VALUE,
+            SAFE_VALUE: "present",
+          },
+          heartbeat: {
+            maxConcurrentRuns: 5,
+          },
+        },
       }),
     ]);
   });

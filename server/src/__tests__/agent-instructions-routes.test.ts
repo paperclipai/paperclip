@@ -366,6 +366,44 @@ describe("agent instructions bundle routes", () => {
     );
   });
 
+  it("preserves existing secret_ref bindings during partial adapter config patches", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "codex_local",
+      adapterConfig: {
+        authBinding: {
+          type: "secret_ref",
+          secretId: "11111111-1111-4111-8111-111111111111",
+        },
+        model: "gpt-5.4",
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterConfig: {
+          command: "codex --profile engineer",
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          command: "codex --profile engineer",
+          model: "gpt-5.4",
+          authBinding: {
+            type: "secret_ref",
+            secretId: "11111111-1111-4111-8111-111111111111",
+          },
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
   it("replaces adapter config when replaceAdapterConfig is true", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent(),

@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "${PAPERCLIP_PORT:-3100}:3100"
+    security_opt:
+      - seccomp=./seccomp/paperclip-server-firefox-userns.json
     environment:
       HOST: "0.0.0.0"
       PAPERCLIP_HOME: "/paperclip"

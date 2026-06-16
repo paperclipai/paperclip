@@ -8,7 +8,6 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "cursor_cloud",
   "cursor",
   "gemini_local",
-  "grok_local",
   "minimax_local",
   "openclaw_gateway",
   "opencode_local",

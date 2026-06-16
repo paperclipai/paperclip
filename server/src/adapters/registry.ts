@@ -99,6 +99,14 @@ import {
   models as minimaxModels,
 } from "@paperclipai/adapter-minimax-local";
 import {
+  execute as minimaxExecute,
+  testEnvironment as minimaxTestEnvironment,
+} from "@paperclipai/adapter-minimax-local/server";
+import {
+  agentConfigurationDoc as minimaxAgentConfigurationDoc,
+  models as minimaxModels,
+} from "@paperclipai/adapter-minimax-local";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -370,27 +378,6 @@ const geminiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
-const grokLocalAdapter: ServerAdapterModule = {
-  type: "grok_local",
-  execute: grokExecute,
-  testEnvironment: grokTestEnvironment,
-  listSkills: listGrokSkills,
-  syncSkills: syncGrokSkills,
-  sessionCodec: grokSessionCodec,
-  sessionManagement: getAdapterSessionManagement("grok_local") ?? undefined,
-  models: grokModels,
-  supportsLocalAgentJwt: true,
-  supportsInstructionsBundle: true,
-  instructionsPathKey: "instructionsFilePath",
-  requiresMaterializedRuntimeSkills: true,
-  getRuntimeCommandSpec: (config) => ({
-    command: readConfiguredCommand(config, "grok"),
-    detectCommand: readConfiguredCommand(config, "grok"),
-    installCommand: null,
-  }),
-  agentConfigurationDoc: grokAgentConfigurationDoc,
-};
-
 const minimaxLocalAdapter: ServerAdapterModule = {
   type: "minimax_local",
   execute: minimaxExecute,
@@ -540,7 +527,6 @@ function registerBuiltInAdapters() {
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
-    grokLocalAdapter,
     minimaxLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,

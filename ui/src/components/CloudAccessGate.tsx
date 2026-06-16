@@ -39,7 +39,7 @@ export function CloudAccessGate() {
         ? 2000
         : false;
     },
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   });
 
   const isAuthenticatedMode = healthQuery.data?.deploymentMode === "authenticated";

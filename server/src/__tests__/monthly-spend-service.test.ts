@@ -108,4 +108,71 @@ describe("monthly spend hydration", () => {
 
     expect(agent?.spentMonthlyCents).toBe(175);
   });
+
+  it("keeps raw secret-bearing agent config available for non-read service flows", async () => {
+    const dbStub = createSelectSequenceDb([
+      [{
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Budget Agent",
+        role: "general",
+        title: null,
+        reportsTo: null,
+        capabilities: null,
+        adapterType: "claude-local",
+        adapterConfig: {
+          apiKey: "sk_live_secret",
+          nested: {
+            authToken: "token-123",
+          },
+          secretRef: {
+            type: "secret_ref",
+            secretId: "secret-1",
+          },
+        },
+        runtimeConfig: {
+          env: {
+            API_KEY: "env-secret",
+          },
+        },
+        budgetMonthlyCents: 5000,
+        spentMonthlyCents: 999999,
+        metadata: {
+          privateNote: "keep-me-raw",
+        },
+        permissions: null,
+        status: "idle",
+        pauseReason: null,
+        pausedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+      [{
+        agentId: "agent-1",
+        spentMonthlyCents: 175,
+      }],
+    ]);
+
+    const agents = agentService(dbStub.db as any);
+    const agent = await agents.getById("agent-1");
+
+    expect(agent?.adapterConfig).toEqual({
+      apiKey: "sk_live_secret",
+      nested: {
+        authToken: "token-123",
+      },
+      secretRef: {
+        type: "secret_ref",
+        secretId: "secret-1",
+      },
+    });
+    expect(agent?.runtimeConfig).toEqual({
+      env: {
+        API_KEY: "env-secret",
+      },
+    });
+    expect(agent?.metadata).toEqual({
+      privateNote: "keep-me-raw",
+    });
+  });
 });
