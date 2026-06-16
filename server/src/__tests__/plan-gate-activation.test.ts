@@ -133,13 +133,15 @@ describeEmbeddedPostgres("planService gate-profile (soft)", () => {
     });
 
     expect(createdChildren).toHaveLength(2);
-    expect(gateApprovalIds).toHaveLength(5); // 1 plan + 2 leaves * 2
+    // 1 plan-approval + 2 leaves × (3 lens code-reviews + 1 wiring + 1 completeness)
+    expect(gateApprovalIds).toHaveLength(11);
 
     const gateRows = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
     const byType = (t: string) => gateRows.filter((r) => r.type === t);
     expect(byType("gate_plan_approval")).toHaveLength(1);
-    expect(byType("gate_code_review")).toHaveLength(2);
+    expect(byType("gate_code_review")).toHaveLength(6); // 3 lenses × 2 leaves
     expect(byType("gate_wiring_review")).toHaveLength(2);
+    expect(byType("gate_completeness_review")).toHaveLength(2);
 
     const planGate = byType("gate_plan_approval")[0]!;
     expect(planGate.status).toBe("pending");

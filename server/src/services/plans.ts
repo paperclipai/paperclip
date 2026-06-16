@@ -330,6 +330,11 @@ export function planService(db: Db) {
           planRootIssueId: issueId,
           actorAgentId: actor.agentId,
           actorUserId: actor.userId,
+          // Request worktree isolation so implementor edits land in a separate
+          // checkout that the dev server's tsx watch does not observe. The
+          // issueService.create() function strips this field when
+          // enableIsolatedWorkspaces is off, so it is safe to always include.
+          executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree" } },
         });
         createdChildren.push(issue);
       }

@@ -61,17 +61,46 @@ echo ""
 echo "▶ Ensuring instance guards allow full pilot chains (agentMonthlyTokens → 5M)…"
 GUARDS_RESULT="$(curl -fsS -X PATCH "$API_BASE/instance/settings/guards" \
   -H 'Content-Type: application/json' \
-  -d '{"budget":{"agentMonthlyTokens":5000000}}' 2>/dev/null || echo '{}')"
+  -d '{"budget":{"agentMonthlyTokens":5000000}}')" || {
+    echo "✗ failed to update instance guards (PATCH /instance/settings/guards was rejected)." >&2
+    echo "  Refusing to continue: the budget cap would stay at its old value (≤500k), and the" >&2
+    echo "  hard-stop would trip mid-chain on the first real review pass — the HIVA-17 failure." >&2
+    exit 1
+  }
 GUARDS_OK="$(printf '%s' "$GUARDS_RESULT" | node -e '
   try {
     const d = JSON.parse(require("fs").readFileSync(0, "utf8"));
     process.stdout.write(d.budget ? "ok" : "warn");
   } catch (e) { process.stdout.write("warn"); }
 ')"
-if [[ "$GUARDS_OK" == "ok" ]]; then
-  echo "  agentMonthlyTokens = 5000000 ✓"
+if [[ "$GUARDS_OK" != "ok" ]]; then
+  echo "✗ guards update returned an unexpected response (no budget object) — cap not confirmed." >&2
+  echo "  response: $GUARDS_RESULT" >&2
+  exit 1
+fi
+echo "  agentMonthlyTokens = 5000000 ✓"
+echo ""
+
+# ---------------------------------------------------------------------------
+# 0b. Enable isolated workspaces so plan child issues run in a git worktree
+#     instead of the main checkout. Agent file edits land in a separate
+#     worktree the tsx dev-server does not watch → no mid-run server restart
+#     → no process_detached orphaned runs (A4/G).
+# ---------------------------------------------------------------------------
+echo "▶ Enabling isolated workspaces (worktree execution for implementors)…"
+IW_RESULT="$(curl -fsS -X PATCH "$API_BASE/instance/settings/experimental" \
+  -H 'Content-Type: application/json' \
+  -d '{"enableIsolatedWorkspaces":true}' 2>/dev/null || echo '{}')"
+IW_OK="$(printf '%s' "$IW_RESULT" | node -e '
+  try {
+    const d = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    process.stdout.write(d.enableIsolatedWorkspaces === true ? "ok" : "warn");
+  } catch (e) { process.stdout.write("warn"); }
+')"
+if [[ "$IW_OK" == "ok" ]]; then
+  echo "  enableIsolatedWorkspaces = true ✓"
 else
-  echo "  warning: could not update instance guards (check server log)" >&2
+  echo "  warning: could not enable isolated workspaces (check server log)" >&2
 fi
 echo ""
 
