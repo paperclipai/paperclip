@@ -40,6 +40,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
         <div className="divide-y divide-border rounded-md border border-border">
           {gateways.map((gateway) => {
             const endpoint = `${origin}${gateway.endpointPath}`;
+            const snippets = gateway.clientSnippets ?? [];
             return (
               <section key={gateway.id} className="space-y-3 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -77,7 +78,17 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                           <div key={token.id} className="flex items-center justify-between gap-3 py-1">
                             <span className="truncate text-foreground">{token.name}</span>
                             <span className="shrink-0 text-xs text-muted-foreground">
-                              {token.revokedAt ? "revoked" : token.expiresAt ? <>expires <RelativeTime value={token.expiresAt} /></> : "no expiry"}
+                              {token.revokedAt ? (
+                                <>
+                                  revoked <RelativeTime value={token.revokedAt} />
+                                </>
+                              ) : token.expiresAt ? (
+                                <>
+                                  expires <RelativeTime value={token.expiresAt} />
+                                </>
+                              ) : (
+                                "no expiry"
+                              )}
                             </span>
                           </div>
                         ))
@@ -88,17 +99,21 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                   <div>
                     <div className="mb-1.5 text-xs font-medium text-muted-foreground">Client snippets</div>
                     <div className="space-y-1 text-sm">
-                      {gateway.clientSnippets.slice(0, 3).map((snippet) => (
-                        <button
-                          key={snippet.client}
-                          type="button"
-                          className="flex w-full items-center justify-between gap-3 rounded px-2 py-1 text-left hover:bg-accent"
-                          onClick={() => copyText(JSON.stringify(snippet.config, null, 2))}
-                        >
-                          <span className="text-foreground">{snippet.label}</span>
-                          <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-                        </button>
-                      ))}
+                      {snippets.length === 0 ? (
+                        <p className="text-muted-foreground">No snippets available.</p>
+                      ) : (
+                        snippets.slice(0, 3).map((snippet) => (
+                          <button
+                            key={snippet.client}
+                            type="button"
+                            className="flex w-full items-center justify-between gap-3 rounded px-2 py-1 text-left hover:bg-accent"
+                            onClick={() => copyText(JSON.stringify(snippet.config, null, 2))}
+                          >
+                            <span className="text-foreground">{snippet.label}</span>
+                            <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                          </button>
+                        ))
+                      )}
                     </div>
                   </div>
                 </div>

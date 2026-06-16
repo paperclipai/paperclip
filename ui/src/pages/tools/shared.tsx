@@ -122,11 +122,14 @@ export function RelativeTime({ value }: { value: Date | string | null | undefine
   const diffMs = Date.now() - date.getTime();
   const abs = Math.abs(diffMs);
   const mins = Math.round(abs / 60000);
+  const isFuture = diffMs < 0;
   let text: string;
   if (mins < 1) text = "just now";
-  else if (mins < 60) text = `${mins}m ago`;
-  else if (mins < 1440) text = `${Math.round(mins / 60)}h ago`;
-  else text = `${Math.round(mins / 1440)}d ago`;
+  else {
+    const value =
+      mins < 60 ? `${mins}m` : mins < 1440 ? `${Math.round(mins / 60)}h` : `${Math.round(mins / 1440)}d`;
+    text = isFuture ? `in ${value}` : `${value} ago`;
+  }
   return (
     <span title={date.toLocaleString()} className="text-muted-foreground">
       {text}
