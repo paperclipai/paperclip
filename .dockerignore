@@ -8,3 +8,8 @@ coverage
 data
 tmp
 *.log
+
+# local/server-only backups; never send to Docker build context
+backups/
+.paperclip-backups/
+paperclip-leftovers-*/
