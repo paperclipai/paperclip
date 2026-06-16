@@ -11,6 +11,11 @@ import {
   TOOL_CONNECTION_KINDS,
   TOOL_INVOCATION_APPROVAL_STATES,
   TOOL_INVOCATION_STATUSES,
+  TOOL_MCP_GATEWAY_CONTEXT_SCOPE_TYPES,
+  TOOL_MCP_GATEWAY_DEFAULT_PROFILE_MODES,
+  TOOL_MCP_GATEWAY_STATUSES,
+  TOOL_MCP_GATEWAY_TOKEN_ACTIONS,
+  TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES,
   TOOL_POLICY_DECISIONS,
   TOOL_POLICY_TYPES,
   TOOL_PROFILE_BINDING_TARGET_TYPES,
@@ -44,6 +49,11 @@ export const toolPolicyTypeSchema = z.enum(TOOL_POLICY_TYPES);
 export const toolPolicyDecisionSchema = z.enum(TOOL_POLICY_DECISIONS);
 export const toolInvocationStatusSchema = z.enum(TOOL_INVOCATION_STATUSES);
 export const toolInvocationApprovalStateSchema = z.enum(TOOL_INVOCATION_APPROVAL_STATES);
+export const toolMcpGatewayStatusSchema = z.enum(TOOL_MCP_GATEWAY_STATUSES);
+export const toolMcpGatewayDefaultProfileModeSchema = z.enum(TOOL_MCP_GATEWAY_DEFAULT_PROFILE_MODES);
+export const toolMcpGatewayContextScopeTypeSchema = z.enum(TOOL_MCP_GATEWAY_CONTEXT_SCOPE_TYPES);
+export const toolMcpGatewayTokenSubjectTypeSchema = z.enum(TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES);
+export const toolMcpGatewayTokenActionSchema = z.enum(TOOL_MCP_GATEWAY_TOKEN_ACTIONS);
 export const toolActionRequestStatusSchema = z.enum(TOOL_ACTION_REQUEST_STATUSES);
 export const toolAuditEventTypeSchema = z.enum(TOOL_AUDIT_EVENT_TYPES);
 export const toolAuditOutcomeSchema = z.enum(TOOL_AUDIT_OUTCOMES);
@@ -326,14 +336,81 @@ export const unbindToolProfileBindingSchema = createToolProfileBindingForProfile
 
 export type UnbindToolProfileBinding = z.infer<typeof unbindToolProfileBindingSchema>;
 
+const headerNameSchema = z.string().trim().min(1).max(120).regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/);
+
+export const toolMcpGatewayAuthConfigSchema = z.object({
+  version: z.literal(1).default(1),
+  bearer: z.object({
+    enabled: z.boolean().default(true),
+    tokenPrefix: z.literal("pcgw").default("pcgw"),
+    defaultTtlSeconds: z.number().int().positive().max(31_536_000).nullable().default(7_776_000),
+    requireFiniteExpiry: z.boolean().default(true),
+    longLivedTokenRequiresOverride: z.boolean().default(true),
+  }).default({}),
+  oauth: z.object({
+    enabled: z.literal(false).default(false),
+    reservedFor: z.literal("v1_5").default("v1_5"),
+    protectedResourceMetadataPath: z.string().trim().max(240).optional().nullable(),
+    dynamicClientRegistration: z.literal(false).optional(),
+    authorizationCodePkce: z.literal(false).optional(),
+  }).default({}),
+});
+
+export const toolMcpGatewayHeaderPolicySchema = z.object({
+  version: z.literal(1).default(1),
+  callerPassthrough: z.object({
+    enabled: z.boolean().default(false),
+    allowedHeaders: z.array(headerNameSchema).max(50).default([]),
+  }).default({}),
+  staticHeaders: z.array(z.object({
+    name: headerNameSchema,
+    valueRef: z.string().trim().max(240).optional().nullable(),
+    value: z.string().max(4000).optional().nullable(),
+  })).max(50).default([]),
+  generatedMetadata: z.object({
+    enabled: z.boolean().default(false),
+    allowedHeaders: z.array(headerNameSchema).max(20).default([]),
+  }).default({}),
+  responseHeaders: z.object({
+    forwardMcpRequiredHeaders: z.boolean().default(true),
+    forwardSafeCacheHeaders: z.boolean().default(true),
+  }).default({}),
+});
+
+export const toolMcpGatewayMetadataPolicySchema = z.object({
+  version: z.literal(1).default(1),
+  forwardCompanyId: z.boolean().default(false),
+  forwardGatewayId: z.boolean().default(false),
+  forwardProjectId: z.boolean().default(false),
+  forwardIssueId: z.boolean().default(false),
+  forwardAgentId: z.boolean().default(false),
+  forwardRunId: z.boolean().default(false),
+  forwardCorrelationId: z.boolean().default(true),
+});
+
+export const toolMcpGatewayOnDemandToolsConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  searchToolName: z.literal("search_tools").default("search_tools"),
+  runToolName: z.literal("run_tool").default("run_tool"),
+});
+
 export const createToolMcpGatewaySchema = z.object({
   name: z.string().trim().min(1).max(160),
   slug: z.string().trim().min(1).max(120).regex(safeKeyPattern).optional(),
+  displaySlug: z.string().trim().min(1).max(120).regex(safeKeyPattern).optional(),
   description: z.string().max(4000).optional().nullable(),
   profileId: z.string().uuid(),
+  defaultProfileMode: toolMcpGatewayDefaultProfileModeSchema.default("gateway_only").optional(),
+  contextScopeType: toolMcpGatewayContextScopeTypeSchema.default("none").optional(),
+  contextScopeId: z.string().trim().min(1).max(200).optional().nullable(),
   agentId: z.string().uuid().optional().nullable(),
   projectId: z.string().uuid().optional().nullable(),
   issueId: z.string().uuid().optional().nullable(),
+  approvalIssueId: z.string().uuid().optional().nullable(),
+  authConfig: toolMcpGatewayAuthConfigSchema.optional(),
+  headerPolicy: toolMcpGatewayHeaderPolicySchema.optional(),
+  metadataPolicy: toolMcpGatewayMetadataPolicySchema.optional(),
+  onDemandToolsConfig: toolMcpGatewayOnDemandToolsConfigSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
@@ -341,14 +418,35 @@ export type CreateToolMcpGateway = z.infer<typeof createToolMcpGatewaySchema>;
 
 export const updateToolMcpGatewaySchema = createToolMcpGatewaySchema
   .partial()
-  .extend({ status: z.enum(["active", "disabled", "archived"]).optional() })
+  .extend({ status: toolMcpGatewayStatusSchema.optional() })
   .refine((value) => Object.keys(value).length > 0, { message: "At least one gateway field is required" });
 
 export type UpdateToolMcpGateway = z.infer<typeof updateToolMcpGatewaySchema>;
 
 export const createToolMcpGatewayTokenSchema = z.object({
   name: z.string().trim().min(1).max(160),
+  subjectType: toolMcpGatewayTokenSubjectTypeSchema.default("gateway_client").optional(),
+  subjectId: z.string().trim().min(1).max(240).optional().nullable(),
+  clientLabel: z.string().trim().min(1).max(160),
+  ownerNote: z.string().trim().min(1).max(1000),
+  allowedActions: z.array(toolMcpGatewayTokenActionSchema).min(1).max(TOOL_MCP_GATEWAY_TOKEN_ACTIONS.length).default(["tools/list", "tools/call"]).optional(),
   expiresAt: z.coerce.date().optional().nullable(),
+  expiryOverrideReason: z.string().trim().min(1).max(1000).optional().nullable(),
+}).superRefine((value, ctx) => {
+  if (value.subjectType && value.subjectType !== "gateway_client") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["subjectType"],
+      message: "V1 can only mint gateway_client service tokens; board_user and agent subjects are reserved for later OAuth/user-bound flows.",
+    });
+  }
+  if (value.expiresAt === null && !value.expiryOverrideReason) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expiryOverrideReason"],
+      message: "Non-expiring gateway tokens require an override reason.",
+    });
+  }
 });
 
 export type CreateToolMcpGatewayToken = z.infer<typeof createToolMcpGatewayTokenSchema>;
@@ -508,6 +606,17 @@ export const toolAccessSelectorSchema = z.object({
   routineIds: z.array(z.string().uuid()).optional(),
   issueId: z.string().uuid().optional(),
   issueIds: z.array(z.string().uuid()).optional(),
+  gatewayId: z.string().uuid().optional(),
+  gatewayIds: z.array(z.string().uuid()).optional(),
+  gatewayPublicId: z.string().trim().min(1).max(120).regex(safeKeyPattern).optional(),
+  gatewayPublicIds: z.array(z.string().trim().min(1).max(120).regex(safeKeyPattern)).optional(),
+  gatewayTokenId: z.string().uuid().optional(),
+  gatewayTokenIds: z.array(z.string().uuid()).optional(),
+  clientSubjectType: toolMcpGatewayTokenSubjectTypeSchema.optional(),
+  clientSubjectTypes: z.array(toolMcpGatewayTokenSubjectTypeSchema).optional(),
+  clientName: z.string().trim().min(1).max(160).optional(),
+  clientNames: z.array(z.string().trim().min(1).max(160)).optional(),
+  externalClient: z.boolean().optional(),
   applicationId: z.string().uuid().optional(),
   applicationIds: z.array(z.string().uuid()).optional(),
   connectionId: z.string().uuid().optional(),
@@ -597,6 +706,13 @@ export const toolPolicyTestRequestSchema = z.object({
     issueId: z.string().uuid().optional().nullable(),
     projectId: z.string().uuid().optional().nullable(),
     routineId: z.string().uuid().optional().nullable(),
+    gatewayId: z.string().uuid().optional().nullable(),
+    gatewayPublicId: z.string().trim().min(1).max(120).regex(safeKeyPattern).optional().nullable(),
+    gatewayTokenId: z.string().uuid().optional().nullable(),
+    clientSubjectType: toolMcpGatewayTokenSubjectTypeSchema.optional().nullable(),
+    clientSubjectId: z.string().trim().min(1).max(240).optional().nullable(),
+    clientName: z.string().trim().min(1).max(160).optional().nullable(),
+    externalClient: z.boolean().optional().nullable(),
   }).optional().nullable(),
   request: z.object({
     applicationId: z.string().uuid().optional().nullable(),

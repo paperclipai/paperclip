@@ -10,6 +10,11 @@ import type {
   ToolConnectionKind,
   ToolInvocationApprovalState,
   ToolInvocationStatus,
+  ToolMcpGatewayContextScopeType,
+  ToolMcpGatewayDefaultProfileMode,
+  ToolMcpGatewayStatus,
+  ToolMcpGatewayTokenAction,
+  ToolMcpGatewayTokenSubjectType,
   ToolPolicyDecision,
   ToolPolicyType,
   ToolProfileBindingTargetType,
@@ -35,6 +40,11 @@ export type {
   ToolConnectionKind,
   ToolInvocationApprovalState,
   ToolInvocationStatus,
+  ToolMcpGatewayContextScopeType,
+  ToolMcpGatewayDefaultProfileMode,
+  ToolMcpGatewayStatus,
+  ToolMcpGatewayTokenAction,
+  ToolMcpGatewayTokenSubjectType,
   ToolPolicyDecision,
   ToolPolicyType,
   ToolProfileBindingTargetType,
@@ -200,23 +210,101 @@ export interface ToolProfileBinding {
   updatedAt: Date;
 }
 
-export type ToolMcpGatewayStatus = "active" | "disabled" | "archived";
+export interface ToolMcpGatewayBearerAuthConfig {
+  enabled: boolean;
+  tokenPrefix: "pcgw";
+  defaultTtlSeconds: number | null;
+  requireFiniteExpiry: boolean;
+  longLivedTokenRequiresOverride: boolean;
+}
+
+export interface ToolMcpGatewayOAuthReservedConfig {
+  enabled: false;
+  reservedFor: "v1_5";
+  protectedResourceMetadataPath?: string | null;
+  dynamicClientRegistration?: false;
+  authorizationCodePkce?: false;
+}
+
+export interface ToolMcpGatewayAuthConfig {
+  version: 1;
+  bearer: ToolMcpGatewayBearerAuthConfig;
+  oauth: ToolMcpGatewayOAuthReservedConfig;
+}
+
+export interface ToolMcpGatewayStaticHeaderPolicy {
+  name: string;
+  valueRef?: string | null;
+  value?: string | null;
+}
+
+export interface ToolMcpGatewayCallerHeaderPolicy {
+  enabled: boolean;
+  allowedHeaders: string[];
+}
+
+export interface ToolMcpGatewayGeneratedMetadataHeaderPolicy {
+  enabled: boolean;
+  allowedHeaders: string[];
+}
+
+export interface ToolMcpGatewayResponseHeaderPolicy {
+  forwardMcpRequiredHeaders: boolean;
+  forwardSafeCacheHeaders: boolean;
+}
+
+export interface ToolMcpGatewayHeaderPolicy {
+  version: 1;
+  callerPassthrough: ToolMcpGatewayCallerHeaderPolicy;
+  staticHeaders: ToolMcpGatewayStaticHeaderPolicy[];
+  generatedMetadata: ToolMcpGatewayGeneratedMetadataHeaderPolicy;
+  responseHeaders: ToolMcpGatewayResponseHeaderPolicy;
+}
+
+export interface ToolMcpGatewayMetadataPolicy {
+  version: 1;
+  forwardCompanyId: boolean;
+  forwardGatewayId: boolean;
+  forwardProjectId: boolean;
+  forwardIssueId: boolean;
+  forwardAgentId: boolean;
+  forwardRunId: boolean;
+  forwardCorrelationId: boolean;
+}
+
+export interface ToolMcpGatewayOnDemandToolsConfig {
+  enabled: boolean;
+  searchToolName: "search_tools";
+  runToolName: "run_tool";
+}
 
 export interface ToolMcpGateway {
   id: string;
   companyId: string;
+  gatewayPublicId: string;
   name: string;
+  displaySlug: string;
+  /** @deprecated Use displaySlug for UI labels and gatewayPublicId for protocol URLs. */
   slug: string;
   description: string | null;
   status: ToolMcpGatewayStatus;
   profileId: string;
+  defaultProfileMode: ToolMcpGatewayDefaultProfileMode;
+  contextScopeType: ToolMcpGatewayContextScopeType;
+  contextScopeId: string | null;
   agentId: string | null;
   projectId: string | null;
   issueId: string | null;
+  approvalIssueId: string | null;
   endpointPath: string;
+  authConfig: ToolMcpGatewayAuthConfig;
+  headerPolicy: ToolMcpGatewayHeaderPolicy;
+  metadataPolicy: ToolMcpGatewayMetadataPolicy;
+  onDemandToolsConfig: ToolMcpGatewayOnDemandToolsConfig;
   metadata: Record<string, unknown> | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  archivedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -226,7 +314,17 @@ export interface ToolMcpGatewayToken {
   companyId: string;
   gatewayId: string;
   name: string;
+  tokenPrefix: string;
+  subjectType: ToolMcpGatewayTokenSubjectType;
+  subjectId: string | null;
+  clientLabel: string;
+  ownerNote: string;
+  allowedActions: ToolMcpGatewayTokenAction[];
   expiresAt: Date | string | null;
+  expiryOverrideReason: string | null;
+  expiryOverrideByUserId: string | null;
+  expiryOverrideByAgentId: string | null;
+  expiryOverrideAt: Date | string | null;
   lastUsedAt: Date | string | null;
   revokedAt: Date | string | null;
   createdByAgentId: string | null;
@@ -835,6 +933,15 @@ export interface ToolAccessSelector {
   issueIds?: string[];
   gatewayId?: string;
   gatewayIds?: string[];
+  gatewayPublicId?: string;
+  gatewayPublicIds?: string[];
+  gatewayTokenId?: string;
+  gatewayTokenIds?: string[];
+  clientSubjectType?: ToolMcpGatewayTokenSubjectType;
+  clientSubjectTypes?: ToolMcpGatewayTokenSubjectType[];
+  clientName?: string;
+  clientNames?: string[];
+  externalClient?: boolean;
   applicationId?: string;
   applicationIds?: string[];
   connectionId?: string;
@@ -956,6 +1063,12 @@ export interface ToolAccessDecisionInput {
     projectId?: string | null;
     routineId?: string | null;
     gatewayId?: string | null;
+    gatewayPublicId?: string | null;
+    gatewayTokenId?: string | null;
+    clientSubjectType?: ToolMcpGatewayTokenSubjectType | null;
+    clientSubjectId?: string | null;
+    clientName?: string | null;
+    externalClient?: boolean | null;
   } | null;
   request: {
     applicationId?: string | null;

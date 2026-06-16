@@ -457,13 +457,18 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         companyId: company.id,
         body: { name: "External reader", profileId: profile.id },
       });
-      expect(created.endpointPath).toBe(`/api/tool-gateway/gateways/${created.id}/mcp`);
+      expect(created.gatewayPublicId).toMatch(/^gw_[a-f0-9]{32}$/);
+      expect(created.endpointPath).toBe(`/mcp/gateways/${created.gatewayPublicId}`);
       expect(created.clientSnippets.length).toBeGreaterThan(0);
       const token = await gateway.createNamedGatewayToken({
         companyId: company.id,
         gatewayId: created.id,
-        body: { name: "Cursor" },
+        body: { name: "Cursor", clientLabel: "Cursor desktop", ownerNote: "QA fixture token" },
       });
+      expect(token.subjectType).toBe("gateway_client");
+      expect(token.clientLabel).toBe("Cursor desktop");
+      expect(token.ownerNote).toBe("QA fixture token");
+      expect(token.tokenPrefix).toMatch(/^pcgw_[a-f0-9]{8}$/);
 
       const app = createGatewayRouteApp(db, gateway);
       const listed = await request(app)

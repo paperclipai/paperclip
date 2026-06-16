@@ -2314,12 +2314,12 @@ export function createToolGatewayService(
     }
   }
 
-  function gatewayEndpointPath(gatewayId: string) {
-    return `/api/tool-gateway/gateways/${gatewayId}/mcp`;
+  function gatewayEndpointPath(gatewayPublicId: string) {
+    return `/mcp/gateways/${gatewayPublicId}`;
   }
 
-  function gatewayClientSnippets(gateway: Pick<typeof toolMcpGateways.$inferSelect, "id" | "name">): ToolMcpGatewayClientSnippet[] {
-    const endpoint = gatewayEndpointPath(gateway.id);
+  function gatewayClientSnippets(gateway: Pick<typeof toolMcpGateways.$inferSelect, "gatewayPublicId" | "name">): ToolMcpGatewayClientSnippet[] {
+    const endpoint = gatewayEndpointPath(gateway.gatewayPublicId);
     const bearerPlaceholder = "pcgw_...";
     return [
       {
@@ -2359,18 +2359,29 @@ export function createToolGatewayService(
     return {
       id: row.id,
       companyId: row.companyId,
+      gatewayPublicId: row.gatewayPublicId,
       name: row.name,
+      displaySlug: row.displaySlug || row.slug,
       slug: row.slug,
       description: row.description,
       status: row.status,
       profileId: row.profileId,
+      defaultProfileMode: row.defaultProfileMode,
+      contextScopeType: row.contextScopeType,
+      contextScopeId: row.contextScopeId,
       agentId: row.agentId,
       projectId: row.projectId,
       issueId: row.issueId,
-      endpointPath: gatewayEndpointPath(row.id),
+      approvalIssueId: row.approvalIssueId,
+      endpointPath: gatewayEndpointPath(row.gatewayPublicId),
+      authConfig: row.authConfig,
+      headerPolicy: row.headerPolicy,
+      metadataPolicy: row.metadataPolicy,
+      onDemandToolsConfig: row.onDemandToolsConfig,
       metadata: row.metadata ?? {},
       createdByAgentId: row.createdByAgentId,
       createdByUserId: row.createdByUserId,
+      archivedAt: row.archivedAt,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -2382,7 +2393,17 @@ export function createToolGatewayService(
       companyId: row.companyId,
       gatewayId: row.gatewayId,
       name: row.name,
+      tokenPrefix: row.tokenPrefix,
+      subjectType: row.subjectType,
+      subjectId: row.subjectId,
+      clientLabel: row.clientLabel,
+      ownerNote: row.ownerNote,
+      allowedActions: row.allowedActions,
       expiresAt: row.expiresAt,
+      expiryOverrideReason: row.expiryOverrideReason,
+      expiryOverrideByUserId: row.expiryOverrideByUserId,
+      expiryOverrideByAgentId: row.expiryOverrideByAgentId,
+      expiryOverrideAt: row.expiryOverrideAt,
       lastUsedAt: row.lastUsedAt,
       revokedAt: row.revokedAt,
       createdByAgentId: row.createdByAgentId,
@@ -2520,18 +2541,27 @@ export function createToolGatewayService(
         issueId: input.body.issueId ?? null,
       });
       const now = new Date();
-      const slug = input.body.slug ?? slugSegment(input.body.name, "gateway");
+      const slug = input.body.displaySlug ?? input.body.slug ?? slugSegment(input.body.name, "gateway");
       const [gateway] = await db
         .insert(toolMcpGateways)
         .values({
           companyId: input.companyId,
           name: input.body.name,
           slug,
+          displaySlug: slug,
           description: input.body.description ?? null,
+          defaultProfileMode: input.body.defaultProfileMode ?? "gateway_only",
+          contextScopeType: input.body.contextScopeType ?? "none",
+          contextScopeId: input.body.contextScopeId ?? null,
           profileId: input.body.profileId,
           agentId: input.body.agentId ?? null,
           projectId: input.body.projectId ?? null,
           issueId: input.body.issueId ?? null,
+          approvalIssueId: input.body.approvalIssueId ?? null,
+          ...(input.body.authConfig !== undefined ? { authConfig: input.body.authConfig } : {}),
+          ...(input.body.headerPolicy !== undefined ? { headerPolicy: input.body.headerPolicy } : {}),
+          ...(input.body.metadataPolicy !== undefined ? { metadataPolicy: input.body.metadataPolicy } : {}),
+          ...(input.body.onDemandToolsConfig !== undefined ? { onDemandToolsConfig: input.body.onDemandToolsConfig } : {}),
           metadata: input.body.metadata ?? {},
           createdByAgentId: input.actor?.agentId ?? null,
           createdByUserId: input.actor?.userId ?? null,
@@ -2608,13 +2638,22 @@ export function createToolGatewayService(
         .update(toolMcpGateways)
         .set({
           ...(input.body.name !== undefined ? { name: input.body.name } : {}),
-          ...(input.body.slug !== undefined ? { slug: input.body.slug } : {}),
+          ...(input.body.slug !== undefined || input.body.displaySlug !== undefined ? { slug: input.body.displaySlug ?? input.body.slug } : {}),
+          ...(input.body.slug !== undefined || input.body.displaySlug !== undefined ? { displaySlug: input.body.displaySlug ?? input.body.slug } : {}),
           ...(input.body.description !== undefined ? { description: input.body.description ?? null } : {}),
           ...(input.body.status !== undefined ? { status: input.body.status } : {}),
           ...(input.body.profileId !== undefined ? { profileId: input.body.profileId } : {}),
+          ...(input.body.defaultProfileMode !== undefined ? { defaultProfileMode: input.body.defaultProfileMode } : {}),
+          ...(input.body.contextScopeType !== undefined ? { contextScopeType: input.body.contextScopeType } : {}),
+          ...(input.body.contextScopeId !== undefined ? { contextScopeId: input.body.contextScopeId ?? null } : {}),
           ...(input.body.agentId !== undefined ? { agentId: input.body.agentId ?? null } : {}),
           ...(input.body.projectId !== undefined ? { projectId: input.body.projectId ?? null } : {}),
           ...(input.body.issueId !== undefined ? { issueId: input.body.issueId ?? null } : {}),
+          ...(input.body.approvalIssueId !== undefined ? { approvalIssueId: input.body.approvalIssueId ?? null } : {}),
+          ...(input.body.authConfig !== undefined ? { authConfig: input.body.authConfig } : {}),
+          ...(input.body.headerPolicy !== undefined ? { headerPolicy: input.body.headerPolicy } : {}),
+          ...(input.body.metadataPolicy !== undefined ? { metadataPolicy: input.body.metadataPolicy } : {}),
+          ...(input.body.onDemandToolsConfig !== undefined ? { onDemandToolsConfig: input.body.onDemandToolsConfig } : {}),
           ...(input.body.metadata !== undefined ? { metadata: input.body.metadata ?? {} } : {}),
           updatedAt: new Date(),
         })
@@ -2650,6 +2689,7 @@ export function createToolGatewayService(
       if (!gateway) throw new ToolGatewayHttpError(404, "MCP gateway not found", "gateway_not_found");
       const tokenId = randomUUID();
       const token = generateNamedGatewayToken(tokenId);
+      const tokenPrefix = `pcgw_${tokenId.slice(0, 8)}`;
       const now = new Date();
       const [row] = await db
         .insert(toolMcpGatewayTokens)
@@ -2659,7 +2699,17 @@ export function createToolGatewayService(
           gatewayId: input.gatewayId,
           name: input.body.name,
           tokenHash: hashGatewayToken(token),
+          tokenPrefix,
+          subjectType: input.body.subjectType ?? "gateway_client",
+          subjectId: input.body.subjectId ?? null,
+          clientLabel: input.body.clientLabel,
+          ownerNote: input.body.ownerNote,
+          allowedActions: input.body.allowedActions ?? ["tools/list", "tools/call"],
           expiresAt: input.body.expiresAt ?? null,
+          expiryOverrideReason: input.body.expiryOverrideReason ?? null,
+          expiryOverrideByAgentId: input.actor?.agentId && input.body.expiryOverrideReason ? input.actor.agentId : null,
+          expiryOverrideByUserId: input.actor?.userId && input.body.expiryOverrideReason ? input.actor.userId : null,
+          expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
           createdByAgentId: input.actor?.agentId ?? null,
           createdByUserId: input.actor?.userId ?? null,
           createdAt: now,

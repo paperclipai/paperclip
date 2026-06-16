@@ -778,6 +778,13 @@
       "when": 1781568000000,
       "tag": "0110_named_mcp_gateways",
       "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1781654400000,
+      "tag": "0111_mcp_gateway_contract_expansion",
+      "breakpoints": true
     }
   ]
 }

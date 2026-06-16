@@ -807,6 +807,32 @@ export type ToolProfileEntryEffect = (typeof TOOL_PROFILE_ENTRY_EFFECTS)[number]
 export const TOOL_PROFILE_BINDING_TARGET_TYPES = ["company", "agent", "project", "routine", "issue", "gateway"] as const;
 export type ToolProfileBindingTargetType = (typeof TOOL_PROFILE_BINDING_TARGET_TYPES)[number];
 
+export const TOOL_MCP_GATEWAY_STATUSES = ["draft", "active", "disabled", "archived"] as const;
+export type ToolMcpGatewayStatus = (typeof TOOL_MCP_GATEWAY_STATUSES)[number];
+
+export const TOOL_MCP_GATEWAY_DEFAULT_PROFILE_MODES = [
+  "gateway_only",
+  "inherit_context_then_gateway",
+  "gateway_then_context",
+] as const;
+export type ToolMcpGatewayDefaultProfileMode = (typeof TOOL_MCP_GATEWAY_DEFAULT_PROFILE_MODES)[number];
+
+export const TOOL_MCP_GATEWAY_CONTEXT_SCOPE_TYPES = [
+  "none",
+  "company",
+  "project",
+  "routine",
+  "issue",
+  "agent",
+] as const;
+export type ToolMcpGatewayContextScopeType = (typeof TOOL_MCP_GATEWAY_CONTEXT_SCOPE_TYPES)[number];
+
+export const TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES = ["gateway_client", "board_user", "agent"] as const;
+export type ToolMcpGatewayTokenSubjectType = (typeof TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES)[number];
+
+export const TOOL_MCP_GATEWAY_TOKEN_ACTIONS = ["tools/list", "tools/call"] as const;
+export type ToolMcpGatewayTokenAction = (typeof TOOL_MCP_GATEWAY_TOKEN_ACTIONS)[number];
+
 export const TOOL_POLICY_TYPES = [
   "allow",
   "block",
