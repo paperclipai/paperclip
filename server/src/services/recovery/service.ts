@@ -2860,6 +2860,71 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  function isWaitingOnReviewContinuationRun(latestRun: LatestIssueRun) {
+    const context = parseObject(latestRun?.contextSnapshot);
+    return latestRun?.status === "cancelled" &&
+      readNonEmptyString(context.retryReason) === "issue_continuation_needed" &&
+      latestRun.errorCode === "issue_continuation_waiting_on_review";
+  }
+
+  function hasActiveMonitorPath(issue: typeof issues.$inferSelect) {
+    return Boolean(issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now());
+  }
+
+  async function parkReviewWaitingContinuationIssue(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: "in_progress";
+    latestRun: LatestIssueRun;
+  }) {
+    return await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${input.issue.companyId} || ':' || ${input.issue.id}, 0))`,
+      );
+
+      const [fresh] = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, input.issue.id))
+        .limit(1);
+      if (!fresh || fresh.status !== "in_progress" || !hasActiveMonitorPath(fresh)) return null;
+
+      const updated = await issuesSvc.update(fresh.id, { status: "in_review" }, tx);
+      if (!updated) return null;
+
+      const activeRecoveryAction = await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: fresh.companyId,
+        sourceIssueId: fresh.id,
+        status: "resolved",
+        outcome: "restored",
+        resolutionNote:
+          "Continuation retry was intentionally cancelled because the issue is waiting on review/CI, and the source issue has an active monitor path.",
+      }, tx);
+
+      await logActivity(db, {
+        companyId: fresh.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: fresh.id,
+        details: {
+          identifier: fresh.identifier,
+          status: "in_review",
+          previousStatus: input.previousStatus,
+          source: "recovery.reconcile_review_waiting_continuation",
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+          latestRunErrorCode: input.latestRun?.errorCode ?? null,
+          recoveryActionId: activeRecoveryAction?.id ?? null,
+        },
+      });
+
+      return updated;
+    });
+  }
+
   async function existingBlockerIssueIds(companyId: string, issueId: string) {
     return db
       .select({ blockerIssueId: issueRelations.issueId })
@@ -3224,6 +3289,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
+      reviewWaitingParked: 0,
       escalated: 0,
       zeroTokenStartupFailureBlocked: 0,
       skipped: 0,
@@ -3399,6 +3465,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
         result.skipped += 1;
+        continue;
+      }
+      if (isWaitingOnReviewContinuationRun(latestRun) && hasActiveMonitorPath(issue)) {
+        const updated = await parkReviewWaitingContinuationIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+        });
+        if (updated) {
+          result.reviewWaitingParked += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
         continue;
       }
       if (isSuccessfulInProgressContinuationRun(latestRun)) {

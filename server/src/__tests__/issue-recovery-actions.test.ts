@@ -974,6 +974,128 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("allows the named recovery owner to resolve another assignee's review-waiting source issue", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        assigneeAgentId: coderId,
+        monitorNextCheckAt: new Date(Date.now() + 60_000),
+      })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:review-waiting-owner-resolution",
+      evidence: { latestIssueStatus: "blocked", latestRunErrorCode: "issue_continuation_waiting_on_review" },
+      nextAction: "Set the source issue to an explicit review-waiting disposition.",
+      wakePolicy: { type: "manual" },
+    });
+    const runId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: managerId,
+      runId,
+      issueId: sourceIssueId,
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_review",
+        resolutionNote: "Recovery owner verified this issue is waiting on PR review/CI and has an active monitor.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "in_review",
+      assigneeAgentId: coderId,
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "restored",
+    });
+  });
+
+  it("allows the named recovery owner to resolve another assignee's checked-out source issue", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ monitorNextCheckAt: new Date(Date.now() + 60_000) })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:checked-out-owner-resolution",
+      evidence: { latestIssueStatus: "in_progress", latestRunErrorCode: "issue_continuation_waiting_on_review" },
+      nextAction: "Set the source issue to an explicit review-waiting disposition.",
+      wakePolicy: { type: "manual" },
+    });
+    const runId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: managerId,
+      runId,
+      issueId: sourceIssueId,
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_review",
+        resolutionNote: "Recovery owner verified this issue is waiting on PR review/CI and has an active monitor.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "in_review",
+      assigneeAgentId: coderId,
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "restored",
+    });
+  });
+
   it("rejects blocked recovery resolution when the source issue has no first-class blockers", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);

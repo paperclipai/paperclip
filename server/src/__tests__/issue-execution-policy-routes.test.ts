@@ -541,6 +541,135 @@ describe("issue execution policy routes", () => {
     );
   });
 
+  it("lets a checked-out execution agent re-arm a board-scheduled monitor", async () => {
+    const previousPolicy = normalizeIssueExecutionPolicy({
+      monitor: {
+        nextCheckAt: "2099-12-01T12:00:00.000Z",
+        scheduledBy: "board",
+        notes: "signature=unchanged; next=old",
+        kind: "external_service",
+        serviceName: "github-pr",
+        externalRef: "https://github.com/paperclipai/paperclip/pull/411",
+      },
+    });
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      checkoutRunId: "run-1",
+      executionRunId: "run-1",
+      createdByUserId: "local-board",
+      identifier: "PAP-1008",
+      title: "PR monitor wait",
+      executionPolicy: previousPolicy,
+      executionState: null,
+      monitorAttemptCount: 1,
+      monitorNextCheckAt: new Date("2099-12-01T12:00:00.000Z"),
+      monitorLastTriggeredAt: new Date("2026-06-15T03:00:00.000Z"),
+      monitorNotes: "signature=unchanged; next=old",
+      monitorScheduledBy: "board",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "in_review",
+        executionPolicy: {
+          monitor: {
+            nextCheckAt: "2099-12-01T13:00:00.000Z",
+            scheduledBy: "board",
+            notes: "signature=unchanged; next=2099-12-01T13:00:00.000Z",
+            kind: "external_service",
+            serviceName: "github-pr",
+            externalRef: "https://github.com/paperclipai/paperclip/pull/411",
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeUserId: null,
+        monitorNextCheckAt: new Date("2099-12-01T13:00:00.000Z"),
+        monitorScheduledBy: "assignee",
+      }),
+    );
+  });
+
+  it("keeps a checked-out review-waiting monitor scheduled on status-only in_review return", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      monitor: {
+        nextCheckAt: "2099-12-01T12:00:00.000Z",
+        scheduledBy: "board",
+        notes: "signature=unchanged",
+        kind: "external_service",
+        serviceName: "github-pr",
+        externalRef: "https://github.com/paperclipai/paperclip/pull/411",
+      },
+    });
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      checkoutRunId: "run-1",
+      executionRunId: "run-1",
+      createdByUserId: "local-board",
+      identifier: "PAP-1009",
+      title: "Status-only monitor wait",
+      executionPolicy: policy,
+      executionState: null,
+      monitorAttemptCount: 1,
+      monitorNextCheckAt: new Date("2099-12-01T12:00:00.000Z"),
+      monitorLastTriggeredAt: null,
+      monitorNotes: "signature=unchanged",
+      monitorScheduledBy: "board",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch).toEqual(expect.objectContaining({
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      monitorNextCheckAt: new Date("2099-12-01T12:00:00.000Z"),
+    }));
+    expect(updatePatch.executionPolicy).not.toBeNull();
+    expect(updatePatch.executionState).toBeUndefined();
+  });
+
   it("allows board-authored in_review repair updates without a review path", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

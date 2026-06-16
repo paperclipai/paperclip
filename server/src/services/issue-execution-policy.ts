@@ -46,6 +46,7 @@ type TransitionInput = {
   previousPolicy?: IssueExecutionPolicy | null;
   requestedStatus?: string;
   requestedAssigneePatch: RequestedAssigneePatch;
+  effectiveMonitorAssigneeAgentId?: string | null;
   actor: ActorLike;
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
@@ -899,11 +900,24 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
     typeof stagePatch.status === "string"
       ? (stagePatch.status as string)
       : input.requestedStatus ?? input.issue.status;
-  const { assigneeAgentId, assigneeUserId } = nextAssigneeIds({
+  let { assigneeAgentId, assigneeUserId } = nextAssigneeIds({
     issue: input.issue,
     requestedAssigneePatch: input.requestedAssigneePatch,
     stagePatch,
   });
+  const canRestoreEffectiveMonitorAssignee =
+    input.policy?.monitor &&
+    input.effectiveMonitorAssigneeAgentId &&
+    !assigneeAgentId &&
+    !assigneeUserId &&
+    input.requestedAssigneePatch.assigneeAgentId === undefined &&
+    input.requestedAssigneePatch.assigneeUserId === undefined &&
+    (nextStatus === "in_progress" || nextStatus === "in_review");
+  if (canRestoreEffectiveMonitorAssignee) {
+    assigneeAgentId = input.effectiveMonitorAssigneeAgentId ?? null;
+    patch.assigneeAgentId = assigneeAgentId;
+    patch.assigneeUserId = null;
+  }
   const stageState =
     stagePatch.executionState !== undefined
       ? parseIssueExecutionState(stagePatch.executionState)

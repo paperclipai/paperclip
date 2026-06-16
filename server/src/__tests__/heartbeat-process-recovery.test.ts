@@ -4428,5 +4428,72 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       const payload = assigneeWakeups[0]?.payload as Record<string, unknown> | null;
       expect(payload).not.toMatchObject({ suppressedNonAssigneeWake: true });
     });
+
+    it("parks review-waiting continuation cancellations in_review and clears active recovery", async () => {
+      const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "cancelled",
+        retryReason: "issue_continuation_needed",
+        runErrorCode: "issue_continuation_waiting_on_review",
+      });
+      const recoveryActionId = randomUUID();
+      await db.update(issues)
+        .set({ monitorNextCheckAt: new Date(Date.now() + 60_000) })
+        .where(eq(issues.id, issueId));
+      await db.insert(issueRecoveryActions).values({
+        id: recoveryActionId,
+        companyId,
+        sourceIssueId: issueId,
+        kind: "stranded_assigned_issue",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: agentId,
+        previousOwnerAgentId: agentId,
+        returnOwnerAgentId: agentId,
+        cause: "stranded_assigned_issue",
+        fingerprint: `source_scoped_recovery:${companyId}:${issueId}:stranded_assigned_issue:${agentId}`,
+        evidence: {},
+        nextAction: "Restore a live execution path.",
+        attemptCount: 1,
+        lastAttemptAt: new Date(Date.now() - 60_000),
+      });
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.reviewWaitingParked).toBe(1);
+      expect(result.escalated).toBe(0);
+      expect(result.issueIds).toEqual([issueId]);
+
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue?.status).toBe("in_review");
+
+      const [action] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.id, recoveryActionId));
+      expect(action).toMatchObject({
+        status: "resolved",
+        outcome: "restored",
+      });
+
+      const recoveryWakeups = await getRecoveryWakeups(agentId);
+      expect(recoveryWakeups).toHaveLength(0);
+    });
+
+    it("does not park non-continuation failures with the review-waiting error code", async () => {
+      const { issueId } = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        runErrorCode: "issue_continuation_waiting_on_review",
+      });
+      await db.update(issues)
+        .set({ monitorNextCheckAt: new Date(Date.now() + 60_000) })
+        .where(eq(issues.id, issueId));
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.reviewWaitingParked).toBe(0);
+
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue?.status).not.toBe("in_review");
+    });
   });
 });
