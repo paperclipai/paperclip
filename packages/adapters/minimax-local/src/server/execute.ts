@@ -19,6 +19,8 @@ import {
   DEFAULT_MINIMAX_LOCAL_TEMPERATURE,
 } from "../index.js";
 
+
+
 function firstNonEmptyString(...values: unknown[]): string | null {
   for (const value of values) {
     if (typeof value === "string" && value.trim().length > 0) {
@@ -39,7 +41,10 @@ function redactSecrets(value: string): string {
 }
 
 function stripThinkBlocks(value: string): string {
-  return value.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  return value
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^\s*<think>[\s\S]*?(?:<\/think>|$)/i, "")
+    .trim();
 }
 
 function resolveConfiguredCwd(config: Record<string, unknown>): string {
@@ -196,7 +201,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: "Bearer " + apiKey,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
