@@ -1944,8 +1944,12 @@ export function decideSessionRotation(input: {
   // full price when the Anthropic cache is cold. Inter-gate review gaps are
   // always >5 min, so all post-review wakes should start fresh (with a handoff
   // summary) rather than cold-resume and rebill the accumulated transcript.
-  // This fires regardless of token threshold because the replay cost is real
-  // whether or not a maxRawInputTokens cap is configured.
+  // This fires independent of the maxRawInputTokens *value* (a session below the
+  // token cap still pays full replay). It is NOT, however, reached for every
+  // policy: the caller (evaluateSessionCompaction) only invokes this function when
+  // hasSessionCompactionThresholds(policy) is true, so adapter-managed policies
+  // (runs/tokens/age all 0 — adapters with native context management) are
+  // intentionally exempt and never cold-rotate here.
   if (
     latestRunCreatedAtMs != null &&
     nowMs - latestRunCreatedAtMs >= SESSION_CACHE_TTL_MS
