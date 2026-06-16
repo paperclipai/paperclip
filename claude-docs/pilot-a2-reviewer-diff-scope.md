@@ -65,10 +65,28 @@ Reviewers can navigate directly to `<prUrl>/files` for the diff without querying
 
 ---
 
+## Bug fix — BUG-007: cross-file blind spot for auth/concurrency
+
+The blanket "touched files only" rule missed a structural case: auth guards and
+concurrency locks often live in one-hop callers or direct imports of a touched file,
+not in the touched file itself. A single-file diff touching a service function can
+silently drop an ownership check that only the calling route enforced.
+
+Fix (commit `2a5de007`): added a scoped cross-file exception after step 2:
+
+> For dimension 1 (Auth) and dimension 3 (Concurrency) only: also read the
+> immediate callers of any touched exported function, and the files directly
+> imported by the touched files. Cap at one hop.
+
+The one-hop cap preserves A2 token discipline; the exception closes the auth/concurrency
+gap that the original instruction left open.
+
+---
+
 ## Files Changed
 
 | File | Change |
 |---|---|
-| `server/src/onboarding-assets/code-reviewer/AGENTS.md` | Diff-first scope step 1 in "How you operate" |
+| `server/src/onboarding-assets/code-reviewer/AGENTS.md` | Diff-first scope step 1 in "How you operate" + BUG-007 cross-file exception |
 | `server/src/onboarding-assets/wiring-expert/AGENTS.md` | Diff-first trace step 1 in "How you operate in Paperclip" |
 | `server/src/routes/issues.ts` | Pass `prUrl` in W5b contextSnapshot (A2) |
