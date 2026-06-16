@@ -183,9 +183,8 @@ export function toolAccessRoutes(
   });
 
   router.post("/companies/:companyId/tools/apps/:connectionId/finish", validate(finishToolAppSchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     const existing = await svc.getConnection(req.params.connectionId as string, companyId);
     const result = await svc.finishGalleryAppConnection(companyId, existing.id, req.body, getActorInfo(req));
     await logActivity(db, {

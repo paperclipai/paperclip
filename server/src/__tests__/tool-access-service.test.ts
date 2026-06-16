@@ -1404,6 +1404,39 @@ describeEmbeddedPostgres("tool access service", () => {
     ]);
   });
 
+  it("requires non-viewer board access to finish app activation and bind profiles", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    mockToolsList([
+      {
+        name: "kv_get",
+        description: "Read a value.",
+        inputSchema: { type: "object", properties: { key: { type: "string" } } },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+    const connect = await service.connectGalleryApp(company.id, {
+      link: "https://secure.example/mcp",
+      name: "Viewer finish blocked",
+      credentialValues: { "headers.Authorization": "Bearer imported-token" },
+    }, { actorType: "user", actorId: "board" });
+
+    const viewerApp = createRouteApp(db, boardSessionActor(company.id, "viewer", "viewer-user"));
+    await request(viewerApp)
+      .post(`/api/companies/${company.id}/tools/apps/${connect.connectionId}/finish`)
+      .send({
+        enabledCatalogEntryIds: connect.catalog.map((entry) => entry.id),
+        askFirstCatalogEntryIds: [],
+        access: "all_agents",
+      })
+      .expect(403);
+
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connect.connectionId));
+    expect(connection.status).toBe("draft");
+    expect(connection.enabled).toBe(false);
+    await expect(db.select().from(toolProfileBindings)).resolves.toHaveLength(0);
+  });
+
   it("binds OAuth callback completion to the initiating board session", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
