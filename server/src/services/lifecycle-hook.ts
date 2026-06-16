@@ -21,6 +21,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 const PRE_RUN_TIMEOUT_MS = 30_000;
 const POST_RUN_TIMEOUT_MS = 90_000;
 const MAX_OUTPUT_BYTES = 16 * 1024;
+const LOCAL_CCROTATE_COMMAND_RE = /(^|[\s;&|()])ccrotate(?=\s|$)/;
 
 /**
  * Lifecycle hooks (pre-run, post-run) fired by the heartbeat scheduler around
@@ -151,6 +152,22 @@ export async function runLifecycleHook(
   const settings = await instanceSettingsService(input.db).getGeneral();
   const command = input.kind === "preRun" ? settings.preRunCmd : settings.postRunCmd;
   if (!command || command.trim().length === 0) {
+    return { status: "skipped" };
+  }
+  if (
+    process.env.CCROTATE_STATE_URL?.trim()
+    && (LOCAL_CCROTATE_COMMAND_RE.test(command) || command.includes("ccrotate-state-hook.js"))
+  ) {
+    logger.info(
+      {
+        kind: input.kind,
+        agentId: input.agentId,
+        companyId: input.companyId,
+        runId: input.runId,
+        adapterType: input.adapterType,
+      },
+      "local ccrotate lifecycle hook skipped; using ccrotate state server",
+    );
     return { status: "skipped" };
   }
 

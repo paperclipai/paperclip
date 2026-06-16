@@ -76,6 +76,16 @@ env:
         secretKeyRef:
           name: paperclip-ccrotate-serve-secrets
           key: serveToken
+    # Canonical ccrotate pool state for the heartbeat tier-gate. This replaces
+    # the retired in-image/local ccrotate CLI and prevents agent dispatch from
+    # trusting stale /paperclip/.ccrotate files on the shared PVC.
+    - name: CCROTATE_STATE_URL
+      value: "http://ccrotate-auth-bot-state.paperclip.svc:4002"
+    - name: CCROTATE_STATE_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-ccrotate-serve-secrets
+          key: serveToken
     # PAPERCLIP_PUBLIC_URL pins the auth base so plugin UIs do not fall back
     # to window.location.origin (which would break behind cloudflared / when
     # iframed). PAPERCLIP_AUTH_BASE_URL_MODE=explicit makes the server treat

@@ -228,97 +228,71 @@ spec:
                   chown 1000:1000 "${BASE}/adapter-plugins.json" 2>/dev/null || true
                 fi
               fi
-              # Install ccrotate's claude-code hooks into /paperclip/.claude/hooks
-              # and register them in /paperclip/.claude/settings.json. claude-code
-              # only loads hooks declared in $HOME/.claude/settings.json, and on a
-              # k8s Job pod $HOME=/paperclip — so without this step a long-running
-              # claude session inside a Job pod can't refresh OAuth mid-run, and
-              # the spawn-time `ccrotate next` prepend is the only refresh point.
-              # See ccrotate README §Claude Code Hook Integration.
-              CCROTATE_PKG_DIR="/usr/local/lib/node_modules/ccrotate"
-              if [ -d "${CCROTATE_PKG_DIR}/claude-hooks" ]; then
-                CLAUDE_DIR="${BASE}/.claude"
-                HOOKS_DIR="${CLAUDE_DIR}/hooks"
-                SETTINGS="${CLAUDE_DIR}/settings.json"
-                mkdir -p "${HOOKS_DIR}"
-                for src in "${CCROTATE_PKG_DIR}/claude-hooks/"*.sh; do
-                  [ -f "${src}" ] || continue
-                  dst="${HOOKS_DIR}/$(basename "${src}")"
-                  if [ ! -f "${dst}" ] || [ "${src}" -nt "${dst}" ]; then
-                    cp "${src}" "${dst}"
-                    chmod +x "${dst}"
-                    echo "seed: installed claude-code hook $(basename ${src})"
-                  fi
-                done
-                # Merge ccrotate hook entries into settings.json without clobbering
-                # operator-set hooks. Idempotent: skips re-inserting an entry whose
-                # command already matches one of ccrotate's hook scripts.
-                python3 - "${SETTINGS}" "${HOOKS_DIR}" <<'PY' || echo "seed: claude settings hooks merge failed (non-fatal)"
+              # Remove legacy local-ccrotate Claude hooks from the shared PVC.
+              # Paperclip production routes provider traffic through
+              # ccrotate-serve/state now; keeping these hooks lets old PVC files
+              # invoke a stale local rotator and move agents onto exhausted
+              # accounts.
+              CLAUDE_DIR="${BASE}/.claude"
+              HOOKS_DIR="${CLAUDE_DIR}/hooks"
+              SETTINGS="${CLAUDE_DIR}/settings.json"
+              python3 - "${SETTINGS}" <<'PY' || echo "seed: legacy ccrotate hook cleanup failed (non-fatal)"
               import json, os, sys
-              settings_path, hooks_dir = sys.argv[1], sys.argv[2]
-              # claude-code settings.json schema: top-level "hooks" is an object
-              # whose keys are hook event names; each value is an array of {hooks:
-              # [{type, command, timeout, statusMessage}]} groups.
-              desired = {
-                  "Stop": {
-                      "command": f"bash {hooks_dir}/ccrotate-on-limit.sh",
-                      "timeout": 15,
-                      "statusMessage": "Checking rate limits...",
-                  },
-                  "SessionStart": {
-                      "command": f"bash {hooks_dir}/ccrotate-check-tier.sh",
-                      "timeout": 45,
-                      "statusMessage": "Checking usage tier...",
-                  },
-                  "UserPromptSubmit": {
-                      "command": f"bash {hooks_dir}/ccrotate-preemptive.sh",
-                      "timeout": 10,
-                  },
-              }
+              settings_path = sys.argv[1]
+              legacy = (
+                  "ccrotate-on-limit.sh",
+                  "ccrotate-check-tier.sh",
+                  "ccrotate-preemptive.sh",
+              )
               try:
                   with open(settings_path) as f:
                       doc = json.load(f) or {}
               except (FileNotFoundError, ValueError):
-                  doc = {}
-              if not isinstance(doc, dict):
-                  doc = {}
-              hooks = doc.setdefault("hooks", {})
-              if not isinstance(hooks, dict):
-                  hooks = {}
-                  doc["hooks"] = hooks
+                  sys.exit(0)
+              if not isinstance(doc, dict) or not isinstance(doc.get("hooks"), dict):
+                  sys.exit(0)
               changed = False
-              for event, entry in desired.items():
-                  groups = hooks.setdefault(event, [])
+              hooks = doc["hooks"]
+              for event, groups in list(hooks.items()):
                   if not isinstance(groups, list):
-                      groups = []
-                      hooks[event] = groups
-                  # Already installed? Match by command path so re-running upgrades
-                  # the timeout/statusMessage if ccrotate's defaults change.
-                  found_idx = None
-                  for i, group in enumerate(groups):
-                      if not isinstance(group, dict): continue
-                      for h in group.get("hooks", []):
-                          if isinstance(h, dict) and h.get("command") == entry["command"]:
-                              found_idx = i
-                              break
-                      if found_idx is not None: break
-                  payload = {"hooks": [{"type": "command", **entry}]}
-                  if found_idx is None:
-                      groups.append(payload)
+                      continue
+                  next_groups = []
+                  for group in groups:
+                      if not isinstance(group, dict):
+                          next_groups.append(group)
+                          continue
+                      group_hooks = group.get("hooks")
+                      if not isinstance(group_hooks, list):
+                          next_groups.append(group)
+                          continue
+                      kept = [
+                          h for h in group_hooks
+                          if not (
+                              isinstance(h, dict)
+                              and any(name in str(h.get("command", "")) for name in legacy)
+                          )
+                      ]
+                      if len(kept) != len(group_hooks):
+                          changed = True
+                      if kept:
+                          next_group = dict(group)
+                          next_group["hooks"] = kept
+                          next_groups.append(next_group)
+                  if next_groups:
+                      hooks[event] = next_groups
+                  else:
+                      del hooks[event]
                       changed = True
-                  elif groups[found_idx] != payload:
-                      groups[found_idx] = payload
-                      changed = True
-              if changed or not os.path.exists(settings_path):
+              if changed:
                   os.makedirs(os.path.dirname(settings_path), exist_ok=True)
                   with open(settings_path, "w") as f:
                       json.dump(doc, f, indent=2)
-                  print(f"seed: updated {settings_path} with ccrotate hooks")
-              else:
-                  print("seed: ccrotate hooks already registered in settings.json")
+                  print(f"seed: removed legacy ccrotate hooks from {settings_path}")
               PY
-                chown 1000:1000 "${CLAUDE_DIR}" "${HOOKS_DIR}" "${SETTINGS}" "${HOOKS_DIR}"/*.sh 2>/dev/null || true
-              fi
+              rm -f \
+                "${HOOKS_DIR}/ccrotate-on-limit.sh" \
+                "${HOOKS_DIR}/ccrotate-check-tier.sh" \
+                "${HOOKS_DIR}/ccrotate-preemptive.sh" 2>/dev/null || true
 
               # Install GitHub command wrappers into the shared Paperclip home.
               # Agent Job pods mount the same PVC and inherit the Secret volume

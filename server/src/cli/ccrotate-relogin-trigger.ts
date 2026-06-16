@@ -17,8 +17,8 @@
  *   PAPERCLIP_ERROR_CODE
  *
  * Maps the adapter to the ccrotate target (claude vs codex), looks up the
- * currently-active email by parsing `ccrotate --target <t> status` output,
- * and fires `POST http://ccrotate-auth-bot.paperclip.svc:7000/reloginViaSession`.
+ * currently-active email from the ccrotate state-server when configured, and
+ * fires `POST http://ccrotate-auth-bot.paperclip.svc:7000/reloginViaSession`.
  * The NetworkPolicy on the bot already restricts ingress to paperclip-0,
  * so no auth header is needed.
  *
@@ -55,6 +55,7 @@ import { dirname } from "node:path";
 
 const BOT_URL = process.env.CCROTATE_AUTH_BOT_URL ?? "http://ccrotate-auth-bot.paperclip.svc:7000";
 const REQUEST_TIMEOUT_MS = Number(process.env.CCROTATE_AUTH_BOT_TIMEOUT_MS ?? "60000");
+const STATE_TIMEOUT_MS = Number(process.env.CCROTATE_STATE_TIMEOUT_MS ?? "10000");
 const SLACK_WEBHOOK_URL = (process.env.PAPERCLIP_SLACK_ESCALATION_WEBHOOK_URL ?? "").trim();
 const SLACK_TIMEOUT_MS = Number(process.env.PAPERCLIP_SLACK_ESCALATION_TIMEOUT_MS ?? "5000");
 const BACKOFF_PATH = process.env.CCROTATE_RELOGIN_BACKOFF_PATH ?? "/paperclip/.ccrotate/relogin-backoff.json";
@@ -105,7 +106,55 @@ function adapterToTarget(adapterType: string): "claude" | "codex" | null {
   return null;
 }
 
-function readActiveEmail(target: "claude" | "codex"): string | null {
+function getCcrotateStateUrl(): string | null {
+  const raw = process.env.CCROTATE_STATE_URL?.trim();
+  if (!raw) return null;
+  return raw.replace(/\/+$/, "");
+}
+
+function getCcrotateStateToken(): string | null {
+  return (
+    process.env.CCROTATE_STATE_TOKEN?.trim()
+    || process.env.CCROTATE_SERVE_TOKEN?.trim()
+    || null
+  );
+}
+
+function extractEmail(raw: unknown): string | null {
+  return typeof raw === "string" && /@/.test(raw) ? raw.trim() : null;
+}
+
+async function readActiveEmailFromStateServer(stateUrl: string): Promise<string | null> {
+  const headers = new Headers({ accept: "application/json" });
+  const token = getCcrotateStateToken();
+  if (token) headers.set("authorization", `Bearer ${token}`);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), STATE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${stateUrl}/state/current`, { headers, signal: ctrl.signal });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+    }
+    const parsed = text.trim() ? JSON.parse(text) as { email?: unknown } : {};
+    return extractEmail(parsed.email);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readActiveEmail(target: "claude" | "codex"): Promise<string | null> {
+  const stateUrl = getCcrotateStateUrl();
+  if (stateUrl) {
+    try {
+      return await readActiveEmailFromStateServer(stateUrl);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[ccrotate-relogin-trigger] state-server current lookup failed: ${msg}`);
+      return null;
+    }
+  }
+
   // ccrotate has no `active` subcommand — `status` is the closest signal.
   // First line is `🔍 Checking usage tier for <email>...` (claude) or
   // `🔍 Checking Codex usage for <email>...` (codex). We pull the email out
@@ -266,7 +315,7 @@ async function main(): Promise<void> {
     console.log(`[ccrotate-relogin-trigger] adapterType=${adapterType} doesn't map to a ccrotate target — skip`);
     return;
   }
-  const email = readActiveEmail(target);
+  const email = await readActiveEmail(target);
   if (!email) {
     console.log(`[ccrotate-relogin-trigger] no active ${target} account — skip`);
     return;

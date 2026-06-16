@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createDefaultCcrotateSwitcher,
   createCcrotateTierGate,
   evaluateTierCacheSnapshot,
   mapAdapterToCcrotateTarget,
@@ -941,16 +942,32 @@ describe("createCcrotateTierGate switcher integration", () => {
 describe("readDefaultCcrotateTierCache", () => {
   let tempHome: string;
   let originalHome: string | undefined;
+  let originalStateUrl: string | undefined;
+  let originalStateToken: string | undefined;
+  let originalServeToken: string | undefined;
 
   beforeEach(async () => {
     originalHome = process.env.HOME;
+    originalStateUrl = process.env.CCROTATE_STATE_URL;
+    originalStateToken = process.env.CCROTATE_STATE_TOKEN;
+    originalServeToken = process.env.CCROTATE_SERVE_TOKEN;
     tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "ccrotate-tier-gate-test-"));
     process.env.HOME = tempHome;
+    delete process.env.CCROTATE_STATE_URL;
+    delete process.env.CCROTATE_STATE_TOKEN;
+    delete process.env.CCROTATE_SERVE_TOKEN;
   });
 
   afterEach(async () => {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
+    if (originalStateUrl === undefined) delete process.env.CCROTATE_STATE_URL;
+    else process.env.CCROTATE_STATE_URL = originalStateUrl;
+    if (originalStateToken === undefined) delete process.env.CCROTATE_STATE_TOKEN;
+    else process.env.CCROTATE_STATE_TOKEN = originalStateToken;
+    if (originalServeToken === undefined) delete process.env.CCROTATE_SERVE_TOKEN;
+    else process.env.CCROTATE_SERVE_TOKEN = originalServeToken;
+    vi.unstubAllGlobals();
     await fs.rm(tempHome, { recursive: true, force: true });
   });
 
@@ -1003,6 +1020,57 @@ describe("readDefaultCcrotateTierCache", () => {
     const snap = await readDefaultCcrotateTierCache("codex");
     expect(snap?.accounts[0]?.email).toBe("x@x.com");
     expect(snap?.accounts[0]?.serviceTier).toBe("available");
+  });
+
+  it("prefers the ccrotate state server when CCROTATE_STATE_URL is set", async () => {
+    process.env.CCROTATE_STATE_URL = "http://ccrotate-state.local/";
+    process.env.CCROTATE_STATE_TOKEN = "state-token";
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      updatedAt: "2026-06-16T00:00:00.000Z",
+      accounts: [{ email: "live@x.com", status: "success", serviceTier: "available" }],
+    })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const snap = await readDefaultCcrotateTierCache("codex");
+
+    expect(snap?.accounts[0]?.email).toBe("live@x.com");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://ccrotate-state.local/state/tier-cache?target=codex");
+    const headers = fetchMock.mock.calls[0]?.[1]?.headers as Headers;
+    expect(headers.get("authorization")).toBe("Bearer state-token");
+  });
+});
+
+describe("createDefaultCcrotateSwitcher", () => {
+  const originalStateUrl = process.env.CCROTATE_STATE_URL;
+  const originalStateToken = process.env.CCROTATE_STATE_TOKEN;
+  const originalServeToken = process.env.CCROTATE_SERVE_TOKEN;
+
+  afterEach(() => {
+    if (originalStateUrl === undefined) delete process.env.CCROTATE_STATE_URL;
+    else process.env.CCROTATE_STATE_URL = originalStateUrl;
+    if (originalStateToken === undefined) delete process.env.CCROTATE_STATE_TOKEN;
+    else process.env.CCROTATE_STATE_TOKEN = originalStateToken;
+    if (originalServeToken === undefined) delete process.env.CCROTATE_SERVE_TOKEN;
+    else process.env.CCROTATE_SERVE_TOKEN = originalServeToken;
+    vi.unstubAllGlobals();
+  });
+
+  it("switches through the ccrotate state server when configured", async () => {
+    process.env.CCROTATE_STATE_URL = "http://ccrotate-state.local";
+    process.env.CCROTATE_SERVE_TOKEN = "serve-token";
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ email: "bot5@x.com" })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createDefaultCcrotateSwitcher().switchTo("codex", "bot5@x.com");
+
+    expect(result).toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://ccrotate-state.local/state/current");
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(JSON.stringify({ target: "codex", email: "bot5@x.com" }));
+    expect((init.headers as Headers).get("authorization")).toBe("Bearer serve-token");
   });
 });
 

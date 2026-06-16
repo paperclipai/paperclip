@@ -36,6 +36,7 @@ beforeEach(() => {
   __resetQuotaExhaustedHookStateForTesting();
   delete process.env.PAPERCLIP_QUOTA_EXHAUSTED_CMD;
   delete process.env.PAPERCLIP_QUOTA_HOOK_ALLOW_ENV;
+  delete process.env.CCROTATE_STATE_URL;
 });
 
 afterEach(() => {
@@ -132,6 +133,27 @@ describe("runQuotaExhaustedHook", () => {
         details: expect.objectContaining({ source: "instance_settings" }),
       }),
     );
+  });
+
+  it("drops legacy local ccrotate fragments when using the state server", async () => {
+    process.env.CCROTATE_STATE_URL = "http://ccrotate-state.local:4002";
+    mockSettings("node -e \"process.stdout.write('relogin')\"; ccrotate --target codex next --yes");
+    const onSuccess = vi.fn();
+
+    const result = await runQuotaExhaustedHook({
+      db: fakeDb,
+      agentId: "a1",
+      companyId: "c1",
+      runId: "r1",
+      errorCode: "provider_quota_exhausted",
+      adapterType: "opencode_k8s",
+      onSuccess,
+    });
+
+    expect(result.status).toBe("ran");
+    expect(result.result?.ok).toBe(true);
+    expect(result.result?.stdout).toBe("relogin");
+    expect(onSuccess).toHaveBeenCalledTimes(1);
   });
 
   it("debounces concurrent calls within 60s window", async () => {

@@ -5,9 +5,11 @@
 # Usage (stdin = prompt, stdout = codex JSONL stream):
 #   echo "<prompt>" | paperclip-consult-codex [--model M] [--effort E]
 #
-# Refreshes Codex creds via ccrotate (snap → next), then exec's `codex exec`
-# with --json --dangerously-bypass-approvals-and-sandbox. Bypass is safe
-# because the Job pod is already the sandbox; the agent can't escape it.
+# Execs `codex exec` with --json --dangerously-bypass-approvals-and-sandbox.
+# Bypass is safe because the Job pod is already the sandbox; the agent can't
+# escape it. Older images used local ccrotate here; production images now rely
+# on ccrotate-serve/state and omit the local CLI, so the preflight below is
+# strictly best-effort when the binary exists in a developer image.
 #
 # MCP fleet inheritance: the wrapper reads the same MCP servers claude is
 # using inside this Job (per-agent merged at /tmp/prompt/mcp.json when the
@@ -16,7 +18,7 @@
 # and points codex at a per-invocation CODEX_HOME that contains:
 #   - config.toml — translated [mcp_servers.*] blocks
 #   - auth.json + everything else — symlinked from $CODEX_HOME so creds
-#     stay current and ccrotate's writes flow back to the canonical home
+#     stay current in the canonical home
 # Each invocation gets its own CODEX_HOME under /tmp/codex-run-* so
 # parallel `consult-codex` calls in the same pod don't fight over a
 # shared config.toml.
@@ -24,13 +26,14 @@
 # Cred isolation:
 #   - claude credentials  : /paperclip/.claude/.credentials.json
 #   - codex credentials   : /paperclip/.codex/auth.json
-# `ccrotate --target codex` only touches /paperclip/.codex/, so claude is
-# unaffected. `flock` on /paperclip/.codex/.ccrotate.lock prevents parallel
-# Job pods from corrupting auth.json during a `next` rotation.
+# Local ccrotate, when present in a developer image, only touches
+# /paperclip/.codex/, so claude is unaffected. `flock` on
+# /paperclip/.codex/.ccrotate.lock prevents parallel Job pods from corrupting
+# auth.json during that legacy preflight.
 #
 # Failure modes:
-#   - ccrotate missing or all codex accounts exhausted → refresh is best-
-#     effort (|| true), then codex exec runs with whatever creds are on
+#   - local ccrotate missing or all codex accounts exhausted → legacy refresh
+#     is skipped (|| true), then codex exec runs with whatever creds are on
 #     disk. Operator gets a meaningful 401-from-codex instead of an opaque
 #     hang.
 #   - mcp.json missing/malformed → wrapper still runs codex, just without
@@ -63,9 +66,9 @@ export CCROTATE_TARGET=codex
 export CODEX_HOME="${CODEX_HOME:-/paperclip/.codex}"
 mkdir -p "${CODEX_HOME}" 2>/dev/null || true
 
-# Cross-pod ccrotate serialization. flock is best-effort: if /paperclip is
-# unwritable for any reason we still want codex to attempt the call rather
-# than fail before the prompt is even sent.
+# Cross-pod serialization for the legacy local ccrotate preflight. flock is
+# best-effort: if /paperclip is unwritable for any reason we still want codex
+# to attempt the call rather than fail before the prompt is even sent.
 LOCKFILE="${CODEX_HOME}/.ccrotate.lock"
 (
   flock -w 10 9 2>/dev/null || true
@@ -86,8 +89,8 @@ elif [ -f /paperclip/.mcp.json ]; then
 fi
 
 # Per-invocation CODEX_HOME so parallel calls don't stomp on each other's
-# config.toml. Symlink everything from the canonical home so auth.json
-# (and ccrotate state) remains the same store; replace just config.toml.
+# config.toml. Symlink everything from the canonical home so auth.json remains
+# the same store; replace just config.toml.
 RUN_HOME="$(mktemp -d /tmp/codex-run-XXXXXX)"
 shopt -s nullglob dotglob
 for src in "$CODEX_HOME"/*; do

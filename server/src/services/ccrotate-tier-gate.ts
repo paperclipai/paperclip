@@ -10,7 +10,9 @@
  * and OpenCode/OpenAI adapters use the `codex` ccrotate target. Other adapter
  * types are passed through (no opinion).
  *
- * The cache file lives at:
+ * In production, the snapshot lives behind ccrotate-auth-bot's state server
+ * (`CCROTATE_STATE_URL`). The local cache file fallback is retained for
+ * developer machines and tests:
  *   - ~/.ccrotate/tier-cache.json        (Claude target)
  *   - ~/.ccrotate/tier-cache.codex.json  (Codex target)
  *
@@ -667,14 +669,30 @@ export function createCcrotateTierGate(opts: CcrotateTierGateOptions): CcrotateT
 }
 
 /**
- * Default switcher that spawns `ccrotate --target <target> switch <email>`.
- * Idempotent at the ccrotate level (short-circuits when already on the target
- * account). Returns `{ ok: false, error }` on any failure — the gate logs and
- * proceeds; switching is best-effort.
+ * Default switcher. Production uses ccrotate-auth-bot's state server when
+ * `CCROTATE_STATE_URL` is set; local/dev environments fall back to spawning
+ * `ccrotate --target <target> switch <email>`. Returns `{ ok: false, error }`
+ * on any failure — the gate logs and proceeds; switching is best-effort.
  */
 export function createDefaultCcrotateSwitcher(): CcrotateSwitcher {
   return {
     async switchTo(target, email) {
+      const stateUrl = getCcrotateStateUrl();
+      if (stateUrl) {
+        try {
+          await requestCcrotateState(stateUrl, "/state/current", {
+            method: "POST",
+            body: JSON.stringify({ target, email }),
+          });
+          return { ok: true };
+        } catch (err) {
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+
       try {
         await execFileAsync(
           "ccrotate",
@@ -692,6 +710,57 @@ export function createDefaultCcrotateSwitcher(): CcrotateSwitcher {
   };
 }
 
+function getCcrotateStateUrl(): string | null {
+  const raw = process.env.CCROTATE_STATE_URL?.trim();
+  if (!raw) return null;
+  return raw.replace(/\/+$/, "");
+}
+
+function getCcrotateStateToken(): string | null {
+  return (
+    process.env.CCROTATE_STATE_TOKEN?.trim()
+    || process.env.CCROTATE_SERVE_TOKEN?.trim()
+    || null
+  );
+}
+
+async function requestCcrotateState(
+  baseUrl: string,
+  pathname: string,
+  init: RequestInit = {},
+): Promise<unknown> {
+  const token = getCcrotateStateToken();
+  const headers = new Headers(init.headers);
+  headers.set("accept", "application/json");
+  if (init.body && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  if (token) headers.set("authorization", `Bearer ${token}`);
+
+  const res = await fetch(`${baseUrl}${pathname}`, { ...init, headers });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`ccrotate state ${pathname} failed: HTTP ${res.status} ${text.slice(0, 200)}`);
+  }
+  if (!text.trim()) return null;
+  return JSON.parse(text) as unknown;
+}
+
+function normalizeTierCacheSnapshot(raw: unknown): CcrotateTierCacheSnapshot | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const accounts = Array.isArray(record.accounts)
+    ? record.accounts.filter(
+      (a): a is CcrotateTierCacheAccount =>
+        typeof a === "object" && a !== null && typeof (a as { email?: unknown }).email === "string",
+    )
+    : [];
+  return {
+    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : null,
+    accounts,
+  };
+}
+
 /**
  * Default reader that loads ccrotate's tier-cache JSON from disk.
  * Returns null if the file does not exist (e.g. ccrotate not installed).
@@ -700,6 +769,13 @@ export function createDefaultCcrotateSwitcher(): CcrotateSwitcher {
 export async function readDefaultCcrotateTierCache(
   target: CcrotateTarget,
 ): Promise<CcrotateTierCacheSnapshot | null> {
+  const stateUrl = getCcrotateStateUrl();
+  if (stateUrl) {
+    const query = new URLSearchParams({ target });
+    const raw = await requestCcrotateState(stateUrl, `/state/tier-cache?${query.toString()}`);
+    return normalizeTierCacheSnapshot(raw);
+  }
+
   const filename = target === "claude" ? "tier-cache.json" : "tier-cache.codex.json";
   const filePath = path.join(os.homedir(), ".ccrotate", filename);
   let raw: string;
@@ -716,18 +792,5 @@ export async function readDefaultCcrotateTierCache(
     }
     throw err;
   }
-  const parsed = JSON.parse(raw) as unknown;
-  if (!parsed || typeof parsed !== "object") return null;
-  const accounts = Array.isArray((parsed as Record<string, unknown>).accounts)
-    ? ((parsed as Record<string, unknown>).accounts as unknown[]).filter(
-      (a): a is CcrotateTierCacheAccount => typeof a === "object" && a !== null && typeof (a as { email?: unknown }).email === "string",
-    )
-    : [];
-  return {
-    updatedAt:
-      typeof (parsed as Record<string, unknown>).updatedAt === "string"
-        ? ((parsed as Record<string, unknown>).updatedAt as string)
-        : null,
-    accounts,
-  };
+  return normalizeTierCacheSnapshot(JSON.parse(raw) as unknown);
 }

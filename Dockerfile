@@ -85,28 +85,13 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked \
 
 FROM base AS vendor
 WORKDIR /vendor
-# Pinned commit SHAs for the kkroo forks of ccrotate + the two k8s-Job
-# adapters. Bump these together by pushing the fork branch and updating the
-# ARG. Public repos, so no auth required at clone time.
+# Pinned commit SHAs for the kkroo forks of the two k8s-Job adapters.
+# Bump these by pushing the fork branch and updating the ARG. Public repos,
+# so no auth required at clone time.
 #
 # Each repo's build → `pnpm pack` (or `npm pack`) produces the .tgz the
 # production stage installs. We never commit the tgz; it's reproduced on
 # every image build.
-ARG CCROTATE_REF=7cf84fccd07dd3bc8b11845cb0630ae825a008f9
-# Re-pinned 2026-05-31 to kkroo/ccrotate main 7cf84fc (was 5c11c8b, #93).
-# Bumps #94 (stale usage %% self-heal) + #95 (operator pool usage billed as
-# metered_api at API-equivalent rates instead of subscription_included/0¢).
-# Prior bump (2026-05-30, 5c11c8b) was current fork tips after #79–#93:
-#  - ccrotate (kkroo/ccrotate#main): serve/codex hardening —
-#    sticky out_of_credits exhaustion, codex admission pacing mirroring
-#    anthropic, operator Codex + Anthropic usage cost reporting, and
-#    profile-targeted token writeback so codex-exec-rotated tokens don't
-#    self-revoke. Also the org-disabled-403 → stale+rotate path. Keeps the
-#    bundled rotator in sync with the live ccrotate-serve state schema.
-#  - claude-k8s (kkroo/paperclip-adapter-claude-k8s#master, +2 commits):
-#    quarantine/clear Claude sessions rejected for immutable thinking
-#    blocks.
-#  - opencode-k8s unchanged — already at master tip.
 # Re-pinned 2026-06-03 (BLO-8909) to kkroo/paperclip-adapter-opencode-k8s
 # master 3bbc0b3 (was 7415df5): default agentDbMode to workspace_subpath so
 # the agent DB lives on a per-(agent, task) subPath of the shared RWX
@@ -187,18 +172,7 @@ RUN cd /vendor/adapter-utils-src \
 # Vendor-stage installs benefit from cache mounts too: pinned REFs mean
 # the layer invalidates only on bumps, but inside each invalidated
 # rebuild we still re-resolve every transitive dep. The pnpm and npm
-# caches let those resolutions reuse tarballs from prior builds across
-# all three vendored repos.
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked \
-    --mount=type=secret,id=gh_token \
-    GH="$(cat /run/secrets/gh_token)" \
- && git -c "url.https://x-access-token:${GH}@github.com/.insteadOf=https://github.com/" \
-      clone https://github.com/Blockcast/ccrotate.git ccrotate \
-  && cd ccrotate && git checkout "${CCROTATE_REF}" && rm -rf .git \
-  && pnpm install --frozen-lockfile \
-  && pnpm run build \
-  && cd dist && npm pack \
-  && mv ccrotate-*.tgz /vendor/ccrotate.tgz
+# caches let those resolutions reuse tarballs from prior builds.
 
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     --mount=type=secret,id=gh_token \
@@ -255,16 +229,17 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-# ccrotate (per-account token rotator the heartbeat ccrotate-tier-gate at
-# server/src/services/ccrotate-tier-gate.ts shells out to) and the kkroo
-# forks of paperclip-adapter-claude-k8s / paperclip-adapter-opencode-k8s
-# are built from source in the `vendor` stage above and installed here.
+# The kkroo forks of paperclip-adapter-claude-k8s /
+# paperclip-adapter-opencode-k8s are built from source in the `vendor` stage
+# above and installed here.
+#
+# Do not install a local ccrotate CLI in this image. Paperclip production uses
+# ccrotate-auth-bot / ccrotate-serve as the source of truth; a baked local
+# rotator can read stale PVC state and switch agents onto exhausted accounts.
 # Refresh procedure:
-#   1. push the relevant kkroo fork branch (kkroo/ccrotate#main,
-#      kkroo/paperclip-adapter-claude-k8s#master,
+#   1. push the relevant kkroo fork branch (kkroo/paperclip-adapter-claude-k8s#master,
 #      kkroo/paperclip-adapter-opencode-k8s#master)
 #   2. bump the *_REF ARG in the `vendor` stage
-COPY --from=vendor /vendor/ccrotate.tgz /tmp/ccrotate.tgz
 RUN mkdir -p /tmp/paperclip-bundled-adapters
 COPY --from=vendor /vendor/paperclip-adapter-claude-k8s.tgz /tmp/paperclip-bundled-adapters/
 COPY --from=vendor /vendor/paperclip-adapter-opencode-k8s.tgz /tmp/paperclip-bundled-adapters/
@@ -277,14 +252,7 @@ COPY --from=github-mcp /server/github-mcp-server /usr/local/bin/github-mcp-serve
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    npm install --global --omit=dev --cache /root/.npm @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest /tmp/ccrotate.tgz \
-  && rm /tmp/ccrotate.tgz \
-  # Upstream ccrotate@1.1.0 bug: dist/cli.js reads `new URL("../package.json", import.meta.url)`,
-  # which resolves to /usr/local/lib/node_modules/package.json (one level above the ccrotate
-  # package dir) when installed globally — that file does not exist. Source layout (dist/cli.js
-  # next to dist/package.json) makes `..` jump out of the package. Rewrite to `./package.json`
-  # so the bundled CLI finds its own manifest. Remove this line when the upstream fix lands.
-  && sed -i 's|new URL("../package.json"|new URL("./package.json"|' /usr/local/lib/node_modules/ccrotate/cli.js \
+    npm install --global --omit=dev --cache /root/.npm @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client rsync jq zsh \
   && mkdir -p /paperclip /paperclip/.local/bin /opt/paperclip-bundled-adapters \
@@ -298,10 +266,9 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Codex 2nd-opinion CLI wrapper for claude_k8s agents (BLO-2413).
 # Lets a claude session shell out to `paperclip-consult-codex "<prompt>"`
-# and get back codex's JSONL — used by the gstack /codex skill for the
-# "200 IQ adversary" external opinion. ccrotate handles per-target cred
-# rotation (--target codex). See .planning/codex-second-opinion.md in
-# the k8s repo for the full design and risk register.
+# and get back codex's JSONL — used by the gstack /codex skill for external
+# review. Production no longer installs a local ccrotate CLI, so this wrapper
+# uses whatever Codex auth the pod already has.
 COPY scripts/paperclip-consult-codex.sh /usr/local/bin/paperclip-consult-codex
 RUN chmod +x /usr/local/bin/paperclip-consult-codex
 

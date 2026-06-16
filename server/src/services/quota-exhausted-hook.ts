@@ -18,6 +18,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 const HOOK_TIMEOUT_MS = 60_000;
 const DEBOUNCE_MS = 60_000;
 const MAX_OUTPUT_BYTES = 16 * 1024;
+const LOCAL_CCROTATE_COMMAND_RE = /(^|[\s;&|()])ccrotate(?=\s|$)/;
 
 interface RunResult {
   ok: boolean;
@@ -48,13 +49,27 @@ function resolveCommand(configured: string | null): {
   command: string | null;
   source: "instance_settings" | "env" | null;
 } {
-  if (configured) return { command: configured, source: "instance_settings" };
+  if (configured) {
+    return {
+      command: removeRetiredLocalCcrotateFragments(configured),
+      source: "instance_settings",
+    };
+  }
   if (process.env.PAPERCLIP_QUOTA_HOOK_ALLOW_ENV !== "1") {
     return { command: null, source: null };
   }
   const envCmd = process.env.PAPERCLIP_QUOTA_EXHAUSTED_CMD?.trim();
   if (!envCmd) return { command: null, source: null };
-  return { command: envCmd, source: "env" };
+  return { command: removeRetiredLocalCcrotateFragments(envCmd), source: "env" };
+}
+
+function removeRetiredLocalCcrotateFragments(command: string): string | null {
+  if (!process.env.CCROTATE_STATE_URL?.trim()) return command;
+  const kept = command
+    .split(";")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0 && !LOCAL_CCROTATE_COMMAND_RE.test(part));
+  return kept.length > 0 ? kept.join("; ") : null;
 }
 
 function runCommand(command: string, env: Record<string, string>): Promise<RunResult> {
