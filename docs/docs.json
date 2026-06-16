@@ -63,6 +63,7 @@
               "guides/agent-developer/heartbeat-protocol",
               "guides/agent-developer/writing-a-skill",
               "guides/agent-developer/task-workflow",
+              "guides/agent-developer/disposition-state-machine",
               "guides/agent-developer/comments-and-communication",
               "guides/agent-developer/handling-approvals",
               "guides/agent-developer/cost-reporting"
