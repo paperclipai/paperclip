@@ -106,6 +106,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originFingerprint?: string | null;
     executionState?: Record<string, unknown> | null;
     description?: string | null;
+    monitorNextCheckAt?: Date | null;
+    monitorAttemptCount?: number | null;
+    executionPolicy?: unknown;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -123,6 +126,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
       description: input.description ?? null,
+      ...(input.monitorNextCheckAt != null ? { monitorNextCheckAt: input.monitorNextCheckAt } : {}),
+      ...(input.monitorAttemptCount != null ? { monitorAttemptCount: input.monitorAttemptCount } : {}),
+      ...(input.executionPolicy != null ? { executionPolicy: input.executionPolicy as Record<string, unknown> } : {}),
     });
     return id;
   }
@@ -710,6 +716,80 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       reason: "missing_successful_run_disposition",
       owner: { type: "agent", agentId },
       action: { label: "Choose disposition" },
+    });
+  });
+
+  it("covers an in_review blocker that has a valid scheduled monitor (BLO-8072)", async () => {
+    const { companyId, agentId } = await createCompany("PBV");
+    const parentId = await insertIssue({ companyId, identifier: "PBV-1", title: "Parent", status: "blocked" });
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBV-2",
+      title: "Monitored wait",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: futureDate,
+      monitorAttemptCount: 0,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+    });
+  });
+
+  it("stalls an in_review blocker whose monitor has already fired (past nextCheckAt) (BLO-8072)", async () => {
+    const { companyId, agentId } = await createCompany("PBS");
+    const parentId = await insertIssue({ companyId, identifier: "PBS-1", title: "Parent", status: "blocked" });
+    const pastDate = new Date(Date.now() - 60 * 1000);
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBS-2",
+      title: "Expired monitor wait",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: pastDate,
+      monitorAttemptCount: 0,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "stalled",
+      reason: "stalled_review",
+      stalledBlockerCount: 1,
+    });
+  });
+
+  it("stalls an in_review blocker whose monitor has exhausted maxAttempts (BLO-8072)", async () => {
+    const { companyId, agentId } = await createCompany("PBX");
+    const parentId = await insertIssue({ companyId, identifier: "PBX-1", title: "Parent", status: "blocked" });
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBX-2",
+      title: "Exhausted monitor wait",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: futureDate,
+      monitorAttemptCount: 3,
+      executionPolicy: { monitor: { maxAttempts: 3 } },
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "stalled",
+      reason: "stalled_review",
+      stalledBlockerCount: 1,
     });
   });
 });

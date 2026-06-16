@@ -1658,6 +1658,7 @@ type ParsedHeartbeatPolicy = {
   cooldownSec: number;
   maxConcurrentRuns: number;
   idleAutoPauseAfter: number;
+  adapterFailedAutoPauseAfter: number;
 };
 
 export function resolveHeartbeatPolicyForRuntimeConfig(runtimeConfigValue: unknown): ParsedHeartbeatPolicy {
@@ -1683,6 +1684,7 @@ export function resolveHeartbeatPolicyForRuntimeConfig(runtimeConfigValue: unkno
   const desiredCooldownSec = normalizeHeartbeatCooldownSec(heartbeat.cooldownSec, presetConfig?.cooldownSec ?? 0);
   const cooldownSec = enabled ? Math.min(desiredCooldownSec, intervalSec) : desiredCooldownSec;
   const idleAutoPauseAfter = Math.max(0, asNumber(heartbeat.idleAutoPauseAfter, 0));
+  const adapterFailedAutoPauseAfter = Math.max(0, asNumber(heartbeat.adapterFailedAutoPauseAfter, 0));
 
   return {
     preset,
@@ -1692,6 +1694,7 @@ export function resolveHeartbeatPolicyForRuntimeConfig(runtimeConfigValue: unkno
     cooldownSec,
     maxConcurrentRuns,
     idleAutoPauseAfter,
+    adapterFailedAutoPauseAfter,
   };
 }
 
@@ -10060,6 +10063,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           '0'::jsonb
         )`;
 
+    // Crashloop circuit breaker: track consecutive adapter_failed runs.
+    // Nested inside idleCounterUpdate so both keys update atomically.
+    const isAdapterFailed = run.status === "failed" && result.errorCode === "adapter_failed";
+    const stateCounterUpdate = isAdapterFailed
+      ? sql`jsonb_set(
+          ${idleCounterUpdate},
+          '{consecutiveAdapterFailedRuns}',
+          to_jsonb(COALESCE((${agentRuntimeState.stateJson}::jsonb->>'consecutiveAdapterFailedRuns')::int, 0) + 1)
+        )`
+      : sql`jsonb_set(
+          ${idleCounterUpdate},
+          '{consecutiveAdapterFailedRuns}',
+          '0'::jsonb
+        )`;
+
     await db
       .update(agentRuntimeState)
       .set({
@@ -10068,7 +10086,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         lastRunId: run.id,
         lastRunStatus: run.status,
         lastError: result.errorMessage ?? null,
-        stateJson: idleCounterUpdate,
+        stateJson: stateCounterUpdate,
         totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
         totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
         totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
@@ -14691,6 +14709,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               "idle circuit breaker: skipping timer wakeup",
             );
             idleSkipped += 1;
+            skipped += 1;
+            continue;
+          }
+        }
+
+        // Crashloop circuit breaker: skip timer wakeup if agent has produced N consecutive
+        // adapter_failed runs with no useful work. Prevents churn from a broken adapter
+        // (e.g. opencode binary crash) re-waking on every heartbeat tick.
+        if (policy.adapterFailedAutoPauseAfter > 0) {
+          const runtimeState = await getRuntimeState(agent.id);
+          const stateJson = parseObject(runtimeState?.stateJson);
+          const consecutiveFailed = asNumber(stateJson.consecutiveAdapterFailedRuns, 0);
+          if (consecutiveFailed >= policy.adapterFailedAutoPauseAfter) {
+            logger.warn(
+              { agentId: agent.id, agentName: agent.name, consecutiveFailed, threshold: policy.adapterFailedAutoPauseAfter },
+              "crashloop circuit breaker: skipping timer wakeup due to consecutive adapter_failed runs",
+            );
             skipped += 1;
             continue;
           }

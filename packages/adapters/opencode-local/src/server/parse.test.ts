@@ -69,6 +69,23 @@ describe("parseOpenCodeJsonl", () => {
     expect(parsed.toolErrors).toEqual(["File not found: e2b-adapter-result.txt"]);
   });
 
+  it("silently skips events with missing or null type (regression: openai gpt-5.5 Responses-API items)", () => {
+    // The opencode binary crashes on stream items with no `type` field when using
+    // certain OpenAI models (e.g. gpt-5.5 Responses API). Our NDJSON parser must
+    // tolerate these gracefully so that any output emitted before the crash is preserved.
+    const stdout = [
+      JSON.stringify({ type: "text", sessionID: "session_456", part: { text: "partial output" } }),
+      JSON.stringify({ sessionID: "session_456" }),        // missing type
+      JSON.stringify({ type: null, sessionID: "session_456" }),  // null type
+      JSON.stringify({ type: "", sessionID: "session_456" }),    // empty type
+    ].join("\n");
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.sessionId).toBe("session_456");
+    expect(parsed.summary).toBe("partial output");
+    expect(parsed.errorMessage).toBeNull();
+  });
+
   it("detects unknown session errors", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);

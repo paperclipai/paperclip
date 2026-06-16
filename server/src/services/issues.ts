@@ -1445,6 +1445,9 @@ type IssueBlockerAttentionNode = {
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  monitorNextCheckAt?: Date | null;
+  monitorAttemptCount?: number | null;
+  executionPolicy?: unknown;
 };
 type IssueBlockerAttentionInputNode =
   Pick<
@@ -1750,6 +1753,32 @@ async function listIssueProductivityReviewMap(
   return map;
 }
 
+function hasValidBlockerMonitor(node: Pick<IssueBlockerAttentionNode, "monitorNextCheckAt" | "monitorAttemptCount" | "executionPolicy">): boolean {
+  const nextCheckAt = node.monitorNextCheckAt;
+  if (!nextCheckAt) return false;
+  const nextCheckAtMs = nextCheckAt instanceof Date ? nextCheckAt.getTime() : new Date(nextCheckAt).getTime();
+  if (Number.isNaN(nextCheckAtMs) || nextCheckAtMs <= Date.now()) return false;
+
+  const policy = node.executionPolicy as Record<string, unknown> | null | undefined;
+  const policyMonitor = policy?.monitor as Record<string, unknown> | null | undefined;
+
+  const timeoutAtRaw = policyMonitor?.timeoutAt;
+  if (timeoutAtRaw != null) {
+    const timeoutAtMs = new Date(timeoutAtRaw as string | Date).getTime();
+    if (!Number.isNaN(timeoutAtMs) && timeoutAtMs <= Date.now()) return false;
+  }
+
+  const maxAttempts = typeof policyMonitor?.maxAttempts === "number" && policyMonitor.maxAttempts > 0
+    ? policyMonitor.maxAttempts
+    : null;
+  if (maxAttempts !== null) {
+    const attemptCount = node.monitorAttemptCount ?? 0;
+    if (attemptCount >= maxAttempts) return false;
+  }
+
+  return true;
+}
+
 async function listIssueBlockerAttentionMap(
   dbOrTx: any,
   companyId: string,
@@ -1787,6 +1816,9 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
+          executionPolicy: issues.executionPolicy,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -1812,6 +1844,9 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
+          executionPolicy: issues.executionPolicy,
         })
         .from(issues)
         .where(
@@ -1847,6 +1882,9 @@ async function listIssueBlockerAttentionMap(
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,
+          monitorNextCheckAt: row.monitorNextCheckAt,
+          monitorAttemptCount: row.monitorAttemptCount,
+          executionPolicy: row.executionPolicy,
         });
         nextFrontier.add(row.blockerIssueId);
       }
@@ -2017,7 +2055,7 @@ async function listIssueBlockerAttentionMap(
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.status === "in_review") {
-      const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId);
+      const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId) || hasValidBlockerMonitor(node);
       if (hasWaitingPath) {
         return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
       }
