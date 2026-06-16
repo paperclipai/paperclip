@@ -86,6 +86,10 @@ For Tailscale-only reachability on a detected tailnet address:
 pnpm dev --bind tailnet
 ```
 
+Authenticated/private dev serving disables Vite HMR by default so browsers on
+tailnet HTTPS URLs do not try to open a separate websocket port. To force HMR
+for a controlled dev session, set `PAPERCLIP_UI_DEV_HMR=true`.
+
 Legacy aliases still map to the old broad private-network behavior:
 
 ```sh

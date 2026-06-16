@@ -43,6 +43,7 @@ export function createCachedViteHtmlRenderer(opts: {
   vite: ViteWatcherHost;
   uiRoot: string;
   brandHtml?: (html: string) => string;
+  devClientEnabled?: boolean;
 }): CachedViteHtmlRenderer {
   const uiRoot = path.resolve(opts.uiRoot);
   const templatePath = path.resolve(uiRoot, "index.html");
@@ -52,7 +53,10 @@ export function createCachedViteHtmlRenderer(opts: {
   function loadHtml(): string {
     if (cachedHtml === null) {
       const rawTemplate = fs.readFileSync(templatePath, "utf-8");
-      cachedHtml = injectViteDevPreamble(brandHtml(rawTemplate));
+      const brandedHtml = brandHtml(rawTemplate);
+      cachedHtml = opts.devClientEnabled === false
+        ? brandedHtml
+        : injectViteDevPreamble(brandedHtml);
     }
     return cachedHtml;
   }

@@ -109,6 +109,21 @@ export function resolveViteHmrHost(bindHost: string): string | undefined {
   return bindHost;
 }
 
+export function resolveViteHmrConfig(opts: {
+  enabled?: boolean;
+  serverPort: number;
+  bindHost: string;
+}): false | { host?: string; port: number; clientPort: number } {
+  if (opts.enabled === false) return false;
+  const hmrPort = resolveViteHmrPort(opts.serverPort);
+  const hmrHost = resolveViteHmrHost(opts.bindHost);
+  return {
+    ...(hmrHost ? { host: hmrHost } : {}),
+    port: hmrPort,
+    clientPort: hmrPort,
+  };
+}
+
 export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   const pathname = req.path;
   if (VITE_DEV_STATIC_PATHS.has(pathname)) return false;
@@ -147,6 +162,7 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    uiDevHmr?: boolean;
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -395,19 +411,17 @@ export async function createApp(
   if (opts.uiMode === "vite-dev") {
     const uiRoot = path.resolve(__dirname, "../../ui");
     const publicUiRoot = path.resolve(uiRoot, "public");
-    const hmrPort = resolveViteHmrPort(opts.serverPort);
-    const hmrHost = resolveViteHmrHost(opts.bindHost);
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: uiRoot,
       appType: "custom",
       server: {
         middlewareMode: true,
-        hmr: {
-          ...(hmrHost ? { host: hmrHost } : {}),
-          port: hmrPort,
-          clientPort: hmrPort,
-        },
+        hmr: resolveViteHmrConfig({
+          enabled: opts.uiDevHmr,
+          serverPort: opts.serverPort,
+          bindHost: opts.bindHost,
+        }),
         allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
       },
     });
@@ -415,6 +429,7 @@ export async function createApp(
       vite,
       uiRoot,
       brandHtml: applyUiBranding,
+      devClientEnabled: opts.uiDevHmr !== false,
     });
     const renderViteHtml = viteHtmlRenderer;
 

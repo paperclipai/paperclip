@@ -71,6 +71,7 @@ export interface Config {
   databaseBackupDir: string;
   serveUi: boolean;
   uiDevMiddleware: boolean;
+  uiDevHmr: boolean;
   secretsProvider: SecretProvider;
   secretsStrictMode: boolean;
   secretsMasterKeyFilePath: string;
@@ -312,6 +313,10 @@ export function loadConfig(): Config {
         ? process.env.SERVE_UI === "true"
         : fileConfig?.server.serveUi ?? true,
     uiDevMiddleware: process.env.PAPERCLIP_UI_DEV_MIDDLEWARE === "true",
+    uiDevHmr:
+      process.env.PAPERCLIP_UI_DEV_HMR !== undefined
+        ? process.env.PAPERCLIP_UI_DEV_HMR === "true"
+        : deploymentMode === "local_trusted",
     secretsProvider,
     secretsStrictMode,
     secretsMasterKeyFilePath:
