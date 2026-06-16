@@ -294,6 +294,25 @@ export function agentService(db: Db) {
     return new Map(rows.map((row) => [row.agentId, Number(row.spentMonthlyCents ?? 0)]));
   }
 
+  async function hydrateAgentRunStats<T extends { id: string }>(normalizedAgents: T[]) {
+    if (normalizedAgents.length === 0) return normalizedAgents.map((a) => ({ ...a, runCount: 0, lastRunAt: null as Date | null }));
+    const agentIds = normalizedAgents.map((a) => a.id);
+    const stats = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        runCount: sql<number>`count(*)::int`,
+        lastRunAt: sql<Date | null>`max(${heartbeatRuns.createdAt})`,
+      })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.agentId, agentIds))
+      .groupBy(heartbeatRuns.agentId);
+    const statsByAgentId = new Map(stats.map((s) => [s.agentId, s]));
+    return normalizedAgents.map((a) => {
+      const s = statsByAgentId.get(a.id);
+      return { ...a, runCount: s?.runCount ?? 0, lastRunAt: s?.lastRunAt ?? null };
+    });
+  }
+
   async function hydrateAgentSpend<T extends { id: string; companyId: string; spentMonthlyCents: number }>(rows: T[]) {
     const agentIds = rows.map((row) => row.id);
     const companyId = rows[0]?.companyId;
@@ -455,7 +474,8 @@ export function agentService(db: Db) {
         listCompanyAgentRows(companyId),
       ]);
       const hydrated = await hydrateAgentSpend(rows);
-      return normalizeAgentRows(hydrated, allCompanyRows);
+      const normalized = normalizeAgentRows(hydrated, allCompanyRows);
+      return hydrateAgentRunStats(normalized);
     },
 
     getById,

@@ -99,6 +99,8 @@ export interface Agent {
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
   notes: string | null;
+  runCount?: number;
+  lastRunAt?: Date | null;
   metadata: Record<string, unknown> | null;
   orgChainHealth?: AgentOrgChainHealth;
   createdAt: Date;
