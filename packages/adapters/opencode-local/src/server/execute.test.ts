@@ -1,6 +1,13 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ensureRemoteOpenCodeModelConfiguredAndAvailable } from "./execute.js";
+import {
+  ensureReferencedSharedDocsMaterialized,
+  ensureRemoteOpenCodeModelConfiguredAndAvailable,
+  extractReferencedSharedDocPaths,
+} from "./execute.js";
 
 describe("ensureRemoteOpenCodeModelConfiguredAndAvailable", () => {
   afterEach(() => {
@@ -58,5 +65,69 @@ describe("ensureRemoteOpenCodeModelConfiguredAndAvailable", () => {
         graceSec: 5,
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe("referenced shared docs materialization", () => {
+  it("extracts unique docs/*.md references from instructions", () => {
+    expect(extractReferencedSharedDocPaths([
+      "Read: docs/definition-of-done.md",
+      "Read `docs/architecture-template.md` before coding.",
+      "Ignore ../docs/secret.md and docs/not-markdown.txt.",
+      "Read: docs/definition-of-done.md",
+    ].join("\n"))).toEqual([
+      "docs/architecture-template.md",
+      "docs/definition-of-done.md",
+    ]);
+  });
+
+  it("copies referenced shared docs from the instructions bundle without overwriting workspace docs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-docs-"));
+    const cwd = path.join(root, "workspace");
+    const instructionsRootPath = path.join(root, "instructions");
+    await fs.mkdir(path.join(cwd, "docs"), { recursive: true });
+    await fs.mkdir(path.join(instructionsRootPath, "docs"), { recursive: true });
+    await fs.writeFile(path.join(instructionsRootPath, "docs", "architecture-template.md"), "# Architecture\n", "utf8");
+    await fs.writeFile(path.join(cwd, "docs", "definition-of-done.md"), "# Existing\n", "utf8");
+
+    try {
+      await ensureReferencedSharedDocsMaterialized({
+        cwd,
+        instructionsRootPath,
+        instructionsContents: [
+          "Read: docs/architecture-template.md",
+          "Read: docs/definition-of-done.md",
+        ].join("\n"),
+        onLog: async () => {},
+      });
+
+      await expect(fs.readFile(path.join(cwd, "docs", "architecture-template.md"), "utf8")).resolves.toBe("# Architecture\n");
+      await expect(fs.readFile(path.join(cwd, "docs", "definition-of-done.md"), "utf8")).resolves.toBe("# Existing\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a non-fatal placeholder for missing referenced shared docs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-docs-missing-"));
+    const cwd = path.join(root, "workspace");
+    const instructionsRootPath = path.join(root, "instructions");
+    await fs.mkdir(cwd, { recursive: true });
+    await fs.mkdir(instructionsRootPath, { recursive: true });
+
+    try {
+      await ensureReferencedSharedDocsMaterialized({
+        cwd,
+        instructionsRootPath,
+        instructionsContents: "Read: docs/backlog-process.md",
+        onLog: async () => {},
+      });
+
+      const materialized = await fs.readFile(path.join(cwd, "docs", "backlog-process.md"), "utf8");
+      expect(materialized).toContain("# Missing Shared Documentation: docs/backlog-process.md");
+      expect(materialized).toContain("Continue the run without failing");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

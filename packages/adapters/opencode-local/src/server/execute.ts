@@ -80,6 +80,67 @@ function parseModelProvider(model: string | null): string | null {
   return trimmed.slice(0, trimmed.indexOf("/")).trim() || null;
 }
 
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveSafeRelativePath(root: string, relativePath: string): string | null {
+  const normalized = path.posix.normalize(relativePath.replaceAll("\\", "/")).replace(/^\/+/, "");
+  if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../")) return null;
+  const absoluteRoot = path.resolve(root);
+  const absolutePath = path.resolve(absoluteRoot, ...normalized.split("/"));
+  const relativeToRoot = path.relative(absoluteRoot, absolutePath);
+  if (relativeToRoot === ".." || relativeToRoot.startsWith(`..${path.sep}`)) return null;
+  return absolutePath;
+}
+
+export function extractReferencedSharedDocPaths(instructionsContents: string): string[] {
+  const refs = new Set<string>();
+  const matcher = /(?:^|[^A-Za-z0-9_./-])(docs\/[A-Za-z0-9][A-Za-z0-9._/-]*\.md)\b/gm;
+  for (const match of instructionsContents.matchAll(matcher)) {
+    const normalized = path.posix.normalize(match[1]!.replaceAll("\\", "/")).replace(/^\/+/, "");
+    if (!normalized.startsWith("docs/") || normalized.includes("../")) continue;
+    refs.add(normalized);
+  }
+  return [...refs].sort((left, right) => left.localeCompare(right));
+}
+
+export async function ensureReferencedSharedDocsMaterialized(input: {
+  cwd: string;
+  instructionsRootPath: string;
+  instructionsContents: string;
+  onLog: AdapterExecutionContext["onLog"];
+}) {
+  const referencedDocs = extractReferencedSharedDocPaths(input.instructionsContents);
+  for (const relativeDocPath of referencedDocs) {
+    const targetPath = resolveSafeRelativePath(input.cwd, relativeDocPath);
+    if (!targetPath || await pathExists(targetPath)) continue;
+
+    const sourcePath = resolveSafeRelativePath(input.instructionsRootPath, relativeDocPath);
+    let content: string;
+    if (sourcePath && await pathExists(sourcePath)) {
+      content = await fs.readFile(sourcePath, "utf8");
+      await input.onLog("stderr", `[paperclip] Materialized shared doc ${relativeDocPath} from ${sourcePath}\n`);
+    } else {
+      content = [
+        `# Missing Shared Documentation: ${relativeDocPath}`,
+        "",
+        "Paperclip materialized this placeholder because AGENTS.md references this shared documentation file, but it was not present in the managed instruction bundle or project workspace.",
+        "Continue the run without failing on this missing shared doc, and mention the missing source document in your issue comment if it affects the work.",
+        "",
+      ].join("\n");
+      await input.onLog("stderr", `[paperclip] Warning: materialized placeholder for missing shared doc ${relativeDocPath}\n`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, content, "utf8");
+  }
+}
+
 function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
   return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
 }
@@ -287,6 +348,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const instructionsRootIsReadableDirectory = instructionsBundle
     ? await fs.stat(instructionsBundle.sourceRootPath).then((stat) => stat.isDirectory()).catch(() => false)
     : false;
+  if (instructionsBundle) {
+    const instructionsContents = await fs.readFile(instructionsBundle.sourceFilePath, "utf8").catch(() => "");
+    if (instructionsContents) {
+      await ensureReferencedSharedDocsMaterialized({
+        cwd,
+        instructionsRootPath: instructionsBundle.sourceRootPath,
+        instructionsContents,
+        onLog,
+      });
+    }
+  }
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   if (!executionTargetIsRemote) {
     await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
