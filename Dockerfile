@@ -120,7 +120,13 @@ ARG CLAUDE_K8S_REF=1d6a08f7c814208caa3bf2333dd7c35ca50b95ae
 # Re-pinned 2026-06-16 (BLO-10651) to 82c3cb2: reconciled type-crash
 # classification + 5-strike adapter crashloop circuit-breaker, so a gpt-5.5
 # response item missing `type` no longer crashlooped every OpenCode agent.
-ARG OPENCODE_K8S_REF=82c3cb25e9112c8197f7001a84d0c6cbf6f386ff
+# Bumped 2026-06-16 (BLO-10651) to e38117b: pin agent runtime caches under the
+# writable home (/paperclip/.runtime-cache) instead of inheriting the server's
+# /runtime-cache mount, which agent pods don't mount — opencode agents whose
+# adapterConfig.env lacked cache overrides were crashing at startup with
+# EACCES mkdir '/runtime-cache' (adapter_failed). Makes per-agent cache env
+# overrides redundant belt-and-suspenders.
+ARG OPENCODE_K8S_REF=e38117bdf54d760685ab002a94ffa810c7412273
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
