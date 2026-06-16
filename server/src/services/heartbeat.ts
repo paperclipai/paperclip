@@ -374,6 +374,12 @@ function mergeAdapterRecoveryMetadata(input: {
   };
 }
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
+// NDA-714 / NDA-959: the only wake reasons permitted to use the non-assignee
+// "notification-only" delivery bypass — deliver past a dependency-blocked gate to a
+// target agent that is NOT the issue assignee (e.g. the board approval requester).
+// Keeping this an explicit allowlist stops the persisted notificationOnlyWake context
+// bit from being trusted for unrelated reasons after a reassignment.
+const NOTIFICATION_ONLY_WAKE_REASONS = new Set<string>(["approval_approved"]);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -2073,6 +2079,26 @@ function allowsIssueInteractionWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
   return Boolean(deriveCommentId(contextSnapshot, null));
+}
+
+// NDA-959: revalidate a persisted notification-only wake against the *fresh* issue row
+// before honoring its gate bypass. CodeRabbit/Greptile flagged that
+// `context.notificationOnlyWake` is a persisted bit: if the issue is reassigned to this
+// agent before the run claims, the stale flag would otherwise let the run skip the
+// dependency / assignee-staleness gates and then take the assignee execution lock. The
+// bypass is legitimate only while ALL of these hold: the flag is set, the run's agent is
+// still NOT the current assignee, and the wake reason is allowlisted (board approval
+// requester notification).
+function isNotificationOnlyWakeForIssue(
+  context: Record<string, unknown> | null | undefined,
+  freshIssueAssigneeAgentId: string | null | undefined,
+  agentId: string | null | undefined,
+): boolean {
+  if (!context || context.notificationOnlyWake !== true) return false;
+  if (!agentId || !freshIssueAssigneeAgentId) return false;
+  if (freshIssueAssigneeAgentId === agentId) return false;
+  const wakeReason = readNonEmptyString(context.wakeReason);
+  return wakeReason != null && NOTIFICATION_ONLY_WAKE_REASONS.has(wakeReason);
 }
 
 async function listUnresolvedBlockerSummaries(
@@ -6808,14 +6834,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      // NDA-714: a non-assignee notification wake (e.g. the approval_approved
-      // requester-wake delivered to the CEO, carrying the still-blocked linked
-      // work issue as context) is flagged notificationOnlyWake at enqueue time and
-      // must survive the claim-time dependency gate just like an interaction wake.
-      // It stays bounded: the lazy-lock below only stamps executionRunId when the
-      // run's agent IS the issue assignee, so the requester's run never adopts or
-      // executes the blocked issue — it only wakes to process the approval.
-      const notificationOnlyWake = context.notificationOnlyWake === true;
+      // NDA-714 / NDA-959: a non-assignee notification wake (e.g. the
+      // approval_approved requester-wake delivered to the CEO, carrying the
+      // still-blocked linked work issue as context) is flagged notificationOnlyWake at
+      // enqueue time and must survive the claim-time dependency gate just like an
+      // interaction wake. The persisted flag is NOT trusted on its own: re-read the
+      // CURRENT assignee and require an allowlisted reason, so a reassignment to this
+      // agent (or any non-allowlisted reason) voids the bypass and the blocked run is
+      // cancelled. It stays bounded regardless: the lazy-lock below only stamps
+      // executionRunId when the run's agent IS the issue assignee.
+      let notificationOnlyWake = false;
+      if (unresolvedBlockerCount > 0 && context.notificationOnlyWake === true) {
+        const freshAssigneeAgentId = await db
+          .select({ assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0]?.assigneeAgentId ?? null);
+        notificationOnlyWake = isNotificationOnlyWakeForIssue(
+          context,
+          freshAssigneeAgentId,
+          run.agentId,
+        );
+      }
       if (
         unresolvedBlockerCount > 0 &&
         !allowsIssueInteractionWake(context) &&
@@ -7001,11 +7041,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
-    // NDA-714: a notification wake's target is intentionally NOT the issue
-    // assignee (it is the requester being notified), so the assignee-mismatch
-    // staleness gate below must not cancel it. It stays bounded via the lazy-lock
-    // assignee guard in claimQueuedRun.
-    const notificationOnlyWake = context.notificationOnlyWake === true;
+    // NDA-714 / NDA-959: a notification wake's target is intentionally NOT the issue
+    // assignee (it is the requester being notified), so the assignee-mismatch staleness
+    // gate below must not cancel it. Revalidate against the fresh issue row (loaded
+    // above) and the wake-reason allowlist rather than the persisted flag — if the issue
+    // was reassigned to this agent, the bypass is void. It stays bounded via the
+    // lazy-lock assignee guard in claimQueuedRun.
+    const notificationOnlyWake = isNotificationOnlyWakeForIssue(
+      context,
+      issue.assigneeAgentId,
+      run.agentId,
+    );
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
@@ -9828,9 +9874,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // completed, it is the issue's own closing artifact (the verdict/handoff that
           // accompanied the close), not new external input; reviving on it bounces a
           // freshly-`done`/`cancelled` ticket back to `todo`. Suppress the reopen only
-          // when EVERY reviving comment is board-sentinel-authored AND the wake is not
-          // newer than completion. A genuine post-completion board directive
-          // (requestedAt > terminalAt -> fresh) or any distinct human user's comment
+          // when EVERY reviving comment is board-sentinel-authored AND the wake is
+          // strictly older than completion. A genuine post-completion board directive
+          // (requestedAt >= terminalAt -> fresh) or any distinct human user's comment
           // still reopens, preserving the liveness invariants.
           const terminalAt =
             issue.status === "done"
@@ -9838,10 +9884,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               : issue.status === "cancelled"
                 ? issue.cancelledAt
                 : null;
+          // NDA-959 (Greptile P2): use strict `<`, not `<=`. Completion and its
+          // triggering board comment can land in the same DB transaction with an
+          // identical clock; treating exact-equal as stale would silently suppress a
+          // genuine same-millisecond post-completion directive. Exact-equal -> NOT
+          // stale (reopens).
           const reopenSignalPredatesCompletion =
             terminalAt != null &&
             deferred.requestedAt != null &&
-            deferred.requestedAt.getTime() <= terminalAt.getTime();
+            deferred.requestedAt.getTime() < terminalAt.getTime();
           const reopenSignalIsBoardSentinelOnly =
             deferredComments.length > 0 &&
             deferredComments.every(
@@ -10585,7 +10636,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .then((rows) => rows[0] ?? null);
 
           if (legacyRun) {
+            const legacyIsNotificationOnly =
+              parseObject(legacyRun.contextSnapshot).notificationOnlyWake === true;
             if (await cancelStaleScheduledRetry(legacyRun)) {
+              activeExecutionRun = null;
+            } else if (legacyIsNotificationOnly) {
+              // NDA-959: a notification-only run (non-assignee approval-requester wake)
+              // must never be adopted as the issue's execution owner. Stamping its id
+              // into issues.executionRunId would break the "notify-only, never adopts
+              // the blocked work" contract and falsely show the blocked issue as running
+              // under the requester. Leave the execution lock unset.
               activeExecutionRun = null;
             } else {
               activeExecutionRun = legacyRun;
@@ -10621,19 +10681,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           !dependencyReadiness.isDependencyReady &&
           allowsIssueInteractionWake(enrichedContextSnapshot);
 
-        // NDA-714: a wake whose target agent is NOT this issue's assignee is a
-        // *notification* (e.g. the approval_approved requester-wake delivered to
+        // NDA-714 / NDA-959: a wake whose target agent is NOT this issue's assignee
+        // is a *notification* (e.g. the approval_approved requester-wake delivered to
         // the CEO, carrying the linked — and still-blocked — work issue as its
         // context). The target will never execute that issue, so its dependency
-        // readiness must not gate delivery. Gating it here is exactly the
-        // approval-wake suppression (wakeRunId:null) that forced manual board
-        // pings. Deliver it, bounded like an interaction wake so it never runs
-        // the blocked issue's work.
+        // readiness must not gate delivery. Gating it here is exactly the approval-wake
+        // suppression (wakeRunId:null) that forced manual board pings. Deliver it,
+        // bounded like an interaction wake so it never runs the blocked issue's work.
+        // The reason is allowlisted so ONLY genuine notification reasons (board
+        // approval requester) get the bypass — without it, any non-assignee wake on a
+        // blocked issue would be delivered + flagged notificationOnlyWake.
+        const notificationWakeReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason;
         const notificationWake = Boolean(
           dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
             issue.assigneeAgentId &&
-            agentId !== issue.assigneeAgentId,
+            agentId !== issue.assigneeAgentId &&
+            notificationWakeReason != null &&
+            NOTIFICATION_ONLY_WAKE_REASONS.has(notificationWakeReason),
         );
 
         if (dependencyReadiness && (blockedInteractionWake || notificationWake)) {

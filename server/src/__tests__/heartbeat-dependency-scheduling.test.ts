@@ -568,6 +568,118 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
+  it("does NOT deliver a non-assignee wake on a blocked issue when the reason is not allowlisted (NDA-959)", async () => {
+    // CodeRabbit/Greptile narrowing: the notification-only delivery bypass must be
+    // scoped to allowlisted reasons (board approval requester), not granted to ANY
+    // non-assignee wake on a blocked issue. A non-assignee wake whose reason is NOT in
+    // NOTIFICATION_ONLY_WAKE_REASONS must still be suppressed by the dependency gate
+    // (status:"skipped", reason:"issue_dependencies_blocked"), so the over-broad
+    // bypass cannot leak stray runs into the queue.
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Bystander",
+        role: "manager",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Upstream blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked work issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: assigneeAgentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    // Non-assignee, non-allowlisted reason ("issue_assigned"), no commentId so it is
+    // NOT an interaction wake either. The only way this could be delivered is the
+    // pre-NDA-959 over-broad notification bypass.
+    const strayWake = await heartbeat.wakeup(otherAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_assigned" },
+    });
+    expect(strayWake).toBeNull();
+
+    const strayWakeSuppressed = await waitForCondition(async () => {
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, otherAgentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${blockedIssueId}`,
+          ),
+        )
+        .orderBy(agentWakeupRequests.requestedAt)
+        .then((rows) => rows[0] ?? null);
+      return Boolean(
+        wakeup && wakeup.status === "skipped" && wakeup.reason === "issue_dependencies_blocked",
+      );
+    });
+    expect(strayWakeSuppressed).toBe(true);
+
+    // No run was ever created for the stray wake, and the blocked issue stays unowned.
+    const strayRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, otherAgentId));
+    expect(strayRuns).toHaveLength(0);
+
+    const blockedIssueAfter = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blockedIssueAfter).toMatchObject({ status: "todo", executionRunId: null });
+  });
+
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
