@@ -19,7 +19,6 @@ const manifest: PaperclipPluginManifestV1 = {
   capabilities: [
     "events.subscribe",
     "costs.read",
-    "issues.read",
     "issue.comments.create",
     "plugin.state.read",
     "plugin.state.write",

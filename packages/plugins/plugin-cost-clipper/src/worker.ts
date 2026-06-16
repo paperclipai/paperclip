@@ -270,7 +270,7 @@ const plugin = definePlugin({
   async onValidateConfig(config) {
     const errors: string[] = [];
     const c = config as Partial<CostClipperConfig>;
-    if (c.minSamples !== undefined && (!Number.isFinite(Number(c.minSamples)) || Number(c.minSamples) < 2)) {
+    if (c.minSamples !== undefined && (!Number.isInteger(Number(c.minSamples)) || Number(c.minSamples) < 2)) {
       errors.push("minSamples must be an integer >= 2");
     }
     if (c.zThreshold !== undefined && (!Number.isFinite(Number(c.zThreshold)) || Number(c.zThreshold) < 1)) {
@@ -278,7 +278,7 @@ const plugin = definePlugin({
     }
     if (
       c.absoluteCentsCeiling !== undefined &&
-      (!Number.isFinite(Number(c.absoluteCentsCeiling)) || Number(c.absoluteCentsCeiling) < 1)
+      (!Number.isInteger(Number(c.absoluteCentsCeiling)) || Number(c.absoluteCentsCeiling) < 1)
     ) {
       errors.push("absoluteCentsCeiling must be an integer >= 1");
     }

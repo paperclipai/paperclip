@@ -76,6 +76,31 @@ describe("cost clipper plugin", () => {
     );
   });
 
+  it("does not request capabilities it never uses (least privilege)", () => {
+    // The worker only posts comments (issue.comments.create); it never reads
+    // issues, so issues.read must not be in the manifest.
+    expect(manifest.capabilities).not.toContain("issues.read");
+  });
+
+  it("validates instance config against the manifest schema", async () => {
+    const validate = (config: Record<string, unknown>) => plugin.definition.onValidateConfig!(config);
+
+    // Defaults and well-formed overrides pass.
+    expect((await validate({})).ok).toBe(true);
+    expect((await validate({ minSamples: 10, zThreshold: 2.5, absoluteCentsCeiling: 5000 })).ok).toBe(true);
+
+    // Integer-typed fields reject non-integers (manifest declares them `integer`).
+    expect((await validate({ minSamples: 3.5 })).ok).toBe(false);
+    expect((await validate({ absoluteCentsCeiling: 99.9 })).ok).toBe(false);
+    // zThreshold is a number and accepts decimals.
+    expect((await validate({ zThreshold: 2.5 })).ok).toBe(true);
+
+    // Below-minimum bounds still reject.
+    expect((await validate({ minSamples: 1 })).ok).toBe(false);
+    expect((await validate({ zThreshold: 0.5 })).ok).toBe(false);
+    expect((await validate({ absoluteCentsCeiling: 0 })).ok).toBe(false);
+  });
+
   it("writes a cost metric for every cost event", async () => {
     const harness = harnessForTest();
     harness.seed({ issues: [seededIssue()] });
