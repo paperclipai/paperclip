@@ -326,6 +326,10 @@ function DraftCard({
             </div>
           ))}
         </div>
+      ) : draft.credentialRefs.length > 0 ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          Keys from this config stay draft-only until an admin maps them to an approved template.
+        </p>
       ) : (
         <p className="mt-3 text-xs text-muted-foreground">No keys needed for this one.</p>
       )}

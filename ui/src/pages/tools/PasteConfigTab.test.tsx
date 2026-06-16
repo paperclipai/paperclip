@@ -299,7 +299,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
             transport: "local_stdio",
             status: "draft",
             config: { importedCommand: "npx -y @modelcontextprotocol/server-github", importedArgs: [] },
-            credentialRefs: [],
+            credentialRefs: [{ name: "GITHUB_TOKEN", secretId: "draft-token", placement: "env", key: "GITHUB_TOKEN" }],
             credentialFields: [],
             warnings: ["Imported stdio commands stay draft-only unless mapped to an approved Paperclip template."],
           },
@@ -311,5 +311,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     expect(container.textContent).toContain("We found 1 app in that config");
     expect(buttonStartingWith("Check actions")).toBeFalsy();
     expect(container.textContent).toContain("stay as drafts until an admin");
+    expect(container.textContent).toContain("Keys from this config stay draft-only");
+    expect(container.textContent).not.toContain("No keys needed for this one.");
   });
 });
