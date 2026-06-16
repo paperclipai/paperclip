@@ -1,13 +1,26 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerAgentCommands } from "../commands/client/agent.js";
 import { registerIssueCommands } from "../commands/client/issue.js";
 import { registerRunCommands } from "../commands/client/run.js";
+import { shouldAutoEnableUiDevMiddleware } from "../commands/run.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const RUN_ID = "33333333-3333-4333-8333-333333333333";
 const ISSUE_ID = "44444444-4444-4444-8444-444444444444";
+
+function createRunConfig(deploymentMode: "local_trusted" | "authenticated") {
+  return {
+    server: {
+      deploymentMode,
+      exposure: "private",
+    },
+  } as any;
+}
 
 function createProgram(): Command {
   const program = new Command();
@@ -216,5 +229,56 @@ describe("run inspection commands", () => {
     expect(fetchMock.mock.calls[2]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/runs");
     expect(fetchMock.mock.calls[3]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/live-runs");
     expect(fetchMock.mock.calls[4]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/active-run");
+  });
+});
+
+describe("paperclipai run UI mode selection", () => {
+  it("keeps Vite middleware for local trusted source checkouts", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-run-ui-"));
+    try {
+      const entrypoint = path.join(root, "server/src/index.ts");
+      fs.mkdirSync(path.join(root, "ui/dist"), { recursive: true });
+      fs.writeFileSync(path.join(root, "ui/dist/index.html"), "<html></html>", "utf8");
+
+      expect(shouldAutoEnableUiDevMiddleware({
+        entrypoint,
+        projectRoot: root,
+        config: createRunConfig("local_trusted"),
+      })).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses static UI for authenticated source checkouts when a built UI exists", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-run-ui-"));
+    try {
+      const entrypoint = path.join(root, "server/src/index.ts");
+      fs.mkdirSync(path.join(root, "ui/dist"), { recursive: true });
+      fs.writeFileSync(path.join(root, "ui/dist/index.html"), "<html></html>", "utf8");
+
+      expect(shouldAutoEnableUiDevMiddleware({
+        entrypoint,
+        projectRoot: root,
+        config: createRunConfig("authenticated"),
+      })).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to Vite middleware for authenticated source checkouts without a built UI", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-run-ui-"));
+    try {
+      const entrypoint = path.join(root, "server/src/index.ts");
+
+      expect(shouldAutoEnableUiDevMiddleware({
+        entrypoint,
+        projectRoot: root,
+        config: createRunConfig("authenticated"),
+      })).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
