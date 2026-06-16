@@ -5132,3 +5132,127 @@ describeEmbeddedPostgres("recoveryService merged-PR thread auto-close (EDG-6246)
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describeEmbeddedPostgres("issueService.create github_mirror idempotency", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-mirror-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  function mirrorInput(originId: string) {
+    return {
+      title: `Mirrored: ${originId}`,
+      description: "mirrored from GitHub",
+      status: "todo" as const,
+      priority: "medium" as const,
+      originKind: "github_mirror",
+      originId,
+    };
+  }
+
+  async function countIssues(companyId: string) {
+    return db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.companyId, companyId))
+      .then((rows) => rows.length);
+  }
+
+  it("re-mirroring an already-mirrored GH issue is a no-op (returns the existing EDG)", async () => {
+    const companyId = await seedCompany();
+    const originId = "edgeview-finance-business/edgeview-finance-crm#1038";
+
+    const first = await svc.create(companyId, mirrorInput(originId));
+    const second = await svc.create(companyId, mirrorInput(originId));
+
+    expect(second.id).toBe(first.id);
+    expect(second.identifier).toBe(first.identifier);
+    expect(await countIssues(companyId)).toBe(1);
+  });
+
+  it("mirrors distinct GH issues to distinct EDG issues", async () => {
+    const companyId = await seedCompany();
+
+    const a = await svc.create(companyId, mirrorInput("owner/repo#1"));
+    const b = await svc.create(companyId, mirrorInput("owner/repo#2"));
+
+    expect(a.id).not.toBe(b.id);
+    expect(await countIssues(companyId)).toBe(2);
+  });
+
+  it("allows a fresh mirror once the prior EDG reached a terminal state", async () => {
+    const companyId = await seedCompany();
+    const originId = "owner/repo#948";
+
+    const first = await svc.create(companyId, mirrorInput(originId));
+    // Terminal issues are excluded from the partial unique index, so the GH issue
+    // can be re-mirrored if it is reopened/re-triaged after the original was closed.
+    await svc.update(first.id, { status: "done" });
+
+    const second = await svc.create(companyId, mirrorInput(originId));
+    expect(second.id).not.toBe(first.id);
+    expect(await countIssues(companyId)).toBe(2);
+  });
+
+  it("collapses a concurrent re-mirror race to a single EDG via the unique index", async () => {
+    const companyId = await seedCompany();
+    const originId = "owner/repo#945";
+
+    const [a, b] = await Promise.all([
+      svc.create(companyId, mirrorInput(originId)),
+      svc.create(companyId, mirrorInput(originId)),
+    ]);
+
+    expect(a.id).toBe(b.id);
+    expect(await countIssues(companyId)).toBe(1);
+  });
+
+  it("does not dedup manual issues that happen to share an originId", async () => {
+    const companyId = await seedCompany();
+
+    const a = await svc.create(companyId, {
+      title: "Manual one",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      originKind: "manual",
+      originId: "owner/repo#1",
+    });
+    const b = await svc.create(companyId, {
+      title: "Manual two",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      originKind: "manual",
+      originId: "owner/repo#1",
+    });
+
+    expect(a.id).not.toBe(b.id);
+    expect(await countIssues(companyId)).toBe(2);
+  });
+});
