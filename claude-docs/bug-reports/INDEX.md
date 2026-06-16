@@ -11,13 +11,18 @@ against the real source before any fix.
 
 | ID | Item | Severity | Title | Status | Fix commit |
 |----|------|----------|-------|--------|-----------|
-| [BUG-001](BUG-001-a4g-silent-project-create-failure.md) | A4/G | HIGH | Silent project-create failure ships pilots without worktree isolation | Fixed | _pending_ |
-| [BUG-002](BUG-002-a3-silent-guards-patch-failure.md) | A3 | MEDIUM | Silent guards PATCH failure leaves stale budget cap | Fixed | _pending_ |
-| [BUG-003](BUG-003-a5-prototype-unsafe-model-alias.md) | A5 | MEDIUM | Prototype-unsafe catalog model-alias lookup | Fixed | _pending_ |
-| [BUG-004](BUG-004-a5-preview-install-divergence.md) | A5 | MEDIUM | Catalog import preview diverges from install (omits adapter/model defaults) | Fixed | _pending_ |
-| [BUG-005](BUG-005-a1b-cold-rotation-comment-and-test-gap.md) | A1b/A1a | LOW | Cold-rotation comment contradicts outer threshold guard; missing rotation test coverage | Fixed | _pending_ |
-| [BUG-006](BUG-006-b4-test-slice-vacuous-assertions.md) | B4 | MEDIUM | Plan-gate criteria test slices to EOF — section assertions pass vacuously | Fixed | _pending_ |
-| [BUG-007](BUG-007-a2-diff-only-reviewer-blind-spot.md) | A2 | LOW | Diff-only reviewer scope creates cross-file auth/concurrency blind spot | Fixed | _pending_ |
+| [BUG-001](BUG-001-a4g-silent-project-create-failure.md) | A4/G | HIGH | Silent project-create failure ships pilots without worktree isolation | Fixed | `bf1f7778` |
+| [BUG-002](BUG-002-a3-silent-guards-patch-failure.md) | A3 | MEDIUM | Silent guards PATCH failure leaves stale budget cap | Fixed | `3b54202b` |
+| [BUG-003](BUG-003-a5-prototype-unsafe-model-alias.md) | A5 | MEDIUM | Prototype-unsafe catalog model-alias lookup | Fixed | `69797e5d` |
+| [BUG-004](BUG-004-a5-preview-install-divergence.md) | A5 | MEDIUM | Catalog import preview diverges from install (omits adapter/model defaults) | Fixed | `48801684` |
+| [BUG-005](BUG-005-a1b-cold-rotation-comment-and-test-gap.md) | A1b/A1a | LOW | Cold-rotation comment contradicts outer threshold guard; missing rotation test coverage | Fixed | `d53332b7` (comment, concurrent) + `cd38b1e3` (tests) |
+| [BUG-006](BUG-006-b4-test-slice-vacuous-assertions.md) | B4 | MEDIUM | Plan-gate criteria test slices to EOF — section assertions pass vacuously | Fixed | `a4aa4022` (concurrent session) |
+| [BUG-007](BUG-007-a2-diff-only-reviewer-blind-spot.md) | A2 | LOW | Diff-only reviewer scope creates cross-file auth/concurrency blind spot | Not started | — |
+
+> **Concurrent activity:** a second session was committing the same BUG-00x fixes to
+> `pilot/b1-dogfood` during this work (BUG-005 comment and all of BUG-006). Their edits were
+> byte-identical to the prescribed fixes, so they are accepted and credited above. BUG-007 paused
+> pending coordination to avoid colliding on the reviewer AGENTS.md prompts.
 
 ## Not fixed — working as intended
 
