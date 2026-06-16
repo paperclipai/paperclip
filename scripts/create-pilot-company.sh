@@ -195,13 +195,33 @@ PLAN_JSON="$(curl -fsS -X POST "$API_BASE/plans" \
     const body = { companyId, title, overview: overview || null, gateProfile, assigneeAgentId };
     if (projectId) body.projectId = projectId;
     process.stdout.write(JSON.stringify(body));
-  ' "$COMPANY_ID" "$PILOT_TITLE" "$PILOT_OVERVIEW" "$GATE_PROFILE" "$CTO_ID" "${PROJECT_ID:-}")")"
+  ' "$COMPANY_ID" "$PILOT_TITLE" "$PILOT_OVERVIEW" "$GATE_PROFILE" "$CTO_ID" "${PROJECT_ID:-}")")" || {
+    echo "✗ pilot plan creation request failed (POST /plans was rejected)." >&2
+    exit 1
+  }
 
-PLAN_ID="$(printf '%s' "$PLAN_JSON" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(d.issue.id)')"
+# Guard the id extraction: a server error body has no issue.id, and an unguarded
+# d.issue.id throws — which under set -e would abort with a node stack and never
+# show the server's error. Print the raw response instead.
+PLAN_ID="$(printf '%s' "$PLAN_JSON" | node -e '
+  try {
+    const d = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (!d.issue || !d.issue.id) throw new Error("no issue.id");
+    process.stdout.write(d.issue.id);
+  } catch (e) { process.exit(7); }
+')" || {
+    echo "✗ pilot plan creation returned an unexpected response (no issue.id)." >&2
+    echo "  response: $PLAN_JSON" >&2
+    exit 1
+  }
 echo "✓ plan created: issueId=$PLAN_ID"
 
 echo "▶ Activating plan (wakes the architect) …"
-curl -fsS -X POST "$API_BASE/plans/$PLAN_ID/activate" >/dev/null
+curl -fsS -X POST "$API_BASE/plans/$PLAN_ID/activate" >/dev/null || {
+  echo "✗ activate failed — plan $PLAN_ID was created but is still DRAFT." >&2
+  echo "  activate it manually: curl -fsS -X POST $API_BASE/plans/$PLAN_ID/activate" >&2
+  exit 1
+}
 echo "✓ plan activated."
 
 cat <<EOF

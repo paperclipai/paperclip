@@ -790,8 +790,8 @@ function buildCatalogImportInput(
   companyId: string,
   prepared: CatalogTeamPreparedSource,
   options: CatalogTeamImportOptions,
+  defaultAdapterType: string,
 ): CompanyPortabilityImport {
-  const defaultAdapterType = defaultSafeCatalogAdapterType();
   const catalogModelHints = readCatalogAgentModelHints(prepared.source.files, prepared.team.agentSlugs);
   return {
     ...buildPortabilityInput(companyId, prepared.source, options),
@@ -912,7 +912,7 @@ export function teamsCatalogService(db: Db) {
     options: CatalogTeamImportOptions = {},
   ): Promise<CatalogTeamImportPreviewResult> {
     const prepared = await prepareCatalogTeamSource(companyId, catalogRef, options);
-    const previewInput = buildCatalogImportInput(companyId, prepared, options);
+    const previewInput = buildCatalogImportInput(companyId, prepared, options, defaultSafeCatalogAdapterType());
     const portabilityPreview = await portability.previewImport(previewInput, {
       mode: "agent_safe",
       sourceCompanyId: companyId,
@@ -977,7 +977,8 @@ export function teamsCatalogService(db: Db) {
       throw unprocessable(`Catalog team source preparation failed: ${prepared.errors.join("; ")}`);
     }
 
-    const importInput = buildCatalogImportInput(companyId, prepared, options);
+    const defaultAdapterType = defaultSafeCatalogAdapterType();
+    const importInput = buildCatalogImportInput(companyId, prepared, options, defaultAdapterType);
     const importPreview = await portability.previewImport(importInput, {
       mode: "agent_safe",
       sourceCompanyId: companyId,
@@ -985,7 +986,6 @@ export function teamsCatalogService(db: Db) {
     if (importPreview.errors.length > 0) {
       throw unprocessable(`Catalog team import preview has errors: ${importPreview.errors.join("; ")}`);
     }
-    const defaultAdapterType = defaultSafeCatalogAdapterType();
     const defaultedAdapterSlugs = prepared.team.agentSlugs.filter(
       (slug) => !options.adapterOverrides?.[slug],
     );

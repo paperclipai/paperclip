@@ -418,6 +418,20 @@ describe("teamsCatalogService", () => {
       expect(overrides["architect"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-opus-4-8" } });
     });
 
+    it("preview of a no-model-hint team produces clean adapter defaults, no adapterConfig (BUG-004 coverage)", async () => {
+      const svc = teamsCatalogService({} as any);
+
+      const result = await svc.previewCatalogTeamImport("company-1", "core-exec-team");
+
+      // The no-model-hint path now runs through the adapter-defaults machinery too;
+      // confirm it yields a bare adapterType (no spurious adapterConfig) and no errors.
+      const [previewArg] = mockCompanyPortabilityService.previewImport.mock.calls.at(-1)!;
+      const overrides = previewArg.adapterOverrides as Record<string, { adapterType: string; adapterConfig?: unknown }>;
+      expect(overrides["ceo"]).toEqual({ adapterType: "claude_local" });
+      expect(overrides["cto"]).toEqual({ adapterType: "claude_local" });
+      expect(result.errors).toEqual([]);
+    });
+
     describe("readCatalogAgentModelHints — frontmatter resolution safety (BUG-003)", () => {
       const md = (model: string) => `---\nmodel: ${model}\n---\n# agent\n`;
 

@@ -97,8 +97,14 @@ if [[ -z "$PROJECT_ID" ]]; then
       const p = JSON.parse(require("fs").readFileSync(0, "utf8"));
       const list = Array.isArray(p) ? p : (p.projects ?? []);
       // Prefer the named pilot project; fall back to the sole project for back-compat.
-      const pilot = list.find((x) => x && x.name === "Pilot") ?? list[0] ?? null;
-      process.stdout.write(pilot?.id ?? "");
+      const pilot = list.find((x) => x && x.name === "Pilot");
+      // Warn when falling back by position (no "Pilot" match but other projects
+      // exist) so a wrong-project selection is never silent (BUG-008 follow-up).
+      if (!pilot && list[0]) {
+        const picked = list[0].name ?? list[0].id;
+        process.stderr.write(`warning: no project named "Pilot"; falling back to first project (${picked})\n`);
+      }
+      process.stdout.write((pilot ?? list[0])?.id ?? "");
     } catch (e) { process.stdout.write(""); }
   ')"
 fi
@@ -136,9 +142,24 @@ PLAN_JSON="$(curl -fsS -X POST "$API_BASE/plans" \
     };
     if (projectId) body.projectId = projectId;
     process.stdout.write(JSON.stringify(body));
-  ' "$COMPANY_ID" "$TITLE" "$OVERVIEW" "$GATE_PROFILE" "$ASSIGNEE_ID" "$CHILD_TITLE" "$CHILD_DESC" "${PROJECT_ID:-}")")"
+  ' "$COMPANY_ID" "$TITLE" "$OVERVIEW" "$GATE_PROFILE" "$ASSIGNEE_ID" "$CHILD_TITLE" "$CHILD_DESC" "${PROJECT_ID:-}")")" || {
+    echo "✗ draft plan creation request failed (POST /plans was rejected)." >&2
+    exit 1
+  }
 
-PLAN_ID="$(printf '%s' "$PLAN_JSON" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(d.issue.id)')"
+# Guard the id extraction so a server error body (no issue.id) prints the response
+# instead of aborting under set -e with a bare node TypeError.
+PLAN_ID="$(printf '%s' "$PLAN_JSON" | node -e '
+  try {
+    const d = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (!d.issue || !d.issue.id) throw new Error("no issue.id");
+    process.stdout.write(d.issue.id);
+  } catch (e) { process.exit(7); }
+')" || {
+    echo "✗ draft plan creation returned an unexpected response (no issue.id)." >&2
+    echo "  response: $PLAN_JSON" >&2
+    exit 1
+  }
 EFFECTIVE="$(printf '%s' "$PLAN_JSON" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(String(d.planDetails && d.planDetails.gateProfile || ""))')"
 STATE="$(printf '%s' "$PLAN_JSON" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(String(d.planDetails && d.planDetails.state || ""))')"
 

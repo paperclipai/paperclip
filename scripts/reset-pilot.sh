@@ -147,15 +147,26 @@ echo ""
 # 1. Find all root issues that are plans
 # ---------------------------------------------------------------------------
 echo "▶ Fetching all issues for company…"
-ISSUES_JSON="$(curl -fsS "$API_BASE/companies/$COMPANY_ID/issues?status=backlog,todo,in_progress,in_review,blocked,done,cancelled,stopped&limit=500")"
+ISSUES_JSON="$(curl -fsS "$API_BASE/companies/$COMPANY_ID/issues?status=backlog,todo,in_progress,in_review,blocked,done,cancelled,stopped&limit=500")" || {
+  echo "✗ could not fetch issues for company $COMPANY_ID — reset incomplete." >&2
+  echo "  (Budget guards/pauses were already cleared; no plans were deleted.) Fix the server, then re-run." >&2
+  exit 1
+}
 
 PLAN_IDS="$(printf '%s' "$ISSUES_JSON" | node -e '
-  const issues = JSON.parse(require("fs").readFileSync(0, "utf8"));
-  const list = Array.isArray(issues) ? issues : (issues.issues || []);
-  // Root issues with no parent = plan roots
-  const roots = list.filter((i) => !i.parentIssueId);
-  process.stdout.write(roots.map((i) => i.id).join("\n"));
-')"
+  try {
+    const issues = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const list = Array.isArray(issues) ? issues : (issues.issues || []);
+    // Root issues with no parent = plan roots
+    const roots = list.filter((i) => !i.parentIssueId);
+    process.stdout.write(roots.map((i) => i.id).join("\n"));
+  } catch (e) { process.exit(7); }
+')" || {
+  echo "✗ unexpected issues response (could not parse) — reset incomplete. Response head:" >&2
+  printf '%s\n' "$ISSUES_JSON" | head -c 400 >&2
+  echo "" >&2
+  exit 1
+}
 
 if [[ -z "$PLAN_IDS" ]]; then
   echo "  no plans found — nothing to delete"
@@ -190,13 +201,17 @@ done
 # ---------------------------------------------------------------------------
 echo ""
 echo "▶ Looking up root CTO for company…"
-AGENTS_JSON="$(curl -fsS "$API_BASE/companies/$COMPANY_ID/agents")"
+# Plans are already deleted by here, so a failed agents fetch must NOT abort and
+# orphan the reset — fall back to empty and let the no-CTO path warn-and-skip.
+AGENTS_JSON="$(curl -fsS "$API_BASE/companies/$COMPANY_ID/agents" 2>/dev/null || echo '[]')"
 CTO_ID="$(printf '%s' "$AGENTS_JSON" | node -e '
-  const agents = JSON.parse(require("fs").readFileSync(0, "utf8"));
-  const list = Array.isArray(agents) ? agents : (agents.agents || []);
-  const cto = list.find((a) => a.reportsTo == null && (a.role === "cto" || /cto/i.test(a.name)))
-            || list.find((a) => a.reportsTo == null);
-  process.stdout.write(cto ? cto.id : "");
+  try {
+    const agents = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const list = Array.isArray(agents) ? agents : (agents.agents || []);
+    const cto = list.find((a) => a.reportsTo == null && (a.role === "cto" || /cto/i.test(a.name)))
+              || list.find((a) => a.reportsTo == null);
+    process.stdout.write(cto ? cto.id : "");
+  } catch (e) { process.stdout.write(""); }
 ')"
 
 if [[ -z "$CTO_ID" ]]; then
