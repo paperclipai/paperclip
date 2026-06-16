@@ -2388,6 +2388,42 @@ export interface HeartbeatServiceOptions {
   environmentRuntime?: HeartbeatEnvironmentRuntime;
 }
 
+// Runtime fairness caps for the single-worker runtime. Both 0 = unlimited (today's behavior).
+// Set the env vars before onboarding additional tenants so one company's queued work cannot
+// starve another's. Per-company is the fairness primitive; global bounds total worker concurrency.
+export function parseRuntimeFairnessCaps(env: NodeJS.ProcessEnv = process.env): {
+  perCompany: number;
+  global: number;
+} {
+  const parse = (raw: string | undefined) => {
+    const n = Number.parseInt((raw ?? "").trim(), 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  return {
+    perCompany: parse(env.VALADRIEN_OS_MAX_CONCURRENT_RUNS_PER_COMPANY),
+    global: parse(env.VALADRIEN_OS_MAX_CONCURRENT_RUNS_GLOBAL),
+  };
+}
+
+// Narrow a per-agent slot budget by the per-company and global caps. A cap of 0 is ignored
+// (unlimited). Counts are the CURRENT running-run totals for the company / whole worker.
+export function computeFairnessAvailableSlots(input: {
+  agentAvailable: number;
+  perCompanyCap: number;
+  companyRunning: number;
+  globalCap: number;
+  globalRunning: number;
+}): number {
+  let slots = Math.max(0, input.agentAvailable);
+  if (input.perCompanyCap > 0) {
+    slots = Math.min(slots, Math.max(0, input.perCompanyCap - input.companyRunning));
+  }
+  if (input.globalCap > 0) {
+    slots = Math.min(slots, Math.max(0, input.globalCap - input.globalRunning));
+  }
+  return slots;
+}
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -5913,6 +5949,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countRunningRunsForCompany(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+    return Number(count ?? 0);
+  }
+
+  async function countRunningRunsGlobal() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -6856,8 +6909,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      let availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
+
+      // Per-tenant fairness + global backpressure (additive; 0 = unlimited). Only query the
+      // running-run counts when a cap is actually set, so the default (both off) adds zero
+      // overhead and is behaviourally identical to before.
+      const fairnessCaps = parseRuntimeFairnessCaps();
+      if (fairnessCaps.perCompany > 0 || fairnessCaps.global > 0) {
+        const companyRunning = fairnessCaps.perCompany > 0 ? await countRunningRunsForCompany(agent.companyId) : 0;
+        const globalRunning = fairnessCaps.global > 0 ? await countRunningRunsGlobal() : 0;
+        const narrowed = computeFairnessAvailableSlots({
+          agentAvailable: availableSlots,
+          perCompanyCap: fairnessCaps.perCompany,
+          companyRunning,
+          globalCap: fairnessCaps.global,
+          globalRunning,
+        });
+        if (narrowed < availableSlots) {
+          logger.info(
+            {
+              agentId,
+              companyId: agent.companyId,
+              agentAvailable: availableSlots,
+              narrowed,
+              perCompanyCap: fairnessCaps.perCompany,
+              globalCap: fairnessCaps.global,
+            },
+            "queued runs deferred by runtime fairness caps",
+          );
+        }
+        availableSlots = narrowed;
+        if (availableSlots <= 0) return [];
+      }
 
       const queuedRuns = await db
         .select()
