@@ -188,6 +188,20 @@ export interface EventFilter {
 }
 
 /**
+ * W3C trace context propagated by the server on a bus event so plugins can
+ * stitch their spans onto the originating server span. Vendor-neutral: the
+ * core emits raw trace ids, the plugin owns all OTel translation.
+ */
+export interface PluginEventTraceContext {
+  /** 32-char hex W3C trace id. */
+  traceId: string;
+  /** 16-char hex parent span id. */
+  spanId: string;
+  /** W3C trace flags (e.g. 1 = sampled). */
+  traceFlags?: number;
+}
+
+/**
  * Envelope wrapping every domain event delivered to a plugin worker.
  *
  * @see PLUGIN_SPEC.md §16 — Event System
@@ -209,6 +223,8 @@ export interface PluginEvent<TPayload = unknown> {
   entityType?: string;
   /** UUID of the company this event belongs to. */
   companyId: string;
+  /** W3C trace context propagated by the server, when a span was active. */
+  traceContext?: PluginEventTraceContext;
   /** Typed event payload. */
   payload: TPayload;
 }
