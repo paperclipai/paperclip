@@ -126,7 +126,11 @@ ARG CLAUDE_K8S_REF=1d6a08f7c814208caa3bf2333dd7c35ca50b95ae
 # adapterConfig.env lacked cache overrides were crashing at startup with
 # EACCES mkdir '/runtime-cache' (adapter_failed). Makes per-agent cache env
 # overrides redundant belt-and-suspenders.
-ARG OPENCODE_K8S_REF=e38117bdf54d760685ab002a94ffa810c7412273
+# Bumped 2026-06-16 (PEN-906) to f1ec78b: a clean opencode run (final answer +
+# step_finish reason=stop) is no longer marked adapter_failed just because an
+# in-session tool call errored (e.g. a `read` on a missing /docs/*-template.md).
+# Stops discarding completed work and re-billing redundant retries.
+ARG OPENCODE_K8S_REF=f1ec78be33cca917d038579034078448156734da
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
