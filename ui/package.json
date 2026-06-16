@@ -48,7 +48,7 @@
     "@paperclipai/shared": "workspace:*",
     "@radix-ui/react-slot": "^1.2.4",
     "@tailwindcss/typography": "^0.5.19",
-    "@tanstack/react-query": "^5.90.21",
+    "@tanstack/react-query": "^5.101.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
