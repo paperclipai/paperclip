@@ -67,13 +67,50 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
-  const nextConfig = {
+  const notes = [
+    "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+  ];
+  const nextConfig: Record<string, unknown> = {
     ...existingConfig,
     permission: {
       ...existingPermission,
       external_directory: "allow",
     },
   };
+
+  // Inject per-model responseFormat: json_object when jsonMode is enabled. This
+  // constrains the model's output to valid JSON on every request, preventing
+  // <think> tags and free-text preambles from leaking into structured-output
+  // agents (Local-AI Catalog Enricher, Doc Extractor, SKU Cataloger).
+  const jsonMode = input.config.jsonMode === true;
+  const configModel = typeof input.config.model === "string" ? input.config.model.trim() : "";
+  const slashIdx = configModel.indexOf("/");
+  if (jsonMode && slashIdx > 0 && slashIdx < configModel.length - 1) {
+    const providerId = configModel.slice(0, slashIdx);
+    const modelId = configModel.slice(slashIdx + 1);
+    const baseProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
+    const baseProviderEntry = isPlainObject(baseProvider[providerId]) ? baseProvider[providerId] : {};
+    const baseModels = isPlainObject(baseProviderEntry.models) ? baseProviderEntry.models : {};
+    const baseModelEntry = isPlainObject(baseModels[modelId]) ? baseModels[modelId] : {};
+    nextConfig.provider = {
+      ...baseProvider,
+      [providerId]: {
+        ...baseProviderEntry,
+        models: {
+          ...baseModels,
+          [modelId]: {
+            ...baseModelEntry,
+            options: {
+              ...(isPlainObject(baseModelEntry.options) ? baseModelEntry.options : {}),
+              responseFormat: { type: "json_object" },
+            },
+          },
+        },
+      },
+    };
+    notes.push(`Injected responseFormat:json_object for model ${configModel} via jsonMode.`);
+  }
+
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
   return {
@@ -81,9 +118,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       ...input.env,
       XDG_CONFIG_HOME: runtimeConfigHome,
     },
-    notes: [
-      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-    ],
+    notes,
     cleanup: async () => {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });
     },
