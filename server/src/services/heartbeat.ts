@@ -11055,21 +11055,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   return {
     list: async (companyId: string, agentId?: string, limit?: number) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+      const agentNameColumn = { agentName: agents.name };
       const query = db
         .select(
           safeForLegacyEncoding
             ? {
                 ...heartbeatRunListColumns,
+                ...agentNameColumn,
                 error: sql<string | null>`NULL`.as("error"),
                 ...heartbeatRunListContextColumns,
               }
             : {
                 ...heartbeatRunListColumns,
+                ...agentNameColumn,
                 ...heartbeatRunListContextColumns,
                 ...heartbeatRunListResultColumns,
               },
         )
         .from(heartbeatRuns)
+        .leftJoin(agents, eq(heartbeatRuns.agentId, agents.id))
         .where(
           agentId
             ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
