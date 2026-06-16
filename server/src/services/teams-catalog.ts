@@ -702,7 +702,7 @@ const CATALOG_MODEL_ALIAS: Record<string, string> = {
  * and resolves it to a `claude_local` model ID via `CATALOG_MODEL_ALIAS`. Slugs without a
  * recognized alias are omitted from the result.
  */
-function readCatalogAgentModelHints(
+export function readCatalogAgentModelHints(
   files: Record<string, CompanyPortabilityFileEntry>,
   agentSlugs: string[],
 ): Record<string, string> {
@@ -712,6 +712,10 @@ function readCatalogAgentModelHints(
     if (typeof content !== "string") continue;
     const modelAlias = asString(parseFrontmatterMarkdown(content).frontmatter.model);
     if (!modelAlias) continue;
+    // Own-property lookup only: a frontmatter value like `model: constructor`
+    // must not resolve to an inherited Object.prototype member and leak a
+    // non-model value into adapterConfig.model / the CLI --model flag.
+    if (!Object.prototype.hasOwnProperty.call(CATALOG_MODEL_ALIAS, modelAlias)) continue;
     const resolved = CATALOG_MODEL_ALIAS[modelAlias];
     if (resolved) hints[slug] = resolved;
   }

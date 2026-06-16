@@ -34,6 +34,7 @@ vi.mock("../services/activity-log.js", () => ({
 
 const {
   collectCatalogTeamSkillPreparations,
+  readCatalogAgentModelHints,
   readCatalogTeamProvenance,
   teamsCatalogService,
 } = await import("../services/teams-catalog.js");
@@ -403,6 +404,35 @@ describe("teamsCatalogService", () => {
       // core-exec-team agents have no model field → no adapterConfig
       expect(overrides["ceo"]).toEqual({ adapterType: "claude_local" });
       expect(overrides["cto"]).toEqual({ adapterType: "claude_local" });
+    });
+
+    describe("readCatalogAgentModelHints — frontmatter resolution safety (BUG-003)", () => {
+      const md = (model: string) => `---\nmodel: ${model}\n---\n# agent\n`;
+
+      it("resolves known aliases to canonical claude_local model IDs", () => {
+        const hints = readCatalogAgentModelHints(
+          { "agents/cto/AGENTS.md": md("sonnet"), "agents/architect/AGENTS.md": md("opus") },
+          ["cto", "architect"],
+        );
+        expect(hints).toEqual({ cto: "claude-sonnet-4-6", architect: "claude-opus-4-8" });
+      });
+
+      it("ignores an unrecognized alias instead of forwarding it to --model", () => {
+        const hints = readCatalogAgentModelHints({ "agents/cto/AGENTS.md": md("haiku") }, ["cto"]);
+        expect(hints).toEqual({});
+      });
+
+      it("does not resolve inherited Object.prototype members (prototype-pollution guard)", () => {
+        const hints = readCatalogAgentModelHints(
+          {
+            "agents/a/AGENTS.md": md("constructor"),
+            "agents/b/AGENTS.md": md("toString"),
+            "agents/c/AGENTS.md": md("hasOwnProperty"),
+          },
+          ["a", "b", "c"],
+        );
+        expect(hints).toEqual({});
+      });
     });
   });
 
