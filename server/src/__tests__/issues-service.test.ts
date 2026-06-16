@@ -15,12 +15,14 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueLabels,
   issueInboxArchives,
   issueDocuments,
   issuePlanDecompositions,
   issueRelations,
   issueThreadInteractions,
   issues,
+  labels,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -4600,11 +4602,13 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
     title?: string;
     description?: string;
     identifier?: string;
+    originKind?: string | null;
   }) {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const workspaceId = randomUUID();
     const issueId = randomUUID();
+    const agentId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -4616,6 +4620,17 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
       id: projectId,
       companyId,
       name: "Server",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Koda",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
     });
     await db.insert(projectWorkspaces).values({
       id: workspaceId,
@@ -4638,9 +4653,10 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
       status: "todo",
       priority: "high",
       identifier: args?.identifier ?? "PAP-9000",
+      originKind: args?.originKind ?? "manual",
     });
 
-    return { companyId, projectId, workspaceId, issueId };
+    return { companyId, projectId, workspaceId, issueId, agentId };
   }
 
   async function attachIssueDocumentRevision(input: {
@@ -4693,6 +4709,8 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     await db.delete(issueComments);
+    await db.delete(issueLabels);
+    await db.delete(labels);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -4912,6 +4930,171 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
+  });
+
+  it("allows routine_execution terminal closes without PR proof when no code-deliverable signal exists", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Daily health routine",
+      description: "Operational work is complete: daily health sweep ran successfully and found no anomalies.",
+      identifier: "PAP-9002C1",
+      originKind: "routine_execution",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("allows routine_execution terminal closes when an explicit non-code deliverable label overrides template code hints", async () => {
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "[EAB-AUDIT-WEEKLY] Run /gstack-agent-audit",
+      description: [
+        "Weekly agent reliability audit. Run /gstack-agent-audit.",
+        "Run: `node ~/.claude/skills/gstack/agent-audit/audit.cjs`",
+        "- `governance/audits/weekly/{this-week-ISO-date}.json` with full lint + behavioural-rate summary",
+      ].join("\n"),
+      identifier: "PAP-9002C1A",
+      originKind: "routine_execution",
+    });
+    const labelId = randomUUID();
+    await db.insert(labels).values({
+      id: labelId,
+      companyId,
+      name: "deliverable:doc",
+      color: "#2563eb",
+    });
+    await db.insert(issueLabels).values({
+      companyId,
+      issueId,
+      labelId,
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("keeps routine_execution closeouts behind merged PR proof when PR URLs appear with no-eligible-work evidence", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      status: 404,
+    } as Response)));
+
+    const { companyId, issueId, agentId } = await seedRepoBackedIssue({
+      title: "Koda nightly own-PR rebase",
+      description: "Nightly CRM X canary routine for Koda-owned pull requests.",
+      identifier: "PAP-9002C1D",
+      originKind: "routine_execution",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "[Orion]: Closeout audit for the 2026-06-10 AEST wake.",
+        "",
+        "Live CRM X PR check:",
+        "- https://github.com/edgeview-finance-business/edgeview-finance-crm/pull/958 links to EDG-1586, which is cancelled and Dan-routed, so it is not Koda-owned rebase work.",
+        "- https://github.com/edgeview-finance-business/edgeview-finance-crm/pull/957 links to EDG-6231, which is todo and assigned to Orion, so it is also not Koda-owned rebase work.",
+        "- https://github.com/paperclipai/paperclip/pull/999999 is the repo-backed implementation PR under verification.",
+        "",
+        "Net result: CRM X currently has zero eligible Koda-owned PRs to rebase.",
+      ].join("\n"),
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        repo: "paperclipai/paperclip",
+        missing: "merged_pr_verification_failed",
+      }),
+    });
+  });
+
+  it("keeps PR-only routine_execution code lanes behind merged PR proof even with no-eligible-work language", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      status: 404,
+    } as Response)));
+
+    const { companyId, issueId, agentId } = await seedRepoBackedIssue({
+      title: "Koda nightly own-PR rebase",
+      description: [
+        "Nightly CRM X canary routine for Koda-owned pull requests.",
+        "Related implementation PR: https://github.com/edgeview-finance-business/edgeview-finance-crm/pull/958",
+        "Repo-backed implementation PR: https://github.com/paperclipai/paperclip/pull/999999",
+      ].join("\n"),
+      identifier: "PAP-9002C1E",
+      originKind: "routine_execution",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "[Koda]: The referenced PR above is not eligible rebase work.",
+        "",
+        "Net result: CRM X currently has zero eligible Koda-owned PRs to rebase.",
+      ].join("\n"),
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        repo: "paperclipai/paperclip",
+        missing: "merged_pr_verification_failed",
+      }),
+    });
+  });
+
+  it("keeps routine_execution code lanes behind merged PR proof", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Routine code lane",
+      description: "deliverable: code",
+      identifier: "PAP-9002C2",
+      originKind: "routine_execution",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+  });
+
+  it("keeps mixed routine_execution code comments behind merged PR proof even with no-eligible-work language", async () => {
+    const { companyId, issueId, agentId } = await seedRepoBackedIssue({
+      title: "Routine code lane with mixed closeout",
+      description: "Routine follow-up touched server/src/services/issues.ts before closeout.",
+      identifier: "PAP-9002C2A",
+      originKind: "routine_execution",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "[Koda]: Closeout attempt.",
+        "",
+        "Diff summary:",
+        "- server/src/services/issues.ts updated while investigating the lane.",
+        "",
+        "Net result: CRM X currently has zero eligible Koda-owned PRs to rebase.",
+      ].join("\n"),
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
   });
 });
 

@@ -426,6 +426,75 @@ function mergeTerminalGateSignals(
   };
 }
 
+// EDG-6360: a routine_execution run that found no eligible code work must be
+// able to close out cleanly instead of erroring/looping at the repo-backed
+// terminal gate. These helpers classify whether a routine-execution issue is
+// plainly operational (no code deliverable) and therefore exempt from the
+// merged-PR requirement.
+type RoutineExecutionDeliverableLabel = TerminalGateDeliverable | "doc";
+
+function parseRoutineExecutionDeliverableLabel(value: string | null | undefined): RoutineExecutionDeliverableLabel | null {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized?.startsWith("deliverable:")) return null;
+  const candidate = normalized.slice("deliverable:".length).trim();
+  if (!candidate) return null;
+  if (candidate === "doc") return "doc";
+  return parseTerminalGateDeliverable(candidate);
+}
+
+function hasRoutineExecutionPullRequestHints(text: string | null | undefined) {
+  if (!text) return false;
+  return /\bPR\s*#\d+\b|https?:\/\/github\.com\/[^\s]+\/pull\/\d+/i.test(text);
+}
+
+function hasRoutineExecutionSourceCodeHints(text: string | null | undefined) {
+  if (!text) return false;
+  return /\b(?:src|server|packages|ui|scripts|lib|app)\/|\b[a-z0-9_.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|sql|sh|ya?ml)\b/i.test(text);
+}
+
+function hasRoutineExecutionCodeHints(text: string | null | undefined) {
+  return hasRoutineExecutionPullRequestHints(text) || hasRoutineExecutionSourceCodeHints(text);
+}
+
+function hasRoutineExecutionNoEligibleWorkEvidence(text: string | null | undefined) {
+  if (!text) return false;
+  return /\b(?:no|zero|0)\s+eligible\b[^\n\r]*\bPRs?\b|\bno\b[^\n\r]*\bKoda-owned\b[^\n\r]*\bPRs?\b[^\n\r]*\bto rebase\b/i.test(text);
+}
+
+function canAutoExemptRoutineExecutionTerminalClose(input: {
+  originKind: string | null | undefined;
+  signals: TerminalGateSignals;
+  description: string | null | undefined;
+  latestAgentComment: string | null | undefined;
+  labelNames: string[];
+}) {
+  if (input.originKind !== "routine_execution") return false;
+  const explicitLabelDeliverable = input.labelNames
+    .map((name) => parseRoutineExecutionDeliverableLabel(name))
+    .find((value): value is RoutineExecutionDeliverableLabel => Boolean(value))
+    ?? null;
+  if (explicitLabelDeliverable === "code") return false;
+  if (explicitLabelDeliverable) return true;
+  if (input.signals.deliverable === "code") return false;
+  if (input.signals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(input.signals.deliverable)) {
+    return false;
+  }
+  const descriptionHasCodeHints = hasRoutineExecutionCodeHints(input.description);
+  const latestCommentHasCodeHints = hasRoutineExecutionCodeHints(input.latestAgentComment);
+  const latestCommentHasNoEligibleWorkEvidence = hasRoutineExecutionNoEligibleWorkEvidence(input.latestAgentComment);
+
+  if (latestCommentHasNoEligibleWorkEvidence) {
+    return !descriptionHasCodeHints && !latestCommentHasCodeHints && !hasRoutineExecutionNoEligibleWorkEvidence(input.description);
+  }
+
+  if (
+    descriptionHasCodeHints || latestCommentHasCodeHints
+  ) {
+    return false;
+  }
+  return true;
+}
+
 // EDG-6246: a repo-backed issue carrying an attached deliverable document is a
 // non-code-deliverable signal — the thread-only PR auto-close skips it (those
 // close on terminalEvidence, not a merged PR).
@@ -633,6 +702,22 @@ export async function resolveMergedPullRequestDetailsForThreadAutoClose(
     .then((rows: Array<{ body: string }>) => rows[0]?.body ?? null);
 
   const gateSignals = mergeTerminalGateSignals(issue.description, latestAgentComment);
+  // EDG-6360: routine_execution runs with no eligible code work close out via
+  // the terminal-gate exemption, not a merged PR — skip them here.
+  const issueLabelRows = await db
+    .select({ name: labels.name })
+    .from(issueLabels)
+    .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+    .where(eq(issueLabels.issueId, issue.id));
+  if (canAutoExemptRoutineExecutionTerminalClose({
+    originKind: issue.originKind,
+    signals: gateSignals,
+    description: issue.description,
+    latestAgentComment,
+    labelNames: issueLabelRows.map((row: { name: string }) => row.name),
+  })) {
+    return null;
+  }
   // Non-code deliverables are closed by document-backed terminalEvidence, not a
   // merged PR — skip them here so we never compete with that gate path.
   if (gateSignals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(gateSignals.deliverable)) {
@@ -5918,7 +6003,23 @@ export function issueService(db: Db) {
               .then((rows: Array<{ body: string }>) => rows[0]?.body ?? null);
             const gateSignals = mergeTerminalGateSignals(nextDescription, latestAgentComment);
             const verificationRepo = gateSignals.subjectRepo ?? repoBinding;
-            if (gateSignals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(gateSignals.deliverable)) {
+            const routineLabelRows = await dbOrTx
+              .select({ name: labels.name })
+              .from(issueLabels)
+              .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+              .where(eq(issueLabels.issueId, existing.id));
+            const routineExecutionTerminalAutoExempt = canAutoExemptRoutineExecutionTerminalClose({
+              originKind: existing.originKind,
+              signals: gateSignals,
+              description: nextDescription,
+              latestAgentComment,
+              labelNames: routineLabelRows.map((row: { name: string }) => row.name),
+            });
+            if (routineExecutionTerminalAutoExempt) {
+              // EDG-6360: routine_execution issues with no eligible code work
+              // close cleanly without merged-PR proof, instead of erroring or
+              // looping at the gate.
+            } else if (gateSignals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(gateSignals.deliverable)) {
               const evidence = gateSignals.terminalEvidence;
               const evidenceExists = evidence
                 ? await issueDocumentRevisionExists({
