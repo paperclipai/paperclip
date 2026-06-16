@@ -19,10 +19,12 @@ import {
   issueAttachments,
   issueComments,
   issueApprovals,
+  issueLabels,
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
   issues,
+  labels,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -2652,6 +2654,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
+          // BLU-15638: perpetual-tracker issues (long-lived SOC 2 / ops
+          // EPICs) are intentionally assigned with no live execution path,
+          // so the stranded-recovery sweep would otherwise flip them to
+          // `blocked` and reassign on every run. Exempt them here — same
+          // intent as the BLU-10337 disposition-flip exemption, applied to
+          // the source-scoped recovery path.
+          sql`not exists (
+            select 1
+            from ${issueLabels} il
+            inner join ${labels} l on l.id = il.label_id
+            where il.issue_id = ${issues.id} and l.name = 'perpetual-tracker'
+          )`,
         ),
       );
 
