@@ -38,6 +38,7 @@ import type {
   ToolMcpGateway,
   ToolMcpGatewayClientSnippet,
   ToolMcpGatewayToken,
+  ToolMcpGatewayTokenAction,
   ToolMcpGatewayTokenCreated,
   ToolMcpGatewayWithTokens,
   UpdateToolMcpGateway,
@@ -122,6 +123,7 @@ export interface ToolGatewaySession {
   gatewayId?: string | null;
   gatewayName?: string | null;
   gatewayTokenId?: string | null;
+  gatewayTokenAllowedActions?: ToolMcpGatewayTokenAction[];
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
   createdAt: Date;
@@ -908,6 +910,35 @@ export function createToolGatewayService(
       .where(eq(toolGatewaySessions.id, row.id));
 
     return gatewaySessionFromRow({ ...row, lastUsedAt: now, updatedAt: now });
+  }
+
+  function normalizeGatewayTokenActions(value: unknown): ToolMcpGatewayTokenAction[] {
+    const actions = Array.isArray(value)
+      ? value.filter((action): action is ToolMcpGatewayTokenAction => action === "tools/list" || action === "tools/call")
+      : [];
+    return actions.length > 0 ? actions : ["tools/list", "tools/call"];
+  }
+
+  async function assertGatewayTokenAction(session: ToolGatewaySession, action: ToolMcpGatewayTokenAction) {
+    const allowedActions = session.gatewayTokenAllowedActions;
+    if (!allowedActions || allowedActions.includes(action)) return;
+    await writeAudit({
+      session,
+      companyId: session.companyId,
+      agentId: session.agentId,
+      runId: session.runId,
+      issueId: session.issueId,
+      action: action === "tools/list" ? "tool_gateway.discovery" : "tool_gateway.call_denied",
+      details: {
+        decision: "deny",
+        reasonCode: "gateway_token_action_denied",
+        requestedAction: action,
+        allowedActions,
+      },
+    });
+    throw new ToolGatewayHttpError(403, "Gateway bearer token is not allowed to perform this MCP action", "gateway_token_action_denied", {
+      requestedAction: action,
+    });
   }
 
   async function writeToolCallEvent(input: {
@@ -2510,6 +2541,7 @@ export function createToolGatewayService(
       gatewayId: row.gateway.id,
       gatewayName: row.gateway.name,
       gatewayTokenId: row.token.id || tokenId,
+      gatewayTokenAllowedActions: normalizeGatewayTokenActions(row.token.allowedActions),
       actorType: "system",
       actorId: row.token.id,
       createdAt: row.token.createdAt,
@@ -2732,6 +2764,7 @@ export function createToolGatewayService(
 
     async listToolsForNamedGateway(input: { gatewayId: string; bearerToken: string }): Promise<ToolGatewayDescriptor[]> {
       const session = await namedGatewaySessionFromBearer(input.gatewayId, input.bearerToken);
+      await assertGatewayTokenAction(session, "tools/list");
       const tools = await listToolsForContext(session);
       await writeAudit({
         session,
@@ -2975,6 +3008,7 @@ export function createToolGatewayService(
 
     async executeTool(input: ExecuteGatewayToolInput) {
       const session = await getActiveSession(input.sessionToken);
+      await assertGatewayTokenAction(session, "tools/call");
       let invocationId = String(randomUUID());
       const startedAt = Date.now();
 

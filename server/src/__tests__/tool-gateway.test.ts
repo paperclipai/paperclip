@@ -504,11 +504,38 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         .expect(403);
       expect(denied.body.error.data.reasonCode).toBe("deny_default");
 
+      const listOnlyToken = await gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: {
+          name: "Discovery only",
+          clientLabel: "Discovery client",
+          ownerNote: "List-only regression token",
+          allowedActions: ["tools/list"],
+        },
+      });
+      await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${listOnlyToken.token}`)
+        .send({ jsonrpc: "2.0", id: 4, method: "tools/list" })
+        .expect(200);
+      const scopedDenied = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${listOnlyToken.token}`)
+        .send({
+          jsonrpc: "2.0",
+          id: 5,
+          method: "tools/call",
+          params: { name: gatewayToolName, arguments: { key: "a", value: "b" } },
+        })
+        .expect(403);
+      expect(scopedDenied.body.error.data.reasonCode).toBe("gateway_token_action_denied");
+
       await gateway.revokeNamedGatewayToken({ companyId: company.id, tokenId: token.id });
       const revoked = await request(app)
         .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
         .set("authorization", `Bearer ${token.token}`)
-        .send({ jsonrpc: "2.0", id: 4, method: "tools/list" })
+        .send({ jsonrpc: "2.0", id: 6, method: "tools/list" })
         .expect(401);
       expect(revoked.body.error.data.reasonCode).toBe("gateway_token_revoked");
     } finally {
