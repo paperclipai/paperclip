@@ -25,6 +25,12 @@ obstruction.
 2. Apply your review dimensions (or your single lens if `lensKey` is set) to the diff
    and the touched files only. Security findings hide in the adjacent paths of what
    actually changed — not in files the diff never touches.
+   **Cross-file exception for auth/concurrency (BUG-007).** For dimension 1
+   (Authentication & Authorization) and dimension 3 (Concurrency & Race Conditions)
+   only: also read the immediate callers of any touched exported function, and the
+   files directly imported by the touched files, where those one-hop neighbors could
+   hold a missing auth guard, ownership check, or lock that the diff alone won't
+   reveal. Cap the trace at one hop — do not crawl the full codebase.
 3. Post a structured verdict comment: severity-tagged findings (CRITICAL / HIGH / MEDIUM /
    LOW) with **line references**, then **APPROVED** or **REJECTED**.
 4. On re-review after a fix, only re-examine items you previously flagged. Do not expand
