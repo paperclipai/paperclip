@@ -4429,6 +4429,7 @@ export async function buildPaperclipWakePayload(input: {
             and(
               eq(issueAttachments.issueId, issueId),
               eq(issueAttachments.companyId, input.companyId),
+              eq(assetsTable.companyId, input.companyId),
             ),
           )
           .orderBy(asc(issueAttachments.createdAt))
@@ -4448,6 +4449,7 @@ export async function buildPaperclipWakePayload(input: {
             and(
               eq(issueDocuments.issueId, issueId),
               eq(issueDocuments.companyId, input.companyId),
+              eq(documentsTable.companyId, input.companyId),
             ),
           )
           .orderBy(asc(issueDocuments.key))
@@ -4718,7 +4720,7 @@ export async function buildPaperclipWakePayload(input: {
       key: d.key,
       title: d.title,
       format: d.format,
-      body: d.body && d.body.length <= 65_536 ? d.body : null,
+      body: d.body ? d.body.slice(0, 65_536) : null,
       bodyTruncated: d.body ? d.body.length > 65_536 : false,
       updatedAt: d.updatedAt instanceof Date ? d.updatedAt.toISOString() : d.updatedAt,
     })),
