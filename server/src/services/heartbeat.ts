@@ -6808,7 +6808,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      // NDA-714: a non-assignee notification wake (e.g. the approval_approved
+      // requester-wake delivered to the CEO, carrying the still-blocked linked
+      // work issue as context) is flagged notificationOnlyWake at enqueue time and
+      // must survive the claim-time dependency gate just like an interaction wake.
+      // It stays bounded: the lazy-lock below only stamps executionRunId when the
+      // run's agent IS the issue assignee, so the requester's run never adopts or
+      // executes the blocked issue — it only wakes to process the approval.
+      const notificationOnlyWake = context.notificationOnlyWake === true;
+      if (
+        unresolvedBlockerCount > 0 &&
+        !allowsIssueInteractionWake(context) &&
+        !notificationOnlyWake
+      ) {
         await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
         logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
@@ -6989,6 +7001,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
+    // NDA-714: a notification wake's target is intentionally NOT the issue
+    // assignee (it is the requester being notified), so the assignee-mismatch
+    // staleness gate below must not cancel it. It stays bounded via the lazy-lock
+    // assignee guard in claimQueuedRun.
+    const notificationOnlyWake = context.notificationOnlyWake === true;
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
@@ -7022,7 +7039,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake) {
+    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake && !notificationOnlyWake) {
       return {
         stale: true,
         errorCode: "issue_assignee_changed",
@@ -10604,7 +10621,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           !dependencyReadiness.isDependencyReady &&
           allowsIssueInteractionWake(enrichedContextSnapshot);
 
-        if (blockedInteractionWake) {
+        // NDA-714: a wake whose target agent is NOT this issue's assignee is a
+        // *notification* (e.g. the approval_approved requester-wake delivered to
+        // the CEO, carrying the linked — and still-blocked — work issue as its
+        // context). The target will never execute that issue, so its dependency
+        // readiness must not gate delivery. Gating it here is exactly the
+        // approval-wake suppression (wakeRunId:null) that forced manual board
+        // pings. Deliver it, bounded like an interaction wake so it never runs
+        // the blocked issue's work.
+        const notificationWake = Boolean(
+          dependencyReadiness &&
+            !dependencyReadiness.isDependencyReady &&
+            issue.assigneeAgentId &&
+            agentId !== issue.assigneeAgentId,
+        );
+
+        if (dependencyReadiness && (blockedInteractionWake || notificationWake)) {
           enrichedContextSnapshot.dependencyBlockedInteraction = true;
           enrichedContextSnapshot.unresolvedBlockerIssueIds = dependencyReadiness.unresolvedBlockerIssueIds;
           enrichedContextSnapshot.unresolvedBlockerCount = dependencyReadiness.unresolvedBlockerCount;
@@ -10614,9 +10646,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             issue.id,
             dependencyReadiness.unresolvedBlockerIssueIds,
           );
+          if (notificationWake && !blockedInteractionWake) {
+            // Non-assignee notification: deliver as notify-only so the run does
+            // not adopt or execute the blocked issue.
+            enrichedContextSnapshot.notificationOnlyWake = true;
+          }
         }
 
-        if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
+        if (
+          !activeExecutionRun &&
+          dependencyReadiness &&
+          !dependencyReadiness.isDependencyReady &&
+          !blockedInteractionWake &&
+          !notificationWake
+        ) {
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
