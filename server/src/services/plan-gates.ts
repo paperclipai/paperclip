@@ -21,12 +21,14 @@ export const GATE_DESIGNATED_URL_KEY: Record<GateApprovalType, string> = {
   [GATE_APPROVAL_TYPES.planApproval]: "architect",
   [GATE_APPROVAL_TYPES.codeReview]: "code-reviewer",
   [GATE_APPROVAL_TYPES.wiringReview]: "wiring-expert",
+  [GATE_APPROVAL_TYPES.completenessReview]: "completeness-critic",
 };
 
 const GATE_TYPE_TO_REASON: Record<GateApprovalType, IssueBlockedInboxReason> = {
   [GATE_APPROVAL_TYPES.planApproval]: "pending_plan_approval",
   [GATE_APPROVAL_TYPES.codeReview]: "pending_code_review",
   [GATE_APPROVAL_TYPES.wiringReview]: "pending_wiring_review",
+  [GATE_APPROVAL_TYPES.completenessReview]: "pending_completeness_review",
 };
 
 export function gateTypeToReason(type: GateApprovalType): IssueBlockedInboxReason {
@@ -40,6 +42,7 @@ const GATE_PRECEDENCE: Record<GateApprovalType, number> = {
   [GATE_APPROVAL_TYPES.planApproval]: 0,
   [GATE_APPROVAL_TYPES.codeReview]: 1,
   [GATE_APPROVAL_TYPES.wiringReview]: 2,
+  [GATE_APPROVAL_TYPES.completenessReview]: 3,
 };
 
 export function gatePrecedence(type: string): number {
@@ -116,6 +119,12 @@ export function buildGateApprovalsForActivation(
         issueId: leafId,
         designatedAgentId: resolve(GATE_APPROVAL_TYPES.wiringReview),
       });
+      // B2: completeness-critic wakes AFTER all code + wiring gates approve (W5c).
+      specs.push({
+        type: GATE_APPROVAL_TYPES.completenessReview,
+        issueId: leafId,
+        designatedAgentId: resolve(GATE_APPROVAL_TYPES.completenessReview),
+      });
     } else {
       // light: single generalist code-review (no lens).
       specs.push({
@@ -150,6 +159,12 @@ const REVIEW_GATE_TYPES = new Set<string>([
   GATE_APPROVAL_TYPES.wiringReview,
 ]);
 
+// W5c gate types that, when ALL approved, trigger the completeness-critic wake.
+const CRITIC_PREREQ_GATE_TYPES = new Set<string>([
+  GATE_APPROVAL_TYPES.codeReview,
+  GATE_APPROVAL_TYPES.wiringReview,
+]);
+
 // Gate-review wake identity. These are emitted by the push-wakes that start a
 // gate review off-cadence — W5a (plan activation, routes/plans.ts) and W5b (leaf
 // reaches in_review, routes/issues.ts) — and consumed by the heartbeat queued-run
@@ -160,9 +175,12 @@ const REVIEW_GATE_TYPES = new Set<string>([
 // queued review. Centralized so the emitter and the checker can never drift.
 export const PLAN_APPROVAL_WAKE_REASON = "gate_plan_approval_requested";
 export const REVIEW_GATE_WAKE_REASON = "gate_review_requested";
+// B2: completeness-critic wake reason (W5c) — fired after all code + wiring gates approve.
+export const CRITIC_GATE_WAKE_REASON = "gate_completeness_review_requested";
 export const GATE_REVIEW_WAKE_REASONS: ReadonlySet<string> = new Set([
   PLAN_APPROVAL_WAKE_REASON,
   REVIEW_GATE_WAKE_REASON,
+  CRITIC_GATE_WAKE_REASON,
 ]);
 // The `contextSnapshot.source` tag each gate wake sets — the second factor that,
 // together with the reason, authorizes the assignee-change exemption (mirrors how
@@ -170,6 +188,7 @@ export const GATE_REVIEW_WAKE_REASONS: ReadonlySet<string> = new Set([
 export const GATE_WAKE_SOURCES: ReadonlySet<string> = new Set([
   "plan.activated.gate", // W5a — routes/plans.ts plan-approval wake
   "issue.in_review.gate", // W5b — routes/issues.ts review wake
+  "issue.review_gates_complete.critic", // W5c — routes/approvals.ts critic wake
 ]);
 
 // Pure predicate for the heartbeat staleness evaluator: is this queued run a
@@ -222,6 +241,37 @@ export function reviewGateAgentIdsFromApprovals(
     targets.push({ agentId: designated, approvalId: approval.id, lensKey });
   }
   return targets;
+}
+
+// B2: W5c — the completeness-critic wake target. Returns the critic's agentId +
+// approvalId when ALL code-review + wiring-review gates on an issue are approved
+// and the completeness gate is still pending. Returns null when prerequisites are
+// unmet, the critic gate is already decided, or no designated agent is set.
+export interface CriticGateWakeTarget {
+  agentId: string;
+  approvalId: string;
+}
+
+export function criticGateWakeTarget(
+  approvals: ReadonlyArray<{
+    id: string;
+    type: string;
+    status: string;
+    payload: Record<string, unknown> | null;
+  }>,
+): CriticGateWakeTarget | null {
+  const prereqs = approvals.filter((a) => CRITIC_PREREQ_GATE_TYPES.has(a.type));
+  if (prereqs.length === 0) return null;
+  if (prereqs.some((a) => a.status !== "approved")) return null;
+  const criticGate = approvals.find(
+    (a) => a.type === GATE_APPROVAL_TYPES.completenessReview && a.status === "pending",
+  );
+  if (!criticGate) return null;
+  const agentId = typeof criticGate.payload?.designatedAgentId === "string"
+    ? criticGate.payload.designatedAgentId
+    : null;
+  if (!agentId) return null;
+  return { agentId, approvalId: criticGate.id };
 }
 
 // Fix 3 (B1 gap-fix) + triage — the pure `done`-gate decision, right-sized by

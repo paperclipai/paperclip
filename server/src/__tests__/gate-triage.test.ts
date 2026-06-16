@@ -7,6 +7,7 @@ import {
 } from "../services/gate-triage.js";
 import {
   buildGateApprovalsForActivation,
+  criticGateWakeTarget,
   planApprovalAgentIds,
   reviewGateAgentIdsFromApprovals,
   REVIEW_GATE_LENSES,
@@ -79,15 +80,16 @@ describe("gate triage — Layer 2 buildGateApprovalsForActivation by profile", (
     expect(specs.map((s) => s.issueId)).toEqual(["leaf-1", "leaf-2"]);
   });
 
-  it("emits plan-approval + lens code-reviews + wiring for dev_team", () => {
+  it("emits plan-approval + lens code-reviews + wiring + completeness for dev_team", () => {
     const specs = buildGateApprovalsForActivation({ ...base, gateProfile: "dev_team" });
-    // 1 plan-approval + 2 leaves x (3 lens code-reviews + 1 wiring) = 9
-    expect(specs).toHaveLength(9);
+    // 1 plan-approval + 2 leaves x (3 lens code-reviews + 1 wiring + 1 completeness) = 11
+    expect(specs).toHaveLength(11);
     expect(specs.filter((s) => s.type === GATE_APPROVAL_TYPES.planApproval)).toHaveLength(1);
     expect(specs.filter((s) => s.type === GATE_APPROVAL_TYPES.codeReview)).toHaveLength(
       2 * REVIEW_GATE_LENSES.length,
     );
     expect(specs.filter((s) => s.type === GATE_APPROVAL_TYPES.wiringReview)).toHaveLength(2);
+    expect(specs.filter((s) => s.type === GATE_APPROVAL_TYPES.completenessReview)).toHaveLength(2);
     // Each code-review spec has a distinct lensKey
     const lensKeys = specs
       .filter((s) => s.type === GATE_APPROVAL_TYPES.codeReview)
@@ -97,7 +99,7 @@ describe("gate triage — Layer 2 buildGateApprovalsForActivation by profile", (
 
   it("defaults to the full set when no profile is given (back-compat)", () => {
     const specs = buildGateApprovalsForActivation(base);
-    expect(specs).toHaveLength(9);
+    expect(specs).toHaveLength(11);
   });
 });
 
@@ -214,5 +216,93 @@ describe("gate triage — W5b reviewGateAgentIdsFromApprovals (in_review wake ta
     const targets = reviewGateAgentIdsFromApprovals(approvals);
     expect(targets).toHaveLength(1);
     expect(targets[0]?.lensKey).toBeNull();
+  });
+
+  it("excludes the completeness-review gate (woken at W5c, not W5b)", () => {
+    const approvals = [
+      { id: "d1", type: GATE_APPROVAL_TYPES.completenessReview, status: "pending", payload: { designatedAgentId: "critic" } },
+      { id: "d2", type: GATE_APPROVAL_TYPES.codeReview, status: "pending", payload: { designatedAgentId: "cr" } },
+    ];
+    const targets = reviewGateAgentIdsFromApprovals(approvals);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.agentId).toBe("cr");
+  });
+});
+
+describe("gate triage — B2 criticGateWakeTarget (W5c completeness-critic wake)", () => {
+  let idSeq = 0;
+  const approved = (type: string) => ({
+    id: `a-${++idSeq}`,
+    type,
+    status: "approved",
+    payload: { gate: true, designatedAgentId: "reviewer" } as Record<string, unknown>,
+  });
+  const pending = (type: string, agentId = "critic") => ({
+    id: `p-${++idSeq}`,
+    type,
+    status: "pending",
+    payload: { gate: true, designatedAgentId: agentId } as Record<string, unknown>,
+  });
+
+  it("returns wake target when all code-review + wiring-review are approved and critic gate is pending", () => {
+    const approvals = [
+      approved(GATE_APPROVAL_TYPES.codeReview),
+      approved(GATE_APPROVAL_TYPES.codeReview),
+      approved(GATE_APPROVAL_TYPES.codeReview),
+      approved(GATE_APPROVAL_TYPES.wiringReview),
+      pending(GATE_APPROVAL_TYPES.completenessReview, "critic-agent"),
+    ];
+    const target = criticGateWakeTarget(approvals);
+    expect(target).not.toBeNull();
+    expect(target?.agentId).toBe("critic-agent");
+    expect(typeof target?.approvalId).toBe("string");
+  });
+
+  it("returns null when any prerequisite gate is still pending", () => {
+    const approvals = [
+      approved(GATE_APPROVAL_TYPES.codeReview),
+      pending(GATE_APPROVAL_TYPES.wiringReview, "we"),      // not yet approved
+      pending(GATE_APPROVAL_TYPES.completenessReview, "critic"),
+    ];
+    expect(criticGateWakeTarget(approvals)).toBeNull();
+  });
+
+  it("returns null when any prerequisite gate is rejected", () => {
+    const approvals = [
+      approved(GATE_APPROVAL_TYPES.codeReview),
+      { ...approved(GATE_APPROVAL_TYPES.wiringReview), status: "rejected" },
+      pending(GATE_APPROVAL_TYPES.completenessReview, "critic"),
+    ];
+    expect(criticGateWakeTarget(approvals)).toBeNull();
+  });
+
+  it("returns null when the completeness gate is already decided (not pending)", () => {
+    const approvals = [
+      approved(GATE_APPROVAL_TYPES.codeReview),
+      approved(GATE_APPROVAL_TYPES.wiringReview),
+      { ...approved(GATE_APPROVAL_TYPES.completenessReview), status: "approved" },
+    ];
+    expect(criticGateWakeTarget(approvals)).toBeNull();
+  });
+
+  it("returns null when no completeness gate exists", () => {
+    const approvals = [
+      approved(GATE_APPROVAL_TYPES.codeReview),
+      approved(GATE_APPROVAL_TYPES.wiringReview),
+    ];
+    expect(criticGateWakeTarget(approvals)).toBeNull();
+  });
+
+  it("returns null when there are no prerequisite gates at all", () => {
+    expect(criticGateWakeTarget([pending(GATE_APPROVAL_TYPES.completenessReview)])).toBeNull();
+  });
+
+  it("returns null when the critic gate has no designated agent (board-routed)", () => {
+    const approvals = [
+      approved(GATE_APPROVAL_TYPES.codeReview),
+      approved(GATE_APPROVAL_TYPES.wiringReview),
+      { id: "c1", type: GATE_APPROVAL_TYPES.completenessReview, status: "pending", payload: { gate: true, designatedAgentId: null } },
+    ];
+    expect(criticGateWakeTarget(approvals)).toBeNull();
   });
 });

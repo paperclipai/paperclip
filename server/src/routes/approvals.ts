@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  GATE_APPROVAL_TYPES,
   addApprovalCommentSchema,
   agentDecideApprovalSchema,
   createApprovalSchema,
@@ -19,7 +20,11 @@ import {
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
-import { isGateApprovalType } from "../services/plan-gates.js";
+import {
+  isGateApprovalType,
+  criticGateWakeTarget,
+  CRITIC_GATE_WAKE_REASON,
+} from "../services/plan-gates.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -352,6 +357,40 @@ export function approvalRoutes(
         decidedByAgentId: req.actor.agentId,
       },
     });
+
+    // B2 W5c: when a code-review or wiring-review gate approves, check if all
+    // prerequisite gates on the same leaf are now approved. If so, wake the
+    // completeness-critic with its pending approval's context.
+    if (
+      decision === "approved" &&
+      (updated.type === GATE_APPROVAL_TYPES.codeReview ||
+        updated.type === GATE_APPROVAL_TYPES.wiringReview)
+    ) {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(updated.id);
+      for (const issue of linkedIssues) {
+        const allApprovals = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
+        const target = criticGateWakeTarget(allApprovals);
+        if (!target) continue;
+        heartbeat
+          .wakeup(target.agentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: CRITIC_GATE_WAKE_REASON,
+            payload: { issueId: issue.id, mutation: "review_gates_complete" },
+            requestedByActorType: "agent",
+            requestedByActorId: req.actor.agentId,
+            contextSnapshot: {
+              issueId: issue.id,
+              source: "issue.review_gates_complete.critic",
+              approvalId: target.approvalId,
+              ...(issue.prUrl ? { prUrl: issue.prUrl } : {}),
+            },
+          })
+          .catch((err) =>
+            logger.warn({ err, issueId: issue.id, agentId: target.agentId }, "failed to wake completeness-critic"),
+          );
+      }
+    }
 
     res.json(redactApprovalPayload(updated));
   });

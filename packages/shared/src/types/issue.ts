@@ -257,6 +257,7 @@ export type IssueBlockedInboxReason =
   | "pending_plan_approval"
   | "pending_code_review"
   | "pending_wiring_review"
+  | "pending_completeness_review"
   | "external_owner_action"
   | "open_recovery_issue";
 
@@ -276,6 +277,7 @@ export const GATE_APPROVAL_TYPES = {
   planApproval: "gate_plan_approval",
   codeReview: "gate_code_review",
   wiringReview: "gate_wiring_review",
+  completenessReview: "gate_completeness_review",
 } as const;
 
 export type GateApprovalType =

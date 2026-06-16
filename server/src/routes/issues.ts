@@ -1566,7 +1566,8 @@ export function issueRoutes(
       .filter(
         (approval) =>
           approval.type === GATE_APPROVAL_TYPES.codeReview ||
-          approval.type === GATE_APPROVAL_TYPES.wiringReview,
+          approval.type === GATE_APPROVAL_TYPES.wiringReview ||
+          approval.type === GATE_APPROVAL_TYPES.completenessReview,
       )
       .map((approval) => String(approval.status));
 
