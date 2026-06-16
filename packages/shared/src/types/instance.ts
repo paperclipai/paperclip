@@ -24,6 +24,7 @@ export interface InstanceGeneralSettings {
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  allowSelfServiceCompanyCreation: boolean;
 }
 
 export interface InstanceExperimentalSettings {

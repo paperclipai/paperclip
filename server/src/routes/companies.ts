@@ -23,6 +23,7 @@ import {
   companyPortabilityService,
   companyService,
   feedbackService,
+  instanceSettingsService,
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
@@ -36,6 +37,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const portability = companyPortabilityService(db, storage);
   const access = accessService(db);
   const budgets = budgetService(db);
+  const instanceSettings = instanceSettingsService(db);
   const feedback = feedbackService(db);
   const importJobs = new Map<string, ImportJobRecord>();
   const importJobTerminalRetentionMs = 5 * 60 * 1000;
@@ -304,8 +306,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/", validate(createCompanySchema), async (req, res) => {
     assertBoard(req);
-    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
-      throw forbidden("Instance admin required");
+    const isInstanceAdmin = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin;
+    if (!isInstanceAdmin) {
+      // Non-admins may create their own company only when the instance owner has opted into
+      // self-service tenancy. The creator still becomes the company owner (membership below).
+      const { allowSelfServiceCompanyCreation } = await instanceSettings.getGeneral();
+      if (!allowSelfServiceCompanyCreation) {
+        throw forbidden("Instance admin required (self-service company creation is disabled)");
+      }
     }
     const company = await svc.create(req.body);
     const ownerPrincipalId = req.actor.userId ?? "local-board";

@@ -79,6 +79,7 @@ export function InstanceGeneralSettings() {
 
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
+  const allowSelfServiceCompanyCreation = generalQuery.data?.allowSelfServiceCompanyCreation === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
   const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
 
@@ -149,6 +150,27 @@ export function InstanceGeneralSettings() {
             onCheckedChange={() => updateGeneralMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })}
             disabled={updateGeneralMutation.isPending}
             aria-label="Toggle username log censoring"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Self-service company creation</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Allow any signed-in user to create their own company and become its owner. When off, only the
+              instance admin can create companies (new users join existing companies by invite). This is off by
+              default — enable it to open self-service tenant onboarding.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={allowSelfServiceCompanyCreation}
+            onCheckedChange={() =>
+              updateGeneralMutation.mutate({ allowSelfServiceCompanyCreation: !allowSelfServiceCompanyCreation })
+            }
+            disabled={updateGeneralMutation.isPending}
+            aria-label="Toggle self-service company creation"
           />
         </div>
       </section>

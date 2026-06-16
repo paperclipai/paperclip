@@ -31,6 +31,9 @@ export const instanceGeneralSettingsSchema = z.object({
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
   backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
+  // When true, any authenticated user (not just the instance admin) may create their own
+  // company and become its owner. Off by default — the owner opts in to self-service tenancy.
+  allowSelfServiceCompanyCreation: z.boolean().default(false),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
