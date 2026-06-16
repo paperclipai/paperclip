@@ -117,7 +117,10 @@ ARG CLAUDE_K8S_REF=1d6a08f7c814208caa3bf2333dd7c35ca50b95ae
 # "Timed out after 0s" and discarding finished (exit 0) runs (dropped PR
 # reviews on the Ally path). PR kkroo/paperclip-adapter-opencode-k8s#23;
 # also picks up #22 (BLO-10315 shared-docs symlink, already merged upstream).
-ARG OPENCODE_K8S_REF=a533d110596d69fa9b9adcc8ad81f49f98fbc8e2
+# Re-pinned 2026-06-16 (BLO-10651) to 82c3cb2: reconciled type-crash
+# classification + 5-strike adapter crashloop circuit-breaker, so a gpt-5.5
+# response item missing `type` no longer crashlooped every OpenCode agent.
+ARG OPENCODE_K8S_REF=82c3cb25e9112c8197f7001a84d0c6cbf6f386ff
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
@@ -249,10 +252,16 @@ COPY --from=vendor /vendor/paperclip-adapter-opencode-k8s.tgz /tmp/paperclip-bun
 # falling back to whatever npm publishes today.
 COPY --from=vendor /vendor/adapter-utils.tgz /tmp/paperclip-bundled-adapters/
 COPY --from=github-mcp /server/github-mcp-server /usr/local/bin/github-mcp-server
+# Pin OpenCode for k8s agent pods (BLO-10651). opencode_k8s runs inside this
+# image, so `opencode-ai@latest` lets unrelated rebuilds pick up parser/runtime
+# changes that can crash every OpenCode-backed agent. Bump only after adapter
+# smoke/regression tests pass.
+ARG OPENCODE_AI_VERSION=1.4.3
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    npm install --global --omit=dev --cache /root/.npm @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
+    npm install --global --omit=dev --cache /root/.npm @anthropic-ai/claude-code@latest @openai/codex@latest "opencode-ai@${OPENCODE_AI_VERSION}" @google/gemini-cli@latest \
+  && test "$(opencode --version)" = "${OPENCODE_AI_VERSION}" \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client rsync jq zsh \
   && mkdir -p /paperclip /paperclip/.local/bin /opt/paperclip-bundled-adapters \
