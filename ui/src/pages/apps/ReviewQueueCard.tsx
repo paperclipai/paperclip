@@ -98,8 +98,9 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
 
   const alwaysAllow = useMutation({
     mutationFn: async () => {
-      await toolsApi.createTrustRuleFromActionRequest(companyId, item.request.id);
-      return toolsApi.approveActionRequest(companyId, item.request.id);
+      const approved = await toolsApi.approveActionRequest(companyId, item.request.id);
+      await toolsApi.createTrustRuleFromActionRequest(companyId, item.request.id, { approvalThreshold: 1 });
+      return approved;
     },
     onMutate: () => setResolving("always"),
     onSuccess: () => {

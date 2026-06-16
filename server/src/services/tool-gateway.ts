@@ -1259,6 +1259,14 @@ export function createToolGatewayService(
         signingSecret: options.toolActionSigningSecret,
       });
     } catch (error) {
+      await db
+        .update(toolActionRequests)
+        .set({
+          status: "cancelled",
+          resolvedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "pending")));
       if (error instanceof ToolActionSigningSecretMissingError) {
         await db
           .update(toolInvocations)

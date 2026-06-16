@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -146,6 +146,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await db.delete(activityLog);
     await db.delete(toolGatewaySessions);
     await db.delete(toolCallEvents);
@@ -250,6 +251,90 @@ describeEmbeddedPostgres("tool gateway service", () => {
       approvedActionRequestId: actionRequest.id,
       parameters: { noteId: "n1", body: "short" },
     })).rejects.toMatchObject({ reasonCode: "action_not_approved" });
+  });
+
+  it("approves a pending action request directly from the review queue and preserves signed arguments", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note writes",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters: { noteId: "n1", body: "reviewed body" },
+    })).rejects.toMatchObject({ reasonCode: "approval_required" });
+
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    const approved = await gateway.approveActionRequest({
+      companyId: company.id,
+      actionRequestId: actionRequest.id,
+      actor: { userId: "board-user" },
+    });
+    expect(approved).toMatchObject({
+      status: "approved",
+      resolvedByUserId: "board-user",
+    });
+
+    const result = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      approvedActionRequestId: actionRequest.id,
+      parameters: { noteId: "n1", body: "tampered body" },
+    });
+    expect(result.status).toBe("completed");
+    expect((result.result as { data?: { bodyLength?: number } }).data?.bodyLength).toBe("reviewed body".length);
+
+    const [invocation] = await db.select().from(toolInvocations);
+    expect(invocation).toMatchObject({
+      status: "succeeded",
+      approvalState: "approved",
+    });
+    const [consumed] = await db.select().from(toolActionRequests);
+    expect(consumed.status).toBe("executed");
+  });
+
+  it("does not leave unsigned action requests pending when signing is unavailable", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "");
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note writes",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createTestToolGatewayService(db, { toolActionSigningSecret: " " });
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters: { noteId: "n1", body: "reviewed body" },
+    })).rejects.toMatchObject({ reasonCode: "signing_secret_unconfigured" });
+
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    expect(actionRequest).toMatchObject({
+      status: "cancelled",
+      signedArguments: null,
+    });
+    const [invocation] = await db.select().from(toolInvocations);
+    expect(invocation).toMatchObject({
+      status: "failed",
+      errorCode: "signing_secret_unconfigured",
+    });
   });
 
   it("declines a pending action request and rejects the invocation (PAP-10859)", async () => {
