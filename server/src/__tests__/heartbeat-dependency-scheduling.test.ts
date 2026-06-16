@@ -24,7 +24,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.js";
-import { heartbeatService } from "../services/heartbeat.js";
+import { DEP_BLOCKED_RETRY_REASON, heartbeatService } from "../services/heartbeat.js";
+import { getDepBlockedMetric, resetDepBlockedMetrics } from "../services/dep-blocked-metrics.js";
 import {
   composeSweepWakeFramePage,
   sweepWakeFrameSlug,
@@ -159,6 +160,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       resultJson: { exitCode: 0 },
     }));
     runningProcesses.clear();
+    resetDepBlockedMetrics();
     await cleanupHeartbeatTestState(db, heartbeat);
   });
 
@@ -253,18 +255,24 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         .then((rows) => rows[0] ?? null);
       return Boolean(
         wakeup &&
-        wakeup.status === "skipped" &&
+        wakeup.status === "scheduled" &&
         wakeup.reason === "issue_dependencies_blocked",
       );
     });
     expect(blockedWakeRequest).toBe(true);
 
-    const blockedRunsBeforeResolution = await db
-      .select({ count: sql<number>`count(*)::int` })
+    const blockedRunBeforeResolution = await db
+      .select({
+        status: heartbeatRuns.status,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      })
       .from(heartbeatRuns)
       .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${blockedIssueId}`)
-      .then((rows) => rows[0]?.count ?? 0);
-    expect(blockedRunsBeforeResolution).toBe(0);
+      .then((rows) => rows[0] ?? null);
+    expect(blockedRunBeforeResolution).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryReason: DEP_BLOCKED_RETRY_REASON,
+    });
 
     const interactionWake = await heartbeat.wakeup(agentId, {
       source: "automation",
@@ -1242,5 +1250,329 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         interaction: true,
       },
     });
+  });
+
+  it("coalesces repeated unchanged dep-blocked wakes into one scheduled_retry run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "in_progress", priority: "high" },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    // First wake: should create a scheduled_retry and return null.
+    const wake1 = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_assigned" },
+    });
+    expect(wake1).toBeNull();
+
+    const scheduledRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          eq(heartbeatRuns.scheduledRetryReason, DEP_BLOCKED_RETRY_REASON),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(scheduledRun).not.toBeNull();
+    expect(scheduledRun?.contextSnapshot).toMatchObject({
+      issueId: blockedIssueId,
+      unresolvedBlockerIssueIds: [blockerId],
+    });
+
+    // Second wake (same blockers, unchanged state): should coalesce into existing run.
+    await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_assigned" },
+    });
+
+    const scheduledRunCount = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.scheduledRetryReason, DEP_BLOCKED_RETRY_REASON),
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(scheduledRunCount).toBe(1);
+
+    const coalescedRequest = await db
+      .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "coalesced"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(coalescedRequest).not.toBeNull();
+    expect(coalescedRequest?.runId).toBe(scheduledRun?.id);
+  });
+
+  it("resets dependency-blocked scheduled_retry when the blocker set changes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerAId = randomUUID();
+    const blockerBId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: blockerAId, companyId, title: "Blocker A", status: "in_progress", priority: "high" },
+      { id: blockerBId, companyId, title: "Blocker B", status: "in_progress", priority: "high" },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values([
+      { companyId, issueId: blockerAId, relatedIssueId: blockedIssueId, type: "blocks" },
+      { companyId, issueId: blockerBId, relatedIssueId: blockedIssueId, type: "blocks" },
+    ]);
+
+    // Wake 1: blocked by A and B — creates scheduled_retry.
+    const wake1 = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_assigned" },
+    });
+    expect(wake1).toBeNull();
+
+    const firstScheduledRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          eq(heartbeatRuns.scheduledRetryReason, DEP_BLOCKED_RETRY_REASON),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(firstScheduledRun).not.toBeNull();
+
+    // Mark blocker A as done — blocker set now changes from [A,B] to [B].
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, blockerAId));
+
+    // Wake 2: blocker set changed → old scheduled_retry cancelled, new one created.
+    const wake2 = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId: blockedIssueId, resolvedBlockerIssueId: blockerAId },
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        wakeReason: "issue_blockers_resolved",
+        resolvedBlockerIssueId: blockerAId,
+      },
+    });
+    expect(wake2).toBeNull();
+
+    // Old scheduled_retry should be cancelled.
+    const oldRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, firstScheduledRun!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(oldRun?.status).toBe("cancelled");
+
+    // New scheduled_retry should reflect only blocker B.
+    const newScheduledRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          eq(heartbeatRuns.scheduledRetryReason, DEP_BLOCKED_RETRY_REASON),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(newScheduledRun).not.toBeNull();
+    expect(newScheduledRun?.id).not.toBe(firstScheduledRun?.id);
+    expect(newScheduledRun?.contextSnapshot).toMatchObject({
+      issueId: blockedIssueId,
+      unresolvedBlockerIssueIds: [blockerBId],
+    });
+    expect(getDepBlockedMetric("dep_blocked_reset")).toBe(1);
+    expect(getDepBlockedMetric("dep_blocked_scheduled")).toBe(2);
+  });
+
+  it("runs immediately when the final blocker resolves while a dep-blocked retry exists", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "in_progress", priority: "high" },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const deferredWake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_assigned" },
+    });
+    expect(deferredWake).toBeNull();
+
+    const depBlockedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          eq(heartbeatRuns.scheduledRetryReason, DEP_BLOCKED_RETRY_REASON),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(depBlockedRun).not.toBeNull();
+
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, blockerId));
+
+    const resolvedWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId: blockedIssueId, resolvedBlockerIssueId: blockerId },
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        wakeReason: "issue_blockers_resolved",
+        resolvedBlockerIssueId: blockerId,
+      },
+    });
+    expect(resolvedWake).not.toBeNull();
+    expect(resolvedWake?.status).toBe("queued");
+
+    const staleRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, depBlockedRun!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(staleRun?.status).toBe("cancelled");
+
+    const staleWakeupRequest = depBlockedRun?.wakeupRequestId
+      ? await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, depBlockedRun.wakeupRequestId))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    expect(staleWakeupRequest?.status).toBe("cancelled");
+
+    const issueLock = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueLock?.executionRunId).toBe(resolvedWake?.id);
+    expect(getDepBlockedMetric("dep_blocked_reset")).toBe(1);
   });
 });

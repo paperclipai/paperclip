@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CONCURRENT_RUN_BLOCKED_METRIC,
+  DEP_BLOCKED_WAKEUP_METRIC,
   HEARTBEAT_RUN_FAILED_METRIC,
   KNOWN_BLOCKED_REASONS,
   KNOWN_INVOCATION_SOURCES,
@@ -15,6 +16,12 @@ import {
   recordHeartbeatRunFailed,
   renderMetrics,
 } from "../services/metrics.js";
+import {
+  getDepBlockedMetric,
+  incrementDepBlockedMetric,
+  resetDepBlockedMetrics,
+  snapshotDepBlockedMetrics,
+} from "../services/dep-blocked-metrics.js";
 
 afterEach(() => {
   __resetMetricsForTest();
@@ -175,5 +182,64 @@ describe("recordHeartbeatRunFailed + renderMetrics", () => {
     expect(body).toContain(
       `${HEARTBEAT_RUN_FAILED_METRIC}{adapter="claude_k8s",error_code="k8s_concurrent_run_blocked",invocation_source="transient_failure_retry"} 2`,
     );
+  });
+});
+
+describe("dep-blocked metrics counters", () => {
+  afterEach(() => {
+    resetDepBlockedMetrics();
+  });
+
+  it("starts at zero for all keys", () => {
+    const snap = snapshotDepBlockedMetrics();
+    for (const value of Object.values(snap)) {
+      expect(value).toBe(0);
+    }
+  });
+
+  it("increments a specific counter", () => {
+    incrementDepBlockedMetric("dep_blocked_scheduled");
+    incrementDepBlockedMetric("dep_blocked_scheduled");
+    expect(getDepBlockedMetric("dep_blocked_scheduled")).toBe(2);
+    expect(getDepBlockedMetric("dep_blocked_coalesced")).toBe(0);
+  });
+
+  it("increments multiple distinct counters independently", () => {
+    incrementDepBlockedMetric("dep_blocked_scheduled");
+    incrementDepBlockedMetric("dep_blocked_coalesced");
+    incrementDepBlockedMetric("dep_blocked_reset");
+    const snap = snapshotDepBlockedMetrics();
+    expect(snap.dep_blocked_scheduled).toBe(1);
+    expect(snap.dep_blocked_coalesced).toBe(1);
+    expect(snap.dep_blocked_reset).toBe(1);
+    expect(snap.dep_blocked_promoted).toBe(0);
+  });
+
+  it("renders dep-blocked counters in Prometheus output", async () => {
+    incrementDepBlockedMetric("dep_blocked_scheduled");
+    incrementDepBlockedMetric("dep_blocked_coalesced");
+
+    const { body } = await renderMetrics();
+    expect(body).toContain(`# TYPE ${DEP_BLOCKED_WAKEUP_METRIC} counter`);
+    expect(body).toContain(`${DEP_BLOCKED_WAKEUP_METRIC}{outcome="dep_blocked_scheduled"} 1`);
+    expect(body).toContain(`${DEP_BLOCKED_WAKEUP_METRIC}{outcome="dep_blocked_coalesced"} 1`);
+  });
+
+  it("snapshot returns a copy that does not mutate on further increments", () => {
+    incrementDepBlockedMetric("dep_blocked_redeferred");
+    const snap = snapshotDepBlockedMetrics();
+    incrementDepBlockedMetric("dep_blocked_redeferred");
+    expect(snap.dep_blocked_redeferred).toBe(1);
+    expect(getDepBlockedMetric("dep_blocked_redeferred")).toBe(2);
+  });
+
+  it("resets all counters to zero", () => {
+    incrementDepBlockedMetric("dep_blocked_exhausted");
+    incrementDepBlockedMetric("dep_blocked_promoted");
+    resetDepBlockedMetrics();
+    const snap = snapshotDepBlockedMetrics();
+    for (const value of Object.values(snap)) {
+      expect(value).toBe(0);
+    }
   });
 });

@@ -19,9 +19,11 @@
  */
 
 import { Counter, Registry, collectDefaultMetrics } from "prom-client";
+import { resetDepBlockedMetrics, snapshotDepBlockedMetrics } from "./dep-blocked-metrics.js";
 
 export const CONCURRENT_RUN_BLOCKED_METRIC = "claude_k8s_concurrent_run_blocked_total";
 export const HEARTBEAT_RUN_FAILED_METRIC = "paperclip_heartbeat_run_failed_total";
+export const DEP_BLOCKED_WAKEUP_METRIC = "paperclip_dependency_blocked_wakeup_total";
 
 /**
  * Bounded `reason` allow-list (mirrors the adapter-lane reasons defined in
@@ -169,7 +171,15 @@ export function recordHeartbeatRunFailed(
 
 export async function renderMetrics(): Promise<{ contentType: string; body: string }> {
   const reg = getMetricsRegistry();
-  return { contentType: reg.contentType, body: await reg.metrics() };
+  const depBlockedSnapshot = snapshotDepBlockedMetrics();
+  const depBlockedBody = [
+    `# HELP ${DEP_BLOCKED_WAKEUP_METRIC} Count of dependency-blocked wakeup coalescer outcomes, labeled by outcome.`,
+    `# TYPE ${DEP_BLOCKED_WAKEUP_METRIC} counter`,
+    ...Object.entries(depBlockedSnapshot).map(
+      ([outcome, value]) => `${DEP_BLOCKED_WAKEUP_METRIC}{outcome="${outcome}"} ${value}`,
+    ),
+  ].join("\n");
+  return { contentType: reg.contentType, body: `${await reg.metrics()}\n${depBlockedBody}\n` };
 }
 
 /** Test-only: drop the registry so each test starts from a clean counter. */
@@ -177,4 +187,5 @@ export function __resetMetricsForTest(): void {
   registry = null;
   concurrentRunBlocked = null;
   heartbeatRunFailed = null;
+  resetDepBlockedMetrics();
 }
