@@ -328,4 +328,95 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("session-123");
   });
 
+  it("treats exit code 143 (SIGTERM) as success when a result/success event was already recorded", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-sigterm-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 143,
+      signal: "SIGTERM",
+      timedOut: false,
+      stdout: [
+        JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }),
+        JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "Done." }] } }),
+        JSON.stringify({ type: "result", subtype: "success", terminal_reason: "completed", session_id: "claude-session-1", result: "No assignments found.", usage: { input_tokens: 10, cache_read_input_tokens: 0, output_tokens: 5 } }),
+      ].join("\n"),
+      stderr: "",
+      pid: 456,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await execute({
+      runId: "run-sigterm",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { command: "claude" },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.errorMessage).toBeNull();
+    expect(result.exitCode).toBe(143);
+    expect(result.summary).toBe("No assignments found.");
+  });
+
+  it("still treats exit code 143 as failure when no success result was recorded", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-sigterm-fail-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 143,
+      signal: "SIGTERM",
+      timedOut: false,
+      stdout: [
+        JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }),
+      ].join("\n"),
+      stderr: "",
+      pid: 789,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await execute({
+      runId: "run-sigterm-fail",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { command: "claude" },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.errorMessage).not.toBeNull();
+    expect(result.exitCode).toBe(143);
+  });
+
 });

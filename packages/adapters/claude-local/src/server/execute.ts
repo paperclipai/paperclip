@@ -880,7 +880,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // SIGTERM (exit 143) after a successful result is normal cleanup: the adapter sends SIGTERM
+    // to tear down background subprocesses once Claude emits result/success. Treat it as success.
+    const sigtermAfterSuccess =
+      (proc.exitCode === 143 || proc.signal === "SIGTERM") &&
+      !parsedIsError &&
+      asString(parsed.subtype, "") === "success";
+    const failed = ((proc.exitCode ?? 0) !== 0 && !sigtermAfterSuccess) || parsedIsError;
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
