@@ -88,3 +88,4 @@ target used by the running Paperclip server). That path is gitignored — only t
 |---|---|
 | `server/src/onboarding-assets/architect/AGENTS.md` | 3 new blocking criteria after Completeness bullet |
 | `server/src/__tests__/architect-plan-gate-criteria.test.ts` | Content-assertion tests (new) |
+| `packages/teams-catalog/.../dev-team/agents/architect/AGENTS.md` | Same 3 criteria + cross-consultation section (commit `abdc6e79`) |
