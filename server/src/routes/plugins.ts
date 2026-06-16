@@ -909,6 +909,7 @@ export function pluginRoutes(
    * Response: `ToolExecutionResult`
    * Errors:
    * - 400 if request validation fails
+   * - 403 if the calling agent is not in the plugin's `authorizedInvokerAgentIds` allowlist
    * - 404 if tool is not found
    * - 501 if tool dispatcher is not configured
    * - 502 if the plugin worker is unavailable or the RPC call fails
@@ -959,6 +960,27 @@ export function pluginRoutes(
     if (!registeredTool) {
       res.status(404).json({ error: `Tool "${tool}" not found` });
       return;
+    }
+
+    // Per-plugin agent authorization: if the plugin's company settings carry an
+    // `authorizedInvokerAgentIds` allowlist, only those agents may execute its
+    // tools.  Board users always pass.  Absent or empty allowlist = open access
+    // (backward-compatible default).
+    if (req.actor.type === "agent") {
+      const companySettings = await registry.getCompanySettings(
+        registeredTool.pluginDbId,
+        runContext.companyId,
+      );
+      const allowlist = companySettings?.settingsJson?.authorizedInvokerAgentIds;
+      if (Array.isArray(allowlist) && allowlist.length > 0) {
+        const callerAgentId = req.actor.agentId ?? null;
+        if (!callerAgentId || !(allowlist as unknown[]).includes(callerAgentId)) {
+          res.status(403).json({
+            error: "Agent is not authorized to invoke this plugin's tools",
+          });
+          return;
+        }
+      }
     }
 
     try {

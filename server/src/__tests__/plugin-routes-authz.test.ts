@@ -1052,4 +1052,147 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(res.status).toBe(403);
     expect(executeTool).not.toHaveBeenCalled();
   });
+
+  it("rejects agent JWT when plugin has non-empty authorizedInvokerAgentIds and agent is not in the list", async () => {
+    const unauthorizedAgent = "88888888-8888-4888-8888-888888888888";
+    const authorizedAgent = "99999999-9999-4999-8999-999999999999";
+    const executeTool = vi.fn();
+    mockRegistry.getCompanySettings.mockResolvedValue({
+      settingsJson: { authorizedInvokerAgentIds: [authorizedAgent] },
+    });
+    const { app } = await createApp(
+      agentActor({ agentId: unauthorizedAgent }),
+      {},
+      {
+        db: createSelectQueueDb([
+          [{ companyId: companyA }],
+          [{ companyId: companyA, agentId: unauthorizedAgent }],
+          [{ companyId: companyA }],
+        ]),
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+            executeTool,
+          },
+        },
+      },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: unauthorizedAgent, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("allows agent JWT when in plugin's authorizedInvokerAgentIds list", async () => {
+    const authorizedAgent = "99999999-9999-4999-8999-999999999999";
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    mockRegistry.getCompanySettings.mockResolvedValue({
+      settingsJson: { authorizedInvokerAgentIds: [authorizedAgent, agentA] },
+    });
+    const { app } = await createApp(
+      agentActor({ agentId: authorizedAgent }),
+      {},
+      {
+        db: createSelectQueueDb([
+          [{ companyId: companyA }],
+          [{ companyId: companyA, agentId: authorizedAgent }],
+          [{ companyId: companyA }],
+        ]),
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+            executeTool,
+          },
+        },
+      },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: { q: "test" },
+        runContext: { agentId: authorizedAgent, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalled();
+  });
+
+  it("allows board user to execute tool even when plugin has authorizedInvokerAgentIds", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    mockRegistry.getCompanySettings.mockResolvedValue({
+      settingsJson: { authorizedInvokerAgentIds: ["some-other-agent-id"] },
+    });
+    const { app } = await createApp(boardActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+        [{ companyId: companyA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalled();
+  });
+
+  it("allows agent JWT when plugin has empty authorizedInvokerAgentIds (no restriction)", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    mockRegistry.getCompanySettings.mockResolvedValue({
+      settingsJson: { authorizedInvokerAgentIds: [] },
+    });
+    const { app } = await createApp(
+      agentActor(),
+      {},
+      {
+        db: createSelectQueueDb([
+          [{ companyId: companyA }],
+          [{ companyId: companyA, agentId: agentA }],
+          [{ companyId: companyA }],
+        ]),
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+            executeTool,
+          },
+        },
+      },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalled();
+  });
 });
