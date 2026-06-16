@@ -1637,6 +1637,55 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Plan mode");
   });
 
+  it("falls back to execCommand when copying the task from an insecure context", async () => {
+    const clipboardWrite = vi.fn(async () => {
+      throw new Error("Clipboard API blocked");
+    });
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: false,
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      identifier: "PAP-1",
+      title: "Copy me",
+      description: "Task body",
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const copyButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.getAttribute("title") === "Copy task as markdown");
+    expect(copyButton).toBeTruthy();
+
+    await act(async () => {
+      copyButton!.click();
+      await Promise.resolve();
+    });
+
+    expect(clipboardWrite).toHaveBeenCalledWith("# PAP-1: Copy me\n\nTask body");
+    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Copied to clipboard",
+      tone: "success",
+    }));
+  });
+
   // PAP-140 flag-off parity: with the Conference Room Chat flag off, the task
   // thread surfaces must render master's behavior (classic fork, master copy,
   // master mention set).
