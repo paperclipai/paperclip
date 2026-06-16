@@ -38,6 +38,9 @@ import type {
   ToolActionRequest,
   ToolActionRequestStatus,
   ToolActionRequestsResponse,
+  ToolMcpGatewayWithTokens,
+  ToolMcpGatewayTokenCreated,
+  ToolMcpGatewayToken,
   CreateToolTrustRuleFromActionRequest,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -60,6 +63,7 @@ export type ToolTrustRulesResponse = { trustRules: ToolPolicy[] };
 export type ToolPoliciesResponse = { policies: ToolPolicy[] };
 export type ToolProfilesResponse = { profiles: ToolProfileWithDetails[] };
 export type ToolGalleryResponse = { apps: AppGalleryEntry[] };
+export type ToolMcpGatewaysResponse = { gateways: ToolMcpGatewayWithTokens[] };
 export type ReviewNewToolsInput = {
   decisions: Array<{ catalogEntryId: string; decision: ToolProfileNewToolReviewDecision }>;
 };
@@ -373,6 +377,14 @@ export const toolsApi = {
       `/companies/${companyId}/tools/action-requests/${actionRequestId}/trust-rule`,
       input,
     ),
+
+  // --- Named MCP gateways ---
+  listGateways: (companyId: string) =>
+    api.get<ToolMcpGatewaysResponse>(`/companies/${companyId}/tools/gateways`),
+  createGatewayToken: (companyId: string, gatewayId: string, input: { name: string; expiresAt?: string | null }) =>
+    api.post<ToolMcpGatewayTokenCreated>(`/tool-gateway/gateways/${gatewayId}/tokens`, { ...input, companyId }),
+  revokeGatewayToken: (companyId: string, tokenId: string) =>
+    api.post<ToolMcpGatewayToken>(`/tool-gateway/gateway-tokens/${tokenId}/revoke`, { companyId }),
 
   // --- Audit / Activity ---
   /**

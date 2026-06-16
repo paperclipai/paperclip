@@ -1,6 +1,7 @@
 import {
   ClipboardPaste,
   Layers,
+  Network,
   ScrollText,
   Server,
   Shield,
@@ -28,6 +29,7 @@ export const ADVANCED_TABS = [
 
 // The pre-Apps developer surface, kept reachable behind the Advanced door.
 export const DEVELOPER_TABS = [
+  { key: "gateways", label: "Gateways", icon: Network },
   { key: "profiles", label: "Profiles", icon: Layers },
   { key: "policies", label: "Rules", icon: Shield },
   { key: "runtime", label: "Health", icon: Server },

@@ -8,6 +8,7 @@ import { ProfilesIndex } from "./profiles/ProfilesIndex";
 import { PoliciesTab } from "./PoliciesTab";
 import { RuntimeTab } from "./RuntimeTab";
 import { AuditTab } from "./AuditTab";
+import { GatewaysTab } from "./GatewaysTab";
 import { PasteConfigTab } from "./PasteConfigTab";
 import { RunYourOwnTab } from "./RunYourOwnTab";
 import {
@@ -28,6 +29,8 @@ function renderTab(tab: ToolTabKey, companyId: string) {
       return <RuntimeTab companyId={companyId} />;
     case "audit":
       return <AuditTab companyId={companyId} />;
+    case "gateways":
+      return <GatewaysTab companyId={companyId} />;
     case "paste-config":
       return <PasteConfigTab companyId={companyId} />;
     case "run-your-own":

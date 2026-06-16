@@ -465,27 +465,47 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         body: { name: "Cursor" },
       });
 
-      const visible = await gateway.listToolsForNamedGateway({ gatewayId: created.id, bearerToken: token.token });
-      expect(visible.map((tool) => tool.name)).toContain(gatewayToolName);
-      expect(visible.map((tool) => tool.name)).not.toContain("mcp-remote-fixture:update_note");
+      const app = createGatewayRouteApp(db, gateway);
+      const listed = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+        .expect(200);
+      const visibleToolNames = listed.body.result.tools.map((tool: { name: string }) => tool.name);
+      expect(visibleToolNames).toContain(gatewayToolName);
+      expect(visibleToolNames).not.toContain("mcp-remote-fixture:update_note");
 
-      const result = await gateway.executeTool({
-        sessionToken: token.token,
-        tool: gatewayToolName,
-        parameters: { key: "a", value: "b" },
-      });
-      expect(result.status).toBe("completed");
-      expect(result.result).toMatchObject({ content: "read ok" });
+      const called = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: gatewayToolName, arguments: { key: "a", value: "b" } },
+        })
+        .expect(200);
+      expect(called.body.result.content).toEqual([{ type: "text", text: "read ok" }]);
 
-      await expect(gateway.executeTool({
-        sessionToken: token.token,
-        tool: "mcp-remote-fixture:update_note",
-        parameters: { noteId: "n1", body: "blocked" },
-      })).rejects.toMatchObject({ status: 403, reasonCode: "deny_default" });
+      const denied = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: { name: "mcp-remote-fixture:update_note", arguments: { noteId: "n1", body: "blocked" } },
+        })
+        .expect(403);
+      expect(denied.body.error.data.reasonCode).toBe("deny_default");
 
       await gateway.revokeNamedGatewayToken({ companyId: company.id, tokenId: token.id });
-      await expect(gateway.listToolsForNamedGateway({ gatewayId: created.id, bearerToken: token.token }))
-        .rejects.toMatchObject({ status: 401, reasonCode: "gateway_token_revoked" });
+      const revoked = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 4, method: "tools/list" })
+        .expect(401);
+      expect(revoked.body.error.data.reasonCode).toBe("gateway_token_revoked");
     } finally {
       await remote.close();
     }
