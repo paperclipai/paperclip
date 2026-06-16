@@ -463,7 +463,7 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
-  recoveryKind: z.enum(ISSUE_RECOVERY_DISPOSITION_KINDS).optional().nullable(),
+  recoveryKind: z.enum(ISSUE_RECOVERY_DISPOSITION_KINDS).optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
