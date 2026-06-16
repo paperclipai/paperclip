@@ -62,7 +62,7 @@ import {
   writePluginLocalFolderTextAtomic,
 } from "./plugin-local-folders.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishPluginDomainEvent } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -2568,6 +2568,27 @@ export function buildHostServices(
           .returning()
           .then((rows) => rows[0]);
 
+        // Broadcast a vendor-neutral telemetry event so observability plugins
+        // can open a session span. This is a separate channel from the
+        // owning-plugin `agents.sessions.event` worker bridge below.
+        publishPluginDomainEvent({
+          eventId: randomUUID(),
+          eventType: "agent.session.created",
+          occurredAt: new Date().toISOString(),
+          actorId: params.agentId,
+          actorType: "agent",
+          entityId: row!.id,
+          entityType: "agent_session",
+          companyId,
+          payload: {
+            sessionId: row!.id,
+            agentId: params.agentId,
+            agentName: agent!.name,
+            companyId,
+            taskKey,
+          },
+        });
+
         return {
           sessionId: row!.id,
           agentId: params.agentId,
@@ -2638,10 +2659,48 @@ export function buildHostServices(
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
 
+        // Resolve the agent name once for vendor-neutral telemetry payloads.
+        const sessionAgent = await agents.getById(session.agentId).catch(() => null);
+        const agentName = sessionAgent?.name ?? "";
+
+        // Broadcast the run's streaming lifecycle as vendor-neutral
+        // `agent.session.*` bus events so observability plugins can record
+        // session spans/metrics. This is independent of the owning-plugin
+        // `agents.sessions.event` worker bridge (which only the plugin that
+        // opened the session receives). The session span ends on the first
+        // terminal run; multi-turn sessions are a known v1 limitation.
+        const emitSessionTelemetry = (
+          eventType:
+            | "agent.session.chunk"
+            | "agent.session.status"
+            | "agent.session.done"
+            | "agent.session.error",
+          extra: Record<string, unknown>,
+        ) => {
+          publishPluginDomainEvent({
+            eventId: randomUUID(),
+            eventType,
+            occurredAt: new Date().toISOString(),
+            actorId: session.agentId,
+            actorType: "agent",
+            entityId: params.sessionId,
+            entityType: "agent_session",
+            companyId,
+            payload: {
+              sessionId: params.sessionId,
+              runId: run.id,
+              agentId: session.agentId,
+              agentName,
+              companyId,
+              ...extra,
+            },
+          });
+        };
+
         // Subscribe to live events and forward to the plugin worker as notifications.
         // Track the subscription so it can be cleaned up on dispose() if the run
         // never reaches a terminal status (hang, crash, network partition).
-        if (notifyWorker) {
+        {
           const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 
           const cleanup = () => {
@@ -2655,19 +2714,27 @@ export function buildHostServices(
             if (!payload || payload.runId !== run.id) return;
 
             if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.event") {
-              notifyWorker("agents.sessions.event", {
+              const seq = (payload.seq as number) ?? 0;
+              const stream = (payload.stream as string) ?? null;
+              const message = (payload.chunk as string) ?? (payload.message as string) ?? null;
+              notifyWorker?.("agents.sessions.event", {
                 sessionId: params.sessionId,
                 runId: run.id,
-                seq: (payload.seq as number) ?? 0,
+                seq,
                 eventType: "chunk",
-                stream: (payload.stream as string) ?? null,
-                message: (payload.chunk as string) ?? (payload.message as string) ?? null,
+                stream,
+                message,
                 payload: payload,
+              });
+              emitSessionTelemetry("agent.session.chunk", {
+                seq,
+                stream: stream ?? "stdout",
+                message: message ?? "",
               });
             } else if (event.type === "heartbeat.run.status") {
               const status = payload.status as string;
               if (TERMINAL_STATUSES.has(status)) {
-                notifyWorker("agents.sessions.event", {
+                notifyWorker?.("agents.sessions.event", {
                   sessionId: params.sessionId,
                   runId: run.id,
                   seq: 0,
@@ -2676,9 +2743,21 @@ export function buildHostServices(
                   message: status === "succeeded" ? "Run completed" : `Run ${status}`,
                   payload: payload,
                 });
+                if (status === "succeeded") {
+                  emitSessionTelemetry("agent.session.done", {
+                    status,
+                    message: "Run completed",
+                  });
+                } else {
+                  emitSessionTelemetry("agent.session.error", {
+                    status,
+                    message: `Run ${status}`,
+                    error: (payload.error as string) ?? `Run ${status}`,
+                  });
+                }
                 cleanup();
               } else {
-                notifyWorker("agents.sessions.event", {
+                notifyWorker?.("agents.sessions.event", {
                   sessionId: params.sessionId,
                   runId: run.id,
                   seq: 0,
@@ -2687,6 +2766,7 @@ export function buildHostServices(
                   message: `Run status: ${status}`,
                   payload: payload,
                 });
+                emitSessionTelemetry("agent.session.status", { status });
               }
             }
           });
