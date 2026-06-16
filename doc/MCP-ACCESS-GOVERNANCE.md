@@ -112,7 +112,9 @@ Paperclip plays two roles in the MCP graph, and confusing them is the most commo
 
 **Gateway mode** — Paperclip proxies tool calls from a Paperclip agent to an upstream MCP server (GitHub, Linear, a local stdio fixture, etc.). Every call goes through profile selection, policy evaluation, optional human approval, rate limiting, redaction, and audit. This is what the rest of this document covers.
 
-Operators usually mean *gateway* when they say "MCP access governance". An agent never speaks MCP directly to a third-party server — it always goes through the gateway. Policies, approvals, and the audit log only exist in gateway mode.
+Operators usually mean *gateway* when they say "MCP access governance". For Paperclip-managed local adapter runs, Paperclip writes adapter MCP config that points at named gateway endpoints with short-lived scoped bearer tokens. Policies, approvals, and the audit log only exist for calls that enter gateway mode.
+
+V1 does not claim host-wide MCP enforcement. If an unmanaged external client, hand-edited adapter config, or process outside the Paperclip-controlled workspace calls an upstream MCP server directly, Paperclip can warn about known overlapping config entries but cannot prevent or audit that bypass. Treat managed MCP config as a control-plane containment feature for Paperclip-launched agents, not as an endpoint firewall for the operator's whole machine.
 
 ## Managed connections
 

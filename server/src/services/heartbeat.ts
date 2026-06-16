@@ -50,6 +50,7 @@ import {
   routineRevisions,
   routineRuns,
   routines,
+  toolMcpGateways,
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -103,6 +104,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { createToolGatewayService } from "./tool-gateway.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -1439,6 +1441,103 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+type ManagedMcpGatewayRunConfig = {
+  version: 1;
+  managedMcpOnly: boolean;
+  gateways: Array<{
+    id: string;
+    name: string;
+    endpointPath: string;
+    bearerToken: string;
+    tokenPrefix: string;
+  }>;
+};
+
+const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local"]);
+
+function adapterSupportsManagedMcpConfig(adapterType: string): boolean {
+  return MANAGED_MCP_LOCAL_ADAPTERS.has(adapterType);
+}
+
+function gatewayAppliesToRun(input: {
+  gateway: typeof toolMcpGateways.$inferSelect;
+  agentId: string;
+  projectId: string | null;
+  issueId: string | null;
+}): boolean {
+  const { gateway, agentId, projectId, issueId } = input;
+  if (gateway.agentId && gateway.agentId !== agentId) return false;
+  if (gateway.projectId && gateway.projectId !== projectId) return false;
+  if (gateway.issueId && gateway.issueId !== issueId) return false;
+  if (gateway.contextScopeType === "agent" && gateway.contextScopeId && gateway.contextScopeId !== agentId) return false;
+  if (gateway.contextScopeType === "project" && gateway.contextScopeId && gateway.contextScopeId !== projectId) return false;
+  if (gateway.contextScopeType === "issue" && gateway.contextScopeId && gateway.contextScopeId !== issueId) return false;
+  return true;
+}
+
+async function createManagedMcpRunConfig(input: {
+  db: Db;
+  agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "adapterType">;
+  runId: string;
+  config: Record<string, unknown>;
+  projectId: string | null;
+  issueId: string | null;
+}): Promise<ManagedMcpGatewayRunConfig | null> {
+  if (!adapterSupportsManagedMcpConfig(input.agent.adapterType)) return null;
+  if (input.config.managedMcpOnly === false) return null;
+
+  const rows = await input.db
+    .select()
+    .from(toolMcpGateways)
+    .where(and(
+      eq(toolMcpGateways.companyId, input.agent.companyId),
+      eq(toolMcpGateways.status, "active"),
+      isNull(toolMcpGateways.archivedAt),
+    ))
+    .orderBy(asc(toolMcpGateways.name));
+
+  const gateways = rows.filter((gateway) => gatewayAppliesToRun({
+    gateway,
+    agentId: input.agent.id,
+    projectId: input.projectId,
+    issueId: input.issueId,
+  }));
+  if (gateways.length === 0) return null;
+
+  const service = createToolGatewayService(input.db);
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+  const managedGateways: ManagedMcpGatewayRunConfig["gateways"] = [];
+  for (const gateway of gateways) {
+    const token = await service.createNamedGatewayToken({
+      companyId: input.agent.companyId,
+      gatewayId: gateway.id,
+      body: {
+        name: `Managed ${input.agent.name} ${input.runId.slice(0, 8)}`,
+        subjectType: "gateway_client",
+        subjectId: input.runId,
+        clientLabel: `${input.agent.name} managed local adapter`,
+        ownerNote: `Short-lived Paperclip-managed MCP token for heartbeat run ${input.runId}.`,
+        allowedActions: ["tools/list", "tools/call"],
+        expiresAt,
+      },
+      actor: { agentId: input.agent.id },
+    });
+    managedGateways.push({
+      id: gateway.id,
+      name: gateway.name,
+      endpointPath: `/api/tool-gateway/gateways/${gateway.id}/mcp`,
+      bearerToken: token.token,
+      tokenPrefix: token.tokenPrefix,
+    });
+  }
+
+  return {
+    version: 1,
+    managedMcpOnly: true,
+    gateways: managedGateways,
+  };
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -8858,12 +8957,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
       try {
+        const adapterContext = { ...context };
+        const managedMcpConfig = await createManagedMcpRunConfig({
+          db,
+          agent,
+          runId: run.id,
+          config: runtimeConfig,
+          projectId: issueRef?.projectId ?? null,
+          issueId: issueRef?.id ?? null,
+        });
+        if (managedMcpConfig) {
+          adapterContext.paperclipManagedMcp = managedMcpConfig;
+        }
         adapterResult = await adapter.execute({
           runId: run.id,
           agent,
           runtime: runtimeForAdapter,
           config: runtimeConfig,
-          context,
+          context: adapterContext,
           runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
           executionTarget,
           executionTransport: remoteExecution

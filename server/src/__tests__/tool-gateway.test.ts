@@ -492,6 +492,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         })
         .expect(200);
       expect(called.body.result.content).toEqual([{ type: "text", text: "read ok" }]);
+      const upstreamRequestCountAfterAllowedCall = remote.requests.length;
 
       const denied = await request(app)
         .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
@@ -504,6 +505,12 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         })
         .expect(403);
       expect(denied.body.error.data.reasonCode).toBe("deny_default");
+      expect(remote.requests.length).toBe(upstreamRequestCountAfterAllowedCall);
+      const deniedAuditRows = await db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.companyId, company.id), eq(activityLog.action, "tool_gateway.call_completed")));
+      expect(JSON.stringify(deniedAuditRows)).not.toContain("blocked");
 
       const listOnlyToken = await gateway.createNamedGatewayToken({
         companyId: company.id,
