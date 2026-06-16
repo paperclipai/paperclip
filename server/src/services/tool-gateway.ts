@@ -88,6 +88,7 @@ const DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS: McpGatewayProtocolLimitOptions = {
   tokenRequests: { windowMs: 60 * 1000, max: 120 },
   sessionSetup: { windowMs: 60 * 1000, max: 30 },
 };
+const DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITER_MAX_KEYS = 10_000;
 
 export type ToolGatewayProviderType =
   | "mcp_http_fixture"
@@ -323,14 +324,52 @@ function safeClientMetadata(headers: Record<string, string | string[] | undefine
   };
 }
 
-function createWindowRateLimiter(now: () => number = () => Date.now()) {
-  const counters = new Map<string, { windowStart: number; count: number }>();
+function createWindowRateLimiter(options: {
+  now?: () => number;
+  maxKeys?: number;
+} = {}) {
+  const now = options.now ?? (() => Date.now());
+  const configuredMaxKeys = options.maxKeys ?? DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITER_MAX_KEYS;
+  const maxKeys = Number.isFinite(configuredMaxKeys) && configuredMaxKeys > 0
+    ? Math.floor(configuredMaxKeys)
+    : DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITER_MAX_KEYS;
+  const counters = new Map<string, { windowStart: number; expiresAt: number; count: number }>();
+  let nextExpiryAt = Number.POSITIVE_INFINITY;
+
+  function pruneExpired(current: number) {
+    let next = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of counters) {
+      if (entry.expiresAt <= current) {
+        counters.delete(key);
+      } else if (entry.expiresAt < next) {
+        next = entry.expiresAt;
+      }
+    }
+    nextExpiryAt = next;
+  }
+
+  function rememberExpiry(expiresAt: number) {
+    if (expiresAt < nextExpiryAt) nextExpiryAt = expiresAt;
+  }
+
   return {
     consume(key: string, config: McpGatewayRateLimitConfig) {
       const current = now();
+      if (current >= nextExpiryAt || counters.size >= maxKeys) {
+        pruneExpired(current);
+      }
       const existing = counters.get(key);
-      if (!existing || current - existing.windowStart >= config.windowMs) {
-        counters.set(key, { windowStart: current, count: 1 });
+      if (!existing || existing.expiresAt <= current) {
+        if (counters.size >= maxKeys && !existing) {
+          return {
+            limited: true,
+            count: config.max + 1,
+            retryAfterMs: Number.isFinite(nextExpiryAt) ? Math.max(0, nextExpiryAt - current) : config.windowMs,
+          };
+        }
+        const expiresAt = current + config.windowMs;
+        counters.set(key, { windowStart: current, expiresAt, count: 1 });
+        rememberExpiry(expiresAt);
         return { limited: false, count: 1, retryAfterMs: config.windowMs };
       }
       existing.count += 1;
@@ -673,6 +712,7 @@ export function createToolGatewayService(
       tokenRequests: Partial<McpGatewayRateLimitConfig>;
       sessionSetup: Partial<McpGatewayRateLimitConfig>;
     }>;
+    mcpGatewayProtocolLimiterMaxKeys?: number;
     now?: () => number;
   } = {},
 ) {
@@ -687,7 +727,14 @@ export function createToolGatewayService(
   const policyService = toolAccessPolicyService(db);
   const secrets = secretService(db);
   const protocolLimits = mcpGatewayProtocolLimits(options.mcpGatewayProtocolLimits);
-  const protocolLimiter = createWindowRateLimiter(options.now);
+  const protocolLimiter = createWindowRateLimiter({
+    now: options.now,
+    maxKeys: options.mcpGatewayProtocolLimiterMaxKeys
+      ?? positiveInt(
+        process.env.PAPERCLIP_MCP_GATEWAY_PROTOCOL_LIMITER_MAX_KEYS,
+        DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITER_MAX_KEYS,
+      ),
+  });
 
   function pluginTools(): ToolGatewayDescriptor[] {
     return (pluginToolDispatcher?.listToolsForAgent() ?? []).map((tool) => ({

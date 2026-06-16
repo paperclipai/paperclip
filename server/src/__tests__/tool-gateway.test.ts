@@ -612,6 +612,106 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     expect(JSON.stringify(audits)).not.toContain("authorization");
   });
 
+  it("evicts expired public gateway auth limiter keys for unique bad tokens", async () => {
+    let now = Date.now();
+    const company = await createCompany(db);
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `auth-limiter-eviction-${randomUUID()}`,
+      name: `Auth limiter eviction ${randomUUID()}`,
+      defaultAction: "deny",
+    }).returning();
+    const gateway = createTestToolGatewayService(db, {
+      now: () => now,
+      mcpGatewayProtocolLimiterMaxKeys: 3,
+      mcpGatewayProtocolLimits: {
+        authFailures: { max: 100, windowMs: 100 },
+      },
+    });
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Public auth limiter eviction", profileId: profile.id },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    const endpoint = `/mcp/gateways/${created.gatewayPublicId}`;
+
+    await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer pcgw_${randomUUID()}.bad-secret`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+      .expect(401);
+    await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer pcgw_${randomUUID()}.bad-secret`)
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list" })
+      .expect(401);
+    await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer pcgw_${randomUUID()}.bad-secret`)
+      .send({ jsonrpc: "2.0", id: 3, method: "tools/list" })
+      .expect(429);
+
+    now += 101;
+    await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer pcgw_${randomUUID()}.bad-secret`)
+      .send({ jsonrpc: "2.0", id: 4, method: "tools/list" })
+      .expect(401);
+  });
+
+  it("fails closed when the public gateway auth limiter store is full", async () => {
+    const company = await createCompany(db);
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `auth-limiter-capacity-${randomUUID()}`,
+      name: `Auth limiter capacity ${randomUUID()}`,
+      defaultAction: "deny",
+    }).returning();
+    const gateway = createTestToolGatewayService(db, {
+      mcpGatewayProtocolLimiterMaxKeys: 1,
+      mcpGatewayProtocolLimits: {
+        authFailures: { max: 100, windowMs: 60_000 },
+      },
+    });
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Public auth limiter capacity", profileId: profile.id },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    const badToken = `pcgw_${randomUUID()}.not-a-real-secret`;
+
+    const throttled = await request(app)
+      .post(`/mcp/gateways/${created.gatewayPublicId}`)
+      .set("authorization", `Bearer ${badToken}`)
+      .set("x-paperclip-client-name", "Capacity test client")
+      .set("x-request-id", "auth-limiter-capacity-test")
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+      .expect(429);
+    expect(throttled.body.error.data).toMatchObject({
+      reasonCode: "gateway_auth_throttled",
+      reasonText: "The MCP gateway authentication attempt was throttled after repeated failures.",
+    });
+
+    const audits = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.reasonCode, "gateway_auth_throttled"));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      companyId: company.id,
+      gatewayId: created.id,
+      gatewayPublicId: created.gatewayPublicId,
+      clientName: "Capacity test client",
+      correlationId: "auth-limiter-capacity-test",
+    });
+    expect(audits[0]!.details).toMatchObject({
+      limiterKeyClass: "token_auth",
+      tokenPrefix: `pcgw_${badToken.slice(5, 13)}`,
+    });
+    expect(JSON.stringify(audits)).not.toContain(badToken);
+    expect(JSON.stringify(audits)).not.toContain("authorization");
+  });
+
   it("rate limits public named gateway session setup, discovery, and calls with redacted audits", async () => {
     const company = await createCompany(db);
     const remote = await startFakeRemoteMcpServer(async () => ({
