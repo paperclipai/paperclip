@@ -57,8 +57,14 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
-// Mirrors enrichment/dispatcher.py re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).
-// Non-greedy, dotall (s flag), global. Exported for unit tests.
+/**
+ * Strip `<think>...</think>` blocks from model output before returning to Paperclip.
+ *
+ * Mirrors enrichment/dispatcher.py:280 (`re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)`)
+ * and additionally `.trim()`s to remove residual whitespace left when a leading think block is removed.
+ * Non-greedy (won't merge separate blocks), dotall (`s` flag), case-sensitive. Requires a matching
+ * closing tag — unclosed `<think>` tags are left intact so real output is never truncated.
+ */
 export function stripThinkBlocks(text: string): string {
   return text.replace(/<think>.*?<\/think>/gs, "").trim();
 }
