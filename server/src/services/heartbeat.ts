@@ -1887,7 +1887,7 @@ function formatCount(value: number | null | undefined) {
 
 // Anthropic prompt-cache TTL. Once a wake is spaced further than this from the
 // previous run, every cached token will be re-billed at full price on the next
-// --resume replay. Used by A1a proactive rotation.
+// --resume replay. Used by A1a proactive rotation and A1b cold-session rotation.
 export const SESSION_CACHE_TTL_MS = 5 * 60 * 1000;
 
 // When the session transcript is this fraction of the rotation threshold AND the
