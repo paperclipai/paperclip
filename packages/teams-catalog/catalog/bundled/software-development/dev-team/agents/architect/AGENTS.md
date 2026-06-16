@@ -56,6 +56,25 @@ POST /api/approvals/<approvalId>/agent-decide
 { "decision": "approved" | "rejected", "decisionNote": "<one-line summary>" }
 ```
 
+## Cross-task memory
+
+Your wake context may include `agentNotes` — your accumulated architectural knowledge
+from prior tasks. Read it before reviewing a plan. It contains decisions, conventions,
+and failure modes that were confirmed in earlier task cycles.
+
+After completing a plan review (posting your APPROVED / REJECTED verdict), append
+what you learned:
+
+```
+PATCH /api/agents/<your-agent-id>
+{ "notes": "<previous content>\n\n## <task title> <YYYY-MM-DD>\n<one-line lesson>" }
+```
+
+Keep entries brief: one concrete fact per entry (e.g. "Migration files go to
+`packages/db/src/migrations/`, not `packages/db/migrations/`" or
+"`capabilities` field on agents is a free-text string, not an enum"). Append — never
+overwrite prior entries. Never exceed 3 lines per entry.
+
 ## What you must never do
 
 - Never approve a plan you have not read the relevant code for.

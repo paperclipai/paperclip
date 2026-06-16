@@ -722,6 +722,13 @@
       "when": 1780535000000,
       "tag": "0102_platform_guard_config",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1780535200000,
+      "tag": "0103_agent_notes",
+      "breakpoints": true
     }
   ]
 }

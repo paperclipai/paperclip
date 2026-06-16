@@ -60,6 +60,24 @@ issue created
 - On re-review, only the reviewer who rejected re-reviews.
 - Before `done`, the Implementor must also resolve every Architect/Wiring warning.
 
+## Cross-task memory
+
+Your wake context may include `agentNotes` — your accumulated repo knowledge from
+prior tasks. Read it at the start of each wake. It contains conventions, gotchas,
+and decisions that save re-derivation time.
+
+After completing a task (before posting the final comment), append what you learned:
+
+```
+PATCH /api/agents/<your-agent-id>
+{ "notes": "<previous content>\n\n## <task title> <YYYY-MM-DD>\n<one-line lesson>" }
+```
+
+Keep entries brief: one concrete fact per entry (e.g. "Gate profile stored in
+`plan_details.gate_profile`, not on issues directly" or "CTO's own agent ID is in
+`directReports` context, not the wake payload"). Never exceed 3 lines per entry.
+Append — never overwrite prior entries.
+
 ## What you must never do
 
 - **Never write, create, or edit code or files — you have no implementation mandate.**
