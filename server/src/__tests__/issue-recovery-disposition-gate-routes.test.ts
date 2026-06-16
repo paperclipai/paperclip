@@ -472,6 +472,55 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
     });
   });
 
+  describe("Condition ordering — B evaluated before D", () => {
+    it("returns condition_b_violation (not condition_d) when assigneeAgentId is null on a measurement-tagged recovery issue", async () => {
+      // When a recovery issue has no current assignee (assigneeAgentId=null), assertAgentIssueMutationAllowed
+      // passes (null assignee allows any agent). The recovery gate then receives a non-self-assigned actor
+      // trying to close a measurement-tagged issue. With old ordering (D before B) this yields
+      // condition_d_violation; with correct ordering (B before D) Condition B fires first.
+      mockIssueService.getById.mockResolvedValue(
+        makeRecoveryIssue({
+          assigneeAgentId: null, // unassigned — mutation check passes for any agent
+          labels: [{ id: "l1", name: "canary", color: "#ff0000", companyId, createdAt: new Date(), updatedAt: new Date() }],
+        }),
+      );
+      const anyAgentActor = {
+        type: "agent",
+        agentId: originalAgentId, // actor is NOT null-assignee's equivalent (null !== originalAgentId)
+        companyId,
+        source: "agent_key",
+        runId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      };
+      const app = await createApp(anyAgentActor);
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .set("Content-Type", "application/json")
+        .send({ status: "done", recoveryKind: "recovery_completion" });
+
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe("recovery_disposition_condition_b_violation");
+    });
+  });
+
+  describe("recoveryKind audit integrity — cannot be erased by follow-up PATCH", () => {
+    it("rejects a PATCH that sets recoveryKind to null after it was already set", async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeRecoveryIssue({ recoveryKind: "recovery_completion" }),
+      );
+      const app = await createApp(recoveryOwnerActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .set("Content-Type", "application/json")
+        .send({ recoveryKind: null });
+
+      // Zod schema no longer accepts null for recoveryKind — request is rejected at validation layer
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("Validation error");
+    });
+  });
+
   describe("gate bypass conditions", () => {
     it("bypasses when previousAssigneeAgentId is null (normal self-disposal)", async () => {
       mockIssueService.getById.mockResolvedValue(

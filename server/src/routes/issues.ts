@@ -3307,6 +3307,24 @@ export function issueRoutes(
       return false;
     }
 
+    // Condition B — assignee must already be the recovery owner (pre-reassigned in a prior call).
+    if (input.existing.assigneeAgentId !== actorAgentId) {
+      res.status(422).json({
+        error:
+          "Recovery owner must update assigneeAgentId to themselves before closing this issue (Condition B). " +
+          "Perform the reassignment in a separate PATCH call, then close.",
+        code: "recovery_disposition_condition_b_violation",
+        details: {
+          issueId: input.existing.id,
+          currentAssigneeAgentId: input.existing.assigneeAgentId,
+          actorAgentId,
+          previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
+          securityPrinciples: ["Separation of Disposition Authority"],
+        },
+      });
+      return false;
+    }
+
     // Condition D — canary/bake-off/measurement issues may not be completed by a recovery owner.
     if (nextStatus === "done") {
       const measurementLabels = MEASUREMENT_CONTEXT_LABEL_NAMES as readonly string[];
@@ -3327,24 +3345,6 @@ export function issueRoutes(
         });
         return false;
       }
-    }
-
-    // Condition B — assignee must already be the recovery owner (pre-reassigned in a prior call).
-    if (input.existing.assigneeAgentId !== actorAgentId) {
-      res.status(422).json({
-        error:
-          "Recovery owner must update assigneeAgentId to themselves before closing this issue (Condition B). " +
-          "Perform the reassignment in a separate PATCH call, then close.",
-        code: "recovery_disposition_condition_b_violation",
-        details: {
-          issueId: input.existing.id,
-          currentAssigneeAgentId: input.existing.assigneeAgentId,
-          actorAgentId,
-          previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
-          securityPrinciples: ["Separation of Disposition Authority"],
-        },
-      });
-      return false;
     }
 
     // Condition C — recoveryKind must be present in the payload.
