@@ -4,7 +4,7 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
-import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
+import { isExpectedClient404, shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 import { redactSensitive } from "./redact-sensitive.js";
 import { resolveLogLevel, serializeHttpRequest } from "./log-config.js";
 
@@ -68,7 +68,12 @@ export const httpLogger = pinoHttp({
       return "silent";
     }
     if (err || res.statusCode >= 500) return "error";
-    if (res.statusCode >= 400) return "warn";
+    if (res.statusCode >= 400) {
+      // Expected board-UI client 404s (mention prefetch + heartbeat-log poll) drop to
+      // debug so they stop burying real 404s in the warn log. See isExpectedClient404.
+      if (isExpectedClient404(_req.method, _req.url, res.statusCode)) return "debug";
+      return "warn";
+    }
     return "info";
   },
   customSuccessMessage(req, res) {
