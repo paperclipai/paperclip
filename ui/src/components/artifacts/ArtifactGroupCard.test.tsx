@@ -25,7 +25,7 @@ function sampleArtifact(overrides: Partial<CompanyArtifact> = {}): CompanyArtifa
     issue: { id: "issue-1", identifier: "PAP-42", title: "Ship launch" },
     project: null,
     createdByAgent: null,
-    updatedAt: "2026-06-01T00:00:00.000Z",
+    updatedAt: "2026-06-01T12:00:00.000Z",
     href: "/PAP/issues/PAP-42#attachment-1",
     ...overrides,
   } as CompanyArtifact;
@@ -40,7 +40,7 @@ function sampleGroup(overrides: Partial<CompanyArtifactGroup> = {}): CompanyArti
     count: 3,
     mediaKinds: ["image"],
     previewArtifacts: [sampleArtifact()],
-    updatedAt: "2026-06-01T00:00:00.000Z",
+    updatedAt: "2026-06-01T12:00:00.000Z",
     href: "/PAP/artifacts?groupBy=task&groupIssueId=issue-1",
     ...overrides,
   };

@@ -19,6 +19,17 @@ FROM ${BASE_IMAGE}
 
 USER root
 
+# The server image no longer installs local ccrotate, but agent images can be
+# rebuilt from older base tags while CI/deploy is catching up. Strip inherited
+# binaries/packages here so job pods always use ccrotate-serve/state.
+RUN set -eux; \
+  rm -f /usr/local/bin/ccrotate /usr/bin/ccrotate /paperclip/.local/bin/ccrotate; \
+  if [ -d /usr/local/lib/node_modules ]; then \
+    find /usr/local/lib/node_modules -maxdepth 2 \
+      \( -name ccrotate -o -name '*ccrotate-cli*' \) \
+      -exec rm -rf {} +; \
+  fi
+
 # Build essentials + unzip (kubelogin ships as a zip)
 # chromium runtime libs (BLO-3663) — required for headless browser / Playwright / screenshot capabilities
 # Canonical list from `npx playwright install-deps chromium --dry-run`
@@ -247,3 +258,9 @@ RUN ffmpeg -hide_banner -muxers 2>&1 | grep -qE '(^|[[:space:]])moq_mmt([[:space
 # runs as that uid (matches the host user mapping established in the base
 # image's USER_UID/USER_GID args).
 USER node
+RUN set -eu; \
+  if ccrotate_path="$(command -v ccrotate 2>/dev/null)"; then \
+    echo "ERROR: local ccrotate CLI leaked into paperclip-agent image at ${ccrotate_path}" >&2; \
+    exit 1; \
+  fi; \
+  echo "verified: local ccrotate CLI absent"
