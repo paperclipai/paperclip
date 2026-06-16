@@ -782,6 +782,7 @@ export function OnboardingWizard() {
                             if (nextType === "opencode_local") {
                               setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
                               return;
+                            }
                             if (nextType === "minimax_local" && !model) {
                               setModel(DEFAULT_MINIMAX_LOCAL_MODEL);
                               return;
@@ -789,7 +790,6 @@ export function OnboardingWizard() {
                             if (nextType !== "codex_local") {
                               setModel("");
                             }
-                            setModel("");
                           }}
                         >
                           {opt.recommended && (
