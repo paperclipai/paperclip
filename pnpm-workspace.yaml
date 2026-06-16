@@ -2,6 +2,10 @@ packages:
   - packages/*
   - packages/adapters/*
   - packages/plugins/*
+  # First-party plugins that ship inside this repo (e.g. paperclip-observability).
+  # They consume workspace:* deps (plugin-sdk, shared), so they MUST be workspace
+  # members for pnpm to resolve them.
+  - plugins/*
   # Keep sandbox-provider plugins installable as standalone packages without
   # forcing root pnpm-lock.yaml churn for their third-party deps.
   - "!packages/plugins/sandbox-providers/**"
