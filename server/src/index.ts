@@ -658,6 +658,7 @@ export async function startServer(): Promise<StartedServer> {
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
     bindHost: config.host,
+    uiDevHmr: config.uiDevHmr,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
     pluginMigrationDb: pluginMigrationDb as any,

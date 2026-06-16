@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveViteHmrHost, resolveViteHmrPort } from "../app.ts";
+import { resolveViteHmrConfig, resolveViteHmrHost, resolveViteHmrPort } from "../app.ts";
 
 describe("resolveViteHmrPort", () => {
   it("uses serverPort + 10000 when the result stays in range", () => {
@@ -27,5 +27,27 @@ describe("resolveViteHmrHost", () => {
   it("keeps concrete bind hosts", () => {
     expect(resolveViteHmrHost("127.0.0.1")).toBe("127.0.0.1");
     expect(resolveViteHmrHost("paperclip-dev")).toBe("paperclip-dev");
+  });
+});
+
+describe("resolveViteHmrConfig", () => {
+  it("disables Vite HMR when configured off", () => {
+    expect(resolveViteHmrConfig({
+      enabled: false,
+      serverPort: 3100,
+      bindHost: "0.0.0.0",
+    })).toBe(false);
+  });
+
+  it("keeps the existing local HMR port behavior when enabled", () => {
+    expect(resolveViteHmrConfig({
+      enabled: true,
+      serverPort: 3100,
+      bindHost: "127.0.0.1",
+    })).toEqual({
+      host: "127.0.0.1",
+      port: 13_100,
+      clientPort: 13_100,
+    });
   });
 });

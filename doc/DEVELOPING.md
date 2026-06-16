@@ -86,6 +86,16 @@ For Tailscale-only reachability on a detected tailnet address:
 pnpm dev --bind tailnet
 ```
 
+Authenticated/private dev serving disables Vite HMR by default so browsers on
+tailnet HTTPS URLs do not try to open a separate websocket port. To force HMR
+for a controlled dev session, set `PAPERCLIP_UI_DEV_HMR=true`.
+
+For long-running authenticated instances started from a source checkout with
+`paperclipai run`, Paperclip serves the built UI from `ui/dist` when that build
+exists. Rebuild it with `pnpm --filter @paperclipai/ui build` before restarting
+the service when UI source has changed. `pnpm dev` continues to use Vite
+middleware for active development.
+
 Legacy aliases still map to the old broad private-network behavior:
 
 ```sh

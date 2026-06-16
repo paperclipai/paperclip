@@ -79,6 +79,7 @@ describeEmbeddedPostgres("heartbeat master runtime failover execution", () => {
     requestedAdapterTypes.length = 0;
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
+    await db.update(activityLog).set({ runId: null });
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);

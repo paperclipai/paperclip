@@ -81,7 +81,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   }
 
   p.log.step("Starting Paperclip server...");
-  const startedServer = await importServerEntry();
+  const startedServer = await importServerEntry(config);
 
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
     p.log.step("Generating bootstrap CEO invite");
@@ -140,11 +140,46 @@ function getMissingModuleSpecifier(err: unknown): string | null {
   return null;
 }
 
-function maybeEnableUiDevMiddleware(entrypoint: string): void {
+export function shouldAutoEnableUiDevMiddleware(input: {
+  entrypoint: string;
+  config: PaperclipConfig;
+  projectRoot: string;
+}): boolean {
+  const normalized = input.entrypoint.replaceAll("\\", "/");
+  const isSourceServerEntry =
+    normalized.endsWith("/server/src/index.ts") ||
+    normalized.endsWith("@paperclipai/server/src/index.ts");
+  if (!isSourceServerEntry) return false;
+  if (input.config.server.deploymentMode === "local_trusted") return true;
+
+  // Authenticated source deployments are often exposed over a private HTTPS
+  // tunnel. If a built UI exists, prefer serving hashed static assets instead
+  // of making browsers load the full Vite module graph over that tunnel.
+  return !fs.existsSync(path.resolve(input.projectRoot, "ui/dist/index.html"));
+}
+
+function maybeEnableUiDevMiddleware(entrypoint: string, config: PaperclipConfig, projectRoot: string): void {
   if (process.env.PAPERCLIP_UI_DEV_MIDDLEWARE !== undefined) return;
-  const normalized = entrypoint.replaceAll("\\", "/");
-  if (normalized.endsWith("/server/src/index.ts") || normalized.endsWith("@paperclipai/server/src/index.ts")) {
+  if (shouldAutoEnableUiDevMiddleware({ entrypoint, config, projectRoot })) {
     process.env.PAPERCLIP_UI_DEV_MIDDLEWARE = "true";
+    return;
+  }
+
+  const normalized = entrypoint.replaceAll("\\", "/");
+  const isSourceServerEntry =
+    normalized.endsWith("/server/src/index.ts") ||
+    normalized.endsWith("@paperclipai/server/src/index.ts");
+  const builtUiIndex = path.resolve(projectRoot, "ui/dist/index.html");
+  if (
+    isSourceServerEntry &&
+    config.server.deploymentMode === "authenticated" &&
+    fs.existsSync(builtUiIndex)
+  ) {
+    p.log.message(
+      pc.dim(
+        "UI: serving built ui/dist for authenticated source run. Rebuild with `pnpm --filter @paperclipai/ui build` after UI changes.",
+      ),
+    );
   }
 }
 
@@ -171,13 +206,13 @@ function ensureDevWorkspaceBuildDeps(projectRoot: string): void {
   }
 }
 
-async function importServerEntry(): Promise<StartedServer> {
+async function importServerEntry(config: PaperclipConfig): Promise<StartedServer> {
   // Dev mode: try local workspace path (monorepo with tsx)
   const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
   const devEntry = path.resolve(projectRoot, "server/src/index.ts");
   if (fs.existsSync(devEntry)) {
     ensureDevWorkspaceBuildDeps(projectRoot);
-    maybeEnableUiDevMiddleware(devEntry);
+    maybeEnableUiDevMiddleware(devEntry, config, projectRoot);
     const mod = await import(pathToFileURL(devEntry).href);
     return await startServerFromModule(mod, devEntry);
   }

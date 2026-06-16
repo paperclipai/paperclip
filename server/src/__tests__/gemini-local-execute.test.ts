@@ -11,6 +11,7 @@ const fs = require("node:fs");
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const payload = {
   argv: process.argv.slice(2),
+  stdin: fs.readFileSync(0, "utf8"),
   paperclipEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
@@ -159,11 +160,12 @@ process.exit(1);
 
 type CapturePayload = {
   argv: string[];
+  stdin: string;
   paperclipEnvKeys: string[];
 };
 
 describe("gemini execute", () => {
-  it("passes prompt via --prompt and injects paperclip env vars", async () => {
+  it("pipes prompt via stdin and injects paperclip env vars", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-execute-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
@@ -214,13 +216,11 @@ describe("gemini execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.argv).toContain("--output-format");
       expect(capture.argv).toContain("stream-json");
-      expect(capture.argv).toContain("--prompt");
+      expect(capture.argv).not.toContain("--prompt");
       expect(capture.argv).toContain("--approval-mode");
       expect(capture.argv).toContain("yolo");
-      const promptFlagIndex = capture.argv.indexOf("--prompt");
-      const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
-      expect(promptArg).toContain("Follow the paperclip heartbeat.");
-      expect(promptArg).toContain("Paperclip runtime note:");
+      expect(capture.stdin).toContain("Follow the paperclip heartbeat.");
+      expect(capture.stdin).toContain("Paperclip runtime note:");
       expect(capture.paperclipEnvKeys).toEqual(
         expect.arrayContaining([
           "PAPERCLIP_AGENT_ID",
@@ -645,14 +645,13 @@ describe("gemini execute", () => {
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      const promptFlagIndex = capture.argv.indexOf("--prompt");
-      const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
       expect(capture.argv).toContain("--resume");
       expect(capture.argv).toContain("gemini-session-1");
-      expect(promptArg).toContain("## Paperclip Resume Delta");
-      expect(promptArg).toContain("Do not switch to another issue until you have handled this wake.");
-      expect(promptArg).toContain("Second comment");
-      expect(promptArg).not.toContain("Follow the paperclip heartbeat.");
+      expect(capture.argv).not.toContain("--prompt");
+      expect(capture.stdin).toContain("## Paperclip Resume Delta");
+      expect(capture.stdin).toContain("Do not switch to another issue until you have handled this wake.");
+      expect(capture.stdin).toContain("Second comment");
+      expect(capture.stdin).not.toContain("Follow the paperclip heartbeat.");
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;
