@@ -260,4 +260,108 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
   });
+
+  it("injects response_format json_object options for the configured model when jsonMode is true", async () => {
+    const configHome = await makeConfigHome();
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {
+        jsonMode: true,
+        model: "ollama/gemma4:26b-a4b-it-q4_K_M",
+      },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig).toMatchObject({
+      provider: {
+        ollama: {
+          models: {
+            "gemma4:26b-a4b-it-q4_K_M": {
+              options: {
+                response_format: { type: "json_object" },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
+  it("does not inject response_format when jsonMode is false", async () => {
+    const configHome = await makeConfigHome();
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {
+        jsonMode: false,
+        model: "ollama/gemma4:26b-a4b-it-q4_K_M",
+      },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect((runtimeConfig as { provider?: unknown }).provider).toBeUndefined();
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
+  it("preserves existing provider config when injecting jsonMode", async () => {
+    const configHome = await makeConfigHome({
+      provider: {
+        ollama: {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: "http://localhost:11434/v1" },
+          models: {
+            "llama3.3:70b": { name: "Llama 3.3", tools: true },
+          },
+        },
+      },
+    });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {
+        jsonMode: true,
+        model: "ollama/gemma4:26b-a4b-it-q4_K_M",
+      },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig).toMatchObject({
+      provider: {
+        ollama: {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: "http://localhost:11434/v1" },
+          models: {
+            "llama3.3:70b": { name: "Llama 3.3", tools: true },
+            "gemma4:26b-a4b-it-q4_K_M": {
+              options: { response_format: { type: "json_object" } },
+            },
+          },
+        },
+      },
+    });
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
 });
