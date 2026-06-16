@@ -389,6 +389,8 @@ const grokLocalAdapter: ServerAdapterModule = {
     installCommand: null,
   }),
   agentConfigurationDoc: grokAgentConfigurationDoc,
+};
+
 const minimaxLocalAdapter: ServerAdapterModule = {
   type: "minimax_local",
   execute: minimaxExecute,
