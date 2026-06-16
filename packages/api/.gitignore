@@ -1,0 +1,29 @@
+# Virtual environments
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Coverage
+.coverage
+htmlcov/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+
+# Logs and run artifacts
+*.log
+qa_results/
+test_results.log
+pytest_results.log
+pytest_output.log
+tests_output.log
+integration_test_run.log
+
+# Nested / stray workspace dirs (env-var-named artifacts)
+packages/
+$PAPERCLIP_WORKSPACE_CWD/
