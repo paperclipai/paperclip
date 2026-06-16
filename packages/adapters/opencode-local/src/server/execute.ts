@@ -56,6 +56,12 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+// Sourced from enrichment/dispatcher.py:280 — matches re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+// Non-greedy, dotall (s flag), case-sensitive. Exported for unit tests.
+export function stripThinkBlocks(text: string): string {
+  return text.replace(/<think>.*?<\/think>/gs, "").trim();
+}
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -713,7 +719,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
         },
-        summary: attempt.parsed.summary,
+        summary: stripThinkBlocks(attempt.parsed.summary),
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
       };
     };
