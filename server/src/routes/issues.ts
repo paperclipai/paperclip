@@ -2865,8 +2865,11 @@ export function issueRoutes(
                 chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
               }
               inlineContent = Buffer.concat(chunks).toString("utf-8");
-            } catch {
-              // storage error — omit inlineContent rather than failing the whole response
+            } catch (err) {
+              logger.warn(
+                { err, issueId: issue.id, attachmentId: a.id },
+                "failed to inline attachment content for heartbeat-context",
+              );
             }
           }
           return {
@@ -2891,15 +2894,22 @@ export function issueRoutes(
             sourceTrust: safeContinuationSummary.sourceTrust ?? null,
           }
         : null,
-      documents: userDocuments.map((doc) => ({
-        key: doc.key,
-        title: doc.title,
-        format: doc.format,
-        body: typeof doc.body === "string" && doc.body.length <= ATTACHMENT_INLINE_MAX_BYTES ? doc.body : null,
-        latestRevisionId: doc.latestRevisionId,
-        latestRevisionNumber: doc.latestRevisionNumber,
-        updatedAt: doc.updatedAt,
-      })),
+      documents: userDocuments.map((doc) => {
+        const safeDoc = redactLowTrust ? redactQuarantinedBodyForHigherTrust(doc) : doc;
+        const bodyFits =
+          typeof safeDoc.body === "string" &&
+          Buffer.byteLength(safeDoc.body, "utf-8") <= ATTACHMENT_INLINE_MAX_BYTES;
+        return {
+          key: safeDoc.key,
+          title: safeDoc.title,
+          format: safeDoc.format,
+          body: bodyFits ? safeDoc.body : null,
+          latestRevisionId: safeDoc.latestRevisionId,
+          latestRevisionNumber: safeDoc.latestRevisionNumber,
+          updatedAt: safeDoc.updatedAt,
+          sourceTrust: safeDoc.sourceTrust ?? null,
+        };
+      }),
       currentExecutionWorkspace,
     });
   });

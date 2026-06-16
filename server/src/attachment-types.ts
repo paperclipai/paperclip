@@ -107,8 +107,11 @@ export const MAX_ATTACHMENT_BYTES =
   Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 
 /** Maximum byte size of a single text attachment that will be inlined in heartbeat-context. */
+const parsedAttachmentInlineMaxBytes = Number(process.env.PAPERCLIP_ATTACHMENT_INLINE_MAX_BYTES);
 export const ATTACHMENT_INLINE_MAX_BYTES =
-  Number(process.env.PAPERCLIP_ATTACHMENT_INLINE_MAX_BYTES) || 65_536;
+  Number.isFinite(parsedAttachmentInlineMaxBytes) && parsedAttachmentInlineMaxBytes >= 0
+    ? Math.floor(parsedAttachmentInlineMaxBytes)
+    : 65_536;
 
 export function normalizeIssueAttachmentMaxBytes(value: number | null | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {

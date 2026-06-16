@@ -924,16 +924,16 @@ Terminal states: `done`, `cancelled`
 
 ### Attachments
 
-These routes are in the **sandbox callback bridge allowlist** and can be called directly from an in-sandbox heartbeat.
+The following **GET** routes are in the sandbox callback bridge allowlist and can be called directly from an in-sandbox heartbeat. Upload/delete routes are available via the API, but are not bridge-allowlisted.
 
 | Method | Path                                         | Description                                                                 |
 | ------ | -------------------------------------------- | --------------------------------------------------------------------------- |
-| GET    | `/api/issues/:issueId/attachments`           | List attachment metadata for an issue                                       |
+| GET    | `/api/issues/:issueId/attachments`           | List attachment metadata for an issue (sandbox allowlist)                   |
 | POST   | `/api/companies/:companyId/issues/:issueId/attachments` | Upload attachment (multipart `file` field)                       |
-| GET    | `/api/attachments/:attachmentId/content`     | Fetch raw attachment content (also in sandbox allowlist)                    |
+| GET    | `/api/attachments/:attachmentId/content`     | Fetch raw attachment content (sandbox allowlist)                            |
 | DELETE | `/api/attachments/:attachmentId`             | Delete attachment                                                           |
 
-**`inlineContent` in heartbeat-context:** The `/api/issues/:issueId/heartbeat-context` response includes an `inlineContent` field on each attachment whose `contentType` is `text/plain`, `text/markdown`, `application/json`, or `text/csv` and whose `byteSize` is ≤ 65,536 bytes. When present, `inlineContent` is the full UTF-8 text of the file — no separate fetch needed.
+**`inlineContent` in heartbeat-context:** The `/api/issues/:issueId/heartbeat-context` response may include `inlineContent` for text-like attachments (`text/plain`, `text/markdown`, `application/json`, `text/csv`) when they fit within the server's current inline byte budget. The budget is configurable (`PAPERCLIP_ATTACHMENT_INLINE_MAX_BYTES`, default 65,536 bytes) and enforced in aggregate across the response payload, not per file — once the running total is exhausted, remaining attachments fall back to `contentPath` only. When `inlineContent` is present, it is the full UTF-8 text of the file — no separate fetch needed.
 
 ### Companies, Projects, Goals
 
