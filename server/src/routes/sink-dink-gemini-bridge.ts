@@ -5,6 +5,45 @@ const DEFAULT_TIMEOUT_MS = 25_000;
 const MAX_INPUT_CHARS = 12_000;
 const MAX_OUTPUT_TOKENS = 1_500;
 
+const BRAND_GUARDRAIL = [
+  "You are working inside SINK DINK Media Company OS for SINK/DINK India.",
+  "SINK/DINK means Single Income No Kids / Double Income No Kids.",
+  "Target audience: Indian singles/couples/working couples with no kids, or people planning a no-kids/childfree/no-children lifestyle respectfully.",
+  "This is NOT a parenting page, kids activity page, family craft page, or children education page.",
+  "Do not create parenting tips, kids activities, child craft ideas, playtime ideas, or content written for parents with children.",
+  "If the input mentions children, family pressure, or parents, convert it into a respectful SINK/DINK angle about personal choice, boundaries, planning, peace, finances, or lifestyle design.",
+  "Never insult children, parents, families, religion, caste, or society.",
+  "Never say kids are bad, parents are wrong, or families are backward.",
+  "Allowed themes: social pressure, couple timeline, freedom, finances, mental peace, travel, career, lifestyle design, mutual respect, family-boundary conversation.",
+  "Every output must include a QA Note with: Brand fit, Niche drift check, Safety note, Human approval needed.",
+  "If you cannot keep the output SINK/DINK-focused, return: REJECTED_BY_BRAND_GUARDRAIL with a short reason.",
+];
+
+const DRIFT_PATTERNS = [
+  "little ones",
+  "kids activities",
+  "kidsactivities",
+  "creativekids",
+  "craftideasforkids",
+  "playtimefun",
+  "parentingindia",
+  "parenting tips",
+  "child-safe",
+  "parent and child",
+  "child are",
+  "child is",
+  "children craft",
+  "family craft",
+  "familyfun",
+  "boredom buster",
+  "school project",
+  "homework",
+  "toddler",
+  "baby care",
+  "mom tips",
+  "dad tips",
+];
+
 type BridgeRequest = {
   mode?: string;
   execute?: boolean;
@@ -53,7 +92,9 @@ function buildPrompt(body: BridgeRequest): string {
   const riskLevel = safeString(body.riskLevel, "low");
 
   return [
-    "You are working inside SINK DINK Media Company OS.",
+    ...BRAND_GUARDRAIL,
+    "",
+    "Execution safety rules:",
     "This is a controlled Paperclip dry-run or approved bridge call.",
     "Do not publish, spend money, expose secrets, or perform external actions.",
     "Keep tone safe, respectful, non-hateful, and India-context aware.",
@@ -68,7 +109,36 @@ function buildPrompt(body: BridgeRequest): string {
     "",
     "Required output format:",
     outputFormat,
+    "",
+    "Final self-check before answering:",
+    "1. Is this for SINK/DINK/no-kids audience, not parents/kids?",
+    "2. Is it respectful toward families/parents/children?",
+    "3. Does QA Note explicitly say Brand fit and Niche drift check?",
   ].join("\n");
+}
+
+function detectBrandDrift(output: string) {
+  const lower = output.toLowerCase();
+  const matches = DRIFT_PATTERNS.filter((pattern) => lower.includes(pattern));
+  const hasSinkDinkSignal = [
+    "sink",
+    "dink",
+    "no kids",
+    "no-kids",
+    "childfree",
+    "child-free",
+    "without kids",
+    "couple timeline",
+    "personal choice",
+    "financial freedom",
+    "mental peace",
+  ].some((signal) => lower.includes(signal));
+
+  return {
+    driftDetected: matches.length > 0 || !hasSinkDinkSignal,
+    matches,
+    hasSinkDinkSignal,
+  };
 }
 
 function simulatedOutput(body: BridgeRequest) {
@@ -135,7 +205,7 @@ async function callGemini(body: BridgeRequest) {
           },
         ],
         generationConfig: {
-          temperature: typeof body.temperature === "number" ? body.temperature : 0.4,
+          temperature: typeof body.temperature === "number" ? body.temperature : 0.25,
           maxOutputTokens: typeof body.maxOutputTokens === "number"
             ? Math.min(Math.max(128, body.maxOutputTokens), MAX_OUTPUT_TOKENS)
             : MAX_OUTPUT_TOKENS,
@@ -177,6 +247,31 @@ async function callGemini(body: BridgeRequest) {
       .filter(Boolean)
       .join("\n\n");
 
+    const brandCheck = detectBrandDrift(output);
+    if (brandCheck.driftDetected) {
+      return {
+        ok: false,
+        simulated: false,
+        provider: "gemini",
+        model,
+        agent: safeString(body.agent, "Manual Brain"),
+        task: safeString(body.task, "Dry run task"),
+        errorType: "brand_drift",
+        safeMessage: "Gemini output failed SINK/DINK India brand guardrail. Output was not accepted.",
+        brandCheck,
+        rejectedOutputPreview: output.slice(0, 1_500),
+        qaRequired: true,
+        nextAction: "Regenerate with stronger SINK/DINK/no-kids framing or send to QA Director.",
+        audit: {
+          mode: safeString(body.mode, "dry_run"),
+          startedAt,
+          completedAt: new Date().toISOString(),
+          secretExposed: false,
+          keyPreview: redactSecret(apiKey),
+        },
+      };
+    }
+
     return {
       ok: true,
       simulated: false,
@@ -186,6 +281,7 @@ async function callGemini(body: BridgeRequest) {
       task: safeString(body.task, "Dry run task"),
       output,
       qaRequired: true,
+      brandCheck,
       audit: {
         mode: safeString(body.mode, "dry_run"),
         startedAt,
@@ -234,6 +330,11 @@ export function sinkDinkGeminiBridgeRoutes() {
         requiresExecutionEnv: true,
         secretsExposed: false,
       },
+      brandGuardrail: {
+        target: "SINK/DINK India no-kids audience",
+        parentingContentBlocked: true,
+        brandDriftDetector: true,
+      },
     });
   });
 
@@ -253,7 +354,8 @@ export function sinkDinkGeminiBridgeRoutes() {
     }
 
     const result = await callGemini(body);
-    res.status(result.ok ? 200 : 502).json(result);
+    const status = result.ok ? 200 : result.errorType === "brand_drift" ? 422 : 502;
+    res.status(status).json(result);
   });
 
   return router;
