@@ -788,6 +788,13 @@ async function getWorkspaceInheritanceIssue(
 }
 
 function touchedByUserCondition(companyId: string, userId: string) {
+  // LIKE patterns for detecting @-mentions of this user in comment bodies.
+  // Two forms are checked:
+  //   1. [@userId] — the link-text form used by agents (e.g. [@local-board](agent://...))
+  //   2. user://userId — the canonical user-mention URL produced by buildUserMentionHref
+  const escaped = escapeLikePattern(userId);
+  const mentionLinkPattern = `%[@${escaped}]%`;
+  const userSchemePattern = `%user://${escaped}%`;
   return sql<boolean>`
     (
       ${issues.createdByUserId} = ${userId}
@@ -805,6 +812,16 @@ function touchedByUserCondition(companyId: string, userId: string) {
         WHERE ${issueComments.issueId} = ${issues.id}
           AND ${issueComments.companyId} = ${companyId}
           AND ${issueComments.authorUserId} = ${userId}
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM ${issueComments}
+        WHERE ${issueComments.issueId} = ${issues.id}
+          AND ${issueComments.companyId} = ${companyId}
+          AND (
+            ${issueComments.body} LIKE ${mentionLinkPattern} ESCAPE '\\'
+            OR ${issueComments.body} LIKE ${userSchemePattern} ESCAPE '\\'
+          )
       )
     )
   `;

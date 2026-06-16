@@ -1347,6 +1347,92 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(afterUpdate.map((i) => i.id)).toContain(issueId);
   });
 
+  it("surfaces issues where the user is @-mentioned in a comment body", async () => {
+    const companyId = randomUUID();
+    const userId = "local-board";
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values(agentRow(companyId, { id: agentId, name: "TestAgent" }));
+
+    const mentionedViaLinkIssueId = randomUUID();
+    const mentionedViaSchemeIssueId = randomUUID();
+    const notMentionedIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: mentionedViaLinkIssueId,
+        companyId,
+        title: "Issue with agent-link mention",
+        status: "in_review",
+        priority: "high",
+        createdByAgentId: agentId,
+        updatedAt: new Date(),
+      },
+      {
+        id: mentionedViaSchemeIssueId,
+        companyId,
+        title: "Issue with user-scheme mention",
+        status: "in_review",
+        priority: "high",
+        createdByAgentId: agentId,
+        updatedAt: new Date(),
+      },
+      {
+        id: notMentionedIssueId,
+        companyId,
+        title: "Issue with no mention of this user",
+        status: "in_review",
+        priority: "high",
+        createdByAgentId: agentId,
+        updatedAt: new Date(),
+      },
+    ]);
+
+    // Comment using the observed agent-produced format: [@userId](agent://some-uuid)
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: mentionedViaLinkIssueId,
+      authorAgentId: agentId,
+      body: `[@${userId}](agent://b5e0a7df-7d2c-4a52-9c39-5a13e9cc7a3a)\n\nReady for your review.`,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Comment using the canonical user:// scheme format
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: mentionedViaSchemeIssueId,
+      authorAgentId: agentId,
+      body: `[@Board](user://${userId})\n\nPlease review this.`,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Comment that does NOT mention this user
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: notMentionedIssueId,
+      authorAgentId: agentId,
+      body: "Internal status update — no mention.",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const result = await svc.list(companyId, { touchedByUserId: userId });
+    const ids = result.map((i) => i.id);
+
+    expect(ids).toContain(mentionedViaLinkIssueId);
+    expect(ids).toContain(mentionedViaSchemeIssueId);
+    expect(ids).not.toContain(notMentionedIssueId);
+  });
+
   it("sorts and exposes last activity from comments and non-local issue activity logs", async () => {
     const companyId = randomUUID();
     const olderIssueId = randomUUID();
