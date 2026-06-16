@@ -406,6 +406,18 @@ describe("teamsCatalogService", () => {
       expect(overrides["cto"]).toEqual({ adapterType: "claude_local" });
     });
 
+    it("preview applies the same adapter defaults + model hints as install (BUG-004)", async () => {
+      const svc = teamsCatalogService({} as any);
+
+      await svc.previewCatalogTeamImport("company-1", "dev-team");
+
+      const [previewArg] = mockCompanyPortabilityService.previewImport.mock.calls.at(-1)!;
+      const overrides = previewArg.adapterOverrides as Record<string, { adapterType: string; adapterConfig?: { model?: string } }>;
+      // Preview must reflect what install writes: claude_local default + catalog model tiers.
+      expect(overrides["cto"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" } });
+      expect(overrides["architect"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-opus-4-8" } });
+    });
+
     describe("readCatalogAgentModelHints — frontmatter resolution safety (BUG-003)", () => {
       const md = (model: string) => `---\nmodel: ${model}\n---\n# agent\n`;
 
