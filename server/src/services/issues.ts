@@ -1570,7 +1570,7 @@ async function listIssueBlockerAttentionMap(
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
-            ne(issues.status, "done"),
+            notInArray(issues.status, ["done", "cancelled"]),
           ),
         );
       const childRowsPromise: Promise<IssueBlockerAttentionQueryRow[]> = dbOrTx
@@ -1592,7 +1592,7 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
-            ne(issues.status, "done"),
+            notInArray(issues.status, ["done", "cancelled"]),
           ),
         );
       const [explicitBlockerRows, childRows] = await Promise.all([
