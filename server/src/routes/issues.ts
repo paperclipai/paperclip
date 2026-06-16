@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, promises as fsPromises } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router, type Request, type Response } from "express";
@@ -1217,28 +1217,35 @@ export function issueRoutes(
           : resolve(fileURLToPath(import.meta.url), "../../../../../paperclip-data/factory-runs"));
     let hasForemanRun = false;
     let latestRunManifest: any = null;
-    if (existing.identifier && existsSync(runsDir)) {
-      try {
-        const candidates = readdirSync(runsDir)
-          .filter((name) => name.startsWith(`${existing.identifier}-`))
-          .map((name) => resolve(runsDir, name))
-          .filter((dir) => existsSync(resolve(dir, "run-manifest.json")))
-          .map((dir) => {
-            try {
-              const manifest = JSON.parse(readFileSync(resolve(dir, "run-manifest.json"), "utf8"));
-              const timeStr = manifest.updatedAt || manifest.createdAt || "1970-01-01T00:00:00.000Z";
-              return { dir, time: new Date(timeStr).getTime() };
-            } catch {
-              return null;
+    if (existing.identifier) {
+      const runsDirExists = await fsPromises.access(runsDir).then(() => true).catch(() => false);
+      if (runsDirExists) {
+        try {
+          const files = await fsPromises.readdir(runsDir);
+          const manifestPaths = files
+            .filter((name) => name.startsWith(`${existing.identifier}-`))
+            .map((name) => resolve(runsDir, name));
+          
+          const list = [];
+          for (const dir of manifestPaths) {
+            const manifestPath = resolve(dir, "run-manifest.json");
+            const hasManifest = await fsPromises.access(manifestPath).then(() => true).catch(() => false);
+            if (hasManifest) {
+              try {
+                const content = await fsPromises.readFile(manifestPath, "utf8");
+                const manifest = JSON.parse(content);
+                const timeStr = manifest.updatedAt || manifest.createdAt || "1970-01-01T00:00:00.000Z";
+                list.push({ dir, manifest, time: new Date(timeStr).getTime() });
+              } catch {}
             }
-          })
-          .filter((item): item is { dir: string; time: number } => item !== null)
-          .sort((a: any, b: any) => b.time - a.time);
-        if (candidates.length > 0) {
-          hasForemanRun = true;
-          latestRunManifest = JSON.parse(readFileSync(resolve(candidates[0].dir, "run-manifest.json"), "utf8"));
-        }
-      } catch {}
+          }
+          list.sort((a: any, b: any) => b.time - a.time);
+          if (list.length > 0) {
+            hasForemanRun = true;
+            latestRunManifest = list[0].manifest;
+          }
+        } catch {}
+      }
     }
 
     const workProducts = await workProductsSvc.listForIssue(issueId);
@@ -1297,13 +1304,14 @@ export function issueRoutes(
 
     const hasWaiver = comments.some((c: any) =>
       c.authorType === "user" &&
-      /samuel approved waiver/i.test(c.body || "")
+      /approved waiver|waiver approved/i.test(c.body || "")
     );
     if (hasWaiver) {
       return;
     }
 
-    if (!existsSync(runsDir)) {
+    const runsDirExists = await fsPromises.access(runsDir).then(() => true).catch(() => false);
+    if (!runsDirExists) {
       throw unprocessable("Factory runs directory is unavailable. Done status transition is blocked.");
     }
 
@@ -1318,7 +1326,6 @@ export function issueRoutes(
 
     let headSha: string | null = null;
     let prMerged = false;
-    let prOpen = false;
     try {
       const { stdout } = await execFileAsync(
         "gh",
@@ -1328,9 +1335,9 @@ export function issueRoutes(
       const prData = JSON.parse(stdout);
       headSha = prData.headRefOid || null;
       prMerged = prData.state === "MERGED" || !!prData.mergedAt;
-      prOpen = prData.state === "OPEN";
     } catch (err: any) {
       console.error(`Error viewing PR ${prUrl}:`, err);
+      throw unprocessable(`Failed to verify pull request status via GitHub CLI: ${err.message || err}`);
     }
 
     if (!prMerged) {
@@ -1344,14 +1351,18 @@ export function issueRoutes(
     let hasNoMistakesPass = false;
     if (headSha && latestRunManifest) {
       const gatePath = latestRunManifest.gates?.no_mistakes?.path;
-      if (gatePath && existsSync(gatePath)) {
-        try {
-          const gate = JSON.parse(readFileSync(gatePath, "utf8"));
-          const gateHead = gate.details?.headAfter || gate.details?.head || null;
-          if (gate.verdict === "PASS" && gateHead === headSha) {
-            hasNoMistakesPass = true;
-          }
-        } catch {}
+      if (gatePath) {
+        const gatePathExists = await fsPromises.access(gatePath).then(() => true).catch(() => false);
+        if (gatePathExists) {
+          try {
+            const gateContent = await fsPromises.readFile(gatePath, "utf8");
+            const gate = JSON.parse(gateContent);
+            const gateHead = gate.details?.headAfter || gate.details?.head || null;
+            if (gate.verdict === "PASS" && gateHead === headSha) {
+              hasNoMistakesPass = true;
+            }
+          } catch {}
+        }
       }
     }
 
@@ -1823,6 +1834,26 @@ export function issueRoutes(
     }
 
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
+  }
+
+  function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
+    return {
+      errorCode: "operator_interrupted",
+      resultJson: {
+        operatorInterrupted: true,
+        interruptionSource: "issue_comment_interrupt",
+        interruptedIssueId: input.issueId,
+        interruptedByActorType: input.actor.actorType,
+        interruptedByActorId: input.actor.actorId,
+      },
+      eventMessage: "run interrupted by board comment",
+      eventPayload: {
+        issueId: input.issueId,
+        source: "issue_comment_interrupt",
+        interruptedByActorType: input.actor.actorType,
+        interruptedByActorId: input.actor.actorId,
+      },
+    };
   }
 
   async function normalizeIssueAssigneeAgentReference(
@@ -3712,7 +3743,11 @@ export function issueRoutes(
 
       const runToInterrupt = await resolveActiveIssueRun(existing);
       if (runToInterrupt) {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+        const cancelled = await heartbeat.cancelRun(
+          runToInterrupt.id,
+          "Interrupted by board comment",
+          operatorInterruptCancelOptions({ issueId: existing.id, actor }),
+        );
         if (cancelled) {
           interruptedRunId = cancelled.id;
           await logActivity(db, {
@@ -5431,7 +5466,11 @@ export function issueRoutes(
 
       const runToInterrupt = await resolveActiveIssueRun(currentIssue);
       if (runToInterrupt) {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+        const cancelled = await heartbeat.cancelRun(
+          runToInterrupt.id,
+          "Interrupted by board comment",
+          operatorInterruptCancelOptions({ issueId: currentIssue.id, actor }),
+        );
         if (cancelled) {
           interruptedRunId = cancelled.id;
           await logActivity(db, {

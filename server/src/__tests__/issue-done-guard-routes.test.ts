@@ -191,6 +191,9 @@ const mockExistsSync = vi.hoisted(() => vi.fn());
 const mockReadFileSync = vi.hoisted(() => vi.fn());
 const mockReaddirSync = vi.hoisted(() => vi.fn());
 const mockStatSync = vi.hoisted(() => vi.fn());
+const mockAccess = vi.hoisted(() => vi.fn());
+const mockReadFile = vi.hoisted(() => vi.fn());
+const mockReaddir = vi.hoisted(() => vi.fn());
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -200,6 +203,11 @@ vi.mock("node:fs", async (importOriginal) => {
     readFileSync: mockReadFileSync,
     readdirSync: mockReaddirSync,
     statSync: mockStatSync,
+    promises: {
+      access: mockAccess,
+      readFile: mockReadFile,
+      readdir: mockReaddir,
+    },
   };
 });
 
@@ -250,6 +258,16 @@ describe("Done transition guard", () => {
     mockExistsSync.mockReturnValue(true);
     mockReaddirSync.mockReturnValue(["PAP-580-run"]);
     mockStatSync.mockReturnValue({ mtimeMs: Date.now() });
+    
+    mockAccess.mockImplementation(async (path: string) => {
+      if (mockExistsSync(path)) {
+        return;
+      }
+      throw new Error("File/directory does not exist");
+    });
+    mockReaddir.mockImplementation(async (path: string) => mockReaddirSync(path));
+    mockReadFile.mockImplementation(async (path: string) => mockReadFileSync(path));
+
     mockExecFilePromise.mockResolvedValue({
       stdout: JSON.stringify({
         state: "MERGED",
