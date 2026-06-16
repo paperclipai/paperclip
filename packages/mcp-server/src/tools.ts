@@ -79,6 +79,10 @@ const listIssuesSchema = z.object({
   q: z.string().optional(),
 });
 
+const searchIssuesSchema = listIssuesSchema.omit({ q: true }).extend({
+  query: z.string().trim().min(1),
+});
+
 const listCommentsSchema = z.object({
   issueId: issueIdSchema,
   after: z.string().uuid().optional(),
@@ -235,6 +239,21 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
   };
 }
 
+type ListIssuesInput = z.infer<typeof listIssuesSchema>;
+
+async function listIssues(client: PaperclipApiClient, input: ListIssuesInput) {
+  const companyId = await client.resolveCompany({ override: input.companyId });
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(input)) {
+    if (key === "companyId" || value === undefined || value === null) continue;
+    params.set(key, String(value));
+  }
+  const qs = params.toString();
+  return client.requestJson("GET", `/companies/${companyId}/issues${qs ? `?${qs}` : ""}`, {
+    companyId,
+  });
+}
+
 export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
   return [
     makeTool(
@@ -274,18 +293,13 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipListIssues",
       "List issues for a company with optional filters",
       listIssuesSchema,
-      async (input) => {
-        const companyId = await client.resolveCompany({ override: input.companyId });
-        const params = new URLSearchParams();
-        for (const [key, value] of Object.entries(input)) {
-          if (key === "companyId" || value === undefined || value === null) continue;
-          params.set(key, String(value));
-        }
-        const qs = params.toString();
-        return client.requestJson("GET", `/companies/${companyId}/issues${qs ? `?${qs}` : ""}`, {
-          companyId,
-        });
-      },
+      async (input) => listIssues(client, input),
+    ),
+    makeTool(
+      "paperclip_search_issues",
+      "Search Paperclip issues by text. Compatibility alias for clients that ask for paperclip_search_issues; prefer paperclipListIssues with q when choosing tools directly.",
+      searchIssuesSchema,
+      async ({ query, ...input }) => listIssues(client, { ...input, q: query }),
     ),
     makeTool(
       "paperclipGetIssue",

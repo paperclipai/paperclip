@@ -37,6 +37,7 @@ Read tools:
 - `paperclipListAgents`
 - `paperclipGetAgent`
 - `paperclipListIssues`
+- `paperclip_search_issues`
 - `paperclipGetIssue`
 - `paperclipGetHeartbeatContext`
 - `paperclipListComments`

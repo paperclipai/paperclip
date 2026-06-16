@@ -90,6 +90,26 @@ describe("paperclip MCP tools", () => {
     expect(response.content[0]?.text).toContain("issue-1");
   });
 
+  it("maps paperclip_search_issues query to issue text search", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse([{ id: "issue-1", title: "CDN+ M0 rollout" }]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclip_search_issues");
+    const response = await tool.execute({
+      query: "CDN+ M0",
+      status: "todo,in_progress,blocked",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues?status=todo%2Cin_progress%2Cblocked&q=CDN%2B+M0",
+    );
+    expect(response.content[0]?.text).toContain("CDN+ M0 rollout");
+  });
+
   it("absolutizes Paperclip issue links before returning MCP issue data", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({
