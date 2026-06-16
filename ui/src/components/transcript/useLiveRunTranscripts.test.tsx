@@ -229,6 +229,86 @@ describe("useLiveRunTranscripts", () => {
     container.remove();
   });
 
+  it("stops polling an active run after its first 404 (log not created yet)", async () => {
+    logMock.mockReset();
+    logMock.mockRejectedValue(new ApiError("Run log not found", 404, { error: "Run log not found" }));
+
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-pending", status: "running", adapterType: "codex_local" }],
+        enableRealtimeUpdates: false,
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(1);
+
+    // A re-render must not resume polling the run whose log still 404s.
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("resumes polling a 404'd active run once it reports persisted log bytes", async () => {
+    logMock.mockReset();
+    logMock.mockRejectedValueOnce(new ApiError("Run log not found", 404, { error: "Run log not found" }));
+    logMock.mockResolvedValue({ runId: "run-late", store: "memory", logRef: "log-1", content: "", nextOffset: 0 });
+
+    function Harness({ bytes }: { bytes?: number }) {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-late", status: "running", adapterType: "codex_local", lastOutputBytes: bytes }],
+        enableRealtimeUpdates: false,
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(1);
+
+    // The run-list now reports the log has bytes — polling resumes to backfill it.
+    await act(async () => {
+      root.render(<Harness bytes={4096} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
   it("can hydrate active runs without opening the live event socket", async () => {
     function Harness() {
       useLiveRunTranscripts({
