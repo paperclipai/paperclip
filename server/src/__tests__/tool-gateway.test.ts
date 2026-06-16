@@ -36,7 +36,7 @@ import {
   secretAccessEvents,
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
-import { toolGatewayRoutes } from "../routes/tool-gateway.js";
+import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import { secretService } from "../services/secrets.js";
@@ -305,6 +305,7 @@ function createGatewayRouteApp(
       next();
     });
   }
+  app.use(mcpGatewayProtocolRoutes(gateway));
   app.use("/api", toolGatewayRoutes(db, gateway));
   return app;
 }
@@ -538,6 +539,205 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         .send({ jsonrpc: "2.0", id: 6, method: "tools/list" })
         .expect(401);
       expect(revoked.body.error.data.reasonCode).toBe("gateway_token_revoked");
+    } finally {
+      await remote.close();
+    }
+  });
+
+  it("throttles named gateway bearer auth failures without leaking bearer material", async () => {
+    const company = await createCompany(db);
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `auth-throttle-${randomUUID()}`,
+      name: `Auth throttle ${randomUUID()}`,
+      defaultAction: "deny",
+    }).returning();
+    const gateway = createTestToolGatewayService(db, {
+      mcpGatewayProtocolLimits: {
+        authFailures: { max: 1, windowMs: 60_000 },
+      },
+    });
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Public auth throttle", profileId: profile.id },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    const badToken = `pcgw_${randomUUID()}.not-a-real-secret`;
+
+    const first = await request(app)
+      .post(`/mcp/gateways/${created.gatewayPublicId}`)
+      .set("authorization", `Bearer ${badToken}`)
+      .set("x-paperclip-client-name", "Noisy client")
+      .set("x-request-id", "auth-throttle-test")
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+      .expect(401);
+    expect(first.body.error.data.reasonCode).toBe("gateway_token_invalid");
+
+    const throttled = await request(app)
+      .post(`/mcp/gateways/${created.gatewayPublicId}`)
+      .set("authorization", `Bearer ${badToken}`)
+      .set("x-paperclip-client-name", "Noisy client")
+      .set("x-request-id", "auth-throttle-test")
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list" })
+      .expect(429);
+    expect(throttled.body.error.data).toMatchObject({
+      reasonCode: "gateway_auth_throttled",
+      reasonText: "The MCP gateway authentication attempt was throttled after repeated failures.",
+    });
+
+    const audits = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.reasonCode, "gateway_auth_throttled"));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      companyId: company.id,
+      gatewayId: created.id,
+      gatewayPublicId: created.gatewayPublicId,
+      clientName: "Noisy client",
+      correlationId: "auth-throttle-test",
+    });
+    expect(audits[0]!.details).toMatchObject({
+      limiterKeyClass: "gateway_auth",
+      tokenPrefix: `pcgw_${badToken.slice(5, 13)}`,
+    });
+    expect(JSON.stringify(audits)).not.toContain(badToken);
+    expect(JSON.stringify(audits)).not.toContain("authorization");
+  });
+
+  it("rate limits public named gateway session setup, discovery, and calls with redacted audits", async () => {
+    const company = await createCompany(db);
+    const remote = await startFakeRemoteMcpServer(async () => ({
+      body: {
+        jsonrpc: "2.0",
+        id: "test",
+        result: { content: [{ type: "text", text: "read ok" }], structuredContent: { ok: true } },
+      },
+    }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url,
+        applicationKey: "limited-named-gateway-app",
+        toolName: "read_note",
+        title: "Read note",
+        riskLevel: "read",
+      });
+      const gatewayToolName = expectedConnectedToolName({
+        applicationKey: application.applicationKey,
+        connectionId: connection.id,
+        toolName: catalogEntry.toolName,
+      });
+      const [profile] = await db.insert(toolProfiles).values({
+        companyId: company.id,
+        profileKey: `protocol-limit-${randomUUID()}`,
+        name: `Protocol limit ${randomUUID()}`,
+        defaultAction: "deny",
+      }).returning();
+      await db.insert(toolProfileEntries).values({
+        companyId: company.id,
+        profileId: profile.id,
+        selectorType: "tool_name",
+        effect: "include",
+        toolName: gatewayToolName,
+      });
+      const gateway = createTestToolGatewayService(db, {
+        mcpGatewayProtocolLimits: {
+          gatewayRequests: { max: 1, windowMs: 60_000 },
+          tokenRequests: { max: 1, windowMs: 60_000 },
+          sessionSetup: { max: 1, windowMs: 60_000 },
+        },
+      });
+      const created = await gateway.createNamedGateway({
+        companyId: company.id,
+        body: { name: "Public protocol limits", profileId: profile.id },
+      });
+      const tokenA = await gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: { name: "Client A", clientLabel: "Client A" },
+      });
+      const tokenB = await gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: { name: "Client B", clientLabel: "Client B" },
+      });
+      const app = createGatewayRouteApp(db, gateway);
+      const endpoint = `/mcp/gateways/${created.gatewayPublicId}`;
+
+      await request(app)
+        .post(endpoint)
+        .set("authorization", `Bearer ${tokenA.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "initialize" })
+        .expect(200);
+      const setupLimited = await request(app)
+        .post(endpoint)
+        .set("authorization", `Bearer ${tokenA.token}`)
+        .send({ jsonrpc: "2.0", id: 2, method: "initialize" })
+        .expect(429);
+      expect(setupLimited.body.error.data).toMatchObject({
+        reasonCode: "gateway_rate_limited",
+        limiterKeyClass: "token",
+        protocolMethod: "initialize",
+      });
+
+      await request(app)
+        .post(endpoint)
+        .set("authorization", `Bearer ${tokenA.token}`)
+        .send({ jsonrpc: "2.0", id: 3, method: "tools/list" })
+        .expect(200);
+      const discoveryLimited = await request(app)
+        .post(endpoint)
+        .set("authorization", `Bearer ${tokenB.token}`)
+        .send({ jsonrpc: "2.0", id: 4, method: "tools/list" })
+        .expect(429);
+      expect(discoveryLimited.body.error.data).toMatchObject({
+        reasonCode: "gateway_rate_limited",
+        limiterKeyClass: "gateway",
+        protocolMethod: "tools/list",
+      });
+
+      await request(app)
+        .post(endpoint)
+        .set("authorization", `Bearer ${tokenB.token}`)
+        .send({
+          jsonrpc: "2.0",
+          id: 5,
+          method: "tools/call",
+          params: { name: gatewayToolName, arguments: { key: "a", value: "b" } },
+        })
+        .expect(200);
+      const callLimited = await request(app)
+        .post(endpoint)
+        .set("authorization", `Bearer ${tokenB.token}`)
+        .send({
+          jsonrpc: "2.0",
+          id: 6,
+          method: "tools/call",
+          params: { name: gatewayToolName, arguments: { key: "a", value: "b" } },
+        })
+        .expect(429);
+      expect(callLimited.body.error.data).toMatchObject({
+        reasonCode: "gateway_rate_limited",
+        limiterKeyClass: "token",
+        protocolMethod: "tools/call",
+      });
+
+      const audits = await db
+        .select()
+        .from(toolAccessAuditEvents)
+        .where(eq(toolAccessAuditEvents.reasonCode, "gateway_rate_limited"));
+      expect(audits).toEqual(expect.arrayContaining([
+        expect.objectContaining({ gatewayId: created.id, gatewayPublicId: created.gatewayPublicId }),
+      ]));
+      expect(audits.map((audit) => audit.details)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ protocolMethod: "initialize", limiterKeyClass: "token" }),
+        expect.objectContaining({ protocolMethod: "tools/list", limiterKeyClass: "gateway" }),
+        expect.objectContaining({ protocolMethod: "tools/call", limiterKeyClass: "token" }),
+      ]));
+      const serializedAudits = JSON.stringify(audits);
+      expect(serializedAudits).not.toContain(tokenA.token);
+      expect(serializedAudits).not.toContain(tokenB.token);
+      expect(serializedAudits).not.toContain("authorization");
     } finally {
       await remote.close();
     }

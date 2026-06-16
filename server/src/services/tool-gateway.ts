@@ -71,6 +71,23 @@ const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
 const MAX_REMOTE_MCP_RESPONSE_BYTES = 1_000_000;
 const ACTIVE_GATEWAY_RUN_STATUSES = new Set(["running"]);
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type McpGatewayProtocolMethod = "initialize" | "tools/list" | "tools/call";
+type McpGatewayRateLimitConfig = { windowMs: number; max: number };
+type McpGatewayProtocolLimitOptions = {
+  authFailures: McpGatewayRateLimitConfig;
+  gatewayRequests: McpGatewayRateLimitConfig;
+  tokenRequests: McpGatewayRateLimitConfig;
+  sessionSetup: McpGatewayRateLimitConfig;
+};
+
+const DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS: McpGatewayProtocolLimitOptions = {
+  authFailures: { windowMs: 5 * 60 * 1000, max: 20 },
+  gatewayRequests: { windowMs: 60 * 1000, max: 300 },
+  tokenRequests: { windowMs: 60 * 1000, max: 120 },
+  sessionSetup: { windowMs: 60 * 1000, max: 30 },
+};
 
 export type ToolGatewayProviderType =
   | "mcp_http_fixture"
@@ -121,6 +138,7 @@ export interface ToolGatewaySession {
   issueId: string | null;
   projectId: string | null;
   gatewayId?: string | null;
+  gatewayPublicId?: string | null;
   gatewayName?: string | null;
   gatewayTokenId?: string | null;
   gatewayTokenAllowedActions?: ToolMcpGatewayTokenAction[];
@@ -145,6 +163,8 @@ export class ToolGatewayHttpError extends Error {
 
 interface ExecuteGatewayToolInput {
   sessionToken: string;
+  gatewayId?: string | null;
+  gatewayPublicId?: string | null;
   tool: string;
   parameters?: unknown;
   timeoutMs?: number;
@@ -224,6 +244,103 @@ function sessionIdFromGatewayToken(token: string) {
 function namedGatewayTokenId(token: string) {
   const match = token.match(/^pcgw_([0-9a-fA-F-]{36})\.[A-Za-z0-9_-]+$/);
   return match?.[1] ?? null;
+}
+
+function positiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function mergeLimitConfig(
+  defaults: McpGatewayRateLimitConfig,
+  overrides: Partial<McpGatewayRateLimitConfig> | undefined,
+): McpGatewayRateLimitConfig {
+  return {
+    windowMs: overrides?.windowMs && overrides.windowMs > 0 ? overrides.windowMs : defaults.windowMs,
+    max: overrides?.max && overrides.max > 0 ? overrides.max : defaults.max,
+  };
+}
+
+function mcpGatewayProtocolLimits(
+  overrides: Partial<{
+    authFailures: Partial<McpGatewayRateLimitConfig>;
+    gatewayRequests: Partial<McpGatewayRateLimitConfig>;
+    tokenRequests: Partial<McpGatewayRateLimitConfig>;
+    sessionSetup: Partial<McpGatewayRateLimitConfig>;
+  }> | undefined,
+): McpGatewayProtocolLimitOptions {
+  const envDefaults: McpGatewayProtocolLimitOptions = {
+    authFailures: {
+      windowMs: positiveInt(process.env.PAPERCLIP_MCP_GATEWAY_AUTH_FAILURE_WINDOW_MS, DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.authFailures.windowMs),
+      max: positiveInt(process.env.PAPERCLIP_MCP_GATEWAY_AUTH_FAILURE_LIMIT, DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.authFailures.max),
+    },
+    gatewayRequests: {
+      windowMs: positiveInt(process.env.PAPERCLIP_MCP_GATEWAY_REQUEST_WINDOW_MS, DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.gatewayRequests.windowMs),
+      max: positiveInt(process.env.PAPERCLIP_MCP_GATEWAY_REQUEST_LIMIT, DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.gatewayRequests.max),
+    },
+    tokenRequests: {
+      windowMs: positiveInt(process.env.PAPERCLIP_MCP_GATEWAY_TOKEN_REQUEST_WINDOW_MS, DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.tokenRequests.windowMs),
+      max: positiveInt(process.env.PAPERCLIP_MCP_GATEWAY_TOKEN_REQUEST_LIMIT, DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.tokenRequests.max),
+    },
+    sessionSetup: {
+      windowMs: positiveInt(process.env.PAPERCLIP_MCP_GATEWAY_SESSION_SETUP_WINDOW_MS, DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.sessionSetup.windowMs),
+      max: positiveInt(process.env.PAPERCLIP_MCP_GATEWAY_SESSION_SETUP_LIMIT, DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS.sessionSetup.max),
+    },
+  };
+  return {
+    authFailures: mergeLimitConfig(envDefaults.authFailures, overrides?.authFailures),
+    gatewayRequests: mergeLimitConfig(envDefaults.gatewayRequests, overrides?.gatewayRequests),
+    tokenRequests: mergeLimitConfig(envDefaults.tokenRequests, overrides?.tokenRequests),
+    sessionSetup: mergeLimitConfig(envDefaults.sessionSetup, overrides?.sessionSetup),
+  };
+}
+
+function tokenPrefixFromNamedBearer(token: string) {
+  const tokenId = namedGatewayTokenId(token);
+  if (tokenId) return `pcgw_${tokenId.slice(0, 8)}`;
+  return token.startsWith("pcgw_") ? "pcgw_malformed" : "unknown";
+}
+
+function safeHeaderValue(headers: Record<string, string | string[] | undefined> | undefined, name: string, maxLength = 160) {
+  const value = headers?.[name] ?? headers?.[name.toLowerCase()];
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!raw) return null;
+  const sanitized = raw.replace(/[\r\n\t]/g, " ").trim();
+  return sanitized ? sanitized.slice(0, maxLength) : null;
+}
+
+function safeClientMetadata(headers: Record<string, string | string[] | undefined> | undefined) {
+  const clientName = safeHeaderValue(headers, "x-paperclip-client-name", 120)
+    ?? safeHeaderValue(headers, "mcp-client-name", 120)
+    ?? null;
+  const correlationId = safeHeaderValue(headers, "x-request-id", 120)
+    ?? safeHeaderValue(headers, "x-correlation-id", 120)
+    ?? null;
+  return {
+    clientName,
+    correlationId,
+    userAgent: safeHeaderValue(headers, "user-agent", 200),
+  };
+}
+
+function createWindowRateLimiter(now: () => number = () => Date.now()) {
+  const counters = new Map<string, { windowStart: number; count: number }>();
+  return {
+    consume(key: string, config: McpGatewayRateLimitConfig) {
+      const current = now();
+      const existing = counters.get(key);
+      if (!existing || current - existing.windowStart >= config.windowMs) {
+        counters.set(key, { windowStart: current, count: 1 });
+        return { limited: false, count: 1, retryAfterMs: config.windowMs };
+      }
+      existing.count += 1;
+      return {
+        limited: existing.count > config.max,
+        count: existing.count,
+        retryAfterMs: Math.max(0, config.windowMs - (current - existing.windowStart)),
+      };
+    },
+  };
 }
 
 function gatewaySessionFromRow(row: typeof toolGatewaySessions.$inferSelect): ToolGatewaySession {
@@ -550,6 +667,13 @@ export function createToolGatewayService(
     trustedLocalStdioRuntimeHost?: string | null;
     runtimeSupervisor?: ToolRuntimeSupervisorOptions;
     toolActionSigningSecret?: string;
+    mcpGatewayProtocolLimits?: Partial<{
+      authFailures: Partial<McpGatewayRateLimitConfig>;
+      gatewayRequests: Partial<McpGatewayRateLimitConfig>;
+      tokenRequests: Partial<McpGatewayRateLimitConfig>;
+      sessionSetup: Partial<McpGatewayRateLimitConfig>;
+    }>;
+    now?: () => number;
   } = {},
 ) {
   const runtimeSupervisor = createToolRuntimeSupervisor(db, {
@@ -562,6 +686,8 @@ export function createToolGatewayService(
   const interactions = issueThreadInteractionService(db);
   const policyService = toolAccessPolicyService(db);
   const secrets = secretService(db);
+  const protocolLimits = mcpGatewayProtocolLimits(options.mcpGatewayProtocolLimits);
+  const protocolLimiter = createWindowRateLimiter(options.now);
 
   function pluginTools(): ToolGatewayDescriptor[] {
     return (pluginToolDispatcher?.listToolsForAgent() ?? []).map((tool) => ({
@@ -775,6 +901,15 @@ export function createToolGatewayService(
             : "success";
     await db.insert(toolAccessAuditEvents).values({
       companyId: input.companyId,
+      gatewayId: input.session?.gatewayId ?? (typeof input.details.gatewayId === "string" && uuidPattern.test(input.details.gatewayId) ? input.details.gatewayId : null),
+      gatewayTokenId: input.session?.gatewayTokenId && uuidPattern.test(input.session.gatewayTokenId)
+        ? input.session.gatewayTokenId
+        : typeof input.details.gatewayTokenId === "string" && uuidPattern.test(input.details.gatewayTokenId)
+          ? input.details.gatewayTokenId
+          : null,
+      gatewayPublicId: typeof input.details.gatewayPublicId === "string" ? input.details.gatewayPublicId : null,
+      clientName: typeof input.details.clientName === "string" ? input.details.clientName : null,
+      correlationId: typeof input.details.correlationId === "string" ? input.details.correlationId : null,
       connectionId: typeof input.details.connectionId === "string" ? input.details.connectionId : null,
       catalogEntryId: typeof input.details.catalogEntryId === "string" ? input.details.catalogEntryId : null,
       actorType: input.actorType ?? input.session?.actorType ?? (input.agentId ? "agent" : "system"),
@@ -789,6 +924,7 @@ export function createToolGatewayService(
         runId: input.runId,
         gatewaySessionId: input.session?.id ?? null,
         gatewayId: input.session?.gatewayId ?? null,
+        gatewayPublicId: input.session?.gatewayPublicId ?? null,
         gatewayName: input.session?.gatewayName ?? null,
         gatewayTokenId: input.session?.gatewayTokenId ?? null,
         ...input.details,
@@ -808,6 +944,8 @@ export function createToolGatewayService(
       runId: input.runId,
       details: {
         gatewaySessionId: input.session?.id ?? null,
+        gatewayId: input.session?.gatewayId ?? null,
+        gatewayPublicId: input.session?.gatewayPublicId ?? null,
         issueId: input.issueId,
         runId: input.runId,
         ...input.details,
@@ -860,13 +998,27 @@ export function createToolGatewayService(
     }
   }
 
-  async function getActiveSession(sessionToken: string): Promise<ToolGatewaySession> {
+  async function getActiveSession(
+    sessionToken: string,
+    namedGatewayProtocol?: {
+      gatewayId?: string | null;
+      gatewayPublicId?: string | null;
+      protocolMethod: McpGatewayProtocolMethod;
+      callerHeaders?: Record<string, string | string[] | undefined>;
+    },
+  ): Promise<ToolGatewaySession> {
     const token = sessionToken.trim();
     if (!token) {
       throw new ToolGatewayHttpError(401, "Tool gateway session is expired or invalid", "session_invalid");
     }
     if (namedGatewayTokenId(token)) {
-      return namedGatewaySessionFromBearer(null, token);
+      return namedGatewaySessionFromBearer({
+        gatewayId: namedGatewayProtocol?.gatewayId ?? null,
+        gatewayPublicId: namedGatewayProtocol?.gatewayPublicId ?? null,
+        bearerToken: token,
+        protocolMethod: namedGatewayProtocol?.protocolMethod ?? "tools/call",
+        callerHeaders: namedGatewayProtocol?.callerHeaders,
+      });
     }
 
     const tokenHash = hashGatewayToken(token);
@@ -2502,11 +2654,197 @@ export function createToolGatewayService(
     }
   }
 
-  async function namedGatewaySessionFromBearer(gatewayId: string | null, bearerToken: string): Promise<ToolGatewaySession> {
+  async function findGatewayForProtocolLocator(input: { gatewayId?: string | null; gatewayPublicId?: string | null }) {
+    if (input.gatewayId) {
+      const [gateway] = await db
+        .select()
+        .from(toolMcpGateways)
+        .where(eq(toolMcpGateways.id, input.gatewayId))
+        .limit(1);
+      return gateway ?? null;
+    }
+    if (input.gatewayPublicId) {
+      const [gateway] = await db
+        .select()
+        .from(toolMcpGateways)
+        .where(eq(toolMcpGateways.gatewayPublicId, input.gatewayPublicId))
+        .limit(1);
+      return gateway ?? null;
+    }
+    return null;
+  }
+
+  function protocolLimiterKeyClass(method: McpGatewayProtocolMethod) {
+    return method === "initialize" ? "session_setup" : method;
+  }
+
+  async function writeProtocolRateLimitAudit(input: {
+    session: ToolGatewaySession;
+    method: McpGatewayProtocolMethod;
+    limiterKeyClass: "token" | "gateway";
+    count: number;
+    limit: McpGatewayRateLimitConfig;
+    retryAfterMs: number;
+    clientMetadata: ReturnType<typeof safeClientMetadata>;
+  }) {
+    await writeAudit({
+      session: input.session,
+      companyId: input.session.companyId,
+      agentId: input.session.agentId,
+      runId: null,
+      issueId: input.session.issueId,
+      action: "tool_gateway.call_denied",
+      details: {
+        decision: "rate_limited",
+        reasonCode: "gateway_rate_limited",
+        reasonText: "The MCP gateway request was rate limited before the protocol action ran.",
+        limiterKeyClass: input.limiterKeyClass,
+        protocolMethod: input.method,
+        protocolAction: protocolLimiterKeyClass(input.method),
+        requestCount: input.count,
+        limit: input.limit.max,
+        windowMs: input.limit.windowMs,
+        retryAfterMs: input.retryAfterMs,
+        gatewayId: input.session.gatewayId ?? null,
+        gatewayPublicId: input.session.gatewayPublicId ?? null,
+        gatewayTokenId: input.session.gatewayTokenId ?? null,
+        tokenPrefix: typeof input.session.gatewayTokenId === "string" ? `pcgw_${input.session.gatewayTokenId.slice(0, 8)}` : null,
+        ...input.clientMetadata,
+      },
+    });
+  }
+
+  async function assertNamedGatewayProtocolLimit(
+    session: ToolGatewaySession,
+    method: McpGatewayProtocolMethod,
+    clientMetadata: ReturnType<typeof safeClientMetadata>,
+  ) {
+    const action = protocolLimiterKeyClass(method);
+    const tokenLimit = method === "initialize" ? protocolLimits.sessionSetup : protocolLimits.tokenRequests;
+    const tokenKey = `mcp_gateway_protocol:token:${session.gatewayTokenId ?? session.actorId ?? "unknown"}:${action}`;
+    const tokenState = protocolLimiter.consume(tokenKey, tokenLimit);
+    if (tokenState.limited) {
+      await writeProtocolRateLimitAudit({
+        session,
+        method,
+        limiterKeyClass: "token",
+        count: tokenState.count,
+        limit: tokenLimit,
+        retryAfterMs: tokenState.retryAfterMs,
+        clientMetadata,
+      });
+      throw new ToolGatewayHttpError(429, "MCP gateway request was rate limited", "gateway_rate_limited", {
+        reasonText: "The MCP gateway request was rate limited before the protocol action ran.",
+        limiterKeyClass: "token",
+        protocolMethod: method,
+        retryAfterMs: tokenState.retryAfterMs,
+      });
+    }
+
+    const gatewayLimit = method === "initialize" ? protocolLimits.sessionSetup : protocolLimits.gatewayRequests;
+    const gatewayKey = `mcp_gateway_protocol:gateway:${session.gatewayId ?? session.gatewayPublicId ?? "unknown"}:${action}`;
+    const gatewayState = protocolLimiter.consume(gatewayKey, gatewayLimit);
+    if (gatewayState.limited) {
+      await writeProtocolRateLimitAudit({
+        session,
+        method,
+        limiterKeyClass: "gateway",
+        count: gatewayState.count,
+        limit: gatewayLimit,
+        retryAfterMs: gatewayState.retryAfterMs,
+        clientMetadata,
+      });
+      throw new ToolGatewayHttpError(429, "MCP gateway request was rate limited", "gateway_rate_limited", {
+        reasonText: "The MCP gateway request was rate limited before the protocol action ran.",
+        limiterKeyClass: "gateway",
+        protocolMethod: method,
+        retryAfterMs: gatewayState.retryAfterMs,
+      });
+    }
+  }
+
+  async function recordNamedGatewayAuthFailure(input: {
+    gatewayId?: string | null;
+    gatewayPublicId?: string | null;
+    bearerToken: string;
+    reasonCode: string;
+    clientMetadata: ReturnType<typeof safeClientMetadata>;
+  }): Promise<never> {
+    const token = input.bearerToken.trim();
+    const tokenId = namedGatewayTokenId(token);
+    const gatewayKey = input.gatewayId ? `id:${input.gatewayId}` : `public:${input.gatewayPublicId ?? "unknown"}`;
+    const tokenKey = tokenId ? `id:${tokenId}` : `hash:${hashGatewayToken(token).slice(0, 24)}`;
+    const gatewayState = protocolLimiter.consume(`mcp_gateway_auth_failure:gateway:${gatewayKey}`, protocolLimits.authFailures);
+    const tokenState = protocolLimiter.consume(`mcp_gateway_auth_failure:token:${gatewayKey}:${tokenKey}`, protocolLimits.authFailures);
+    const limited = gatewayState.limited || tokenState.limited;
+    const gateway = limited ? await findGatewayForProtocolLocator(input) : null;
+    if (limited && gateway) {
+      const limiterKeyClass = gatewayState.limited ? "gateway_auth" : "token_auth";
+      const count = gatewayState.limited ? gatewayState.count : tokenState.count;
+      const retryAfterMs = gatewayState.limited ? gatewayState.retryAfterMs : tokenState.retryAfterMs;
+      await writeAudit({
+        session: {
+          id: `gateway:${gateway.id}`,
+          token: "",
+          companyId: gateway.companyId,
+          agentId: gateway.agentId,
+          runId: null,
+          issueId: gateway.issueId,
+          projectId: gateway.projectId,
+          gatewayId: gateway.id,
+          gatewayPublicId: gateway.gatewayPublicId,
+          gatewayName: gateway.name,
+          gatewayTokenId: null,
+          actorType: "system",
+          actorId: gateway.id,
+          createdAt: new Date(),
+          expiresAt: new Date(),
+        },
+        companyId: gateway.companyId,
+        agentId: gateway.agentId,
+        runId: null,
+        issueId: gateway.issueId,
+        action: "tool_gateway.session_rejected",
+        details: {
+          decision: "deny",
+          reasonCode: "gateway_auth_throttled",
+          reasonText: "The MCP gateway authentication attempt was throttled after repeated failures.",
+          limiterKeyClass,
+          failedReasonCode: input.reasonCode,
+          requestCount: count,
+          limit: protocolLimits.authFailures.max,
+          windowMs: protocolLimits.authFailures.windowMs,
+          retryAfterMs,
+          gatewayId: gateway.id,
+          gatewayPublicId: gateway.gatewayPublicId,
+          tokenPrefix: tokenPrefixFromNamedBearer(token),
+          ...input.clientMetadata,
+        },
+      });
+    }
+    if (limited) {
+      throw new ToolGatewayHttpError(429, "MCP gateway authentication was throttled", "gateway_auth_throttled", {
+        reasonText: "The MCP gateway authentication attempt was throttled after repeated failures.",
+        retryAfterMs: Math.max(gatewayState.retryAfterMs, tokenState.retryAfterMs),
+      });
+    }
+    throw new ToolGatewayHttpError(401, "Gateway bearer token is expired or invalid", input.reasonCode);
+  }
+
+  async function namedGatewaySessionFromBearer(input: {
+    gatewayId?: string | null;
+    gatewayPublicId?: string | null;
+    bearerToken: string;
+    protocolMethod: McpGatewayProtocolMethod;
+    callerHeaders?: Record<string, string | string[] | undefined>;
+  }): Promise<ToolGatewaySession> {
+    const clientMetadata = safeClientMetadata(input.callerHeaders);
+    const bearerToken = input.bearerToken.trim();
     const tokenId = namedGatewayTokenId(bearerToken.trim());
     const tokenHash = hashGatewayToken(bearerToken.trim());
     const conditions = [eq(toolMcpGatewayTokens.tokenHash, tokenHash)];
-    if (gatewayId) conditions.push(eq(toolMcpGatewayTokens.gatewayId, gatewayId));
+    if (input.gatewayId) conditions.push(eq(toolMcpGatewayTokens.gatewayId, input.gatewayId));
+    if (input.gatewayPublicId) conditions.push(eq(toolMcpGateways.gatewayPublicId, input.gatewayPublicId));
     const [row] = await db
       .select({ gateway: toolMcpGateways, token: toolMcpGatewayTokens })
       .from(toolMcpGatewayTokens)
@@ -2514,23 +2852,47 @@ export function createToolGatewayService(
       .where(and(...conditions))
       .limit(1);
     if (!row) {
-      throw new ToolGatewayHttpError(401, "Gateway bearer token is expired or invalid", "gateway_token_invalid");
+      await recordNamedGatewayAuthFailure({
+        gatewayId: input.gatewayId,
+        gatewayPublicId: input.gatewayPublicId,
+        bearerToken,
+        reasonCode: "gateway_token_invalid",
+        clientMetadata,
+      });
     }
     if (row.gateway.status !== "active") {
-      throw new ToolGatewayHttpError(403, "MCP gateway is not active", "gateway_disabled", { gatewayId });
+      await recordNamedGatewayAuthFailure({
+        gatewayId: input.gatewayId,
+        gatewayPublicId: input.gatewayPublicId,
+        bearerToken,
+        reasonCode: "gateway_disabled",
+        clientMetadata,
+      });
     }
     if (row.token.revokedAt) {
-      throw new ToolGatewayHttpError(401, "Gateway bearer token is expired or invalid", "gateway_token_revoked", { gatewayId });
+      await recordNamedGatewayAuthFailure({
+        gatewayId: input.gatewayId,
+        gatewayPublicId: input.gatewayPublicId,
+        bearerToken,
+        reasonCode: "gateway_token_revoked",
+        clientMetadata,
+      });
     }
     if (row.token.expiresAt && row.token.expiresAt.getTime() <= Date.now()) {
-      throw new ToolGatewayHttpError(401, "Gateway bearer token is expired or invalid", "gateway_token_expired", { gatewayId });
+      await recordNamedGatewayAuthFailure({
+        gatewayId: input.gatewayId,
+        gatewayPublicId: input.gatewayPublicId,
+        bearerToken,
+        reasonCode: "gateway_token_expired",
+        clientMetadata,
+      });
     }
     const now = new Date();
     await db
       .update(toolMcpGatewayTokens)
       .set({ lastUsedAt: now, updatedAt: now })
       .where(eq(toolMcpGatewayTokens.id, row.token.id));
-    return {
+    const session: ToolGatewaySession = {
       id: `gateway:${row.gateway.id}`,
       token: "",
       companyId: row.gateway.companyId,
@@ -2539,6 +2901,7 @@ export function createToolGatewayService(
       issueId: row.gateway.issueId,
       projectId: row.gateway.projectId,
       gatewayId: row.gateway.id,
+      gatewayPublicId: row.gateway.gatewayPublicId,
       gatewayName: row.gateway.name,
       gatewayTokenId: row.token.id || tokenId,
       gatewayTokenAllowedActions: normalizeGatewayTokenActions(row.token.allowedActions),
@@ -2547,6 +2910,8 @@ export function createToolGatewayService(
       createdAt: row.token.createdAt,
       expiresAt: row.token.expiresAt ?? new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
     };
+    await assertNamedGatewayProtocolLimit(session, input.protocolMethod, clientMetadata);
+    return session;
   }
 
   return {
@@ -2762,8 +3127,34 @@ export function createToolGatewayService(
       return toGatewayToken(row);
     },
 
-    async listToolsForNamedGateway(input: { gatewayId: string; bearerToken: string }): Promise<ToolGatewayDescriptor[]> {
-      const session = await namedGatewaySessionFromBearer(input.gatewayId, input.bearerToken);
+    async initializeNamedGatewayProtocol(input: {
+      gatewayId?: string | null;
+      gatewayPublicId?: string | null;
+      bearerToken: string;
+      callerHeaders?: Record<string, string | string[] | undefined>;
+    }): Promise<ToolGatewaySession> {
+      return namedGatewaySessionFromBearer({
+        gatewayId: input.gatewayId ?? null,
+        gatewayPublicId: input.gatewayPublicId ?? null,
+        bearerToken: input.bearerToken,
+        protocolMethod: "initialize",
+        callerHeaders: input.callerHeaders,
+      });
+    },
+
+    async listToolsForNamedGateway(input: {
+      gatewayId?: string | null;
+      gatewayPublicId?: string | null;
+      bearerToken: string;
+      callerHeaders?: Record<string, string | string[] | undefined>;
+    }): Promise<ToolGatewayDescriptor[]> {
+      const session = await namedGatewaySessionFromBearer({
+        gatewayId: input.gatewayId ?? null,
+        gatewayPublicId: input.gatewayPublicId ?? null,
+        bearerToken: input.bearerToken,
+        protocolMethod: "tools/list",
+        callerHeaders: input.callerHeaders,
+      });
       await assertGatewayTokenAction(session, "tools/list");
       const tools = await listToolsForContext(session);
       await writeAudit({
@@ -3007,7 +3398,12 @@ export function createToolGatewayService(
     },
 
     async executeTool(input: ExecuteGatewayToolInput) {
-      const session = await getActiveSession(input.sessionToken);
+      const session = await getActiveSession(input.sessionToken, {
+        gatewayId: input.gatewayId ?? null,
+        gatewayPublicId: input.gatewayPublicId ?? null,
+        protocolMethod: "tools/call",
+        callerHeaders: input.callerHeaders,
+      });
       await assertGatewayTokenAction(session, "tools/call");
       let invocationId = String(randomUUID());
       const startedAt = Date.now();

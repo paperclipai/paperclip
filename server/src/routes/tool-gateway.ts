@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { and, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, toolApplications, toolConnections, toolInvocations } from "@paperclipai/db";
@@ -51,6 +51,124 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
     else if (Array.isArray(value)) headers[name] = value.join(", ");
   }
   return headers;
+}
+
+async function handleMcpGatewayProtocol(
+  req: Request,
+  res: Response,
+  toolGateway: ToolGatewayService,
+  locator: { gatewayId?: string | null; gatewayPublicId?: string | null },
+) {
+  try {
+    const token = bearerToken(req);
+    if (!token) {
+      res.status(401).json({ error: "Bearer token is required" });
+      return;
+    }
+    const headers = callerHeaders(req);
+    const body = (req.body ?? {}) as { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
+    const id = body.id ?? null;
+    if (body.method === "initialize") {
+      await toolGateway.initializeNamedGatewayProtocol({
+        ...locator,
+        bearerToken: token,
+        callerHeaders: headers,
+      });
+      res.json({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          protocolVersion: "2025-03-26",
+          capabilities: { tools: {} },
+          serverInfo: { name: "Paperclip MCP Gateway", version: "1.0.0" },
+        },
+      });
+      return;
+    }
+    if (body.method === "notifications/initialized") {
+      res.status(202).end();
+      return;
+    }
+    if (body.method === "tools/list") {
+      const tools = await toolGateway.listToolsForNamedGateway({
+        ...locator,
+        bearerToken: token,
+        callerHeaders: headers,
+      });
+      res.json({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          tools: tools.map((tool) => ({
+            name: tool.name,
+            title: tool.displayName,
+            description: tool.description,
+            inputSchema: tool.parametersSchema ?? { type: "object", properties: {} },
+          })),
+        },
+      });
+      return;
+    }
+    if (body.method === "tools/call") {
+      const params = body.params ?? {};
+      const name = typeof params.name === "string" ? params.name : "";
+      if (!name) {
+        res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32602, message: "params.name is required" } });
+        return;
+      }
+      const result = await toolGateway.executeTool({
+        sessionToken: token,
+        gatewayId: locator.gatewayId ?? null,
+        gatewayPublicId: locator.gatewayPublicId ?? null,
+        tool: name,
+        parameters: params.arguments ?? {},
+        callerHeaders: req.headers,
+      });
+      const resultRecord = result.result && typeof result.result === "object" && !Array.isArray(result.result)
+        ? result.result as Record<string, unknown>
+        : null;
+      const contentText = typeof resultRecord?.content === "string"
+        ? resultRecord.content
+        : JSON.stringify(resultRecord?.data ?? result.result ?? null);
+      res.json({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: contentText }],
+          structuredContent: resultRecord?.data ?? null,
+          isError: false,
+        },
+      });
+      return;
+    }
+    res.status(404).json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+  } catch (err) {
+    if (err instanceof ToolGatewayHttpError) {
+      const id = (req.body as { id?: unknown } | undefined)?.id ?? null;
+      res.status(err.status).json({
+        jsonrpc: "2.0",
+        id,
+        error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...err.details } },
+      });
+      return;
+    }
+    sendGatewayError(res, err);
+  }
+}
+
+export function mcpGatewayProtocolRoutes(toolGateway: ToolGatewayService) {
+  const router = Router();
+  router.get("/mcp/gateways/:gatewayPublicId", async (req, res) => {
+    res.json({
+      transport: "streamable_http",
+      endpoint: `/mcp/gateways/${req.params.gatewayPublicId}`,
+      authentication: "bearer",
+    });
+  });
+  router.post("/mcp/gateways/:gatewayPublicId", async (req, res) => {
+    await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayPublicId: req.params.gatewayPublicId });
+  });
+  return router;
 }
 
 function detailString(details: Record<string, unknown> | null | undefined, key: string): string | null {
@@ -246,89 +364,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   });
 
   router.post("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
-    try {
-      const token = bearerToken(req);
-      if (!token) {
-        res.status(401).json({ error: "Bearer token is required" });
-        return;
-      }
-      const body = (req.body ?? {}) as { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
-      const id = body.id ?? null;
-      if (body.method === "initialize") {
-        res.json({
-          jsonrpc: "2.0",
-          id,
-          result: {
-            protocolVersion: "2025-03-26",
-            capabilities: { tools: {} },
-            serverInfo: { name: "Paperclip MCP Gateway", version: "1.0.0" },
-          },
-        });
-        return;
-      }
-      if (body.method === "notifications/initialized") {
-        res.status(202).end();
-        return;
-      }
-      if (body.method === "tools/list") {
-        const tools = await toolGateway.listToolsForNamedGateway({ gatewayId: req.params.gatewayId, bearerToken: token });
-        res.json({
-          jsonrpc: "2.0",
-          id,
-          result: {
-            tools: tools.map((tool) => ({
-              name: tool.name,
-              title: tool.displayName,
-              description: tool.description,
-              inputSchema: tool.parametersSchema ?? { type: "object", properties: {} },
-            })),
-          },
-        });
-        return;
-      }
-      if (body.method === "tools/call") {
-        const params = body.params ?? {};
-        const name = typeof params.name === "string" ? params.name : "";
-        if (!name) {
-          res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32602, message: "params.name is required" } });
-          return;
-        }
-        const result = await toolGateway.executeTool({
-          sessionToken: token,
-          tool: name,
-          parameters: params.arguments ?? {},
-          callerHeaders: req.headers,
-        });
-        const resultRecord = result.result && typeof result.result === "object" && !Array.isArray(result.result)
-          ? result.result as Record<string, unknown>
-          : null;
-        const contentText = typeof resultRecord?.content === "string"
-          ? resultRecord.content
-          : JSON.stringify(resultRecord?.data ?? result.result ?? null);
-        res.json({
-          jsonrpc: "2.0",
-          id,
-          result: {
-            content: [{ type: "text", text: contentText }],
-            structuredContent: resultRecord?.data ?? null,
-            isError: false,
-          },
-        });
-        return;
-      }
-      res.status(404).json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
-    } catch (err) {
-      if (err instanceof ToolGatewayHttpError) {
-        const id = (req.body as { id?: unknown } | undefined)?.id ?? null;
-        res.status(err.status).json({
-          jsonrpc: "2.0",
-          id,
-          error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...err.details } },
-        });
-        return;
-      }
-      sendGatewayError(res, err);
-    }
+    await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayId: req.params.gatewayId });
   });
 
   router.post("/tool-gateway/sessions", async (req, res) => {
