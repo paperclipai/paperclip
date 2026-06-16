@@ -1,11 +1,14 @@
 import { QueryClient } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import {
   fetchIssueDetail,
   getCachedIssueDetail,
+  isKnown404IssueRef,
   prefetchIssueDetail,
+  resetIssueDetailNegativeCache,
   seedIssueDetailCache,
 } from "./issueDetailCache";
 import { queryKeys } from "./queryKeys";
@@ -72,6 +75,7 @@ describe("issueDetailCache", () => {
       },
     });
     vi.clearAllMocks();
+    resetIssueDetailNegativeCache();
   });
 
   it("seeds and resolves issue detail by both identifier and id", () => {
@@ -104,5 +108,52 @@ describe("issueDetailCache", () => {
     expect(result).toEqual(issue);
     expect(queryClient.getQueryData(queryKeys.issues.detail(issue.identifier!))).toEqual(issue);
     expect(queryClient.getQueryData(queryKeys.issues.detail(issue.id))).toEqual(issue);
+  });
+
+  it("negative-caches a 404 mention key and skips re-fetching it", async () => {
+    vi.mocked(issuesApi.get).mockRejectedValue(
+      new ApiError("Issue not found", 404, { error: "Issue not found" }),
+    );
+
+    await expect(fetchIssueDetail(queryClient, "GONE-1")).rejects.toBeInstanceOf(ApiError);
+    expect(isKnown404IssueRef("GONE-1")).toBe(true);
+    expect(issuesApi.get).toHaveBeenCalledTimes(1);
+
+    // A subsequent prefetch for the same key must not hit the network again.
+    await prefetchIssueDetail(queryClient, "GONE-1");
+    expect(issuesApi.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("still prefetches refs that have not been resolved as 404", async () => {
+    const issue = createIssue({ identifier: "PAP-7", id: "issue-7" });
+    vi.mocked(issuesApi.get).mockResolvedValue(issue);
+
+    await prefetchIssueDetail(queryClient, "PAP-7");
+    expect(issuesApi.get).toHaveBeenCalledTimes(1);
+    expect(isKnown404IssueRef("PAP-7")).toBe(false);
+  });
+
+  it("does not negative-cache non-404 failures", async () => {
+    vi.mocked(issuesApi.get).mockRejectedValue(
+      new ApiError("Server error", 500, { error: "Server error" }),
+    );
+
+    await expect(fetchIssueDetail(queryClient, "BOOM-1")).rejects.toBeInstanceOf(ApiError);
+    expect(isKnown404IssueRef("BOOM-1")).toBe(false);
+  });
+
+  it("clears the negative-cache entry once the key resolves successfully", async () => {
+    vi.mocked(issuesApi.get).mockRejectedValueOnce(
+      new ApiError("Issue not found", 404, { error: "Issue not found" }),
+    );
+    await expect(fetchIssueDetail(queryClient, "PAP-9")).rejects.toBeInstanceOf(ApiError);
+    expect(isKnown404IssueRef("PAP-9")).toBe(true);
+
+    const issue = createIssue({ identifier: "PAP-9", id: "issue-9" });
+    vi.mocked(issuesApi.get).mockResolvedValue(issue);
+    const result = await fetchIssueDetail(queryClient, "PAP-9");
+
+    expect(result).toEqual(issue);
+    expect(isKnown404IssueRef("PAP-9")).toBe(false);
   });
 });
