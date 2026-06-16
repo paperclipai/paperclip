@@ -1855,6 +1855,7 @@ export function issueRoutes(
       if (!hasNoMistakesPass && headSha) {
         hasNoMistakesPass = comments.some((c: any) =>
           c.body?.includes(headSha!) &&
+          c.authorType !== "agent" &&
           (c.body?.toLowerCase().includes("no mistakes pass") ||
            c.body?.toLowerCase().includes("no_mistakes_pass") ||
            c.body?.toLowerCase().includes("gate_result:no_mistakes") && c.body?.includes("PASS"))
@@ -7068,7 +7069,7 @@ export function issueRoutes(
 
       const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
       const commentOptions = {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        authorType: actor.actorType === "agent" ? "agent" : (req.body.authorType ?? "user"),
         presentation: req.body.presentation ?? null,
         metadata: req.body.metadata ?? null,
         sourceTrust,
@@ -7152,7 +7153,7 @@ export function issueRoutes(
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
       }, {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        authorType: actor.actorType === "agent" ? "agent" : (req.body.authorType ?? "user"),
         presentation: req.body.presentation ?? null,
         metadata: req.body.metadata ?? null,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),

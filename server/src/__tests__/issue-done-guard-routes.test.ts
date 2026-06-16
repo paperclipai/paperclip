@@ -708,4 +708,54 @@ describe("Done transition guard", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("done");
   });
+
+  it("blocks transition to done when comment-based NM gate fallback is authored by an agent", async () => {
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "https://github.com/org/repo/pull/123" },
+      { body: "abcdef1234567890 no mistakes pass", authorType: "agent" }
+    ]);
+    
+    // Mismatch/absent gate file in run manifest
+    mockReadFileSync.mockImplementation((path: string) => {
+      if (path.includes("run-manifest.json")) {
+        return JSON.stringify({
+          taskRoute: { prBacked: true },
+          gates: { no_mistakes: null }
+        });
+      }
+      return "{}";
+    });
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("No Mistakes gate proof is missing or does not match");
+  });
+
+  it("blocks transition to done when QA-looking title is a completed fix (has plan) but has no PR", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      title: "QA verification for auth fixes",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockDocumentService.listIssueDocuments.mockResolvedValue([{ key: "plan" }]);
+    mockIssueService.listComments.mockResolvedValue([]);
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Linked implementation PR/work product is required");
+  });
 });
