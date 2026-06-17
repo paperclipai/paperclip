@@ -186,15 +186,67 @@ function collectTextFiles(root: string, current: string, files: Record<string, s
   }
 }
 
+// The server is spawned via `pnpm paperclipai run`. `pnpm` is only a wrapper:
+// the process that actually binds the HTTP port is a node grandchild. Signalling
+// the pnpm child alone (`child.kill`) leaves that grandchild orphaned, where it
+// keeps squatting its port — and once afterAll() removes the temp data dir, it
+// becomes a DB-less server that poisons later runs. We therefore spawn the child
+// `detached` (making it a process-group leader) and signal the whole group.
+const activeServerPids = new Set<number>();
+
+function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    // Negative pid → deliver to every process in the group (pnpm + node server).
+    process.kill(-pid, signal);
+  } catch {
+    // Group already gone; fall back to the direct child in case it survived.
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Already dead — nothing to do.
+    }
+  }
+}
+
+// Backstop: if a run is interrupted (SIGINT/SIGTERM) or exits before afterAll,
+// reap any server groups we started so we never leak orphaned servers.
+function reapAllServers(): void {
+  for (const pid of activeServerPids) {
+    signalProcessGroup(pid, "SIGKILL");
+  }
+  activeServerPids.clear();
+}
+
+process.once("exit", reapAllServers);
+for (const interrupt of ["SIGINT", "SIGTERM"] as const) {
+  process.once(interrupt, () => {
+    reapAllServers();
+    process.exit(interrupt === "SIGINT" ? 130 : 143);
+  });
+}
+
 async function stopServerProcess(child: ServerProcess | null) {
   if (!child || child.exitCode !== null) return;
-  child.kill("SIGTERM");
+  const pid = child.pid;
+  if (typeof pid !== "number") {
+    child.kill("SIGTERM");
+    return;
+  }
+  signalProcessGroup(pid, "SIGTERM");
   await new Promise<void>((resolve) => {
-    child.once("exit", () => resolve());
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      activeServerPids.delete(pid);
+      resolve();
+    };
+    child.once("exit", finish);
     setTimeout(() => {
       if (child.exitCode === null) {
-        child.kill("SIGKILL");
+        signalProcessGroup(pid, "SIGKILL");
       }
+      finish();
     }, 5_000);
   });
 }
@@ -306,9 +358,15 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
           shellHome: cliShellHome,
         }),
         stdio: ["ignore", "pipe", "pipe"],
+        // Become a process-group leader so teardown can signal the whole tree
+        // (pnpm wrapper + the node server grandchild that binds the port).
+        detached: true,
       },
     );
     serverProcess = child;
+    if (typeof child.pid === "number") {
+      activeServerPids.add(child.pid);
+    }
     child.stdout?.on("data", (chunk) => {
       output.stdout.push(String(chunk));
     });
