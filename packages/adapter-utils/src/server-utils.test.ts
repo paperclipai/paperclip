@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  buildPaperclipEnv,
   buildPersistentSkillSnapshot,
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
@@ -1159,5 +1160,24 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("buildPaperclipEnv", () => {
+  it("includes PAPERCLIP_NOW_UTC as a valid ISO timestamp", () => {
+    const before = new Date();
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+    const after = new Date();
+    expect(env.PAPERCLIP_NOW_UTC).toBeDefined();
+    const parsed = new Date(env.PAPERCLIP_NOW_UTC!);
+    expect(parsed.toISOString()).toBe(env.PAPERCLIP_NOW_UTC);
+    expect(parsed.getTime()).toBeGreaterThanOrEqual(before.getTime());
+    expect(parsed.getTime()).toBeLessThanOrEqual(after.getTime());
+  });
+
+  it("includes PAPERCLIP_AGENT_ID and PAPERCLIP_COMPANY_ID", () => {
+    const env = buildPaperclipEnv({ id: "agent-42", companyId: "company-99" });
+    expect(env.PAPERCLIP_AGENT_ID).toBe("agent-42");
+    expect(env.PAPERCLIP_COMPANY_ID).toBe("company-99");
   });
 });
