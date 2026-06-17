@@ -109,6 +109,27 @@ describe("isClaudeTransientUpstreamError", () => {
       }),
     ).toBe(false);
   });
+
+  it("classifies local CLI connection failures as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({ stderr: "Error: connect ECONNREFUSED 127.0.0.1:35345" }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({ errorMessage: "ConnectionRefused: unable to connect to api" }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({ stderr: "Error: getaddrinfo ENOTFOUND api.anthropic.com" }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({ stderr: "Error: connect EHOSTUNREACH 192.168.1.1" }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({ stderr: "Error: connect ETIMEDOUT 1.2.3.4:443" }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({ errorMessage: "socket hang up" }),
+    ).toBe(true);
+  });
 });
 
 describe("isClaudePoisonedPreviousMessageIdError", () => {
