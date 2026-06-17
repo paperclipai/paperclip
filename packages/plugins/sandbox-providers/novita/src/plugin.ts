@@ -433,8 +433,10 @@ const plugin = definePlugin({
         : params.workspace.remotePath ?? params.workspace.localPath ?? config.requestedCwd;
 
     if (params.lease.providerLeaseId) {
-      const sandbox = await connectSandbox(config, params.lease.providerLeaseId);
-      await ensureWorkspace(sandbox, remoteCwd, config);
+      const sandbox = await getSandboxOrNull(config, params.lease.providerLeaseId);
+      if (sandbox) {
+        await ensureWorkspace(sandbox, remoteCwd, config);
+      }
     }
 
     return {
