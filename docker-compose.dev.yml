@@ -109,7 +109,9 @@ services:
         SQL
 
   server:
-    build: .
+    build:
+      context: .
+      no_cache: true
     restart: unless-stopped
     labels:
       paperclip.dev.deployment_generation: "2026-06-17-clean-server-dist"
