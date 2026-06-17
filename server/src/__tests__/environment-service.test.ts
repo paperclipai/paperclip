@@ -468,6 +468,20 @@ describeEmbeddedPostgres("environmentService leases", () => {
       ])
       .returning();
 
+    const [lease] = await db
+      .insert(environmentLeases)
+      .values({
+        companyId,
+        environmentId: newer!.id,
+        status: "active",
+        leasePolicy: "ephemeral",
+        acquiredAt: newerCreatedAt,
+        lastUsedAt: newerCreatedAt,
+        createdAt: newerCreatedAt,
+        updatedAt: newerCreatedAt,
+      })
+      .returning();
+
     const ensured = await svc.ensureKubernetesEnvironment(companyId, {
       backend: "job",
       inCluster: true,
@@ -488,6 +502,11 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows[0]?.id).not.toBe(newer?.id);
     expect((rows[0]?.config as Record<string, unknown>)?.inCluster).toBe(true);
     expect((rows[0]?.metadata as Record<string, unknown>)?.managedKubernetesSandbox).toBe(true);
+
+    const leaseRows = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, companyId));
+    expect(leaseRows).toHaveLength(1);
+    expect(leaseRows[0]?.id).toBe(lease?.id);
+    expect(leaseRows[0]?.environmentId).toBe(older?.id);
   });
 
   it("does not treat a non-kubernetes sandbox environment as the managed k8s env", async () => {
