@@ -40,7 +40,16 @@ function jwtConfig() {
     ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
-    disableLegacyFallback: parseBooleanEnv(process.env.PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK),
+    // Secure by default: the master-secret verification fallback is disabled
+    // unless explicitly re-enabled. New tokens are signed with the per-company
+    // derived key, so only legacy tokens issued before per-company signing rely
+    // on the fallback — and those expire within one TTL (~1h). Operators
+    // upgrading mid-flight can set PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK=false
+    // for one TTL to avoid re-authenticating in-flight agents.
+    disableLegacyFallback:
+      process.env.PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK === undefined
+        ? true
+        : parseBooleanEnv(process.env.PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK),
   };
 }
 

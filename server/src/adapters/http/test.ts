@@ -4,6 +4,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "../types.js";
 import { asString, parseObject } from "../utils.js";
+import { assertPublicHttpUrl } from "./url-guard.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -73,12 +74,28 @@ export async function testEnvironment(
     message: `Configured method: ${method}`,
   });
 
+  let targetIsPublic = true;
   if (url && (url.protocol === "http:" || url.protocol === "https:")) {
+    try {
+      await assertPublicHttpUrl(url.toString());
+    } catch (err) {
+      targetIsPublic = false;
+      checks.push({
+        code: "http_url_private_target",
+        level: "error",
+        message: err instanceof Error ? err.message : "URL targets a private/reserved address.",
+        hint: "Point the adapter at a public http(s) endpoint, not an internal/loopback host.",
+      });
+    }
+  }
+
+  if (url && targetIsPublic && (url.protocol === "http:" || url.protocol === "https:")) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
     try {
       const response = await fetch(url, {
         method: "HEAD",
+        redirect: "error",
         signal: controller.signal,
       });
       if (!response.ok && response.status !== 405 && response.status !== 501) {

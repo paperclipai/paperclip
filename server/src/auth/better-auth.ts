@@ -122,6 +122,19 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
     );
   }
+  // In authenticated mode this secret signs session cookies AND is the agent
+  // JWT signing key. Reject the well-known development default and low-entropy
+  // values so a copied .env.example cannot ship a forgeable production secret.
+  if (config.deploymentMode === "authenticated") {
+    const WEAK_AUTH_SECRETS = new Set(["paperclip-dev-secret", "changeme", "change-me", "secret", "password"]);
+    if (WEAK_AUTH_SECRETS.has(secret) || secret.length < 24) {
+      throw new Error(
+        "BETTER_AUTH_SECRET is the well-known development default or too weak for " +
+        "authenticated mode. Set a unique, high-entropy secret of at least 24 characters, " +
+        "e.g. `openssl rand -base64 48`.",
+      );
+    }
+  }
   const disableSecureCookies = shouldDisableSecureAuthCookies({
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
