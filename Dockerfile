@@ -117,7 +117,15 @@ WORKDIR /vendor
 # corresponding local Claude JSONL session exists. Paperclip runtime UUIDs
 # without a Claude session file now start fresh instead of failing with
 # "No conversation found with session ID".
-ARG CLAUDE_K8S_REF=af5df8448e02f3b152ddb0d8e40c558d371a0ebd
+# Bumped 2026-06-17 to f79ab9a (master tip): BLO-10699 — redirect Chrome's
+# BrowserMetrics spool off the shared CephFS HOME to the per-pod /runtime-cache
+# emptyDir (PR #8), so the agent-browser designer tool's headless Chrome can no
+# longer leak *.pma buffers onto /paperclip and wall the fleet with EDQUOT.
+# af5df84's "only --resume when the JSONL session exists" guard was pinned
+# directly off an unmerged branch and was NOT on master; PR #9 ported it onto
+# master (cherry-pick), so f79ab9a carries BOTH the --resume guard and the
+# BrowserMetrics fix (verified present + 371 tests green). No --resume regress.
+ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98
 # Re-pinned 2026-06-14 to kkroo/paperclip-adapter-opencode-k8s master a533d11
 # (was 168688e): BLO-10448 — a transient k8s status-read error during the
 # completion poll was mislabeled as a deadline, surfacing as the bogus
@@ -145,7 +153,14 @@ ARG CLAUDE_K8S_REF=af5df8448e02f3b152ddb0d8e40c558d371a0ebd
 # (exit 1)" self-explains instead of needing a kubectl trip. PR
 # kkroo/paperclip-adapter-opencode-k8s#27; the pin was 2 behind tip so this
 # also picks up #26 (5d43c07 was the pre-merge sha; #26 merged at 09083e1).
-ARG OPENCODE_K8S_REF=4b195304acfd7c5b693b2cfeb9a6cc9fdcda98dd
+# Bumped 2026-06-17 to cac7d0b (master tip): BLO-10699 — redirect Chrome's
+# BrowserMetrics spool off the shared CephFS HOME to the per-pod /tmp (opencode
+# pods have no /runtime-cache emptyDir). The agent-browser designer tool's
+# headless Chrome leaked 42GiB of un-reaped *.pma metrics buffers onto
+# /paperclip, filling its byte quota and walling the whole agent fleet at
+# workspace setup with EDQUOT. PR kkroo/paperclip-adapter-opencode-k8s#28;
+# verified 4b19530 is an ancestor of cac7d0b (no regress).
+ARG OPENCODE_K8S_REF=cac7d0b53fa420beb756919561004f1b5b709fa2
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
