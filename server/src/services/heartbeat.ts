@@ -615,21 +615,39 @@ async function resolveRunScopedMentionedSkillKeys(input: {
   ]);
   if (mentionedSkillIds.length === 0) return [];
 
-  const skillRows = await input.db
-    .select({
-      id: companySkillsTable.id,
-      key: companySkillsTable.key,
-    })
-    .from(companySkillsTable)
-    .where(
-      and(
-        eq(companySkillsTable.companyId, input.companyId),
-        inArray(companySkillsTable.id, mentionedSkillIds),
-      ),
-    );
-  const skillKeyById = new Map(skillRows.map((row) => [row.id, row.key]));
+  const uuidIds = mentionedSkillIds.filter((id) => isUuidLike(id));
+  const nonUuidIds = mentionedSkillIds.filter((id) => !isUuidLike(id));
+
+  const [byIdRows, byKeyRows] = await Promise.all([
+    uuidIds.length > 0
+      ? input.db
+          .select({ id: companySkillsTable.id, key: companySkillsTable.key })
+          .from(companySkillsTable)
+          .where(
+            and(
+              eq(companySkillsTable.companyId, input.companyId),
+              inArray(companySkillsTable.id, uuidIds),
+            ),
+          )
+      : Promise.resolve([]),
+    nonUuidIds.length > 0
+      ? input.db
+          .select({ id: companySkillsTable.id, key: companySkillsTable.key })
+          .from(companySkillsTable)
+          .where(
+            and(
+              eq(companySkillsTable.companyId, input.companyId),
+              inArray(companySkillsTable.key, nonUuidIds),
+            ),
+          )
+      : Promise.resolve([]),
+  ]);
+
+  const skillKeyById = new Map([...byIdRows, ...byKeyRows].map((row) => [row.id, row.key]));
+  const skillKeyByKey = new Map(byKeyRows.map((row) => [row.key, row.key]));
+
   return mentionedSkillIds
-    .map((skillId) => skillKeyById.get(skillId) ?? null)
+    .map((skillId) => skillKeyById.get(skillId) ?? skillKeyByKey.get(skillId) ?? null)
     .filter((skillKey): skillKey is string => Boolean(skillKey));
 }
 
