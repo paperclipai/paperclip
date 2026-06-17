@@ -44,7 +44,7 @@ WORKDIR /app
 COPY --from=deps /app /app
 ARG CACHE_BUST=1
 COPY . .
-RUN rm -rf ui/dist server/ui-dist \
+RUN rm -rf ui/dist server/ui-dist server/dist \
   && pnpm --filter "@paperclipai/ui..." build \
   && mkdir -p server/ui-dist \
   && cp -R ui/dist/. server/ui-dist/ \
