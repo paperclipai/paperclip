@@ -94,6 +94,7 @@ import {
   evaluateDevTeamDoneReadiness,
   REVIEW_GATE_WAKE_REASON,
   reviewGateAgentIdsFromApprovals,
+  buildGateWorkspaceContext,
 } from "../services/plan-gates.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
@@ -5798,6 +5799,10 @@ export function issueRoutes(
                   ...(lensKey != null ? { lensKey } : {}),
                   // A2: give reviewer a direct diff pointer; avoids full-repo crawl.
                   ...(issue.prUrl ? { prUrl: issue.prUrl } : {}),
+                  // Bind the reviewer to the leaf's git worktree (executionWorkspaceId
+                  // + project ids) so resolveWorkspaceForRun lands in the worktree,
+                  // not an empty per-agent fallback.
+                  ...buildGateWorkspaceContext(issue),
                 },
               })
               .catch((err) =>

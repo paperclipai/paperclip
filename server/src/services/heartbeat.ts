@@ -973,6 +973,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   executionTarget: unknown;
   environmentDriver?: string | null;
   leaseMetadata?: unknown;
+  isGateReview?: boolean;
 }) {
   if (!GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.adapterType)) return;
 
@@ -992,10 +993,23 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   const effectiveCwd = readNonEmptyString(input.executionWorkspace.cwd);
   const persistedCwd = readNonEmptyString(input.persistedExecutionWorkspace?.cwd);
   const agentFallbackCwd = resolveDefaultAgentWorkspaceDir(input.agentId);
+  // A gate reviewer reviews the issue's worktree diff. If it resolved to the empty
+  // per-agent fallback (agent_home) yet a project/worktree binding exists, it would
+  // review an empty/wrong tree and silently mis-decide (the BUG observed: critic
+  // rejected a real feature as "not implemented"). Treat a worktree as mandatory in
+  // that case so the fallback_agent_home_cwd / missing_git_metadata checks fire and
+  // the run fails closed instead. Gated on a real binding so light/solo profiles with
+  // no project (legitimately agent_home) — and implementor first-runs (not gate
+  // reviews) — are unaffected.
+  const hasProjectBinding =
+    Boolean(issue.projectId) || Boolean(input.resolvedWorkspace.projectId);
   const workspaceExpectation =
     Boolean(issue.projectWorkspaceId) ||
     Boolean(input.resolvedWorkspace.workspaceId) ||
-    input.executionWorkspace.strategy === "git_worktree";
+    input.executionWorkspace.strategy === "git_worktree" ||
+    (Boolean(input.isGateReview) &&
+      input.resolvedWorkspace.source === "agent_home" &&
+      hasProjectBinding);
 
   const fail = (reason: string, message: string, extra: Record<string, unknown> = {}) => {
     throw new WorkspaceValidationFailure(message, {
@@ -1418,7 +1432,7 @@ export interface ModelProfileApplication {
 
 export type ResolvedWorkspaceForRun = {
   cwd: string;
-  source: "project_primary" | "task_session" | "agent_home";
+  source: "project_primary" | "task_session" | "agent_home" | "issue_worktree";
   projectId: string | null;
   workspaceId: string | null;
   repoUrl: string | null;
@@ -4289,6 +4303,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
+
+    // Highest priority: a wake that carries an explicit executionWorkspaceId binds
+    // directly to that issue's persisted git worktree. Gate-review wakes set this
+    // (see buildGateWorkspaceContext) so a reviewer — including a dynamically-added
+    // gate agent — lands in the issue's worktree instead of an empty per-agent
+    // fallback. DB-backed, so it survives forceFreshSession. On any miss
+    // (absent / archived / wrong-company / cwd gone) we fall through to the
+    // project-workspace → session → agent-home resolution below.
+    const contextExecutionWorkspaceId = readNonEmptyString(context.executionWorkspaceId);
+    if (contextExecutionWorkspaceId) {
+      const ws = await executionWorkspacesSvc
+        .getById(contextExecutionWorkspaceId)
+        .catch(() => null);
+      const wsCwd = ws ? readNonEmptyString(ws.providerRef) ?? readNonEmptyString(ws.cwd) : null;
+      if (ws && ws.companyId === agent.companyId && ws.status !== "archived" && wsCwd) {
+        const wsCwdExists = await fs
+          .stat(wsCwd)
+          .then((stats) => stats.isDirectory())
+          .catch(() => false);
+        if (wsCwdExists) {
+          return {
+            cwd: wsCwd,
+            source: "issue_worktree" as const,
+            projectId: ws.projectId ?? null,
+            workspaceId: ws.projectWorkspaceId ?? null,
+            repoUrl: ws.repoUrl ?? null,
+            repoRef: ws.baseRef ?? null,
+            workspaceHints: [],
+            warnings: [],
+          };
+        }
+      }
+    }
     const issueProjectRef = issueId
       ? await db
           .select({
@@ -8803,6 +8850,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionTarget,
         environmentDriver: selectedEnvironment.driver,
         leaseMetadata: activeEnvironmentLease.lease.metadata,
+        isGateReview: isGateReviewWake(context),
       });
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(

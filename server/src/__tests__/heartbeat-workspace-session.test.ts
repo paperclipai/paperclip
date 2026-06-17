@@ -312,6 +312,67 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     );
   });
 
+  it("rejects a gate reviewer that resolved to the agent fallback cwd when a project binding exists", async () => {
+    const base = buildWorkspaceValidationInput();
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+
+    // No projectWorkspaceId / workspaceId / git_worktree strategy — so the only
+    // thing that makes a worktree "expected" is the new gate-review clause.
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        isGateReview: true,
+        issue: { id: "issue-1", identifier: "PAP-1", projectId: "project-1", projectWorkspaceId: null },
+        resolvedWorkspace: buildResolvedWorkspace({
+          source: "agent_home",
+          cwd: fallbackCwd,
+          workspaceId: null,
+          projectId: "project-1",
+        }),
+        executionWorkspace: {
+          ...base.executionWorkspace,
+          strategy: "project_primary",
+          workspaceId: null,
+          cwd: fallbackCwd,
+        },
+        persistedExecutionWorkspace: {
+          ...base.persistedExecutionWorkspace!,
+          projectWorkspaceId: null,
+          cwd: fallbackCwd,
+        },
+      }),
+      "fallback_agent_home_cwd",
+      "would launch from agent fallback cwd",
+    );
+  });
+
+  it("allows a gate reviewer in the agent fallback cwd when no project binding exists (solo/light)", async () => {
+    const base = buildWorkspaceValidationInput();
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          isGateReview: true,
+          issue: { id: "issue-1", identifier: "PAP-1", projectId: null, projectWorkspaceId: null },
+          resolvedWorkspace: buildResolvedWorkspace({
+            source: "agent_home",
+            cwd: fallbackCwd,
+            workspaceId: null,
+            projectId: null,
+          }),
+          executionWorkspace: {
+            ...base.executionWorkspace,
+            strategy: "project_primary",
+            workspaceId: null,
+            projectId: null,
+            cwd: fallbackCwd,
+          },
+          persistedExecutionWorkspace: null,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
   it("rejects a git worktree persisted workspace when cwd differs from providerRef", async () => {
     const input = buildWorkspaceValidationInput();
 

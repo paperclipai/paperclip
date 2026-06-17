@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { GATE_APPROVAL_TYPES } from "@paperclipai/shared";
 import {
   buildGateApprovalsForActivation,
+  buildGateWorkspaceContext,
   gatePrecedence,
   gateTypeToReason,
   isGateApprovalType,
@@ -50,14 +51,19 @@ describe("plan-gates", () => {
       },
     });
 
-    expect(specs).toHaveLength(5); // 1 plan + 2 leaves * 2
+    // dev_team profile: 1 plan-approval + per leaf (3 code-review lenses + 1 wiring
+    // + 1 completeness) = 1 + 2 × 5 = 11.
+    expect(specs).toHaveLength(11);
     const plan = specs.find((s) => s.type === GATE_APPROVAL_TYPES.planApproval);
     expect(plan).toMatchObject({ issueId: "root", designatedAgentId: "agent-arch" });
 
     const leafGates = specs.filter((s) => s.issueId === "leaf-a");
-    expect(leafGates.map((s) => s.type).sort()).toEqual(
-      [GATE_APPROVAL_TYPES.codeReview, GATE_APPROVAL_TYPES.wiringReview].sort(),
-    );
+    expect(leafGates).toHaveLength(5);
+    expect(leafGates.filter((s) => s.type === GATE_APPROVAL_TYPES.codeReview)).toHaveLength(3);
+    expect(leafGates.filter((s) => s.type === GATE_APPROVAL_TYPES.wiringReview)).toHaveLength(1);
+    expect(
+      leafGates.filter((s) => s.type === GATE_APPROVAL_TYPES.completenessReview),
+    ).toHaveLength(1);
     expect(specs.find((s) => s.type === GATE_APPROVAL_TYPES.codeReview)?.designatedAgentId).toBe(
       "agent-cr",
     );
@@ -83,5 +89,28 @@ describe("plan-gates", () => {
     });
     expect(specs).toHaveLength(1);
     expect(specs[0]!.type).toBe(GATE_APPROVAL_TYPES.planApproval);
+  });
+
+  describe("buildGateWorkspaceContext", () => {
+    it("includes only the present worktree binding fields", () => {
+      expect(
+        buildGateWorkspaceContext({
+          executionWorkspaceId: "ew-1",
+          projectId: "p-1",
+          projectWorkspaceId: "pw-1",
+        }),
+      ).toEqual({
+        executionWorkspaceId: "ew-1",
+        projectId: "p-1",
+        projectWorkspaceId: "pw-1",
+      });
+    });
+
+    it("omits null/absent fields (no worktree at plan activation)", () => {
+      expect(
+        buildGateWorkspaceContext({ executionWorkspaceId: null, projectId: "p-1", projectWorkspaceId: null }),
+      ).toEqual({ projectId: "p-1" });
+      expect(buildGateWorkspaceContext({})).toEqual({});
+    });
   });
 });

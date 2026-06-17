@@ -24,6 +24,7 @@ import {
   isGateApprovalType,
   criticGateWakeTarget,
   CRITIC_GATE_WAKE_REASON,
+  buildGateWorkspaceContext,
 } from "../services/plan-gates.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -384,6 +385,8 @@ export function approvalRoutes(
               source: "issue.review_gates_complete.critic",
               approvalId: target.approvalId,
               ...(issue.prUrl ? { prUrl: issue.prUrl } : {}),
+              // Bind the critic to the leaf's git worktree (see buildGateWorkspaceContext).
+              ...buildGateWorkspaceContext(issue),
             },
           })
           .catch((err) =>

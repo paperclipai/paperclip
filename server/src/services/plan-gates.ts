@@ -274,6 +274,26 @@ export function criticGateWakeTarget(
   return { agentId, approvalId: criticGate.id };
 }
 
+// Workspace binding for a gate-review wake's contextSnapshot. Carries the issue's
+// persisted execution-workspace anchor (a DB-backed git worktree row that survives
+// forceFreshSession) plus its project ids as fallbacks. resolveWorkspaceForRun
+// consumes these to land the reviewer in the issue's worktree instead of an empty
+// per-agent fallback dir. Keyed by the issue, not the agent — so a dynamically
+// provisioned gate agent (e.g. a completeness-critic added mid-plan) inherits the
+// same worktree automatically. Fields are omitted when absent (e.g. a plan-approval
+// wake at activation, before any worktree exists), which is a correct no-op.
+export function buildGateWorkspaceContext(issue: {
+  executionWorkspaceId?: string | null;
+  projectId?: string | null;
+  projectWorkspaceId?: string | null;
+}): Record<string, string> {
+  const ctx: Record<string, string> = {};
+  if (issue.executionWorkspaceId) ctx.executionWorkspaceId = issue.executionWorkspaceId;
+  if (issue.projectId) ctx.projectId = issue.projectId;
+  if (issue.projectWorkspaceId) ctx.projectWorkspaceId = issue.projectWorkspaceId;
+  return ctx;
+}
+
 // Fix 3 (B1 gap-fix) + triage — the pure `done`-gate decision, right-sized by
 // profile. Returns the unmet preconditions for closing a gated issue. Empty
 // array = ready to close. The caller decides what to do with the reasons (throw

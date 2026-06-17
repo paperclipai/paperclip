@@ -79,6 +79,8 @@ export function issueApprovalService(db: Db) {
           id: issues.id,
           companyId: issues.companyId,
           projectId: issues.projectId,
+          projectWorkspaceId: issues.projectWorkspaceId,
+          executionWorkspaceId: issues.executionWorkspaceId,
           goalId: issues.goalId,
           parentId: issues.parentId,
           title: issues.title,

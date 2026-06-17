@@ -5,7 +5,7 @@ import { planService, type PlanTier } from "../services/plans.js";
 import { agentService, heartbeatService, issueService, logActivity } from "../services/index.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { cancelIssueSubtree } from "../services/issue-subtree-cancel.js";
-import { PLAN_APPROVAL_WAKE_REASON } from "../services/plan-gates.js";
+import { PLAN_APPROVAL_WAKE_REASON, buildGateWorkspaceContext } from "../services/plan-gates.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { logger } from "../middleware/logger.js";
@@ -284,7 +284,13 @@ export function planRoutes(
           payload: { issueId: planIssueId, mutation: "plan_activated" },
           requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
           requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: planIssueId, source: "plan.activated.gate" },
+          contextSnapshot: {
+            issueId: planIssueId,
+            source: "plan.activated.gate",
+            // Usually a no-op at activation (no worktree yet); included for
+            // consistency so a plan reviewed against an existing worktree binds to it.
+            ...buildGateWorkspaceContext(existing),
+          },
         })
         .catch((err) => logger.warn({ err, planIssueId, agentId }, "failed to wake plan-approval gate agent"));
     }
