@@ -111,6 +111,8 @@ services:
   server:
     build: .
     restart: unless-stopped
+    labels:
+      paperclip.dev.deployment_generation: "2026-06-17-clean-server-dist"
     expose:
       - "3100"
     environment:
