@@ -2225,6 +2225,40 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+const modelUsageQuerySchema = z.object({
+  groupBy: z.enum(["model", "agent", "provider", "taskType"]).optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+});
+
+const modelUsageResponseSchema = z.object({
+  groupBy: z.string(),
+  rows: z.array(z.record(z.unknown())),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/analytics/model-usage",
+  tags: ["analytics"],
+  summary: "Get model usage analytics",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: modelUsageQuerySchema,
+  },
+  responses: { 200: r.ok(modelUsageResponseSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/analytics/model-usage",
+  tags: ["analytics"],
+  summary: "Get model usage analytics by query company id",
+  request: {
+    query: modelUsageQuerySchema.extend({ companyId: z.string() }),
+  },
+  responses: { 200: r.ok(modelUsageResponseSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
 registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/budgets/policies",
