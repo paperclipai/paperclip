@@ -46,6 +46,7 @@ ARG CACHE_BUST=1
 COPY . .
 RUN pnpm --filter "@paperclipai/ui..." build
 RUN pnpm --filter "@paperclipai/server..." build
+RUN pnpm --filter "@paperclipai/plugin-llm-wiki" build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
 FROM base AS production
