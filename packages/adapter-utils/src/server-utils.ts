@@ -1410,9 +1410,13 @@ export async function listPaperclipSkillEntries(
           : null,
       };
     }));
-    return results
-      .filter((result): result is PromiseFulfilledResult<PaperclipSkillEntry> => result.status === "fulfilled")
-      .map((result) => result.value);
+    const fulfilled: PaperclipSkillEntry[] = [];
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        fulfilled.push(result.value);
+      }
+    }
+    return fulfilled;
   } catch {
     return [];
   }
