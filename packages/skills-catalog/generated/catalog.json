@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-06-04T19:57:14.020Z",
+  "generatedAt": "2026-06-15T23:53:59.018Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -214,6 +214,38 @@
         }
       ],
       "contentHash": "sha256:32372dacaf62e93454b9855968c4eec96456ba78b509f450b3dfaa48e31ef356"
+    },
+    {
+      "id": "paperclipai:bundled:software-development:github-issue-workflow",
+      "key": "paperclipai/bundled/software-development/github-issue-workflow",
+      "kind": "bundled",
+      "category": "software-development",
+      "slug": "github-issue-workflow",
+      "name": "github-issue-workflow",
+      "description": "Prepare a GitHub issue for upstream contribution — issue hygiene, title/body, verification notes, labels, and follow-ups. Use when triaging or filing issues for a repository that prefers issues over PRs.",
+      "path": "catalog/bundled/software-development/github-issue-workflow",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "github",
+        "issues",
+        "upstream-contribution"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4875,
+          "sha256": "21c2bc59f0fc2b6efe948b3959ec6ce45b31f184d82dacb6e3587edb87f5ff95"
+        }
+      ],
+      "contentHash": "sha256:b5a1b32c78f7380b11b773d92554f8d31aeaaecd133c1f3958311c821cc3809f"
     },
     {
       "id": "paperclipai:bundled:software-development:github-pr-workflow",
