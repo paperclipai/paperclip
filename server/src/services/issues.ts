@@ -6369,11 +6369,15 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const explicitAgentMentionIds = extractAgentMentionIds(body);
+      const explicitAgentMentionIds = [...new Set(extractAgentMentionIds(body))];
       if (explicitAgentMentionIds.length === 0) return [];
 
       const rows = await db.select({ id: agents.id })
-        .from(agents).where(eq(agents.companyId, companyId));
+        .from(agents)
+        .where(and(
+          eq(agents.companyId, companyId),
+          inArray(agents.id, explicitAgentMentionIds),
+        ));
       const companyAgentIds = new Set(rows.map((agent) => agent.id));
       return explicitAgentMentionIds.filter((agentId) => companyAgentIds.has(agentId));
     },

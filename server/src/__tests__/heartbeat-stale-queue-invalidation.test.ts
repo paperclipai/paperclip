@@ -716,6 +716,93 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBeNull();
   });
 
+  it("treats a soft-deleted triggering comment as unresolved instead of reading its body for the live-mention staleness check", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "ReviewerAgent",
+      role: "qa",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "In-review task whose triggering comment was deleted",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: otherAgentId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+    // A plain comment that, if read, carries no competing reviewer mention and
+    // would let the queued run proceed (cf. the preceding test). It is
+    // soft-deleted, so the staleness check must not consult its body and must
+    // instead treat the triggering comment as unresolved.
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorAgentId: otherAgentId,
+      body: "Review feedback comment",
+      deletedAt: new Date(),
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_commented",
+      invocationSource: "automation",
+      contextExtras: {
+        commentId,
+        wakeCommentId: commentId,
+        source: "issue.comment",
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const run = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_review_participant_changed");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("cancels comment-driven in_review wakes when only an older batched comment mentioned the queued agent", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "Castellan" });
     const otherAgentId = randomUUID();

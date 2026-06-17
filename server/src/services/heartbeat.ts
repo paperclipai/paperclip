@@ -7117,6 +7117,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 eq(issueComments.id, wakeCommentId),
                 eq(issueComments.issueId, issueId),
                 eq(issueComments.companyId, run.companyId),
+                isNull(issueComments.deletedAt),
               ),
             )
             .then((rows) => rows[0] ?? null);
