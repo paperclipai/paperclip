@@ -468,14 +468,6 @@ async function ensureBundledLlmWikiPlugin({
   pluginRegistry: ReturnType<typeof pluginRegistryService>;
 }) {
   const pluginKey = "paperclipai.plugin-llm-wiki";
-  const existing = await pluginRegistry.getByKey(pluginKey);
-  if (existing && existing.status !== "uninstalled") {
-    if (existing.status === "installed") {
-      await lifecycle.load(existing.id);
-    }
-    return;
-  }
-
   const candidates = [
     path.resolve(process.cwd(), "packages/plugins/plugin-llm-wiki"),
     path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../packages/plugins/plugin-llm-wiki"),
@@ -486,6 +478,22 @@ async function ensureBundledLlmWikiPlugin({
     fs.existsSync(path.join(candidate, "dist/worker.js")),
   );
   if (!pluginPath) return;
+
+  const existing = await pluginRegistry.getByKey(pluginKey);
+  if (existing && existing.status !== "uninstalled") {
+    if (existing.packagePath === pluginPath) {
+      if (existing.status === "installed") {
+        await lifecycle.load(existing.id);
+      }
+      return;
+    }
+
+    await lifecycle.unload(existing.id, false);
+    logger.info(
+      { pluginKey, previousPackagePath: existing.packagePath, pluginPath },
+      "Reinstalling bundled LLM Wiki plugin from bundled path",
+    );
+  }
 
   const discovered = await loader.installPlugin({ localPath: pluginPath });
   const installed = discovered.manifest ? await pluginRegistry.getByKey(discovered.manifest.id) : null;
