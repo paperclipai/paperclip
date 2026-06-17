@@ -384,6 +384,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               key: "home",
               localDir: effectiveCodexHome,
               followSymlinks: true,
+              exclude: [
+                "sessions",
+                "sessions/**",
+              ],
             },
           ],
         });
