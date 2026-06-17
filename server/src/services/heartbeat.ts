@@ -6189,7 +6189,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             | "issue_cancelled"
             | "issue_terminal_status"
             | "issue_not_in_progress"
-            | "issue_execution_lock_changed";
+            | "issue_execution_lock_changed"
+            | "routine_execution_auto_continuation_disabled";
           issueId: string | null;
           details: Record<string, unknown>;
         };
@@ -6256,6 +6257,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               status: issues.status,
               assigneeAgentId: issues.assigneeAgentId,
               executionRunId: issues.executionRunId,
+              originKind: issues.originKind,
             })
             .from(issues)
             .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -6316,6 +6318,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 issueId,
                 expectedExecutionRunId: run.id,
                 currentExecutionRunId: lockedIssue.executionRunId,
+              },
+            };
+          }
+
+          if (
+            lockedIssue.originKind === "routine_execution" &&
+            contextSnapshot.allowMaxTurnContinuation !== true
+          ) {
+            return {
+              outcome: "not_scheduled",
+              reason:
+                "Scheduled max-turn continuation suppressed for routine execution issue without explicit allowMaxTurnContinuation opt-in",
+              errorCode: "routine_execution_auto_continuation_disabled",
+              issueId,
+              details: {
+                issueId,
+                originKind: lockedIssue.originKind,
+                optInContextKey: "allowMaxTurnContinuation",
               },
             };
           }
