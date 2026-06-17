@@ -545,6 +545,124 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     }
   }, 40_000);
 
+  it("honors the premium managed global cap across different agents", async () => {
+    const originalPremiumCap = process.env.PAPERCLIP_PREMIUM_MAX_CONCURRENT_RUNS;
+    process.env.PAPERCLIP_PREMIUM_MAX_CONCURRENT_RUNS = "1";
+    const companyId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+    const firstIssueId = randomUUID();
+    const secondIssueId = randomUUID();
+    let finishFirstRun!: () => void;
+    const firstRunFinished = new Promise<void>((resolve) => {
+      finishFirstRun = resolve;
+    });
+
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await firstRunFinished;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "First premium run completed.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "FirstPremiumAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "SecondPremiumAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: firstIssueId,
+        companyId,
+        title: "First premium assignment",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: firstAgentId,
+      },
+      {
+        id: secondIssueId,
+        companyId,
+        title: "Second premium assignment",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: secondAgentId,
+      },
+    ]);
+
+    try {
+      const firstWake = await heartbeat.wakeup(firstAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: firstIssueId },
+        contextSnapshot: { issueId: firstIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(firstWake).not.toBeNull();
+
+      const firstRunStarted = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstWake!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+      expect(firstRunStarted).toBe(true);
+      expect(await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1, 30_000)).toBe(true);
+
+      const secondWake = await heartbeat.wakeup(secondAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: secondIssueId },
+        contextSnapshot: { issueId: secondIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(secondWake).not.toBeNull();
+
+      const secondRunWhileFirstRunning = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, secondWake!.id))
+        .then((rows) => rows[0] ?? null);
+      expect(secondRunWhileFirstRunning?.status).toBe("queued");
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    } finally {
+      process.env.PAPERCLIP_PREMIUM_MAX_CONCURRENT_RUNS = originalPremiumCap;
+      finishFirstRun();
+    }
+  }, 40_000);
+
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
