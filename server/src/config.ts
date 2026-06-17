@@ -34,10 +34,18 @@ const loadedEnvRealPaths = new Set<string>();
 
 function loadEnvFileOnce(envPath: string): void {
   if (!existsSync(envPath)) return;
-  const real = realpathSync(envPath);
-  if (loadedEnvRealPaths.has(real)) return;
-  loadedEnvRealPaths.add(real);
-  loadDotenv({ path: envPath, override: false, quiet: true });
+  // existsSync + realpathSync is inherently racy: an optional .env can be
+  // removed or swapped between the check and the read. Optional env loading is
+  // best-effort and must never crash module load / server startup, so swallow
+  // any transient FS error here.
+  try {
+    const real = realpathSync(envPath);
+    if (loadedEnvRealPaths.has(real)) return;
+    loadedEnvRealPaths.add(real);
+    loadDotenv({ path: envPath, override: false, quiet: true });
+  } catch {
+    // Optional env loading should not block startup.
+  }
 }
 
 // Walk from CWD up to the project root to find .env files that should be
