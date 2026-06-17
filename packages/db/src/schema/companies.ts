@@ -1,4 +1,14 @@
-import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import {
+  type AnyPgColumn,
+  pgTable,
+  uuid,
+  text,
+  integer,
+  timestamp,
+  boolean,
+  index,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 
 export const companies = pgTable(
   "companies",
@@ -11,6 +21,9 @@ export const companies = pgTable(
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     issuePrefix: text("issue_prefix").notNull().default("PAP"),
     issueCounter: integer("issue_counter").notNull().default(0),
+    parentCompanyId: uuid("parent_company_id").references((): AnyPgColumn => companies.id, {
+      onDelete: "set null",
+    }),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     attachmentMaxBytes: integer("attachment_max_bytes")
@@ -31,5 +44,6 @@ export const companies = pgTable(
   },
   (table) => ({
     issuePrefixUniqueIdx: uniqueIndex("companies_issue_prefix_idx").on(table.issuePrefix),
+    parentCompanyIdx: index("companies_parent_company_id_idx").on(table.parentCompanyId),
   }),
 );
