@@ -1395,9 +1395,64 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
       }
       // No terminal evidence found (the run didn't directly mark its source issue done),
-      // but the source issue is already terminal. Skip rather than filing a new alert —
-      // each cycle would otherwise re-create the alert after an assignee closes the
-      // previous false-positive, producing runaway duplicates (VIG-116 / SUP-29468).
+      // but the source issue is already terminal. Perform lightweight cleanup and skip
+      // rather than filing a new alert — each cycle would otherwise re-create the alert
+      // after an assignee closes the previous false-positive, producing runaway duplicates
+      // (VIG-116 / SUP-29468).
+      await logActivity(db, {
+        companyId: input.run.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: input.run.agentId,
+        runId: input.run.id,
+        action: "heartbeat.output_stale_recovery_terminal_source_no_evidence",
+        entityType: "heartbeat_run",
+        entityId: input.run.id,
+        details: {
+          source: "recovery.scan_silent_active_runs",
+          sourceIssueId: sourceIssue.id,
+          sourceIssueIdentifier: sourceIssue.identifier,
+          sourceIssueStatus: sourceIssue.status,
+          existingEvaluationIssueId: existing?.id ?? null,
+        },
+      });
+      if (existing && !isTerminalIssueStatus(existing.status)) {
+        await issuesSvc.update(existing.id, { status: "done" });
+        await issuesSvc.addComment(
+          existing.id,
+          [
+            "Terminal-source watchdog guard (no same-run evidence).",
+            "",
+            `- Source issue: ${sourceIssue.identifier ?? sourceIssue.id} (status: ${sourceIssue.status})`,
+            `- Run: \`${input.run.id}\``,
+            "- No same-run terminal evidence found; suppressed based on terminal source status.",
+            "- Outcome: false positive suppressed.",
+          ].join("\n"),
+          { runId: input.run.id },
+        );
+      }
+      const finalRunStatus = sourceIssue.status === "cancelled" ? "cancelled" : "succeeded";
+      await db.transaction(async (tx) => {
+        await tx
+          .update(heartbeatRuns)
+          .set({ status: finalRunStatus, finishedAt: input.now, error: null, errorCode: null, updatedAt: input.now })
+          .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId), eq(heartbeatRuns.status, "running")));
+        if (input.run.wakeupRequestId) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: finalRunStatus === "succeeded" ? "completed" : "cancelled",
+              finishedAt: input.now,
+              error: null,
+              updatedAt: input.now,
+            })
+            .where(and(eq(agentWakeupRequests.id, input.run.wakeupRequestId), eq(agentWakeupRequests.companyId, input.run.companyId)));
+        }
+        await tx
+          .update(issues)
+          .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: input.now })
+          .where(and(eq(issues.id, sourceIssue.id), eq(issues.companyId, input.run.companyId), eq(issues.executionRunId, input.run.id)));
+      });
       return { kind: "skipped" as const };
     }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
