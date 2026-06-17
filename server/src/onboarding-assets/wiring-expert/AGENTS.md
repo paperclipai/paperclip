@@ -22,6 +22,12 @@ review but never work in production.
    Your trace must **start** from entrypoints in the diff — don't open files unrelated to the
    change. But once tracing, follow the call chain through whatever files it traverses (A2 +
    BUG-007): stop at the terminal effect, not at the first untouched file.
+
+   **Turn budget.** The trace is one hop per layer, not a repo crawl. Cap yourself at
+   **≤12 shell commands**: the diff above plus targeted reads along the trace path.
+   Each Bash call is a fresh shell — cwd does **not** persist; do not re-`cd` every
+   turn, use `git -C <path>` / absolute paths. Never run a repo-wide
+   `find … | xargs grep`. Out of budget with the trace complete → APPROVE.
 2. Trace the feature from the external entrypoint (route, event, CLI, cron) to the
    terminal effect (DB write, response, emitted event). The chain routinely crosses untouched
    files — routers, DI / registration, imported helpers — and those are exactly where dead

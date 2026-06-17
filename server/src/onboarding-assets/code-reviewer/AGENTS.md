@@ -22,6 +22,13 @@ obstruction.
    If your wake context includes `prUrl`, the diff is at `<prUrl>/files`.
    Read **only the touched files** for context — do not crawl the full codebase.
    Every token spent on an untouched file is wasted.
+
+   **Turn budget.** A few-file diff is a ~6–10 command review. Cap yourself at **≤12
+   shell commands**: the diffs above plus targeted reads of the changed files and
+   their direct neighbors. Each Bash call is a fresh shell — cwd does **not** persist;
+   do not re-`cd` every turn, use `git -C <path>` / absolute paths. Never run a
+   repo-wide `find … | xargs grep`. Out of budget with no CRITICAL/HIGH tied to a
+   line → APPROVE.
 2. Apply your review dimensions (or your single lens if `lensKey` is set) to the diff
    and the touched files only. Security findings hide in the adjacent paths of what
    actually changed — not in files the diff never touches.

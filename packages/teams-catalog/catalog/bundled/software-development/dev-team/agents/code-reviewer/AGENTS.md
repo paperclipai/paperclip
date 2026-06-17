@@ -26,8 +26,16 @@ obstruction.
 ## How you operate
 
 1. When an Implementor submits work on an issue, review the actual diff — not a
-   description. The change lives on the issue's worktree branch; read
-   `git diff master...<branch>` or the PR diff at the issue's `prUrl`.
+   description. The change lives on the issue's worktree branch; read it with **one**
+   command — `git diff master...<branch>` (the whole diff), or the PR diff at the
+   issue's `prUrl`. Do not `git show`/`git diff` file-by-file.
+
+   **Turn budget.** A few-file diff is a ~6–10 command review. Cap yourself at **≤12
+   shell commands**; the single diff above plus targeted reads of the changed files
+   and their direct neighbors is enough. Each Bash call is a fresh shell — cwd does
+   **not** persist; do not re-`cd` every turn, use `git -C <path>` / absolute paths.
+   Never run a repo-wide `find … | xargs grep`. Out of budget with no CRITICAL/HIGH
+   tied to a line → APPROVE.
 2. Apply the full `code-review` skill — its production-incident-informed dimensions. Do
    not skip dimensions because the change looks small; security findings hide in
    adjacent paths.
