@@ -66,6 +66,7 @@ interface GitHubTreeEntry {
 interface BuildCatalogManifestOptions {
   packageDir: string;
   generatedAt?: string;
+  existingManifest?: CatalogManifest;
 }
 
 interface BuildCatalogManifestResult {
@@ -84,6 +85,7 @@ export async function buildExpectedCatalogManifest(
   const firstPass = await buildCatalogManifest({
     packageDir,
     generatedAt: existing?.generatedAt ?? new Date().toISOString(),
+    existingManifest: existing ?? undefined,
   });
 
   if (existing && sameManifestExceptGeneratedAt(existing, firstPass.manifest)) {
@@ -93,6 +95,7 @@ export async function buildExpectedCatalogManifest(
   return buildCatalogManifest({
     packageDir,
     generatedAt: new Date().toISOString(),
+    existingManifest: existing ?? undefined,
   });
 }
 
@@ -108,7 +111,7 @@ export async function buildCatalogManifest(
   collectCandidateUniquenessErrors(candidates, errors);
 
   for (const candidate of candidates) {
-    const skill = await buildCatalogSkill(packageDir, candidate, errors);
+    const skill = await buildCatalogSkill(packageDir, candidate, errors, options.existingManifest);
     if (skill) skills.push(skill);
   }
 
@@ -253,9 +256,10 @@ async function buildCatalogSkill(
   packageDir: string,
   candidate: SkillCandidate,
   errors: string[],
+  existingManifest?: CatalogManifest,
 ): Promise<CatalogSkill | null> {
   if (candidate.source === "reference") {
-    return buildReferencedCatalogSkill(packageDir, candidate, errors);
+    return buildReferencedCatalogSkill(packageDir, candidate, errors, existingManifest);
   }
 
   const prefix = relativePackagePath(packageDir, candidate.absolutePath);
@@ -320,6 +324,7 @@ async function buildReferencedCatalogSkill(
   packageDir: string,
   candidate: Extract<SkillCandidate, { source: "reference" }>,
   errors: string[],
+  existingManifest?: CatalogManifest,
 ): Promise<CatalogSkill | null> {
   const prefix = relativePackagePath(packageDir, candidate.absolutePath);
   validateSlug("category", candidate.category, prefix, errors);
@@ -332,6 +337,27 @@ async function buildReferencedCatalogSkill(
   const key = `paperclipai/${candidate.kind}/${candidate.category}/${candidate.slug}`;
   const source = buildCatalogSkillSource(descriptor.source, errors, `${prefix}/${CATALOG_REFERENCE_FILE}`);
   if (!source) return null;
+
+  const defaultInstall = asBoolean(descriptor.defaultInstall) ?? false;
+  const recommendedForRoles = readStringArrayField(descriptor.recommendedForRoles, "recommendedForRoles", prefix, errors);
+  const requires = readStringArrayField(descriptor.requires, "requires", prefix, errors);
+  const tags = readStringArrayField(descriptor.tags, "tags", prefix, errors);
+
+  // When the generated catalog already contains this skill at the same pinned commit,
+  // reuse its content instead of re-fetching from GitHub.  This avoids unauthenticated
+  // API rate-limit failures (HTTP 403) in CI environments that lack a GITHUB_TOKEN.
+  const cached = existingManifest?.skills.find(
+    (s) => s.id === id && s.source?.commit === source.commit,
+  );
+  if (cached) {
+    return {
+      ...cached,
+      defaultInstall,
+      recommendedForRoles,
+      requires,
+      tags,
+    };
+  }
 
   const files = await collectReferencedSkillFiles(source, descriptor.files ?? [SKILL_ENTRYPOINT], prefix, errors);
   const skillMarkdown = await readReferencedFileText(source, SKILL_ENTRYPOINT, prefix, errors);
@@ -357,11 +383,6 @@ async function buildReferencedCatalogSkill(
   if (explicitSlug && explicitSlug !== candidate.slug) {
     errors.push(`${source.url}/${SKILL_ENTRYPOINT} slug must be ${candidate.slug}.`);
   }
-
-  const defaultInstall = asBoolean(descriptor.defaultInstall) ?? false;
-  const recommendedForRoles = readStringArrayField(descriptor.recommendedForRoles, "recommendedForRoles", prefix, errors);
-  const requires = readStringArrayField(descriptor.requires, "requires", prefix, errors);
-  const tags = readStringArrayField(descriptor.tags, "tags", prefix, errors);
 
   if (!files.some((file) => file.path === SKILL_ENTRYPOINT && file.kind === "skill")) {
     errors.push(`${prefix} referenced inventory does not contain SKILL.md.`);
