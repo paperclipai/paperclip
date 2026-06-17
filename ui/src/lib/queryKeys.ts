@@ -198,6 +198,11 @@ export const queryKeys = {
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
   },
+  memory: {
+    overview: (companyId: string) => ["memory", companyId, "overview"] as const,
+    operations: (companyId: string, limit?: number) =>
+      ["memory", companyId, "operations", limit ?? "__default-limit__"] as const,
+  },
   cloudUpstreams: (companyId: string) => ["cloud-upstreams", companyId] as const,
   health: ["health"] as const,
   secrets: {

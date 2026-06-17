@@ -81,10 +81,7 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
-import {
-  parseIssueGraphLivenessIncidentKey,
-  RECOVERY_ORIGIN_KINDS,
-} from "./recovery/origins.js";
+import { isRecoveryIssueLike, parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
@@ -5391,21 +5388,22 @@ export function issueService(db: Db) {
         if (
           (issueData.status === "done" || issueData.status === "cancelled") &&
           existing.status !== issueData.status &&
-          existing.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
+          isRecoveryIssueLike({ originKind: existing.originKind, title: existing.title })
         ) {
-          const parsedIncident = parseIssueGraphLivenessIncidentKey(existing.originId);
-          if (parsedIncident?.issueId && parsedIncident.companyId === existing.companyId) {
-            await tx
-              .delete(issueRelations)
-              .where(
-                and(
-                  eq(issueRelations.companyId, existing.companyId),
-                  eq(issueRelations.issueId, existing.id),
-                  eq(issueRelations.relatedIssueId, parsedIncident.issueId),
-                  eq(issueRelations.type, "blocks"),
-                ),
-              );
-          }
+          // A closing recovery issue can no longer meaningfully block its source.
+          // Drop every outgoing `blocks` relation so the source isn't trapped by
+          // a cancelled-only blocker set (cancelled blockers stay unresolved per
+          // listIssueDependencyReadinessMap; without this prune the source is
+          // stuck until heartbeat reconciliation catches up or a human intervenes).
+          await tx
+            .delete(issueRelations)
+            .where(
+              and(
+                eq(issueRelations.companyId, existing.companyId),
+                eq(issueRelations.issueId, existing.id),
+                eq(issueRelations.type, "blocks"),
+              ),
+            );
         }
         return enriched;
       };
@@ -5868,6 +5866,39 @@ export function issueService(db: Db) {
         if (!updated) return null;
         const [enriched] = await withIssueLabels(tx, [updated]);
         return enriched;
+      }),
+
+    clearCancelledBlockers: async (id: string) =>
+      db.transaction(async (tx) => {
+        const existing = await tx
+          .select({ id: issues.id, companyId: issues.companyId })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows: Array<{ id: string; companyId: string }>) => rows[0] ?? null);
+        if (!existing) return null;
+
+        const removedRows = await tx
+          .delete(issueRelations)
+          .where(
+            and(
+              eq(issueRelations.companyId, existing.companyId),
+              eq(issueRelations.relatedIssueId, existing.id),
+              eq(issueRelations.type, "blocks"),
+              sql`exists (
+                select 1
+                from ${issues}
+                where ${issues.id} = ${issueRelations.issueId}
+                  and ${issues.companyId} = ${issueRelations.companyId}
+                  and ${issues.status} = 'cancelled'
+              )`,
+            ),
+          )
+          .returning({ blockerIssueId: issueRelations.issueId });
+
+        return {
+          issueId: existing.id,
+          removedBlockerIssueIds: removedRows.map((row) => row.blockerIssueId),
+        };
       }),
 
     adminForceRelease: async (id: string, options: { clearAssignee?: boolean } = {}) =>

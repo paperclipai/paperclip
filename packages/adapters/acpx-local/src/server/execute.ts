@@ -182,16 +182,27 @@ async function writeFileAtomically(input: {
 
 async function ensureSymlink(target: string, source: string): Promise<void> {
   const resolvedSource = path.resolve(source);
+  await ensureParentDir(target);
+  const symlinkWithRetry = async () => {
+    try {
+      await fs.symlink(resolvedSource, target);
+    } catch (error) {
+      if ((error as { code?: unknown }).code === "EEXIST") {
+        await ensureSymlink(target, resolvedSource);
+        return;
+      }
+      throw error;
+    }
+  };
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
-    await ensureParentDir(target);
-    await fs.symlink(resolvedSource, target);
+    await symlinkWithRetry();
     return;
   }
 
   if (!existing.isSymbolicLink()) {
     await fs.rm(target, { recursive: true, force: true });
-    await fs.symlink(resolvedSource, target);
+    await symlinkWithRetry();
     return;
   }
 
@@ -202,7 +213,7 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   if (resolvedLinkedPath === resolvedSource) return;
 
   await fs.unlink(target);
-  await fs.symlink(resolvedSource, target);
+  await symlinkWithRetry();
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {

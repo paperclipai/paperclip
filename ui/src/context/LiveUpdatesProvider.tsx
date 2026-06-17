@@ -451,6 +451,42 @@ function buildActivityToast(
   const actorId = readString(payload.actorId);
   const actorType = readString(payload.actorType);
 
+  // A pending thread interaction (e.g. a plan/confirmation request) means an
+  // agent is blocked waiting on the user. Surface it as an actionable toast
+  // that deep-links straight to the interaction card, so the notification
+  // itself leads to an approve/answer control instead of dead-ending.
+  if (entityType === "issue" && entityId && action === "issue.thread_interaction_created") {
+    const interactionId = readString(details?.interactionId);
+    const interactionKind = readString(details?.interactionKind);
+    const interactionStatus = readString(details?.interactionStatus);
+    if (!interactionId || interactionStatus !== "pending") return null;
+    const needsApproval =
+      interactionKind === "request_confirmation" ||
+      interactionKind === "request_checkbox_confirmation";
+    const isQuestion = interactionKind === "ask_user_questions";
+    const isSuggestion = interactionKind === "suggest_tasks";
+    if (!needsApproval && !isQuestion && !isSuggestion) return null;
+    const isSelfActivity =
+      (actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
+      (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId);
+    if (isSelfActivity) return null;
+    const issue = resolveIssueToastContext(queryClient, companyId, entityId, details);
+    const actor = resolveActorLabel(queryClient, companyId, actorType, actorId);
+    const verb = needsApproval
+      ? "wants your approval on"
+      : isQuestion
+        ? "has a question on"
+        : "suggested work on";
+    const actionLabel = needsApproval ? "Review & approve" : isQuestion ? "Answer" : "Review";
+    return {
+      title: `${actor} ${verb} ${issue.ref}`,
+      body: issue.title ? truncate(issue.title, 96) : undefined,
+      tone: "warn",
+      action: { label: actionLabel, href: `${issue.href}#interaction-${interactionId}` },
+      dedupeKey: `activity:interaction:${interactionId}`,
+    };
+  }
+
   if (entityType !== "issue" || !entityId || !action || !ISSUE_TOAST_ACTIONS.has(action)) {
     return null;
   }

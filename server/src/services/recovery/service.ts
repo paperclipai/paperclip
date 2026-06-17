@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -48,8 +48,11 @@ import {
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
 import {
+  RECOVERY_ISSUE_ORIGIN_KINDS,
+  RECOVERY_ISSUE_TITLE_PREFIXES,
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
+  isRecoveryIssueOriginKind,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
@@ -156,6 +159,13 @@ function readNonEmptyString(value: unknown): string | null {
 function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   if (!run) return null;
 
+  if (run.errorCode === "codex_usage_limit") {
+    const failure = readNonEmptyString(run.error);
+    return failure
+      ? ` Latest Codex quota failure: ${failure}`
+      : " Latest Codex quota failure requires a model route change or waiting for the reset window.";
+  }
+
   if (readNonEmptyString(run.error) || readNonEmptyString(run.errorCode)) {
     return " Latest retry failure details were withheld from the issue thread; inspect the linked run for evidence.";
   }
@@ -188,6 +198,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "agent_not_found",
   "budget_blocked",
   "budget_exhausted",
+  "codex_usage_limit",
   "issue_paused",
   "issue_dependencies_blocked",
 ]);
@@ -2982,12 +2993,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
         monitorAttemptCount: issues.monitorAttemptCount,
+        originKind: issues.originKind,
       })
       .from(issues)
       .where(
         and(
           isNull(issues.hiddenAt),
-          notInArray(issues.originKind, [RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation]),
+          notInArray(issues.originKind, [...RECOVERY_ISSUE_ORIGIN_KINDS]),
         ),
       ));
 
@@ -3044,7 +3056,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .where(
           and(
             isNull(issues.hiddenAt),
-            notInArray(issues.originKind, [RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation]),
+            notInArray(issues.originKind, [...RECOVERY_ISSUE_ORIGIN_KINDS]),
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
           ),
         ),
@@ -3086,10 +3098,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .where(
           and(
             isNull(issues.hiddenAt),
-            inArray(issues.originKind, [
-              STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
-              RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
-            ]),
+            inArray(issues.originKind, [...RECOVERY_ISSUE_ORIGIN_KINDS]),
             notInArray(issues.status, ["done", "cancelled"]),
           ),
         ),
@@ -3131,6 +3140,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ];
       }
 
+      if (!isRecoveryIssueOriginKind(row.originKind)) return [];
       const issueId = readNonEmptyString(row.originId);
       if (!issueId) return [];
       return [{
@@ -3220,7 +3230,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }) ?? null;
   }
 
-  async function removeRecoveryBlockerFromSource(recovery: typeof issues.$inferSelect) {
+  async function removeRecoveryBlockerFromSource(recovery: Pick<typeof issues.$inferSelect, "id" | "companyId" | "originId">) {
     const parsed = parseLivenessIncidentKey(recovery.originId);
     if (!parsed) return false;
     const sourceIssue = await db
@@ -3339,13 +3349,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
-  async function retireDoneLivenessRecoveryBlockers() {
+  async function retireClosedRecoveryBlockers() {
     const closedRecoveries = await db
-      .select()
-      .from(issues)
+      .selectDistinct({
+        id: issues.id,
+        companyId: issues.companyId,
+        originId: issues.originId,
+      })
+      .from(issueRelations)
+      .innerJoin(
+        issues,
+        and(
+          eq(issueRelations.companyId, issues.companyId),
+          eq(issueRelations.issueId, issues.id),
+        ),
+      )
       .where(
         and(
-          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          eq(issueRelations.type, "blocks"),
+          or(
+            inArray(issues.originKind, [...RECOVERY_ISSUE_ORIGIN_KINDS]),
+            ...RECOVERY_ISSUE_TITLE_PREFIXES.map((prefix) => sql`${issues.title} like ${`${prefix}%`}`),
+          ),
           isNull(issues.hiddenAt),
           inArray(issues.status, ["done", "cancelled"]),
         ),
@@ -3354,6 +3379,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let blockerRelationsRemoved = 0;
     for (const recovery of closedRecoveries) {
       if (await removeRecoveryBlockerFromSource(recovery)) {
+        blockerRelationsRemoved += 1;
+        continue;
+      }
+
+      const sourceRows = await db
+        .select({ sourceIssueId: issueRelations.relatedIssueId })
+        .from(issueRelations)
+        .where(
+          and(
+            eq(issueRelations.companyId, recovery.companyId),
+            eq(issueRelations.issueId, recovery.id),
+            eq(issueRelations.type, "blocks"),
+          ),
+        );
+      for (const source of sourceRows) {
+        const blockerIds = await existingBlockerIssueIds(recovery.companyId, source.sourceIssueId);
+        if (!blockerIds.includes(recovery.id)) continue;
+        await issuesSvc.update(source.sourceIssueId, {
+          blockedByIssueIds: blockerIds.filter((blockerId) => blockerId !== recovery.id),
+        });
         blockerRelationsRemoved += 1;
       }
     }
@@ -3756,7 +3801,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const now = new Date();
     const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
     const obsoleteRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings);
-    const doneRecoveryBlockerCleanup = await retireDoneLivenessRecoveryBlockers();
+    const doneRecoveryBlockerCleanup = await retireClosedRecoveryBlockers();
     const updatedAtByIssueKey = await loadLivenessDependencyUpdatedAtByIssue(findings);
     const result = {
       findings: findings.length,

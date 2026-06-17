@@ -5963,6 +5963,49 @@ export function issueRoutes(
     res.json(released);
   });
 
+  router.post("/issues/:id/clear-cancelled-blockers", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+
+    await assertCanAssignTasks(req, existing.companyId, {
+      issueId: existing.id,
+      projectId: existing.projectId ?? null,
+      parentIssueId: existing.parentId ?? null,
+      assigneeAgentId: existing.assigneeAgentId ?? null,
+      assigneeUserId: existing.assigneeUserId ?? null,
+    });
+
+    const result = await svc.clearCancelledBlockers(id);
+    if (!result) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.clear_cancelled_blockers",
+      entityType: "issue",
+      entityId: existing.id,
+      details: {
+        issueId: existing.id,
+        removedBlockerIssueIds: result.removedBlockerIssueIds,
+      },
+    });
+
+    res.json(result);
+  });
+
   router.post("/issues/:id/admin/force-release", async (req, res) => {
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board access required" });
@@ -6637,6 +6680,7 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const reopenRequested = req.body.reopen === true;
+    const suppressImplicitCommentWake = req.body.reopen === false;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
@@ -6647,7 +6691,7 @@ export function issueRoutes(
     const isBlocked = issue.status === "blocked";
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
     const scheduledRetryForHumanComment =
-      shouldHumanCommentResumeInProgressScheduledRetry({
+      !suppressImplicitCommentWake && shouldHumanCommentResumeInProgressScheduledRetry({
         hasComment: true,
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
@@ -6669,15 +6713,16 @@ export function issueRoutes(
     const effectiveMoveToTodoRequested =
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
-        shouldImplicitlyMoveCommentedIssueToTodo({
-          issueStatus: issue.status,
-          assigneeAgentId: issue.assigneeAgentId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          actorRunId: actor.runId,
-          checkoutRunId: issue.checkoutRunId,
-          executionRunId: issue.executionRunId,
-        }) ||
+        (!suppressImplicitCommentWake &&
+          shouldImplicitlyMoveCommentedIssueToTodo({
+            issueStatus: issue.status,
+            assigneeAgentId: issue.assigneeAgentId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            actorRunId: actor.runId,
+            checkoutRunId: issue.checkoutRunId,
+            executionRunId: issue.executionRunId,
+          })) ||
         shouldResumeInProgressScheduledRetry);
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
@@ -7010,7 +7055,7 @@ export function issueRoutes(
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
-      const skipWake = selfComment || isClosedIssueStatus(currentIssue.status);
+      const skipWake = selfComment || isClosedIssueStatus(currentIssue.status) || suppressImplicitCommentWake;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           addWakeup(assigneeId, {

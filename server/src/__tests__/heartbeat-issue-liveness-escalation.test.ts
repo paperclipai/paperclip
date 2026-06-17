@@ -370,6 +370,71 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(escalations).toHaveLength(1);
   });
 
+  it("does not create supervisor recovery for blocked recovery issues", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const recoveryIssueId = randomUUID();
+    const recoveryBlockerId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const issueTimestamp = new Date(Date.now() - 60 * 60 * 1000);
+
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: issueTimestamp })
+      .where(eq(issues.id, blockedIssueId));
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: issueTimestamp })
+      .where(eq(issues.id, blockerIssueId));
+
+    await db.insert(issues).values([
+      {
+        id: recoveryIssueId,
+        companyId,
+        title: "Recover missing next step source",
+        status: "blocked",
+        priority: "medium",
+        parentId: blockedIssueId,
+        assigneeAgentId: managerId,
+        issueNumber: 6,
+        identifier: `${issuePrefix}-6`,
+        originKind: "stranded_issue_recovery",
+        originId: blockedIssueId,
+        createdAt: issueTimestamp,
+        updatedAt: issueTimestamp,
+      },
+      {
+        id: recoveryBlockerId,
+        companyId,
+        title: "Unassigned recovery-only blocker",
+        status: "todo",
+        priority: "medium",
+        issueNumber: 7,
+        identifier: `${issuePrefix}-7`,
+        createdAt: issueTimestamp,
+        updatedAt: issueTimestamp,
+      },
+    ]);
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: recoveryBlockerId,
+      relatedIssueId: recoveryIssueId,
+      type: "blocks",
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.escalationsCreated).toBe(0);
+    expect(result.findings).toBe(0);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
+  });
+
   it("keeps active invalid_review_participant recoveries from being retired", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
@@ -838,5 +903,69 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issueRelations)
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.some((row) => row.blockerIssueId === escalations[0]!.id)).toBe(false);
+  });
+
+  it("removes closed recovery-origin blockers from source issues during reconciliation", async () => {
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const recoveryIssueId = randomUUID();
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      title: "Recover missing next step RAY-test",
+      status: "cancelled",
+      priority: "medium",
+      originKind: "stranded_issue_recovery",
+      cancelledAt: new Date(),
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: recoveryIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const result = await heartbeat.reconcileIssueGraphLiveness();
+    expect(result.doneRecoveryBlockerRelationsRemoved).toBe(1);
+
+    const blockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    expect(blockers.map((row) => row.blockerIssueId)).toContain(blockerIssueId);
+    expect(blockers.map((row) => row.blockerIssueId)).not.toContain(recoveryIssueId);
+  });
+
+  it("removes closed legacy manual recovery-title blockers from source issues during reconciliation", async () => {
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const recoveryIssueId = randomUUID();
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      title: "Supervisor recovery: RAY-689 stale cancelled blocker",
+      status: "cancelled",
+      priority: "high",
+      originKind: "manual",
+      cancelledAt: new Date(),
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: recoveryIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const result = await heartbeat.reconcileIssueGraphLiveness();
+    expect(result.doneRecoveryBlockerRelationsRemoved).toBe(1);
+
+    const blockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    expect(blockers.map((row) => row.blockerIssueId)).toContain(blockerIssueId);
+    expect(blockers.map((row) => row.blockerIssueId)).not.toContain(recoveryIssueId);
   });
 });

@@ -10,6 +10,9 @@ import {
   buildRunLivenessContinuationIdempotencyKey,
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
+  isRecoveryIssueLike,
+  isRecoveryIssueOriginKind,
+  isRecoveryIssueTitle,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
@@ -240,9 +243,128 @@ describe("recovery classifier boundary", () => {
   });
 
   it("classifies stranded recovery origins as recovery-owned work", () => {
+    expect(isRecoveryIssueOriginKind("stranded_issue_recovery")).toBe(true);
+    expect(isRecoveryIssueOriginKind("harness_liveness_escalation")).toBe(true);
+    expect(isRecoveryIssueOriginKind("stale_active_run_evaluation")).toBe(true);
+    expect(isRecoveryIssueOriginKind("issue_productivity_review")).toBe(true);
+    expect(isRecoveryIssueOriginKind("manual")).toBe(false);
+    expect(isRecoveryIssueTitle("Supervisor recovery: RAY-689")).toBe(true);
+    expect(isRecoveryIssueTitle("Recover missing next step RAY-631")).toBe(true);
+    expect(isRecoveryIssueTitle("Review productivity for RAY-679")).toBe(true);
+    expect(isRecoveryIssueTitle("Implement recovery cleanup")).toBe(false);
+    expect(isRecoveryIssueLike({ originKind: "manual", title: "Supervisor recovery: RAY-689" })).toBe(true);
+    expect(isRecoveryIssueLike({ originKind: "manual", title: "Implement recovery cleanup" })).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("stranded_issue_recovery")).toBe(true);
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+
+  it("does not create issue graph findings for blocked recovery/meta issues", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "PAP-3010",
+          title: "Recover missing next step PAP-3009",
+          status: "blocked",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          originKind: "stranded_issue_recovery",
+          executionState: null,
+        },
+        {
+          id: blockerId,
+          companyId,
+          identifier: "PAP-3011",
+          title: "Unassigned recovery blocker",
+          status: "todo",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          originKind: "manual",
+          executionState: null,
+        },
+      ],
+      relations: [{ companyId, blockerIssueId: blockerId, blockedIssueId: issueId }],
+      agents: [
+        {
+          id: agentId,
+          companyId,
+          name: "Coder",
+          role: "engineer",
+          status: "idle",
+          reportsTo: managerId,
+        },
+        {
+          id: managerId,
+          companyId,
+          name: "CTO",
+          role: "cto",
+          status: "idle",
+          reportsTo: null,
+        },
+      ],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it("does not create issue graph findings for blocked legacy manual recovery-title issues", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "PAP-3010",
+          title: "Supervisor recovery: PAP-3009 Recover missing next step",
+          status: "blocked",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          originKind: "manual",
+          executionState: null,
+        },
+        {
+          id: blockerId,
+          companyId,
+          identifier: "PAP-3011",
+          title: "Unassigned recovery blocker",
+          status: "todo",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          originKind: "manual",
+          executionState: null,
+        },
+      ],
+      relations: [{ companyId, blockerIssueId: blockerId, blockedIssueId: issueId }],
+      agents: [
+        {
+          id: agentId,
+          companyId,
+          name: "Coder",
+          role: "engineer",
+          status: "idle",
+          reportsTo: managerId,
+        },
+        {
+          id: managerId,
+          companyId,
+          name: "CTO",
+          role: "cto",
+          status: "idle",
+          reportsTo: null,
+        },
+      ],
+    });
+
+    expect(findings).toEqual([]);
   });
 });

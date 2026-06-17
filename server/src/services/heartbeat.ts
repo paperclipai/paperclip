@@ -158,6 +158,7 @@ import {
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
+import { memoryService } from "./memory/index.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -3130,6 +3131,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
+  const memorySvc = memoryService(db);
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function releaseEnvironmentLeasesForRun(input: {
@@ -8071,6 +8073,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipTaskMarkdown;
     }
+    // Pre-run memory hydrate: advisory remembered context from the bound
+    // memory provider. The service owns its own timeout and never throws;
+    // any failure degrades to "no memory" so the run is never blocked.
+    const memoryMarkdown = await memorySvc
+      .hydrateForRun({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        runId: run.id,
+        issue: issueRef
+          ? {
+              id: issueRef.id,
+              identifier: issueRef.identifier,
+              title: issueRef.title,
+              description: issueRef.description,
+            }
+          : null,
+        wakeReason: readNonEmptyString(context.wakeReason),
+        wakeCommentBody: readNonEmptyString(safeWakeCommentContext?.body),
+      })
+      .catch(() => null);
+    if (memoryMarkdown) {
+      context.paperclipMemoryMarkdown = memoryMarkdown;
+    } else {
+      delete context.paperclipMemoryMarkdown;
+    }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
     const requestedShouldReuseExisting =
@@ -9259,6 +9286,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
+        // Post-run memory capture: persist the already-redacted run summary
+        // into the bound memory provider for both succeeded and failed
+        // terminal outcomes. The service never throws; swallow defensively so
+        // memory can never delay or fail run finalization.
+        if (outcome === "succeeded" || outcome === "failed") {
+          await memorySvc
+            .captureRunCompletion({
+              run: livenessRun,
+              agent: { id: agent.id, name: agent.name },
+              issueRef,
+              outcome,
+              status,
+              resultJson: persistedResultJson,
+            })
+            .catch(() => {});
+        }
         if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
           const policy = parseMaxTurnContinuationPolicy(agent);
           if (policy.enabled && policy.maxAttempts > 0) {
@@ -9424,6 +9467,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
+        await memorySvc
+          .captureRunCompletion({
+            run: livenessRun,
+            agent: { id: agent.id, name: agent.name },
+            issueRef,
+            outcome: "failed",
+            status: livenessRun.status,
+            resultJson: parseObject(livenessRun.resultJson),
+          })
+          .catch(() => {});
         if (!isWorkspaceValidationFailedRun(livenessRun)) {
           await finalizeIssueCommentPolicy(livenessRun, agent);
         }

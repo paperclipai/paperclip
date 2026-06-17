@@ -1023,8 +1023,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         })
     );
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-    // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
-    expect(issue?.checkoutRunId).toBeNull();
+    // Terminal run cleanup releases the failed run's checkout lock. The retry
+    // may already be running by the time this assertion observes the row.
+    expect(issue?.checkoutRunId).not.toBe(runId);
+    expect([null, retryRun?.id]).toContain(issue?.checkoutRunId ?? null);
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
@@ -1425,8 +1427,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(recoveryAction?.nextAction).toContain("Repair the source issue workspace link");
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
+    const validationCommentObserved = await waitForValue(async () =>
+      db.select().from(issueComments).where(eq(issueComments.issueId, issueId)).then((comments) =>
+        comments.some((comment) => comment.body.includes("workspace failed validation")) ? true : null,
+      ),
+    );
+    expect(validationCommentObserved).toBe(true);
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {
@@ -3033,6 +3039,47 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await waitForRunToSettle(heartbeat, row.id);
       }
     }
+  });
+
+  it("blocks Codex usage-limit continuation failures instead of retrying the same route", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "codex_usage_limit",
+      runError:
+        "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at Jun 11th, 2026 7:39 AM.",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: null,
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("non-retryable failure");
+    expect(comments[0]?.body).toContain("`codex_usage_limit`");
+    expect(comments[0]?.body).toContain("Switch to another model now");
+
+    const followupRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const continuationRetryRun = followupRuns.find((row) => {
+      const ctx = row.contextSnapshot as Record<string, unknown> | null;
+      return ctx?.retryReason === "issue_continuation_needed";
+    });
+    expect(continuationRetryRun).toBeUndefined();
   });
 
   it("leaves the productive-but-stranded continuation path unchanged under the new classifier", async () => {

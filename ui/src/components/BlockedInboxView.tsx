@@ -1,9 +1,12 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
+import { useNavigate } from "@/lib/router";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { useToastActions } from "../context/ToastContext";
+import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { cn } from "../lib/utils";
 import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceContext } from "../lib/issue-filters";
 import {
@@ -59,6 +62,36 @@ export function BlockedInboxView({
   showUpdatedColumn,
 }: BlockedInboxViewProps) {
   const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
+
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  // Lets the user approve a pending plan/confirmation directly from the Blocked
+  // tab. The server already ships the interaction id on the attention entry
+  // (reason "pending_board_decision"); previously this surface only linked into
+  // the issue thread, so a notification arrived with no way to act on it.
+  const acceptInteraction = useMutation({
+    mutationFn: ({ issueId, interactionId }: { issueId: string; interactionId: string }) =>
+      issuesApi.acceptInteraction(issueId, interactionId, {}),
+    onSuccess: (_interaction, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listBlockedAttention(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(variables.issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+      pushToast({ title: "Approved", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Approve failed",
+        body: err instanceof Error ? err.message : "Unable to approve",
+        tone: "error",
+      });
+    },
+  });
+  const handleApprove = (issueId: string, interactionId: string) => {
+    acceptInteraction.mutate({ issueId, interactionId });
+  };
+  const approvingInteractionId = acceptInteraction.isPending
+    ? acceptInteraction.variables?.interactionId ?? null
+    : null;
 
   const {
     data: issues = [] as Issue[],
@@ -212,6 +245,8 @@ export function BlockedInboxView({
               showStatusColumn={showStatusColumn}
               showIdentifierColumn={showIdentifierColumn}
               showUpdatedColumn={showUpdatedColumn}
+              onApprove={handleApprove}
+              approvingInteractionId={approvingInteractionId}
             />
           ))
         ) : (
@@ -239,6 +274,8 @@ export function BlockedInboxView({
                         showStatusColumn={showStatusColumn}
                         showIdentifierColumn={showIdentifierColumn}
                         showUpdatedColumn={showUpdatedColumn}
+                        onApprove={handleApprove}
+                        approvingInteractionId={approvingInteractionId}
                       />
                     ))}
                   </div>
@@ -260,6 +297,8 @@ interface BlockedInboxRowProps {
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
   showUpdatedColumn: boolean;
+  onApprove?: (issueId: string, interactionId: string) => void;
+  approvingInteractionId?: string | null;
 }
 
 function resolveOwnerName(
@@ -286,12 +325,76 @@ function BlockedInboxRow({
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
+  onApprove,
+  approvingInteractionId,
 }: BlockedInboxRowProps) {
   const { label: ownerName, isAgent } = resolveOwnerName(row, agentNameById, userLabelById);
   const stoppedAge = formatStoppedAge(row.attention.stoppedSinceAt);
+  const navigate = useNavigate();
+
+  const interactionId = row.attention.interactionId;
+  const canApprove = !!interactionId && row.attention.reason === "pending_board_decision";
+  const isApproving = !!interactionId && approvingInteractionId === interactionId;
+
+  // Every stopped row gets an explicit call-to-action so the user can act
+  // without first opening the issue and hunting for the control:
+  //  - board decisions (plan/confirmation): one-click Approve + Review
+  //  - other interactions (questions): "Respond" deep-linked to the card
+  //  - non-interaction blockers: the server-supplied action label
+  //    ("Resolve recovery", "Choose disposition", …) opening the issue that
+  //    actually needs the action (recovery/leaf issue when there is one).
+  const ownIssueRef = row.issue.identifier ?? row.issue.id;
+  const targetIssueRef =
+    row.attention.recoveryIssue?.identifier ??
+    row.attention.leafIssue?.identifier ??
+    ownIssueRef;
+  const respondHref = interactionId
+    ? `${createIssueDetailPath(ownIssueRef)}#interaction-${interactionId}`
+    : createIssueDetailPath(targetIssueRef);
+  const secondaryLabel = interactionId
+    ? canApprove
+      ? "Review"
+      : "Respond"
+    : row.attention.action?.label?.trim() || "Open";
+
+  const actionButtons = (
+    <span className="flex shrink-0 items-center gap-1.5" data-testid="blocked-row-actions">
+      {canApprove ? (
+        <Button
+          type="button"
+          size="sm"
+          className="h-7 shrink-0 bg-green-700 px-2.5 text-xs text-white hover:bg-green-600"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onApprove?.(row.issue.id, interactionId!);
+          }}
+          disabled={isApproving || !onApprove}
+          data-testid="blocked-row-approve"
+        >
+          {isApproving ? "Approving…" : "Approve"}
+        </Button>
+      ) : null}
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="h-7 shrink-0 px-2.5 text-xs"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          navigate(respondHref);
+        }}
+        data-testid="blocked-row-action"
+      >
+        {secondaryLabel}
+      </Button>
+    </span>
+  );
 
   const desktopTrailing = (
     <span className="flex shrink-0 items-center gap-3 text-xs">
+      {actionButtons}
       <span
         className="hidden w-[10.5rem] shrink-0 justify-start sm:inline-flex"
         data-testid="blocked-row-reason-column"
@@ -323,6 +426,7 @@ function BlockedInboxRow({
 
   const mobileMeta = (
     <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+      {actionButtons}
       <span data-testid="blocked-row-age-mobile">{stoppedAge}</span>
       {ownerName ? (
         <>

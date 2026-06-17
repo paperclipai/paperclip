@@ -327,6 +327,44 @@ describe("claude execute", () => {
     }
   });
 
+  it("injects memory context markdown into the Claude prompt after the task context", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-memory-context-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      await execute({
+        runId: "run-memory-context",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {
+          paperclipTaskMarkdown: "## Task Memory\n\nRemember the approved architecture decision.",
+          paperclipMemoryMarkdown:
+            "## Remembered context (advisory)\n- [paperclip/test/runs/prior] (0.91) — prior run insight",
+        },
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8")) as CapturePayload;
+      expect(captured.prompt).toContain("## Remembered context (advisory)");
+      expect(captured.prompt).toContain("prior run insight");
+      const taskContextIndex = captured.prompt.indexOf("## Task Memory");
+      const memoryContextIndex = captured.prompt.indexOf("## Remembered context (advisory)");
+      const heartbeatPromptIndex = captured.prompt.indexOf("Do work.");
+      expect(taskContextIndex).toBeGreaterThanOrEqual(0);
+      expect(memoryContextIndex).toBeGreaterThan(taskContextIndex);
+      expect(heartbeatPromptIndex).toBeGreaterThan(memoryContextIndex);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   /**
    * Regression tests for commandNotes accuracy (Greptile P2).
    *

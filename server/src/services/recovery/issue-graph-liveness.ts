@@ -1,5 +1,5 @@
 import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
-import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
+import { buildIssueGraphLivenessIncidentKey, isRecoveryIssueLike } from "./origins.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
 
@@ -24,6 +24,7 @@ export interface IssueLivenessIssueInput {
   assigneeUserId?: string | null;
   createdByAgentId?: string | null;
   createdByUserId?: string | null;
+  originKind?: string | null;
   executionPolicy?: Record<string, unknown> | null;
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
@@ -401,6 +402,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
+      isRecoveryIssueLike(issue) ||
       hasScheduledMonitor(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
@@ -590,6 +592,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   for (const issue of input.issues) {
+    if (isRecoveryIssueLike(issue)) continue;
+
     if (issue.status === "blocked") {
       if (unresolvedBlockers.has(issue.id)) continue;
       const chainFinding = firstBlockedChainFinding(issue, issue, [issue], new Set());

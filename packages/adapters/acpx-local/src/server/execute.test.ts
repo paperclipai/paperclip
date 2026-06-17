@@ -227,6 +227,55 @@ describe("acpx_local runtime skill isolation", () => {
     expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
   });
 
+  it.skipIf(process.platform === "win32")("keeps managed Codex auth symlink stable across concurrent starts", async () => {
+    const root = await makeTempRoot();
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const paperclipInstanceId = "test-instance";
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      paperclipInstanceId,
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    const sourceAuth = path.join(sourceCodexHome, "auth.json");
+    const managedAuth = path.join(managedCodexHome, "auth.json");
+    await fs.writeFile(sourceAuth, "{\"source\":true}", "utf8");
+
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    try {
+      process.env.CODEX_HOME = sourceCodexHome;
+      process.env.PAPERCLIP_HOME = paperclipHome;
+      process.env.PAPERCLIP_INSTANCE_ID = paperclipInstanceId;
+      await Promise.all(
+        Array.from({ length: 6 }, (_, index) =>
+          runExecutor({
+            agent: "codex",
+            stateDir: path.join(root, `state-${index}`),
+            paperclipRuntimeSkills: [],
+            paperclipSkillSync: { desiredSkills: [] },
+          }),
+        ),
+      );
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+    }
+
+    const authStat = await fs.lstat(managedAuth);
+    expect(authStat.isSymbolicLink()).toBe(true);
+    expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
+  });
+
   it("keeps fresh credential wrapper scripts across ACPX agent changes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

@@ -3345,6 +3345,203 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
+  it("unblocks a source issue when a stranded_issue_recovery is cancelled", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const sourceIssueId = randomUUID();
+    const recoveryIssueId = randomUUID();
+    const independentBlockerId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Source issue",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: recoveryIssueId,
+        companyId,
+        title: "Recover missing next step source",
+        status: "in_progress",
+        priority: "high",
+        originKind: "stranded_issue_recovery",
+        originId: sourceIssueId,
+      },
+      {
+        id: independentBlockerId,
+        companyId,
+        title: "Real blocker",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await svc.update(sourceIssueId, {
+      blockedByIssueIds: [recoveryIssueId, independentBlockerId],
+    });
+
+    await svc.update(recoveryIssueId, { status: "cancelled" });
+
+    await expect(svc.getRelationSummaries(sourceIssueId)).resolves.toMatchObject({
+      blockedBy: [expect.objectContaining({ id: independentBlockerId })],
+    });
+  });
+
+  it("preserves non-cancelled blockers when a closing recovery issue prunes its own block relations", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const sourceIssueId = randomUUID();
+    const recoveryIssueId = randomUUID();
+    const nonRecoveryBlockerId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Source issue",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: recoveryIssueId,
+        companyId,
+        title: "Stranded recovery",
+        status: "in_progress",
+        priority: "high",
+        originKind: "stranded_issue_recovery",
+        originId: sourceIssueId,
+      },
+      {
+        id: nonRecoveryBlockerId,
+        companyId,
+        title: "Genuine blocker",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await svc.update(sourceIssueId, {
+      blockedByIssueIds: [recoveryIssueId, nonRecoveryBlockerId],
+    });
+
+    await svc.update(recoveryIssueId, { status: "cancelled" });
+
+    const relations = await svc.getRelationSummaries(sourceIssueId);
+    expect(relations.blockedBy.map((row: { id: string }) => row.id)).toEqual([nonRecoveryBlockerId]);
+  });
+
+  it("clearCancelledBlockers removes only cancelled blocker relations", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const sourceIssueId = randomUUID();
+    const cancelledBlockerId = randomUUID();
+    const liveBlockerId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Source",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: cancelledBlockerId,
+        companyId,
+        title: "Cancelled blocker",
+        status: "cancelled",
+        priority: "medium",
+        cancelledAt: new Date(),
+      },
+      {
+        id: liveBlockerId,
+        companyId,
+        title: "Live blocker",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await db.insert(issueRelations).values([
+      {
+        companyId,
+        issueId: cancelledBlockerId,
+        relatedIssueId: sourceIssueId,
+        type: "blocks",
+      },
+      {
+        companyId,
+        issueId: liveBlockerId,
+        relatedIssueId: sourceIssueId,
+        type: "blocks",
+      },
+    ]);
+
+    const result = await svc.clearCancelledBlockers(sourceIssueId);
+    expect(result?.removedBlockerIssueIds).toEqual([cancelledBlockerId]);
+
+    const relations = await svc.getRelationSummaries(sourceIssueId);
+    expect(relations.blockedBy.map((row: { id: string }) => row.id)).toEqual([liveBlockerId]);
+  });
+
+  it("clearCancelledBlockers is a no-op when no cancelled blockers exist", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const sourceIssueId = randomUUID();
+    const liveBlockerId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Source",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: liveBlockerId,
+        companyId,
+        title: "Live blocker",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: liveBlockerId,
+      relatedIssueId: sourceIssueId,
+      type: "blocks",
+    });
+
+    const result = await svc.clearCancelledBlockers(sourceIssueId);
+    expect(result?.removedBlockerIssueIds).toEqual([]);
+
+    const relations = await svc.getRelationSummaries(sourceIssueId);
+    expect(relations.blockedBy.map((row: { id: string }) => row.id)).toEqual([liveBlockerId]);
+  });
+
   it("rejects execution when unresolved blockers remain", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
