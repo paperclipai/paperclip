@@ -94,7 +94,7 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/same company/i);
   });
 
-  it("rejects Paperclip runtime env keys backed by secret refs during env normalization", async () => {
+  it("rejects Paperclip runtime env keys backed by non-plain bindings during env normalization", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
 
@@ -107,7 +107,7 @@ describeEmbeddedPostgres("secretService", () => {
         },
       }),
     ).rejects.toThrow(
-      'Environment key "PAPERCLIP_AGENT_ID" is reserved by the Paperclip runtime and cannot be overridden via a secret_ref binding.',
+      'Environment key "PAPERCLIP_AGENT_ID" is reserved by the Paperclip runtime and cannot be overridden via a non-plain binding.',
     );
   });
 

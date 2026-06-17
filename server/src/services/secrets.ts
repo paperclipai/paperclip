@@ -686,9 +686,9 @@ export function secretService(db: Db) {
         continue;
       }
 
-      if (binding.type === "secret_ref" && key.startsWith("PAPERCLIP_")) {
+      if (key.startsWith("PAPERCLIP_")) {
         throw unprocessable(
-          `Environment key "${key}" is reserved by the Paperclip runtime and cannot be overridden via a secret_ref binding.`,
+          `Environment key "${key}" is reserved by the Paperclip runtime and cannot be overridden via a non-plain binding.`,
         );
       }
 
