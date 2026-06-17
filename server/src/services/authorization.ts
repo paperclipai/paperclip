@@ -2,15 +2,21 @@ import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
   companyMemberships,
   heartbeatRuns,
   instanceUserRoles,
   issues,
   principalPermissionGrants,
+  projectMemberships,
   projects,
 } from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, type LowTrustBoundary } from "@paperclipai/shared";
+import type { IssueVisibilityMode, PermissionKey, PrincipalType } from "@paperclipai/shared";
+import {
+  DEFAULT_ISSUE_VISIBILITY_MODE,
+  LOW_TRUST_REVIEW_PRESET,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -80,6 +86,9 @@ export type AuthorizationDecision = {
     | "allow_company_agent"
     | "allow_company_member"
     | "allow_simple_company_member"
+    | "allow_project_member"
+    | "allow_project_grant"
+    | "allow_own_assignment"
     | "allow_manager_chain"
     | "deny_unauthenticated"
     | "deny_company_boundary"
@@ -87,6 +96,7 @@ export type AuthorizationDecision = {
     | "deny_missing_grant"
     | "deny_policy_restricted"
     | "deny_low_trust_boundary"
+    | "deny_project_scope"
     | "deny_scope"
     | "deny_unsupported_action";
   grant?: {
@@ -449,6 +459,48 @@ export function authorizationService(db: Db) {
         ),
       )
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function loadIssueVisibilityMode(companyId: string): Promise<IssueVisibilityMode> {
+    const row = await db
+      .select({ issueVisibilityMode: companies.issueVisibilityMode })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    return row?.issueVisibilityMode === "project_scoped" ? "project_scoped" : DEFAULT_ISSUE_VISIBILITY_MODE;
+  }
+
+  async function userIsActiveProjectMember(
+    companyId: string,
+    userId: string,
+    projectId: string,
+  ): Promise<boolean> {
+    const row = await db
+      .select({ state: projectMemberships.state })
+      .from(projectMemberships)
+      .where(
+        and(
+          eq(projectMemberships.companyId, companyId),
+          eq(projectMemberships.userId, userId),
+          eq(projectMemberships.projectId, projectId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row && row.state !== "left");
+  }
+
+  async function userReadScopeGrantAllows(
+    companyId: string,
+    userId: string,
+    scope: Record<string, unknown> | null | undefined,
+  ): Promise<boolean> {
+    const grant = await findGrant(companyId, "user", userId, "issues:read_scope");
+    if (!grant) return false;
+    return scopeAllows(db, companyId, grant.scope, scope, { requireStructuredScope: true });
+  }
+
+  function boardMembershipRoleIsPrivileged(role: string | null | undefined): boolean {
+    return role === "owner" || role === "admin";
   }
 
   async function decidePrincipalGrant(input: {
@@ -906,6 +958,78 @@ export function authorizationService(db: Db) {
       });
     }
 
+    // Project-scoped issue visibility (opt-in per company). Returns:
+    //   - an AuthorizationDecision when the project_scoped policy applies and
+    //     has reached a verdict for this non-privileged member, or
+    //   - null to mean "policy does not apply; fall through to the existing
+    //     open-mode allow_simple_company_member / allow_company_member path".
+    // Owners/admins (and instance-admin/local, handled earlier) keep full
+    // company visibility, so this only ever scopes operators/viewers.
+    async function decideBoardProjectScopedRead(
+      userId: string,
+      membership: { membershipRole?: string | null } | null,
+    ): Promise<AuthorizationDecision | null> {
+      if (input.action !== "issue:read" && input.action !== "project:read") return null;
+      if (!membership) return null;
+      if (boardMembershipRoleIsPrivileged(membership.membershipRole)) return null;
+
+      const mode = await loadIssueVisibilityMode(companyId);
+      if (mode !== "project_scoped") return null;
+
+      const projectId =
+        input.resource.type === "issue"
+          ? input.resource.projectId ?? null
+          : input.resource.type === "project"
+            ? input.resource.projectId ?? null
+            : null;
+
+      // Never hide a user their own assigned work, regardless of project.
+      if (
+        input.action === "issue:read" &&
+        input.resource.type === "issue" &&
+        input.resource.assigneeUserId &&
+        input.resource.assigneeUserId === userId
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_own_assignment",
+          explanation: "Allowed because the actor is the assignee of this issue.",
+        });
+      }
+
+      // Project-less issues stay visible by default (policy choice; avoids
+      // orphaning issues that are not yet attached to a project).
+      if (!projectId) {
+        return allow({
+          action: input.action,
+          reason: "allow_project_member",
+          explanation: "Allowed because the issue is not attached to a project.",
+        });
+      }
+
+      if (await userIsActiveProjectMember(companyId, userId, projectId)) {
+        return allow({
+          action: input.action,
+          reason: "allow_project_member",
+          explanation: "Allowed by active project membership under project-scoped visibility.",
+        });
+      }
+
+      if (await userReadScopeGrantAllows(companyId, userId, input.scope)) {
+        return allow({
+          action: input.action,
+          reason: "allow_project_grant",
+          explanation: "Allowed by explicit issues:read_scope grant under project-scoped visibility.",
+        });
+      }
+
+      return deny({
+        action: input.action,
+        reason: "deny_project_scope",
+        explanation: "Project-scoped visibility hides issues outside the actor's projects.",
+      });
+    }
+
     if (input.actor.type === "none") {
       return deny({
         action: input.action,
@@ -950,6 +1074,8 @@ export function authorizationService(db: Db) {
             input.action === "issue:read" ||
             input.action === "project:read"
           ) {
+            const scopedDecision = await decideBoardProjectScopedRead(input.actor.userId, membership);
+            if (scopedDecision) return scopedDecision;
             return allow({
               action: input.action,
               reason: "allow_company_member",
@@ -1008,6 +1134,10 @@ export function authorizationService(db: Db) {
           const requiresNonViewer =
             input.action === "runtime:manage" || input.action === "secrets:read";
           if (membership && (!requiresNonViewer || membership.membershipRole !== "viewer")) {
+            // Opt-in project-scoped visibility narrows issue/project reads for
+            // non-privileged members before the open-mode default allow.
+            const scopedDecision = await decideBoardProjectScopedRead(input.actor.userId, membership);
+            if (scopedDecision) return scopedDecision;
             return allow({
               action: input.action,
               reason: "allow_simple_company_member",

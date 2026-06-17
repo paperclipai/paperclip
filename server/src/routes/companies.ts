@@ -15,6 +15,7 @@ import {
   feedbackVoteValueSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
+  updateIssueVisibilityModeSchema,
 } from "@paperclipai/shared";
 import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -66,6 +67,21 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     assertCompanyAccess(req, target.companyId);
+  }
+
+  async function assertCanManageCompanySettings(req: Request, companyId: string) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const userId = req.actor.userId ?? null;
+    const membership = userId ? await access.getMembership(companyId, "user", userId) : null;
+    if (
+      !membership ||
+      membership.status !== "active" ||
+      (membership.membershipRole !== "owner" && membership.membershipRole !== "admin")
+    ) {
+      throw forbidden("Only company owners or admins may change company settings");
+    }
   }
 
   async function assertCanUpdateBranding(req: Request, companyId: string) {
@@ -443,6 +459,42 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     });
     res.json(company);
   });
+
+  router.patch(
+    "/:companyId/issue-visibility",
+    validate(updateIssueVisibilityModeSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanManageCompanySettings(req, companyId);
+      const existingCompany = await svc.getById(companyId);
+      if (!existingCompany) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      const { issueVisibilityMode } = req.body as { issueVisibilityMode: "open" | "project_scoped" };
+      const actor = getActorInfo(req);
+      const company = await svc.update(companyId, { issueVisibilityMode }, actor);
+      if (!company) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.issue_visibility_updated",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          from: existingCompany.issueVisibilityMode ?? "open",
+          to: issueVisibilityMode,
+        },
+      });
+      res.json(company);
+    },
+  );
 
   router.post("/:companyId/archive", async (req, res) => {
     assertBoard(req);

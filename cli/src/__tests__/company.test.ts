@@ -46,6 +46,7 @@ function company(overrides: Record<string, unknown> = {}) {
     description: null,
     status: "active",
     issuePrefix: "PAP",
+    issueVisibilityMode: "open",
     issueCounter: 1,
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
