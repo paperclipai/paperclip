@@ -9,6 +9,8 @@ const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const managerAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const ceoAgentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -411,13 +413,17 @@ describe("agent issue mutation checkout ownership", () => {
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockImplementation(async (id: string) => {
-      if (id === ownerAgentId) return makeAgent(ownerAgentId);
+      if (id === ownerAgentId) return makeAgent(ownerAgentId, { reportsTo: managerAgentId });
       if (id === peerAgentId) return makeAgent(peerAgentId);
+      if (id === managerAgentId) return makeAgent(managerAgentId, { role: "engineering_manager", reportsTo: ceoAgentId });
+      if (id === ceoAgentId) return makeAgent(ceoAgentId, { role: "ceo" });
       return null;
     });
     mockAgentService.list.mockResolvedValue([
-      makeAgent(ownerAgentId),
+      makeAgent(ownerAgentId, { reportsTo: managerAgentId }),
       makeAgent(peerAgentId),
+      makeAgent(managerAgentId, { role: "engineering_manager", reportsTo: ceoAgentId }),
+      makeAgent(ceoAgentId, { role: "ceo" }),
     ]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
     mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
@@ -1146,5 +1152,112 @@ describe("agent issue mutation checkout ownership", () => {
       }),
     }));
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a direct manager to PATCH status on a direct report's issue", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string; actor?: Record<string, unknown>; resource?: Record<string, unknown> }) => ({
+      allowed:
+        input.action === "issue:mutate" ||
+        input.action === "issue:read" ||
+        input.action === "company_scope:read" ||
+        input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts" ? "allow_manager_chain" : "allow_explicit_grant",
+      explanation: "Allowed by test default.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+    mockIssueService.assertCheckoutOwner.mockRejectedValue(new Error("Not the checkout owner"));
+
+    const app = await createApp({
+      type: "agent",
+      agentId: managerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "66666666-6666-4666-8666-666666666666",
+    });
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("allows a CEO (2+ levels up) to PATCH status on a transitive report's issue", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "issue:mutate" ||
+        input.action === "issue:read" ||
+        input.action === "company_scope:read" ||
+        input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts" ? "allow_manager_chain" : "allow_explicit_grant",
+      explanation: "Allowed by test default.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+    mockIssueService.assertCheckoutOwner.mockRejectedValue(new Error("Not the checkout owner"));
+
+    const app = await createApp({
+      type: "agent",
+      agentId: ceoAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "66666666-6666-4666-8666-666666666666",
+    });
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("denies a non-manager agent PATCH on another agent's issue when authz denies", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
+      if (input.action === "issue:mutate") {
+        return {
+          allowed: false,
+          action: input.action,
+          reason: "deny_missing_grant",
+          explanation: "No agent permission mapping exists for issue:mutate.",
+        };
+      }
+      return {
+        allowed: input.action === "issue:read" || input.action === "company_scope:read",
+        action: input.action,
+        reason: input.action === "issue:read" || input.action === "company_scope:read" ? "allow_explicit_grant" : "deny_missing_grant",
+        explanation: "Test default.",
+      };
+    });
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+
+    const app = await createApp(peerActor());
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a manager to comment on a direct report's issue", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "issue:mutate" ||
+        input.action === "issue:read" ||
+        input.action === "company_scope:read" ||
+        input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts" || input.action === "issue:mutate" ? "allow_manager_chain" : "allow_explicit_grant",
+      explanation: "Allowed by test default.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+    mockIssueService.assertCheckoutOwner.mockRejectedValue(new Error("Not the checkout owner"));
+
+    const app = await createApp({
+      type: "agent",
+      agentId: managerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "66666666-6666-4666-8666-666666666666",
+    });
+    const res = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Checking in on progress" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
   });
 });

@@ -892,6 +892,80 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(denied.allowed).toBe(false);
   });
 
+  it("allows direct manager to mutate a direct report's issue", async () => {
+    const company = await createCompany(db, "ManagerMutate");
+    const manager = await createAgent(db, company.id, { role: "engineering_manager" });
+    const report = await createAgent(db, company.id, { role: "engineer", reportsTo: manager.id });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: report.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: manager.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: { type: "issue", companyId: company.id, issueId: issue.id, assigneeAgentId: report.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+  });
+
+  it("allows transitive manager (CEO) to mutate a report's report's issue", async () => {
+    const company = await createCompany(db, "CEOMutate");
+    const ceo = await createAgent(db, company.id, { role: "ceo" });
+    const manager = await createAgent(db, company.id, { role: "engineering_manager", reportsTo: ceo.id });
+    const engineer = await createAgent(db, company.id, { role: "engineer", reportsTo: manager.id });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: engineer.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: ceo.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: { type: "issue", companyId: company.id, issueId: issue.id, assigneeAgentId: engineer.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+  });
+
+  it("denies non-manager agent from mutating another agent's issue", async () => {
+    const company = await createCompany(db, "PeerDeny");
+    const agentA = await createAgent(db, company.id, { role: "engineer" });
+    const agentB = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: agentB.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: agentA.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: { type: "issue", companyId: company.id, issueId: issue.id, assigneeAgentId: agentB.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: false });
+  });
+
+  it("allows self-mutation on own issue", async () => {
+    const company = await createCompany(db, "SelfMutate");
+    const agent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: agent.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: agent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: { type: "issue", companyId: company.id, issueId: issue.id, assigneeAgentId: agent.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_self" });
+  });
+
+  it("allows mutation on unassigned issue", async () => {
+    const company = await createCompany(db, "UnassignedMutate");
+    const agent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id);
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: agent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: { type: "issue", companyId: company.id, issueId: issue.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_company_agent" });
+  });
+
   it("preserves unscoped tasks:assign compatibility for assignment decisions", async () => {
     const company = await createCompany(db, "BroadAssign");
     const actorAgent = await createAgent(db, company.id);
