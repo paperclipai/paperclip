@@ -25,6 +25,14 @@ import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
+const CLAUDE_STRICT_MCP_CONFIG_ARG = "--strict-mcp-config";
+
+function appendClaudeStrictMcpConfigArg(args: string[], extraArgs: string[], strictMcpConfig: boolean): void {
+  if (!strictMcpConfig) return;
+  if (args.includes(CLAUDE_STRICT_MCP_CONFIG_ARG) || extraArgs.includes(CLAUDE_STRICT_MCP_CONFIG_ARG)) return;
+  args.push(CLAUDE_STRICT_MCP_CONFIG_ARG);
+}
+
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
   if (checks.some((check) => check.level === "warn")) return "warn";
@@ -195,6 +203,7 @@ export async function testEnvironment(
       const chrome = asBoolean(config.chrome, false);
       const maxTurns = asNumber(config.maxTurnsPerRun, 0);
       const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+      const strictMcpConfig = asBoolean(config.strictMcpConfig, true);
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -210,6 +219,7 @@ export async function testEnvironment(
       }
       if (effort) args.push("--effort", effort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
+      appendClaudeStrictMcpConfigArg(args, extraArgs, strictMcpConfig);
       if (extraArgs.length > 0) args.push(...extraArgs);
 
       // Sandbox bridges still add lease warmup and transport overhead, but

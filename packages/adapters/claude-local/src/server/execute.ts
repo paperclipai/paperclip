@@ -65,6 +65,7 @@ import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const CLAUDE_STRICT_MCP_CONFIG_ARG = "--strict-mcp-config";
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -130,6 +131,12 @@ function isBedrockAuth(env: Record<string, string>): boolean {
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
   if (isBedrockAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+}
+
+function appendClaudeStrictMcpConfigArg(args: string[], extraArgs: string[], strictMcpConfig: boolean): void {
+  if (!strictMcpConfig) return;
+  if (args.includes(CLAUDE_STRICT_MCP_CONFIG_ARG) || extraArgs.includes(CLAUDE_STRICT_MCP_CONFIG_ARG)) return;
+  args.push(CLAUDE_STRICT_MCP_CONFIG_ARG);
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -379,6 +386,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  const strictMcpConfig = asBoolean(config.strictMcpConfig, true);
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -710,6 +718,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    appendClaudeStrictMcpConfigArg(args, extraArgs, strictMcpConfig);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };

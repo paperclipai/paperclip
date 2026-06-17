@@ -296,6 +296,61 @@ describe("claude execute", () => {
     }
   });
 
+  it("passes --strict-mcp-config by default to isolate account-level MCP connectors", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-strict-mcp-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      await execute({
+        runId: "run-strict-mcp",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      expect(captured.argv).toContain("--strict-mcp-config");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows operators to opt out of strict MCP config", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-loose-mcp-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      await execute({
+        runId: "run-loose-mcp",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+          strictMcpConfig: false,
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      expect(captured.argv).not.toContain("--strict-mcp-config");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("omits --append-system-prompt-file on a resumed session even when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);

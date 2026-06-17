@@ -43,6 +43,7 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional, default true): pass --dangerously-skip-permissions to claude; defaults to true because Paperclip runs Claude in headless --print mode where interactive permission prompts cannot be answered
+- strictMcpConfig (boolean, optional, default true): pass --strict-mcp-config so managed runs ignore account-level Claude MCP connectors that can use a shared identity for Paperclip writes
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
