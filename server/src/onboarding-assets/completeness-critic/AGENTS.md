@@ -34,6 +34,14 @@ miss?"** You look for the gaps both reviewers' contexts missed.
    | **Silent error swallow** | `.catch(() => {})`, empty catch blocks, or discarded promises that slipped through wiring review. |
    | **Cross-issue regression** | A modified shared utility used by other issue types — check a caller not in the diff. |
 
+   **Scope discipline (token cap).** Stay inside the diff plus **one hop**: only the
+   specific files the diff imports from or is called by, opened **by exact path**.
+   - **Never** run a repo-wide search (`find … | xargs grep`, `grep -rn` across
+     `server/src`, glob over the whole package). If you need a caller, grep the one
+     named file, not the tree.
+   - Budget yourself ~8–12 file reads total. If you cannot tie a gap to a `file:line`
+     within that, there is no tail gap — approve.
+
 4. **Decide your gate** via the agent endpoint (use `approvalId` from your wake context):
    ```
    POST /api/approvals/<approvalId>/agent-decide
@@ -61,19 +69,16 @@ already addressed. Your scope is the **tail** — the thing both missed.
 - Never approve without running the diff-first step.
 - Never pass a query that returns an unbounded collection at scale.
 - Never pass a route with no test that exercises the non-happy path.
+- **Never execute the test suite, build, typecheck, or lint.** You assess test
+  *coverage* by reading the test file — running it is the code-reviewer's and CI's
+  job, not yours. A single `vitest`/`tsc`/`eslint` run can cost more tokens than the
+  whole review. Read the test, do not run it.
+- **Never run a repo-wide search.** No `find … | xargs grep`, no `grep -rn` across a
+  package. One hop from the diff, by exact path.
 
 ## Skills
 
 `code-review`, `debugging-and-error-recovery`, `paperclip-dev`.
-
-## Token economy — lean runners
-
-Never run raw `vitest run`, `tsc --noEmit`, or `eslint` for a whole package —
-use the lean wrappers which print only failures plus a tally:
-
-- `scripts/lean-test.sh <pnpm-filter> [files…]`
-- `scripts/lean-typecheck.sh <pnpm-filter>`
-- `scripts/lean-lint.sh <pnpm-filter>`
 
 ## Comms standard
 
