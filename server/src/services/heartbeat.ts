@@ -254,6 +254,15 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
+const AGENT_ERROR_FAIL_THRESHOLD_DEFAULT = 3;
+const AGENT_ERROR_FAIL_THRESHOLD_CAP = 100;
+function resolveAgentErrorFailThreshold(): number {
+  const raw = process.env.PAPERCLIP_AGENT_ERROR_FAIL_THRESHOLD;
+  if (!raw) return AGENT_ERROR_FAIL_THRESHOLD_DEFAULT;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return AGENT_ERROR_FAIL_THRESHOLD_DEFAULT;
+  return Math.min(AGENT_ERROR_FAIL_THRESHOLD_CAP, parsed);
+}
 // Keep this in sync with local adapters that require a git workspace before launch.
 const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "acpx_local",
@@ -7145,6 +7154,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    failureContext?: {
+      errorCode?: string | null;
+      errorMessage?: string | null;
+      runId?: string | null;
+    },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -7156,18 +7170,76 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
-      runningCount > 0
-        ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
-          ? "idle"
-          : "error";
+    const isFailureOutcome = outcome === "failed" || outcome === "timed_out";
+    const failureErrorCode = readNonEmptyString(failureContext?.errorCode);
+    const validationBypass = failureErrorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
+    const threshold = resolveAgentErrorFailThreshold();
+
+    const priorMetadata =
+      existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
+        ? (existing.metadata as Record<string, unknown>)
+        : null;
+    const priorFailureCount = Math.max(
+      0,
+      Number.isFinite(existing.consecutiveFailureCount as number)
+        ? Number(existing.consecutiveFailureCount)
+        : 0,
+    );
+
+    let nextFailureCount = priorFailureCount;
+    if (isFailureOutcome) {
+      nextFailureCount = priorFailureCount + 1;
+    } else if (outcome === "succeeded") {
+      nextFailureCount = 0;
+    }
+    // cancelled: nextFailureCount stays at priorFailureCount.
+
+    let nextStatus: "running" | "idle" | "error";
+    if (runningCount > 0) {
+      nextStatus = "running";
+    } else if (outcome === "succeeded" || outcome === "cancelled") {
+      nextStatus = "idle";
+    } else if (validationBypass) {
+      nextStatus = "error";
+    } else if (nextFailureCount >= threshold) {
+      nextStatus = "error";
+    } else {
+      nextStatus = "idle";
+    }
+
+    // The counter we will actually persist. When other runs are still in flight we keep
+    // the prior count so the bump is only observed once the agent settles — metadata and
+    // the live event must agree with the stored column value.
+    const storedFailureCount = nextStatus === "running" ? priorFailureCount : nextFailureCount;
+    const softFail = isFailureOutcome && !validationBypass && nextStatus === "idle";
+
+    let nextMetadata: Record<string, unknown> | null = priorMetadata;
+    if (isFailureOutcome) {
+      const lastFailure: Record<string, unknown> = {
+        outcome,
+        errorCode: failureErrorCode ?? null,
+        errorMessage: readNonEmptyString(failureContext?.errorMessage) ?? null,
+        runId: readNonEmptyString(failureContext?.runId) ?? null,
+        at: new Date().toISOString(),
+        consecutiveFailures: storedFailureCount,
+      };
+      nextMetadata = { ...(priorMetadata ?? {}), lastFailure };
+    } else if (outcome === "succeeded") {
+      if (priorMetadata && Object.prototype.hasOwnProperty.call(priorMetadata, "lastFailure")) {
+        const copy: Record<string, unknown> = { ...priorMetadata };
+        delete copy.lastFailure;
+        nextMetadata = copy;
+      }
+    }
+    // cancelled: preserve metadata as-is.
 
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
         lastHeartbeatAt: new Date(),
+        consecutiveFailureCount: storedFailureCount,
+        metadata: nextMetadata,
         updatedAt: new Date(),
       })
       .where(eq(agents.id, agentId))
@@ -7190,6 +7262,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? new Date(updated.lastHeartbeatAt).toISOString()
             : null,
           outcome,
+          ...(isFailureOutcome
+            ? {
+              consecutiveFailures: storedFailureCount,
+              threshold,
+              softFail,
+              ...(validationBypass ? { workspaceValidationFailure: true } : {}),
+            }
+            : {}),
         },
       });
     }
@@ -7529,7 +7609,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      await finalizeAgentStatus(run.agentId, "failed", {
+        errorCode: "process_lost",
+        errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        runId: run.id,
+      });
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -8778,7 +8862,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const runningAgent = await db
         .update(agents)
-        .set({ status: "running", updatedAt: new Date() })
+        .set({
+          status: "running",
+          consecutiveFailureCount: 0,
+          // Strip any soft-fail `lastFailure` marker from the prior cycle so the dashboard
+          // doesn't render a stale failure card alongside a healthy run.
+          metadata: sql`${agents.metadata} - 'lastFailure'`,
+          updatedAt: new Date(),
+        })
         .where(eq(agents.id, agent.id))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -9452,7 +9543,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", {
+        errorCode: failureErrorCode,
+        errorMessage: message,
+        runId: failedRun?.id ?? run.id,
+      });
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -9497,7 +9592,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
-          await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+          await finalizeAgentStatus(run.agentId, "failed", {
+            errorCode: "setup_failed",
+            errorMessage: outerErr instanceof Error ? outerErr.message : null,
+            runId,
+          }).catch(() => undefined);
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
           await releaseEnvironmentLeasesForRun({
@@ -11569,5 +11668,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .limit(1);
       return run ?? null;
     },
+
+    __test_finalizeAgentStatus: (
+      agentId: string,
+      outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+      failureContext?: { errorCode?: string | null; errorMessage?: string | null; runId?: string | null },
+    ) => finalizeAgentStatus(agentId, outcome, failureContext),
   };
 }
+
+export { WORKSPACE_VALIDATION_FAILURE_CODE };

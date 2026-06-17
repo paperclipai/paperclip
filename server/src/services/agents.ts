@@ -537,12 +537,26 @@ export function agentService(db: Db) {
         throw conflict("Only agents in error status can have their error cleared");
       }
 
+      const existingMetadata =
+        existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
+          ? (existing.metadata as Record<string, unknown>)
+          : null;
+      const nextMetadata = existingMetadata
+        ? (() => {
+          const copy: Record<string, unknown> = { ...existingMetadata };
+          delete copy.lastFailure;
+          return copy;
+        })()
+        : null;
+
       const updated = await db
         .update(agents)
         .set({
           status: "idle",
           pauseReason: null,
           pausedAt: null,
+          consecutiveFailureCount: 0,
+          metadata: nextMetadata,
           updatedAt: new Date(),
         })
         .where(and(eq(agents.id, id), eq(agents.status, "error")))
