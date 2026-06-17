@@ -186,7 +186,7 @@ export function resolveDatabaseTarget(): ResolvedDatabaseTarget {
   const envPath = resolvePaperclipEnvPath(configPath);
   const envEntries = readEnvEntries(envPath);
 
-  const envUrl = process.env.DATABASE_URL?.trim();
+  const envUrl = (process.env.PAPERCLIP_DATABASE_URL ?? process.env.DATABASE_URL)?.trim();
   if (envUrl) {
     const envSource = process.env.PAPERCLIP_DATABASE_URL ? "PAPERCLIP_DATABASE_URL" : "DATABASE_URL";
     if (envSource === "DATABASE_URL") {
