@@ -3,6 +3,7 @@ export interface TelemetryState {
   salt: string;
   createdAt: string;
   firstSeenVersion: string;
+  seenEventNames?: string[];
 }
 
 export interface TelemetryConfig {
@@ -12,11 +13,13 @@ export interface TelemetryConfig {
   schemaVersion?: string;
 }
 
+export type TelemetryDimensions = Record<string, string | number | boolean>;
+
 /** Per-event object inside the backend envelope */
 export interface TelemetryEvent {
   name: string;
   occurredAt: string;
-  dimensions: Record<string, string | number | boolean>;
+  dimensions: TelemetryDimensions;
 }
 
 /** Full payload sent to the backend ingest endpoint */
@@ -38,7 +41,17 @@ export type TelemetryEventName =
   | "goal.created"
   | "agent.created"
   | "skill.imported"
+  | "skill.invoked"
+  | "task.created"
+  | "task.status_changed"
+  | "task.completed"
+  | "task.blocked"
+  | "task.reopened"
+  | "interaction.created"
+  | "interaction.resolved"
+  | "product.first_task_completed"
   | "agent.first_heartbeat"
   | "agent.task_completed"
   | "error.handler_crash"
-  | `plugin.${string}`;
+  | `plugin.${string}`
+  | `ui.${string}`;
