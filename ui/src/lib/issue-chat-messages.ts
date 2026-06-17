@@ -538,6 +538,17 @@ export interface SegmentTiming {
   endMs: number;
 }
 
+export function isCoTSegmentActive(args: {
+  isMessageRunning: boolean;
+  segmentIndex: number;
+  segmentCount: number;
+}) {
+  const { isMessageRunning, segmentIndex, segmentCount } = args;
+  if (!isMessageRunning) return false;
+  if (segmentCount <= 0 || segmentIndex < 0) return true;
+  return segmentIndex === segmentCount - 1;
+}
+
 function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): SegmentTiming[] {
   const timings: SegmentTiming[] = [];
   let inSegment = false;

@@ -481,6 +481,68 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("cycles the composer work mode with meta-period", () => {
+    const root = createRoot(container);
+    const onWorkModeChange = vi.fn();
+
+    flushAct(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueWorkMode="standard"
+            onWorkModeChange={onWorkModeChange}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector(
+      'textarea[aria-label="Issue chat editor"]',
+    ) as HTMLTextAreaElement | null;
+    const composer = container.querySelector('[data-testid="issue-chat-composer"]');
+    const chip = container.querySelector(
+      '[data-testid="issue-chat-composer-work-mode-toggle"]',
+    );
+    expect(editor).not.toBeNull();
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
+    expect(chip?.textContent).toContain("Agent mode");
+
+    flushAct(() => {
+      editor?.dispatchEvent(new KeyboardEvent("keydown", {
+        key: ".",
+        code: "Period",
+        metaKey: true,
+        bubbles: true,
+      }));
+    });
+
+    expect(onWorkModeChange).not.toHaveBeenCalled();
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("planning");
+    expect(chip?.textContent).toContain("Plan mode");
+
+    flushAct(() => {
+      editor?.dispatchEvent(new KeyboardEvent("keydown", {
+        key: ".",
+        code: "Period",
+        metaKey: true,
+        bubbles: true,
+      }));
+    });
+
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
+    expect(chip?.textContent).toContain("Agent mode");
+
+    flushAct(() => {
+      root.unmount();
+    });
+  });
+
   it("virtualizes long merged threads so only a windowed slice mounts", () => {
     const root = createRoot(container);
     const totalMergedRows =
