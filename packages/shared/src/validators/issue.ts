@@ -614,12 +614,25 @@ export const suggestTasksResultCreatedTaskSchema = z.object({
   parentIdentifier: z.string().trim().min(1).nullable().optional(),
 });
 
-export const suggestTasksResultSchema = z.object({
+const terminalIssueInteractionResultSchema = z.object({
   version: z.literal(1),
+  outcome: z.literal("terminal_issue"),
+  terminalStatus: z.enum(["done", "cancelled"]),
+});
+
+const suggestTasksResolvedResultSchema = z.object({
+  version: z.literal(1),
+  outcome: z.undefined().optional(),
+  terminalStatus: z.undefined().optional(),
   createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
   skippedClientKeys: z.array(z.string().trim().min(1).max(120)).max(50).optional(),
   rejectionReason: z.string().trim().max(4000).nullable().optional(),
 });
+
+export const suggestTasksResultSchema = z.union([
+  terminalIssueInteractionResultSchema,
+  suggestTasksResolvedResultSchema,
+]);
 
 export const askUserQuestionsQuestionOptionSchema = z.object({
   id: z.string().trim().min(1).max(120),
@@ -673,13 +686,18 @@ export const askUserQuestionsAnswerSchema = z.object({
   otherText: multilineTextSchema.pipe(z.string().trim().max(4000)).nullable().optional(),
 });
 
-export const askUserQuestionsResultSchema = z.object({
+const askUserQuestionsAnsweredResultSchema = z.object({
   version: z.literal(1),
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
+
+export const askUserQuestionsResultSchema = z.union([
+  terminalIssueInteractionResultSchema,
+  askUserQuestionsAnsweredResultSchema,
+]);
 
 const requestConfirmationHrefSchema = z.string().trim().min(1).max(2000).refine((value) => {
   if (value.startsWith("#")) return true;
@@ -827,7 +845,7 @@ export const requestCheckboxConfirmationPayloadSchema = z.object({
   }
 });
 
-export const requestConfirmationResultSchema = z.object({
+const requestConfirmationResolvedResultSchema = z.object({
   version: z.literal(1),
   outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
   reason: z.string().trim().max(4000).nullable().optional(),
@@ -835,7 +853,12 @@ export const requestConfirmationResultSchema = z.object({
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
 });
 
-export const requestCheckboxConfirmationResultSchema = requestConfirmationResultSchema.extend({
+export const requestConfirmationResultSchema = z.union([
+  terminalIssueInteractionResultSchema,
+  requestConfirmationResolvedResultSchema,
+]);
+
+const requestCheckboxConfirmationResolvedResultSchema = requestConfirmationResolvedResultSchema.extend({
   selectedOptionIds: z.array(z.string().trim().min(1).max(120))
     .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT)
     .optional(),
@@ -853,6 +876,11 @@ export const requestCheckboxConfirmationResultSchema = requestConfirmationResult
     seenOptionIds.add(optionId);
   }
 });
+
+export const requestCheckboxConfirmationResultSchema = z.union([
+  terminalIssueInteractionResultSchema,
+  requestCheckboxConfirmationResolvedResultSchema,
+]);
 
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   z.object({

@@ -82,6 +82,13 @@ type RequestConfirmationLikeInteraction =
   | RequestConfirmationInteraction
   | RequestCheckboxConfirmationInteraction;
 
+const TERMINAL_CLEANUP_INTERACTION_KINDS = [
+  "request_confirmation",
+  "request_checkbox_confirmation",
+  "ask_user_questions",
+  "suggest_tasks",
+] as const;
+
 function isRequestConfirmationLikeKind(kind: string): kind is RequestConfirmationLikeKind {
   return (REQUEST_CONFIRMATION_INTERACTION_KINDS as readonly string[]).includes(kind);
 }
@@ -163,7 +170,7 @@ async function touchIssue(db: IssueTouchDb, issueId: string) {
     .where(eq(issues.id, issueId));
 }
 
-function isTerminalIssueStatus(status: string) {
+function isTerminalIssueStatus(status: string): status is "done" | "cancelled" {
   return status === "done" || status === "cancelled";
 }
 
@@ -1261,6 +1268,41 @@ export function issueThreadInteractionService(db: Db) {
         await touchIssue(db, issue.id);
       }
       return expired;
+    },
+
+    expirePendingInteractionsForTerminalIssue: async (
+      issue: { id: string; companyId: string; status: string },
+      actor: InteractionActor,
+    ) => {
+      if (!isTerminalIssueStatus(issue.status)) return [];
+
+      const now = new Date();
+      const updatedRows = await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "expired",
+          result: {
+            version: 1,
+            outcome: "terminal_issue",
+            terminalStatus: issue.status,
+          },
+          resolvedByAgentId: actor.agentId ?? null,
+          resolvedByUserId: actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          inArray(issueThreadInteractions.kind, [...TERMINAL_CLEANUP_INTERACTION_KINDS]),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+
+      if (updatedRows.length > 0) {
+        await touchIssue(db, issue.id);
+      }
+      return updatedRows.map(hydrateInteraction);
     },
 
     expireStaleRequestConfirmationsForIssueDocument: async (

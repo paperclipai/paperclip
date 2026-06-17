@@ -142,6 +142,7 @@ function registerModuleMocks() {
     issueReferenceService: () => mockIssueReferenceService,
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => ({
+      expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
       expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
       expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
     }),

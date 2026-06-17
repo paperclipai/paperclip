@@ -17,8 +17,20 @@ const mockInteractionService = vi.hoisted(() => ({
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
+  expirePendingInteractionsForTerminalIssue: vi.fn(),
   answerQuestions: vi.fn(),
   cancelQuestions: vi.fn(),
+}));
+
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(async () => true),
+  decide: vi.fn(async (input: { action?: string }) => ({
+    allowed: true,
+    action: input.action,
+    reason: "allow_explicit_grant",
+    explanation: "Allowed by test grant.",
+  })),
+  hasPermission: vi.fn(async () => true),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -54,14 +66,9 @@ function registerModuleMocks() {
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
     }),
     accessService: () => ({
-      canUser: vi.fn(async () => true),
-      decide: vi.fn(async (input: { action?: string }) => ({
-        allowed: true,
-        action: input.action,
-        reason: "allow_explicit_grant",
-        explanation: "Allowed by test grant.",
-      })),
-      hasPermission: vi.fn(async () => true),
+      canUser: mockAccessService.canUser,
+      decide: mockAccessService.decide,
+      hasPermission: mockAccessService.hasPermission,
     }),
     agentService: () => ({
       getById: vi.fn(async () => ({ id: CREATED_AGENT_ID, companyId: "company-1", permissions: null })),
@@ -174,9 +181,16 @@ describe.sequential("issue thread interaction routes", () => {
     vi.doUnmock("../services/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant.",
+    }));
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
+    mockInteractionService.expirePendingInteractionsForTerminalIssue.mockResolvedValue([]);
     mockInteractionService.create.mockResolvedValue({
       id: "interaction-1",
       companyId: "company-1",
@@ -380,6 +394,77 @@ describe.sequential("issue thread interaction routes", () => {
           interactionKind: "suggest_tasks",
         }),
       }),
+    );
+  });
+
+  it("expires pending interactions on terminal issues before listing them", async () => {
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "done" }));
+    mockInteractionService.expirePendingInteractionsForTerminalIssue.mockResolvedValueOnce([
+      {
+        id: "interaction-terminal",
+        kind: "ask_user_questions",
+        status: "expired",
+        result: {
+          version: 1,
+          outcome: "terminal_issue",
+          terminalStatus: "done",
+        },
+      },
+    ]);
+    mockInteractionService.listForIssue.mockResolvedValue([
+      { id: "interaction-terminal", kind: "ask_user_questions", status: "expired" },
+    ]);
+    const app = await createApp();
+
+    const listRes = await request(app).get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions");
+
+    expect(listRes.status).toBe(200);
+    expect(mockInteractionService.expirePendingInteractionsForTerminalIssue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        status: "done",
+      }),
+      {
+        agentId: null,
+        userId: "local-board",
+      },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_expired",
+        details: expect.objectContaining({
+          interactionId: "interaction-terminal",
+          interactionKind: "ask_user_questions",
+          source: "issue.interactions.catchup_terminal_issue",
+          result: expect.objectContaining({
+            outcome: "terminal_issue",
+            terminalStatus: "done",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("does not run interaction catch-up when issue read access is denied", async () => {
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "done" }));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "issue:read",
+      action: input.action,
+      reason: "deny_missing_grant",
+      explanation: "Denied by test grant.",
+    }));
+    const app = await createApp();
+
+    const listRes = await request(app).get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions");
+
+    expect(listRes.status).toBe(403);
+    expect(mockInteractionService.expirePendingInteractionsForTerminalIssue).not.toHaveBeenCalled();
+    expect(mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments).not.toHaveBeenCalled();
+    expect(mockInteractionService.listForIssue).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.thread_interaction_expired" }),
     );
   });
 
