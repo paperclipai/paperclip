@@ -53,11 +53,26 @@ export function stripMarkdownCode(markdown: string): string {
           closingFenceMatch.marker === fenceMatch.marker &&
           closingFenceMatch.length >= fenceMatch.length
         ) {
-          while (markdown[index] === " ") index += 1;
-          index += closingFenceMatch.length;
-          while (index < markdown.length && markdown[index] !== "\n") index += 1;
-          if (index < markdown.length) index += 1;
-          break;
+          // A closing fence may carry only trailing whitespace after the
+          // fence run (CommonMark). A line like ```` ```not-close ```` keeps
+          // the block open; treating it as a close would re-enable mention
+          // parsing for content that should stay scrubbed.
+          let cursor = index;
+          while (markdown[cursor] === " ") cursor += 1;
+          cursor += closingFenceMatch.length;
+          while (
+            cursor < markdown.length &&
+            (markdown[cursor] === " " || markdown[cursor] === "\t")
+          ) {
+            cursor += 1;
+          }
+          const isBareClose =
+            cursor >= markdown.length || markdown[cursor] === "\n";
+          if (isBareClose) {
+            index = cursor;
+            if (index < markdown.length) index += 1;
+            break;
+          }
         }
         index += 1;
       }

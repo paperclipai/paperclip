@@ -4100,7 +4100,7 @@ describeEmbeddedPostgres("issueService.findMentionedAgents", () => {
     ]);
 
     const body = [
-      "Please take this next, @Seneschal.",
+      `Please take this next, [@Seneschal](${buildAgentMentionHref(liveAgentId)}).`,
       "",
       `\`[@Castellan](${buildAgentMentionHref(codeAgentId)})\` should stay literal.`,
       "",
@@ -4108,6 +4108,11 @@ describeEmbeddedPostgres("issueService.findMentionedAgents", () => {
       "@Castellan",
       `[@Castellan](${buildAgentMentionHref(codeAgentId)})`,
       "```",
+      "",
+      "   ~~~md",
+      "@Castellan",
+      `[@Castellan](${buildAgentMentionHref(codeAgentId)})`,
+      "   ~~~",
     ].join("\n");
 
     expect(await svc.findMentionedAgents(companyId, body)).toEqual([liveAgentId]);

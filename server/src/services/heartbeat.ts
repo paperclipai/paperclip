@@ -102,7 +102,7 @@ import {
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
-import { issueService } from "./issues.js";
+import { issueService, normalizeAgentMentionToken } from "./issues.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -184,7 +184,7 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { extractSkillMentionIds, isUuidLike, stripMarkdownCode } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
@@ -6955,6 +6955,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         details: Record<string, unknown>;
       };
 
+  async function findTriggeringCommentMentionedAgentIds(companyId: string, body: string) {
+    const mentionedAgentIds = new Set(await issuesSvc.findMentionedAgents(companyId, body));
+    const rawMentionTokens = new Set<string>();
+    const rawMentionRe = /\B@([^\s@,!?()[\]{}<>:;]+)/g;
+    const scrubbedBody = stripMarkdownCode(body);
+    let match: RegExpExecArray | null;
+    while ((match = rawMentionRe.exec(scrubbedBody)) !== null) {
+      const normalized = normalizeAgentMentionToken(match[1]);
+      if (normalized) rawMentionTokens.add(normalized.toLowerCase());
+    }
+    if (rawMentionTokens.size === 0) return [...mentionedAgentIds];
+
+    const rows = await db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    for (const agent of rows) {
+      if (rawMentionTokens.has(agent.name.toLowerCase())) {
+        mentionedAgentIds.add(agent.id);
+      }
+    }
+    return [...mentionedAgentIds];
+  }
+
   async function evaluateQueuedRunStaleness(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
@@ -7112,7 +7136,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             };
           }
 
-          const mentionedAgentIds = await issuesSvc.findMentionedAgents(run.companyId, wakeComment.body);
+          const mentionedAgentIds = await findTriggeringCommentMentionedAgentIds(run.companyId, wakeComment.body);
           if (mentionedAgentIds.length > 0 && !mentionedAgentIds.includes(run.agentId)) {
             return {
               stale: true,

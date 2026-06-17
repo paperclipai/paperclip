@@ -66,6 +66,22 @@ describe("project-mentions", () => {
     expect(extractAgentMentionIds(markdown)).toEqual(["agent-live"]);
   });
 
+  it("does not treat fence lines with trailing text as closing fences", () => {
+    const liveHref = buildAgentMentionHref("agent-live");
+    const hiddenHref = buildAgentMentionHref("agent-hidden");
+    const markdown = [
+      `Use [@Live](${liveHref}) here.`,
+      "",
+      "```md",
+      `[@Hidden](${hiddenHref})`,
+      "```not-close",
+      `[@StillHidden](${buildAgentMentionHref("agent-still-hidden")})`,
+      "```",
+    ].join("\n");
+
+    expect(extractAgentMentionIds(markdown)).toEqual(["agent-live"]);
+  });
+
   it("round-trips user mentions", () => {
     const href = buildUserMentionHref("user-123");
     expect(parseUserMentionHref(href)).toEqual({

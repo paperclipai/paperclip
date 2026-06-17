@@ -56,7 +56,6 @@ import {
   issueCommentPresentationSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
-  stripMarkdownCode,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -6370,27 +6369,13 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const scrubbedBody = stripMarkdownCode(body);
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(scrubbedBody)) !== null) {
-        const normalized = normalizeAgentMentionToken(m[1]);
-        if (normalized) tokens.add(normalized.toLowerCase());
-      }
+      const explicitAgentMentionIds = extractAgentMentionIds(body);
+      if (explicitAgentMentionIds.length === 0) return [];
 
-      const explicitAgentMentionIds = extractAgentMentionIds(scrubbedBody);
-      if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
-
-      const rows = await db.select({ id: agents.id, name: agents.name })
+      const rows = await db.select({ id: agents.id })
         .from(agents).where(eq(agents.companyId, companyId));
-      const resolved = new Set<string>(explicitAgentMentionIds);
-      for (const agent of rows) {
-        if (tokens.has(agent.name.toLowerCase())) {
-          resolved.add(agent.id);
-        }
-      }
-      return [...resolved];
+      const companyAgentIds = new Set(rows.map((agent) => agent.id));
+      return explicitAgentMentionIds.filter((agentId) => companyAgentIds.has(agentId));
     },
 
     findMentionedProjectIds: async (
