@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -23,6 +24,7 @@ import {
   toolMcpGatewayTokens,
   toolProfileBindings,
   toolProfiles,
+  toolStdioCommandTemplates,
 } from "@paperclipai/db";
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
 import type {
@@ -94,6 +96,7 @@ export type ToolGatewayProviderType =
   | "mcp_http_fixture"
   | "mcp_stdio_fixture"
   | "mcp_remote_http"
+  | "mcp_local_stdio"
   | "paperclip_self"
   | "paperclip_plugin"
   | "paperclip_virtual";
@@ -103,7 +106,7 @@ export interface ConnectedMcpGatewayMetadata {
   applicationKey: string | null;
   connectionId: string;
   catalogEntryId: string;
-  transport: "remote_http";
+  transport: "remote_http" | "local_stdio";
   gatewayToolName: string;
   upstreamToolName: string;
   catalogName: string;
@@ -199,6 +202,35 @@ type HeaderPolicySummary = {
 type RemoteHttpExecutionResult = {
   result: unknown;
   headerSummary?: HeaderPolicySummary;
+};
+
+type LocalStdioRuntimeTemplate = {
+  templateId: string;
+  command: string | null;
+  args: string[];
+  envKeys: string[];
+};
+
+const BUILTIN_LOCAL_STDIO_RUNTIME_TEMPLATES: Record<string, Omit<LocalStdioRuntimeTemplate, "templateId">> = {
+  "paperclip.google-sheets": {
+    command: "paperclip-google-sheets-mcp-server",
+    args: [],
+    envKeys: [
+      "GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON",
+      "GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_PATH",
+      "GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS",
+    ],
+  },
+  "paperclip.echo-calculator-time": {
+    command: null,
+    args: [],
+    envKeys: [],
+  },
+  "paperclip.synthetic-todo-kv": {
+    command: null,
+    args: [],
+    envKeys: [],
+  },
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -764,17 +796,21 @@ export function createToolGatewayService(
         eq(toolCatalogEntries.status, "active"),
         isNull(toolCatalogEntries.quarantinedAt),
         eq(toolConnections.companyId, companyId),
-        eq(toolConnections.transport, "remote_http"),
+        inArray(toolConnections.transport, ["remote_http", "local_stdio"]),
         eq(toolConnections.status, "active"),
         eq(toolConnections.enabled, true),
         inArray(toolConnections.healthStatus, ["ok", "healthy"]),
         eq(toolApplications.companyId, companyId),
-        eq(toolApplications.type, "mcp_http"),
+        inArray(toolApplications.type, ["mcp_http", "mcp_stdio"]),
         eq(toolApplications.status, "active"),
       ))
       .orderBy(toolConnections.name, toolCatalogEntries.name);
 
-    const baseNames = rows.map(({ catalogEntry, connection, application }) => {
+    const eligibleRows = rows.filter(({ connection, application }) =>
+      (connection.transport === "remote_http" && application.type === "mcp_http")
+      || (connection.transport === "local_stdio" && application.type === "mcp_stdio")
+    );
+    const baseNames = eligibleRows.map(({ catalogEntry, connection, application }) => {
       const applicationKey = application.applicationKey ?? null;
       const connectionNamespace = `${slugSegment(applicationKey ?? connection.name ?? application.name, "mcp")}-${shortStableId(connection.id)}`;
       const toolSlug = slugSegment(catalogEntry.toolName, "tool");
@@ -785,7 +821,7 @@ export function createToolGatewayService(
       return counts;
     }, new Map());
 
-    return rows.map(({ catalogEntry, connection, application }, index) => {
+    return eligibleRows.map(({ catalogEntry, connection, application }, index) => {
       const baseName = baseNames[index]!;
       const gatewayToolName = baseNameCounts.get(baseName)! > 1
         ? `${baseName}-${shortStableId(catalogEntry.id)}`
@@ -801,7 +837,7 @@ export function createToolGatewayService(
         applicationKey,
         connectionId: connection.id,
         catalogEntryId: catalogEntry.id,
-        transport: "remote_http",
+        transport: connection.transport,
         gatewayToolName,
         upstreamToolName: catalogEntry.toolName,
         catalogName: catalogEntry.name,
@@ -822,7 +858,7 @@ export function createToolGatewayService(
         description: catalogEntry.description ?? `Connected MCP tool ${catalogEntry.toolName} from ${connection.name}.`,
         parametersSchema: inputSchema,
         pluginId: `mcp:${applicationKey ?? application.id}`,
-        providerType: "mcp_remote_http",
+        providerType: connection.transport === "local_stdio" ? "mcp_local_stdio" : "mcp_remote_http",
         risk,
         applicationId: application.id,
         applicationKey,
@@ -2165,6 +2201,236 @@ export function createToolGatewayService(
     return { entry, connection };
   }
 
+  async function resolveConnectedLocalStdioTool(session: ToolGatewaySession, tool: ToolGatewayDescriptor) {
+    if (tool.providerType !== "mcp_local_stdio" || !tool.connectionId || !tool.catalogEntryId) {
+      throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
+    }
+    const [entry] = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(
+        eq(toolCatalogEntries.id, tool.catalogEntryId),
+        eq(toolCatalogEntries.companyId, session.companyId),
+      ))
+      .limit(1);
+    if (!entry || entry.status !== "active" || entry.entryKind !== "tool") {
+      throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
+    }
+    const [connection] = await db
+      .select()
+      .from(toolConnections)
+      .where(and(
+        eq(toolConnections.id, entry.connectionId),
+        eq(toolConnections.companyId, session.companyId),
+      ))
+      .limit(1);
+    if (!connection || connection.transport !== "local_stdio") {
+      throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
+    }
+    if (!connection.enabled || connection.status !== "active") {
+      throw new ToolGatewayHttpError(403, "Connection is disabled.", "local_stdio_connection_disabled", {
+        connectionId: connection.id,
+      });
+    }
+    return { entry, connection };
+  }
+
+  function localStdioTemplateId(connection: typeof toolConnections.$inferSelect): string {
+    const config = asRecord(connection.config) ?? {};
+    const templateId = config.templateId;
+    if (typeof templateId !== "string" || templateId.trim().length === 0) {
+      throw new ToolGatewayHttpError(422, "Local stdio MCP connection requires an approved templateId", "local_stdio_template_missing", {
+        connectionId: connection.id,
+      });
+    }
+    return templateId.trim();
+  }
+
+  async function resolveLocalStdioRuntimeTemplate(connection: typeof toolConnections.$inferSelect): Promise<LocalStdioRuntimeTemplate> {
+    const templateId = localStdioTemplateId(connection);
+    const builtIn = BUILTIN_LOCAL_STDIO_RUNTIME_TEMPLATES[templateId];
+    if (builtIn) return { templateId, ...builtIn };
+    const [template] = await db
+      .select()
+      .from(toolStdioCommandTemplates)
+      .where(and(
+        eq(toolStdioCommandTemplates.companyId, connection.companyId),
+        eq(toolStdioCommandTemplates.templateKey, templateId),
+      ))
+      .limit(1);
+    if (!template || template.status !== "active") {
+      throw new ToolGatewayHttpError(422, "Local stdio MCP connection requires an active approved template", "local_stdio_template_invalid", {
+        connectionId: connection.id,
+        templateId,
+      });
+    }
+    return {
+      templateId,
+      command: template.command,
+      args: template.args ?? [],
+      envKeys: template.envKeys ?? [],
+    };
+  }
+
+  function localStdioEnvironment(connection: typeof toolConnections.$inferSelect, template: LocalStdioRuntimeTemplate): NodeJS.ProcessEnv {
+    const config = asRecord(connection.config) ?? {};
+    const configEnv = asRecord(config.env) ?? {};
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of template.envKeys) {
+      const configured = configEnv[key];
+      if (typeof configured === "string") {
+        env[key] = configured;
+      }
+    }
+    for (const [key, value] of Object.entries(configEnv)) {
+      if (/^[A-Z_][A-Z0-9_]*$/.test(key) && typeof value === "string") {
+        env[key] = value;
+      }
+    }
+    return env;
+  }
+
+  function stdioProtocolError(message: string, details: Record<string, unknown> = {}) {
+    return new ToolGatewayHttpError(502, message, "local_stdio_protocol_error", details);
+  }
+
+  async function callLocalStdioMcp(input: {
+    connection: typeof toolConnections.$inferSelect;
+    entry: typeof toolCatalogEntries.$inferSelect;
+    template: LocalStdioRuntimeTemplate;
+    parameters: unknown;
+    timeoutMs: number;
+  }): Promise<unknown> {
+    if (!input.template.command) {
+      throw new ToolGatewayHttpError(
+        501,
+        "Local stdio template does not define an executable command",
+        "local_stdio_command_unavailable",
+        { connectionId: input.connection.id, templateId: input.template.templateId },
+      );
+    }
+    const child = spawn(input.template.command, input.template.args, {
+      env: localStdioEnvironment(input.connection, input.template),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let nextId = 1;
+    const pending = new Map<number, {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+    }>();
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      for (const { reject } of pending.values()) {
+        reject(new ToolGatewayHttpError(504, "Local stdio MCP tool call timed out", "tool_timeout", {
+          connectionId: input.connection.id,
+          catalogEntryId: input.entry.id,
+        }));
+      }
+      pending.clear();
+    }, input.timeoutMs);
+    timer.unref?.();
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      let newline = stdout.indexOf("\n");
+      while (newline >= 0) {
+        const line = stdout.slice(0, newline).trim();
+        stdout = stdout.slice(newline + 1);
+        if (line) {
+          try {
+            const message = JSON.parse(line) as Record<string, unknown>;
+            const id = typeof message.id === "number" ? message.id : null;
+            if (id !== null && pending.has(id)) {
+              const waiter = pending.get(id)!;
+              pending.delete(id);
+              if (message.error !== undefined) {
+                waiter.reject(stdioProtocolError("Local stdio MCP server returned a JSON-RPC error", {
+                  connectionId: input.connection.id,
+                  catalogEntryId: input.entry.id,
+                  error: message.error,
+                }));
+              } else {
+                waiter.resolve(message.result);
+              }
+            }
+          } catch {
+            for (const { reject } of pending.values()) {
+              reject(stdioProtocolError("Local stdio MCP server returned invalid JSON", {
+                connectionId: input.connection.id,
+                catalogEntryId: input.entry.id,
+              }));
+            }
+            pending.clear();
+          }
+        }
+        newline = stdout.indexOf("\n");
+      }
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr = `${stderr}${chunk}`.slice(-4_000);
+    });
+    const exitPromise = new Promise<void>((resolve, reject) => {
+      child.on("error", (error) => {
+        const gatewayError = new ToolGatewayHttpError(502, "Local stdio MCP command failed to start", "local_stdio_spawn_failed", {
+          connectionId: input.connection.id,
+          templateId: input.template.templateId,
+          message: error.message,
+        });
+        for (const { reject: rejectPending } of pending.values()) {
+          rejectPending(gatewayError);
+        }
+        pending.clear();
+        reject(gatewayError);
+      });
+      child.on("exit", (code, signal) => {
+        if (pending.size === 0) {
+          resolve();
+          return;
+        }
+        for (const { reject: rejectPending } of pending.values()) {
+          rejectPending(new ToolGatewayHttpError(502, "Local stdio MCP command exited before responding", "local_stdio_process_exited", {
+            connectionId: input.connection.id,
+            catalogEntryId: input.entry.id,
+            code,
+            signal,
+            stderr,
+          }));
+        }
+        pending.clear();
+        resolve();
+      });
+    });
+    const request = (method: string, params: Record<string, unknown>) => {
+      const id = nextId;
+      nextId += 1;
+      const promise = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+      });
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      return promise;
+    };
+    try {
+      await request("initialize", {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "paperclip-tool-gateway", version: "0.3.1" },
+      });
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`);
+      return await request("tools/call", {
+        name: input.entry.toolName,
+        arguments: input.parameters ?? {},
+      });
+    } finally {
+      clearTimeout(timer);
+      child.stdin.end();
+      child.kill("SIGTERM");
+      await exitPromise.catch(() => undefined);
+    }
+  }
+
   async function connectedRemoteApprovalSnapshot(
     session: ToolGatewaySession,
     tool: ToolGatewayDescriptor,
@@ -2419,7 +2685,11 @@ export function createToolGatewayService(
     }).join("\n");
   }
 
-  function normalizeMcpToolResult(result: unknown) {
+  function normalizeMcpToolResult(
+    result: unknown,
+    transport: "mcp_http" | "local_stdio" = "mcp_http",
+    spawnedLocalProcess = false,
+  ) {
     const record = asRecord(result);
     if (!record) throw malformedRemoteMcpResponse();
     return {
@@ -2428,10 +2698,10 @@ export function createToolGatewayService(
         content: record.content,
         structuredContent: record.structuredContent ?? null,
         isError: record.isError === true,
-        transport: "mcp_http",
-        spawnedLocalProcess: false,
+        transport,
+        spawnedLocalProcess,
       },
-      ...(record.isError === true ? { error: "Remote MCP tool returned an error result" } : {}),
+      ...(record.isError === true ? { error: "MCP tool returned an error result" } : {}),
     };
   }
 
@@ -2533,6 +2803,47 @@ export function createToolGatewayService(
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async function executeLocalStdioTool(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+    parameters: unknown,
+    ms: number,
+  ): Promise<RemoteHttpExecutionResult> {
+    const { entry, connection } = await resolveConnectedLocalStdioTool(session, tool);
+    const template = await resolveLocalStdioRuntimeTemplate(connection);
+    const result = await runtimeSupervisor.useConnectionSlot(
+      {
+        companyId: session.companyId,
+        applicationId: tool.applicationId ?? null,
+        connectionId: connection.id,
+        connectionKey: `mcp:${session.companyId}:${connection.id}`,
+        runId: session.runId,
+        issueId: session.issueId,
+        agentId: session.agentId,
+        commandTemplateKey: template.templateId,
+        metadata: {
+          fixture: "connected-local-stdio",
+          applicationId: tool.applicationId ?? null,
+          connectionId: connection.id,
+          catalogEntryId: entry.id,
+        },
+      },
+      async (handle) => {
+        handle.appendLog("stdout", `calling ${entry.toolName}`);
+        return callLocalStdioMcp({
+          connection,
+          entry,
+          template,
+          parameters,
+          timeoutMs: ms,
+        });
+      },
+    );
+    return {
+      result: normalizeMcpToolResult(result, "local_stdio", true),
+    };
   }
 
   async function runWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -3859,13 +4170,15 @@ export function createToolGatewayService(
         if (tool.providerType === "paperclip_plugin" && (!session.agentId || !session.runId)) {
           throw new ToolGatewayHttpError(403, "Plugin tools require an agent run context", "agent_context_required");
         }
-        const remoteExecution =
+        const connectedMcpExecution =
           tool.providerType === "mcp_remote_http"
             ? await executeRemoteHttpTool(session, tool, effectiveParameters, executionTimeoutMs, invocationId, input.callerHeaders)
+            : tool.providerType === "mcp_local_stdio"
+            ? await executeLocalStdioTool(session, tool, effectiveParameters, executionTimeoutMs)
             : null;
         const result =
-          remoteExecution
-            ? remoteExecution.result
+          connectedMcpExecution
+            ? connectedMcpExecution.result
             : tool.providerType === "paperclip_plugin"
             ? await runWithTimeout(
                 pluginToolDispatcher!.executeTool(
@@ -3912,7 +4225,7 @@ export function createToolGatewayService(
           resultSummary: resultValidation.summary,
           metadata: {
             ...(virtualToolName ? { virtualToolName, targetToolName: tool.name } : {}),
-            ...(remoteExecution?.headerSummary ? { headerSummary: remoteExecution.headerSummary } : {}),
+            ...(connectedMcpExecution?.headerSummary ? { headerSummary: connectedMcpExecution.headerSummary } : {}),
           },
           tool,
         });
@@ -3935,7 +4248,7 @@ export function createToolGatewayService(
             durationMs: Date.now() - startedAt,
             result: summarizeResult(resultValidation.value),
             resultSummary: resultValidation.summary,
-            headerSummary: remoteExecution?.headerSummary ?? undefined,
+            headerSummary: connectedMcpExecution?.headerSummary ?? undefined,
           },
         });
         return {

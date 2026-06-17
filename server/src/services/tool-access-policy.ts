@@ -940,7 +940,11 @@ export function toolAccessPolicyService(db: Db) {
       applicationType = application.type;
     }
     providerType = providerType
-      ?? (applicationType === "mcp_http" && connectionTransport === "remote_http" ? "mcp_remote_http" : null);
+      ?? (applicationType === "mcp_http" && connectionTransport === "remote_http"
+        ? "mcp_remote_http"
+        : applicationType === "mcp_stdio" && connectionTransport === "local_stdio"
+        ? "mcp_local_stdio"
+        : null);
 
     return {
       ok: true,

@@ -461,6 +461,8 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
 
   async function getOrCreateSlot(input: {
     companyId: string;
+    applicationId?: string | null;
+    connectionId?: string | null;
     connectionKey: string;
     runId?: string | null;
     issueId?: string | null;
@@ -487,9 +489,11 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
       .insert(toolRuntimeSlots)
       .values({
         companyId: input.companyId,
+        applicationId: input.applicationId ?? null,
+        connectionId: input.connectionId ?? null,
         slotKey: input.connectionKey,
         ownerScopeType: "connection",
-        ownerScopeId: input.connectionKey,
+        ownerScopeId: input.connectionId ?? input.connectionKey,
         runtimeKind: "local_stdio",
         status: "stopped",
         reuseKey: input.connectionKey,
@@ -553,6 +557,8 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
 
   async function ensureRunningSlot(input: {
     companyId: string;
+    applicationId?: string | null;
+    connectionId?: string | null;
     connectionKey: string;
     runId?: string | null;
     issueId?: string | null;
@@ -624,6 +630,71 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
   }
 
   return {
+    async useConnectionSlot<T>(
+      input: {
+        companyId: string;
+        applicationId?: string | null;
+        connectionId?: string | null;
+        connectionKey: string;
+        runId?: string | null;
+        issueId?: string | null;
+        agentId?: string | null;
+        commandTemplateKey?: string | null;
+        metadata?: Record<string, unknown>;
+      },
+      fn: (handle: RuntimeSlotHandle) => Promise<T>,
+    ): Promise<T> {
+      const row = await ensureRunningSlot(input);
+      const metadata = asRecord(row.metadata);
+      const handle: RuntimeSlotHandle = {
+        slot: slotView(row),
+        metadata,
+        appendLog(stream, line) {
+          const logs = Array.isArray(metadata.logs) ? [...metadata.logs] as Array<Record<string, unknown>> : [];
+          logs.push({
+            stream,
+            line: redactLogLine(line).slice(0, 1_000),
+            at: now().toISOString(),
+          });
+          metadata.logs = trimLogs(logs, maxLogEntries, maxLogBytes);
+        },
+      };
+      try {
+        const result = await fn(handle);
+        await idleSlot(row, metadata);
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const at = now();
+        await db
+          .update(toolRuntimeSlots)
+          .set({
+            status: "failed",
+            healthStatus: "error",
+            healthMessage: "Local stdio runtime failed during execution.",
+            lastError: message.slice(0, 500),
+            metadata: {
+              ...metadata,
+              lastFailureAt: at.toISOString(),
+            },
+            updatedAt: at,
+          })
+          .where(eq(toolRuntimeSlots.id, row.id));
+        await writeAudit({
+          companyId: row.companyId,
+          slotId: row.id,
+          runId: input.runId,
+          issueId: input.issueId,
+          agentId: input.agentId,
+          action: "runtime_failed",
+          outcome: "failure",
+          reasonCode: "runtime_execution_failed",
+          details: { message: message.slice(0, 500), slotKey: row.slotKey },
+        });
+        throw error;
+      }
+    },
+
     async useFixtureSlot<T>(
       input: {
         companyId: string;

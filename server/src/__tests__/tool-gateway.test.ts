@@ -32,6 +32,7 @@ import {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
+  toolStdioCommandTemplates,
   toolRuntimeSlots,
   secretAccessEvents,
 } from "@paperclipai/db";
@@ -255,6 +256,104 @@ async function createRemoteMcpTool(
     quarantinedAt: input.quarantinedAt ?? null,
   }).returning();
   return { application, connection: connection!, catalogEntry: catalogEntry! };
+}
+
+async function createLocalStdioMcpTool(
+  db: Db,
+  companyId: string,
+  input: {
+    applicationKey?: string | null;
+    connectionName?: string;
+    toolName?: string;
+    title?: string | null;
+    connectionEnabled?: boolean;
+    connectionStatus?: "draft" | "active" | "disabled" | "archived";
+    healthStatus?: "unknown" | "healthy" | "degraded" | "failed" | "unchecked" | "ok" | "error" | "missing_secret";
+    catalogStatus?: "active" | "disabled" | "quarantined" | "removed";
+    riskLevel?: "read" | "write" | "destructive";
+  } = {},
+) {
+  const applicationKey = input.applicationKey ?? `local-app-${randomUUID().slice(0, 8)}`;
+  const [application] = await db.insert(toolApplications).values({
+    companyId,
+    applicationKey,
+    name: `Local stdio app ${randomUUID()}`,
+    type: "mcp_stdio",
+    status: "active",
+  }).returning();
+  const toolName = input.toolName ?? "echo";
+  const templateKey = `test.local-stdio.${randomUUID()}`;
+  const stdioScript = `
+const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "test-stdio", version: "0.0.0" } } }) + "\\n");
+    return;
+  }
+  if (message.method === "tools/call") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "local:" + String(message.params?.arguments?.message ?? "") }], structuredContent: { echoed: message.params?.arguments?.message ?? null } } }) + "\\n");
+  }
+});
+`;
+  await db.insert(toolStdioCommandTemplates).values({
+    companyId,
+    templateKey,
+    name: `Local stdio template ${randomUUID()}`,
+    command: process.execPath,
+    args: ["-e", stdioScript],
+    envKeys: [],
+    tools: [
+      {
+        name: toolName,
+        title: input.title ?? "Local Echo",
+        description: `Call ${toolName}`,
+        inputSchema: {
+          type: "object",
+          properties: { message: { type: "string" } },
+          required: ["message"],
+          additionalProperties: false,
+        },
+        annotations: { readOnlyHint: true },
+      },
+    ],
+  });
+  const [connection] = await db.insert(toolConnections).values({
+    companyId,
+    applicationId: application!.id,
+    name: input.connectionName ?? `Local stdio connection ${randomUUID()}`,
+    transport: "local_stdio",
+    status: input.connectionStatus ?? "active",
+    enabled: input.connectionEnabled ?? true,
+    healthStatus: input.healthStatus ?? "ok",
+    config: { templateId: templateKey },
+    transportConfig: { templateId: templateKey },
+  }).returning();
+  const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+    companyId,
+    applicationId: application!.id,
+    connectionId: connection!.id,
+    entryKind: "tool",
+    name: `${toolName}-${randomUUID()}`,
+    toolName,
+    title: input.title ?? "Local Echo",
+    description: `Call ${toolName}`,
+    inputSchema: {
+      type: "object",
+      properties: { message: { type: "string" } },
+      required: ["message"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    riskLevel: input.riskLevel ?? "read",
+    isReadOnly: (input.riskLevel ?? "read") === "read",
+    isWrite: (input.riskLevel ?? "read") === "write",
+    isDestructive: (input.riskLevel ?? "read") === "destructive",
+    status: input.catalogStatus ?? "active",
+    versionHash: randomUUID(),
+  }).returning();
+  return { application: application!, connection: connection!, catalogEntry: catalogEntry!, templateKey };
 }
 
 function expectedConnectedToolName(input: { applicationKey: string | null; connectionId: string; toolName: string }) {
@@ -1039,6 +1138,86 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       }),
     ]);
     expect(otherTools.map((tool) => tool.catalogEntryId)).not.toContain(remoteTool.catalogEntry.id);
+  });
+
+  it("lists and executes connected local stdio MCP catalog tools through the gateway", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const unprofiledAgent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { run: unprofiledRun } = await createIssueAndRun(db, company.id, unprofiledAgent.id);
+    const localTool = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "local-demo",
+      connectionName: "Local Demo",
+      toolName: "echo",
+      title: "Local echo",
+    });
+    const expectedName = expectedConnectedToolName({
+      applicationKey: "local-demo",
+      connectionId: localTool.connection.id,
+      toolName: "echo",
+    });
+    const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: profile.id,
+      selectorType: "catalog_entry",
+      effect: "include",
+      catalogEntryId: localTool.catalogEntry.id,
+    });
+
+    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const unprofiledSession = await gateway.createSession({
+      companyId: company.id,
+      agentId: unprofiledAgent.id,
+      runId: unprofiledRun.id,
+    });
+
+    const tools = await gateway.listToolsForSession(session.token);
+    expect(tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: expectedName,
+        displayName: "Local echo",
+        providerType: "mcp_local_stdio",
+        risk: "read",
+        applicationId: localTool.application.id,
+        applicationKey: "local-demo",
+        connectionId: localTool.connection.id,
+        catalogEntryId: localTool.catalogEntry.id,
+        upstreamToolName: "echo",
+        providerMetadata: expect.objectContaining({
+          transport: "local_stdio",
+          connectionId: localTool.connection.id,
+          catalogEntryId: localTool.catalogEntry.id,
+          upstreamToolName: "echo",
+        }),
+      }),
+    ]));
+    await expect(gateway.listToolsForSession(unprofiledSession.token)).resolves.toEqual([]);
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: expectedName,
+      parameters: { message: "hello" },
+    })).resolves.toMatchObject({
+      status: "completed",
+      result: {
+        content: "local:hello",
+        data: {
+          structuredContent: { echoed: "hello" },
+          transport: "local_stdio",
+          spawnedLocalProcess: true,
+        },
+      },
+    });
+
+    const [slot] = await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, localTool.connection.id));
+    expect(slot).toMatchObject({
+      status: "idle",
+      commandTemplateKey: localTool.templateKey,
+      healthStatus: "ok",
+    });
   });
 
   it("keeps connected remote MCP gateway names collision-safe and excludes inactive catalog sources", async () => {
