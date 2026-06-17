@@ -64,6 +64,26 @@ function headersFromExpressRequest(req: Request): Headers {
   return headersFromNodeHeaders(req.headers);
 }
 
+function isSignInEmailRequest(req: Request): boolean {
+  return req.path.includes("/sign-in/email") || req.originalUrl.includes("/sign-in/email");
+}
+
+function isRetryableAuthError(err: unknown): boolean {
+  const status = typeof err === "object" && err !== null && "status" in err
+    ? Number((err as { status?: number }).status)
+    : undefined;
+  if (status === 429 || (status !== undefined && status >= 500)) return true;
+
+  const message = err instanceof Error ? err.message : String(err);
+  return /database|connection|timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT/i.test(message);
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function parseCookieHeader(cookieHeader: string | null): Map<string, string> {
   const cookies = new Map<string, string>();
   if (!cookieHeader) return cookies;
@@ -210,8 +230,25 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
 
 export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandler {
   const handler = toNodeHandler(auth);
-  return (req, res, next) => {
-    void Promise.resolve(handler(req, res)).catch(next);
+  return async (req, res, next) => {
+    const maxRetries = isSignInEmailRequest(req) ? 1 : 0;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await handler(req, res);
+        return;
+      } catch (err) {
+        if (
+          attempt >= maxRetries ||
+          !isRetryableAuthError(err) ||
+          res.headersSent ||
+          res.writableEnded
+        ) {
+          next(err);
+          return;
+        }
+        await wait(200 * (attempt + 1));
+      }
+    }
   };
 }
 

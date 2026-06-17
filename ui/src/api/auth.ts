@@ -60,18 +60,74 @@ function extractAuthError(payload: AuthErrorBody, status: number) {
   return new AuthApiError(message, status, payload, code);
 }
 
-async function authPost(path: string, body: Record<string, unknown>) {
-  const res = await fetch(`/api/auth${path}`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+type AuthRetryPolicy = {
+  maxRetries?: number;
+  retryDelayMs?: (attempt: number) => number;
+  isRetryable?: (error: AuthApiError) => boolean;
+};
+
+function sleep(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
-  const payload = await res.json().catch(() => null);
-  if (!res.ok) {
-    throw extractAuthError(payload as AuthErrorBody, res.status);
+}
+
+function isRetryableNetworkError(error: unknown) {
+  if (error instanceof AuthApiError) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return /fetch failed|Failed to fetch|NetworkError|ECONNRESET|ECONNREFUSED|ETIMEDOUT|timeout/i.test(message);
+}
+
+function shouldRetrySignInError(error: AuthApiError) {
+  if (error.status === 429) return true;
+  if (error.status >= 500) return true;
+  if (error.code === "TOO_MANY_REQUESTS" || error.code === "TOO_MANY_REQUESTS_ERROR") return true;
+  return false;
+}
+
+async function authPost(
+  path: string,
+  body: Record<string, unknown>,
+  retryPolicy: AuthRetryPolicy = {},
+) {
+  const {
+    maxRetries = 0,
+    retryDelayMs = (attempt) => Math.min(600, 120 * attempt),
+    isRetryable = shouldRetrySignInError,
+  } = retryPolicy;
+
+  let attempt = 0;
+  while (true) {
+    attempt += 1;
+    let res: Response;
+    try {
+      res = await fetch(`/api/auth${path}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      if (attempt <= maxRetries && isRetryableNetworkError(error)) {
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      throw error instanceof Error
+        ? error
+        : new Error(`Authentication request failed: ${error}`);
+    }
+
+    const payload = await res.json().catch(() => null);
+    if (!res.ok) {
+      const err = extractAuthError(payload as AuthErrorBody, res.status);
+      if (attempt <= maxRetries && isRetryable(err)) {
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      throw err;
+    }
+    return payload;
   }
-  return payload;
 }
 
 async function authPatch<T>(path: string, body: Record<string, unknown>, parse: (value: unknown) => T): Promise<T> {
@@ -106,7 +162,10 @@ export const authApi = {
   },
 
   signInEmail: async (input: { email: string; password: string }) => {
-    return (await authPost("/sign-in/email", input)) as { twoFactorRedirect?: boolean } | null;
+    return (await authPost("/sign-in/email", input, {
+      maxRetries: 4,
+      retryDelayMs: (attempt) => 300 * attempt,
+    })) as { twoFactorRedirect?: boolean } | null;
   },
 
   signUpEmail: async (input: { name: string; email: string; password: string }) => {

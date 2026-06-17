@@ -52,7 +52,13 @@ export function WorkHub() {
   const [searchParams, setSearchParams] = useSearchParams();
   const fetchNextPageInFlightRef = useRef(false);
 
-  const activeFilter = (searchParams.get("filter") as WorkItemFilter) || "all";
+  const filterParam = searchParams.get("filter");
+  const activeFilter: WorkItemFilter = filterParam === "all"
+    || filterParam === "initiative"
+    || filterParam === "human_task"
+    || filterParam === "ai_task"
+    ? filterParam
+    : "all";
   const filterConfig = FILTER_CONFIG[activeFilter];
   const workItemTypeParam = filterConfig.workItemTypes.length > 0
     ? filterConfig.workItemTypes.join(",")

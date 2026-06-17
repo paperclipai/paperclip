@@ -65,6 +65,24 @@ export async function checkSchemaIntegrity(db: Db | undefined): Promise<SchemaIn
   };
 }
 
+async function canReachDatabase(db: Db): Promise<boolean> {
+  try {
+    await db.execute(sql`SELECT 1`);
+    return true;
+  } catch (error) {
+    logger.warn({ err: error }, "Health check database probe failed");
+    const integrity = await checkSchemaIntegrity(db);
+    if (integrity.status === "ok") {
+      logger.warn(
+        { err: error, checkedAt: integrity.checkedAt },
+        "Health check database probe failed but schema integrity probe succeeded",
+      );
+      return true;
+    }
+    return false;
+  }
+}
+
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
   deploymentMode: DeploymentMode,
@@ -118,10 +136,7 @@ export function healthRoutes(
       return;
     }
 
-    try {
-      await db.execute(sql`SELECT 1`);
-    } catch (error) {
-      logger.warn({ err: error }, "Health check database probe failed");
+    if (!(await canReachDatabase(db))) {
       res.status(503).json({
         status: "unhealthy",
         version: serverVersion,

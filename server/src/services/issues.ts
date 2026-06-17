@@ -788,6 +788,24 @@ function latestIssueActivityAt(...values: Array<Date | string | null | undefined
   return normalized[0] ?? null;
 }
 
+function rowsFromDbExecuteResult<T>(result: unknown): T[] {
+  if (!result) return [];
+  if (Array.isArray(result)) return result as T[];
+
+  if (typeof result === "object" && "rows" in result) {
+    const rowsValue = (result as { rows?: unknown }).rows;
+    if (Array.isArray(rowsValue)) return rowsValue as T[];
+  }
+
+  if (
+    typeof result === "object" &&
+    typeof (result as Iterable<T>)[Symbol.iterator] === "function"
+  ) {
+    return Array.from(result as Iterable<T>);
+  }
+  return [];
+}
+
 async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<string, IssueLabelRow[]>> {
   const map = new Map<string, IssueLabelRow[]>();
   if (issueIds.length === 0) return map;
@@ -1605,6 +1623,7 @@ const issueListSelect = {
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
+const { workItemType: _workItemType, ...issueListSelectWithoutWorkItemType } = issueListSelect;
 
 function withActiveRuns(
   issueRows: IssueWithLabels[],
@@ -2459,10 +2478,32 @@ export function issueService(db: Db) {
     });
   }
 
+  let workItemTypeColumnSupported: boolean | null = null;
+  async function hasWorkItemTypeColumnInIssuesTable() {
+    if (workItemTypeColumnSupported !== null) return workItemTypeColumnSupported;
+
+    try {
+      const rows = rowsFromDbExecuteResult<unknown>(await db.execute(sql`
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'issues'
+          AND column_name = 'work_item_type'
+        LIMIT 1
+      `));
+      const resolved = rows.length > 0;
+      workItemTypeColumnSupported = resolved;
+      return resolved;
+    } catch {
+      workItemTypeColumnSupported = false;
+      return false;
+    }
+  }
+
   return {
     clearExecutionRunIfTerminal,
 
     list: async (companyId: string, filters?: IssueFilters) => {
+      const requestedWorkItemType = filters?.workItemType?.trim();
       const conditions = [eq(issues.companyId, companyId)];
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
@@ -2477,6 +2518,7 @@ export function issueService(db: Db) {
       const contextUserId =
         unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId ?? awaitingDecisionForUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
+      const supportsWorkItemTypeColumn = await hasWorkItemTypeColumnInIssuesTable();
       const rawSearch = filters?.q?.trim() ?? "";
       const hasSearch = rawSearch.length > 0;
       const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
@@ -2570,7 +2612,9 @@ export function issueService(db: Db) {
         conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
       }
       if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
-      if (filters?.workItemType) conditions.push(eq(issues.workItemType, filters.workItemType));
+      if (requestedWorkItemType && supportsWorkItemTypeColumn) {
+        conditions.push(eq(issues.workItemType, requestedWorkItemType));
+      }
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
@@ -2613,8 +2657,11 @@ export function issueService(db: Db) {
         END
       `;
       const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
+      const issueListSelectForList = supportsWorkItemTypeColumn
+        ? issueListSelect
+        : issueListSelectWithoutWorkItemType;
       const baseQuery = db
-        .select(issueListSelect)
+        .select(issueListSelectForList)
         .from(issues)
         .where(and(...conditions))
         .orderBy(
@@ -2629,9 +2676,10 @@ export function issueService(db: Db) {
         : (limit === undefined ? baseQuery : baseQuery.limit(limit));
       const rows = (await pageQuery).map((row) => ({
         ...row,
+        ...(supportsWorkItemTypeColumn ? {} : { workItemType: "ai_task" as const }),
         description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
       }));
-      const withLabels = await withIssueLabels(db, rows);
+      const withLabels = await withIssueLabels(db, rows as IssueRow[]);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
       if (withRuns.length === 0) {
