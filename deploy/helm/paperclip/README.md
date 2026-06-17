@@ -138,9 +138,9 @@ kubectl -n paperclip exec paperclip-0 -- \
 | imagePullSecrets | list | `[]` | Image pull secrets. Only needed if the GHCR package is private. Example: `[{name: ghcr-pull}]`. |
 | nameOverride | string | `""` | Override the chart name used in resource names. |
 | fullnameOverride | string | `""` | Override the full name used as the prefix for every resource. |
-| persistence | object | `{"accessMode":"ReadWriteOnce","enabled":true,"mountPath":"/paperclip","size":"20Gi","storageClassName":"local-path"}` | Persistent volume settings for `/paperclip`. |
+| persistence | object | `{"accessMode":"ReadWriteOnce","enabled":true,"mountPath":"/paperclip","size":"20Gi","storageClassName":""}` | Persistent volume settings for `/paperclip`. |
 | persistence.enabled | bool | `true` | Whether to create a PVC for `/paperclip`. Required for any real use — disabling loses all state on pod restart. |
-| persistence.storageClassName | string | `"local-path"` | StorageClass for the PVC. `local-path` on the Talos cluster; set to empty string to use the cluster default. |
+| persistence.storageClassName | string | `""` | StorageClass for the PVC. Empty string uses the cluster's default StorageClass; set explicitly (e.g. `local-path` on Talos) to pin one. |
 | persistence.accessMode | string | `"ReadWriteOnce"` | Access mode for the PVC. ReadWriteOnce is correct for the single-replica StatefulSet. |
 | persistence.size | string | `"20Gi"` | PVC size. Sized for live state + ~30 days of hourly pg_dumps. |
 | persistence.mountPath | string | `"/paperclip"` | Mount path inside the container. Paperclip's `PAPERCLIP_HOME` defaults to `/paperclip`; keep these aligned. |

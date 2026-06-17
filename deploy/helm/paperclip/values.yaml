@@ -24,8 +24,8 @@ fullnameOverride: ""
 persistence:
   # -- Whether to create a PVC for `/paperclip`. Required for any real use — disabling loses all state on pod restart.
   enabled: true
-  # -- StorageClass for the PVC. `local-path` on the Talos cluster; set to empty string to use the cluster default.
-  storageClassName: local-path
+  # -- StorageClass for the PVC. Empty string uses the cluster's default StorageClass; set explicitly (e.g. `local-path` on Talos) to pin one.
+  storageClassName: ""
   # -- Access mode for the PVC. ReadWriteOnce is correct for the single-replica StatefulSet.
   accessMode: ReadWriteOnce
   # -- PVC size. Sized for live state + ~30 days of hourly pg_dumps.

@@ -22,6 +22,15 @@ Create a default fully qualified app name.
 {{- end }}
 
 {{/*
+Headless Service name. fullname is already truncated to 63 chars; reserve room
+for the "-headless" suffix (9 chars) so the resulting DNS label stays within the
+63-char Kubernetes limit for long release names.
+*/}}
+{{- define "paperclip.headlessServiceName" -}}
+{{- printf "%s-headless" (include "paperclip.fullname" . | trunc 54 | trimSuffix "-") }}
+{{- end }}
+
+{{/*
 Chart name and version label.
 */}}
 {{- define "paperclip.chart" -}}
