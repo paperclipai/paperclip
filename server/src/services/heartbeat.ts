@@ -197,6 +197,9 @@ import {
 } from "./low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { createCcrotateTierGate, createDefaultCcrotateSwitcher, readDefaultCcrotateTierCache, type CcrotateTierGate } from "./ccrotate-tier-gate.js";
+import { createCcrotateServeVerifier } from "./ccrotate-serve-verifier.js";
+import { captureQuotaBurnIntoCcrotateTierCache } from "./ccrotate-quota-writeback.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -252,6 +255,17 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+export const CCROTATE_CAPACITY_DEFAULT_RETRY_DELAY_MS = 5 * 60 * 1000;
+export const CCROTATE_CAPACITY_RETRY_REASON = "ccrotate_capacity";
+export const CCROTATE_CAPACITY_MAX_RETRY_ATTEMPTS = 24;
+export const DEP_BLOCKED_RETRY_REASON = "dependency_blocked";
+export const DEP_BLOCKED_BASE_DELAY_MS = 5 * 60 * 1000;
+export const DEP_BLOCKED_MAX_DELAY_MS = 60 * 60 * 1000;
+export const DEP_BLOCKED_MAX_RETRY_ATTEMPTS = 72;
+
+function depBlockedRetryDelayMs(attempt: number): number {
+  return Math.min(DEP_BLOCKED_BASE_DELAY_MS * Math.pow(2, attempt), DEP_BLOCKED_MAX_DELAY_MS);
+}
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 // Keep this in sync with local adapters that require a git workspace before launch.
@@ -3095,6 +3109,10 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  /** Optional override for the ccrotate tier-gate. Defaults to reading ~/.ccrotate/tier-cache.json. Tests inject a deterministic stub. */
+  ccrotateGate?: CcrotateTierGate;
+  /** When true, startNextQueuedRunForAgent is a no-op. Prevents background executeRun races in tests. */
+  skipQueuedRunDispatch?: boolean;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -3130,6 +3148,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
+  const ccrotateServeBaseUrl =
+    process.env.CCROTATE_SERVE_BASE_URL ??
+    (process.env.CCROTATE_SERVE_SERVICE_HOST && process.env.CCROTATE_SERVE_SERVICE_PORT_SERVE
+      ? `http://${process.env.CCROTATE_SERVE_SERVICE_HOST}:${process.env.CCROTATE_SERVE_SERVICE_PORT_SERVE}`
+      : undefined);
+  const ccrotateServeToken = process.env.CCROTATE_SERVE_TOKEN;
+  const ccrotateVerifier = ccrotateServeBaseUrl && ccrotateServeToken
+    ? createCcrotateServeVerifier({
+        baseUrl: ccrotateServeBaseUrl,
+        token: ccrotateServeToken,
+        timeoutMs: 3_000,
+        retries: 1,
+        circuitBreakerThreshold: 3,
+        circuitBreakerCooldownMs: 30_000,
+        memoTtlMs: 30_000,
+        log: {
+          info: (payload, msg) => logger.info(payload, msg),
+          warn: (payload, msg) => logger.warn(payload, msg),
+          error: (payload, msg) => logger.warn(payload, msg),
+        },
+      })
+    : undefined;
+  if (ccrotateVerifier) {
+    logger.info({ baseUrl: ccrotateServeBaseUrl }, "ccrotate.verifier_enabled");
+  } else {
+    logger.warn({}, "ccrotate.verifier_disabled — set CCROTATE_SERVE_BASE_URL + CCROTATE_SERVE_TOKEN to enable");
+  }
+  const ccrotateGate: CcrotateTierGate = options.ccrotateGate ?? createCcrotateTierGate({
+    readCache: readDefaultCcrotateTierCache,
+    switcher: createDefaultCcrotateSwitcher(),
+    log: {
+      info: (payload, msg) => logger.info(payload, msg),
+      warn: (payload, msg) => logger.warn(payload, msg),
+    },
+    verifier: ccrotateVerifier,
+  });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function releaseEnvironmentLeasesForRun(input: {
@@ -5979,6 +6033,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ) {
         // Preserve legacy transient retry behavior for runs that only carry a
         // loose task context rather than a persisted issue row.
+      } else if (
+        gate.errorCode === "issue_dependencies_blocked" &&
+        dueRun.scheduledRetryReason === DEP_BLOCKED_RETRY_REASON
+      ) {
+        // Re-defer logic handled in the dep-blocked block below instead of cancelling.
       } else {
         const cancelled = await cancelScheduledRetryForGate(dueRun, gate, now);
         return cancelled
@@ -5989,6 +6048,171 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               errorCode: gate.errorCode,
             }
           : { outcome: "not_promoted", run: null };
+      }
+    }
+
+    // A ccrotate capacity defer must re-check the gate at promotion time: if the
+    // pool is still exhausted, re-defer instead of promoting a run that would 429.
+    if (dueRun.scheduledRetryReason === CCROTATE_CAPACITY_RETRY_REASON) {
+      const capacity = await ccrotateGate.checkAdapter({
+        adapterType: agent.adapterType,
+        agentId: dueRun.agentId,
+        now,
+      });
+      if (!capacity.allow) {
+        const nextAttempt = (dueRun.scheduledRetryAttempt ?? 0) + 1;
+        if (nextAttempt > CCROTATE_CAPACITY_MAX_RETRY_ATTEMPTS) {
+          const exhausted = await db
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: `ccrotate capacity retry exhausted after ${dueRun.scheduledRetryAttempt ?? 0} attempts; pool did not recover`,
+              errorCode: "rate_limit_exhausted",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, dueRun.id),
+                eq(heartbeatRuns.status, "scheduled_retry"),
+                lte(heartbeatRuns.scheduledRetryAt, now),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (exhausted) {
+            await appendRunEvent(exhausted, await nextRunEventSeq(exhausted.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: "ccrotate capacity retry exhausted; pool did not recover within the retry budget",
+              payload: {
+                scheduledRetryAttempt: dueRun.scheduledRetryAttempt ?? 0,
+                maxAttempts: CCROTATE_CAPACITY_MAX_RETRY_ATTEMPTS,
+                ccrotateTarget: capacity.target,
+              },
+            });
+            try {
+              await recovery.escalateCcrotateCapacityExhausted({
+                companyId: dueRun.companyId,
+                ccrotateTarget: capacity.target,
+                agentId: dueRun.agentId,
+                agentName: agent.name ?? null,
+                runId: exhausted.id,
+                attempts: dueRun.scheduledRetryAttempt ?? 0,
+              });
+            } catch (escalationError) {
+              logger.warn(
+                { err: escalationError, runId: exhausted.id, ccrotateTarget: capacity.target },
+                "ccrotate capacity exhaustion escalation failed",
+              );
+            }
+          }
+          return { outcome: "not_promoted", run: exhausted };
+        }
+        const nextDueAt =
+          capacity.resumeAt ?? new Date(now.getTime() + CCROTATE_CAPACITY_DEFAULT_RETRY_DELAY_MS);
+        const rescheduled = await db
+          .update(heartbeatRuns)
+          .set({ scheduledRetryAttempt: nextAttempt, scheduledRetryAt: nextDueAt, updatedAt: now })
+          .where(
+            and(
+              eq(heartbeatRuns.id, dueRun.id),
+              eq(heartbeatRuns.status, "scheduled_retry"),
+              lte(heartbeatRuns.scheduledRetryAt, now),
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (rescheduled) {
+          await appendRunEvent(rescheduled, await nextRunEventSeq(rescheduled.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message: "ccrotate capacity still exhausted at promotion; re-deferred with backoff",
+            payload: {
+              scheduledRetryAttempt: nextAttempt,
+              scheduledRetryAt: nextDueAt.toISOString(),
+              ccrotateTarget: capacity.target,
+            },
+          });
+        }
+        return { outcome: "not_promoted", run: rescheduled };
+      }
+    }
+
+    // A dep-blocked defer must re-check dependency readiness at promotion time.
+    // If still blocked → re-defer with exponential backoff. If resolved → fall
+    // through to normal promotion so the run becomes queued and runs.
+    if (dueRun.scheduledRetryReason === DEP_BLOCKED_RETRY_REASON) {
+      const depIssueId = readNonEmptyString(parseObject(dueRun.contextSnapshot).issueId);
+      if (depIssueId) {
+        const readiness = (await issuesSvc.listDependencyReadiness(dueRun.companyId, [depIssueId])).get(depIssueId);
+        if (readiness && !readiness.isDependencyReady) {
+          const nextAttempt = (dueRun.scheduledRetryAttempt ?? 0) + 1;
+          if (nextAttempt > DEP_BLOCKED_MAX_RETRY_ATTEMPTS) {
+            const exhausted = await db
+              .update(heartbeatRuns)
+              .set({
+                status: "cancelled",
+                finishedAt: now,
+                error: `dependency-blocked retry exhausted after ${dueRun.scheduledRetryAttempt ?? 0} attempts; blockers never resolved`,
+                errorCode: "issue_dependencies_blocked",
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  eq(heartbeatRuns.id, dueRun.id),
+                  eq(heartbeatRuns.status, "scheduled_retry"),
+                  lte(heartbeatRuns.scheduledRetryAt, now),
+                ),
+              )
+              .returning()
+              .then((rows) => rows[0] ?? null);
+            if (exhausted) {
+              await appendRunEvent(exhausted, await nextRunEventSeq(exhausted.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: "dependency-blocked retry exhausted; blockers never resolved within the retry budget",
+                payload: {
+                  scheduledRetryAttempt: dueRun.scheduledRetryAttempt ?? 0,
+                  maxAttempts: DEP_BLOCKED_MAX_RETRY_ATTEMPTS,
+                  unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+                },
+              });
+            }
+            return { outcome: "not_promoted", run: exhausted };
+          }
+          const nextDueAt = new Date(now.getTime() + depBlockedRetryDelayMs(nextAttempt));
+          const rescheduled = await db
+            .update(heartbeatRuns)
+            .set({ scheduledRetryAttempt: nextAttempt, scheduledRetryAt: nextDueAt, updatedAt: now })
+            .where(
+              and(
+                eq(heartbeatRuns.id, dueRun.id),
+                eq(heartbeatRuns.status, "scheduled_retry"),
+                lte(heartbeatRuns.scheduledRetryAt, now),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (rescheduled) {
+            await appendRunEvent(rescheduled, await nextRunEventSeq(rescheduled.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "info",
+              message: "dependencies still blocked at promotion; re-deferred with backoff",
+              payload: {
+                scheduledRetryAttempt: nextAttempt,
+                scheduledRetryAt: nextDueAt.toISOString(),
+                unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+              },
+            });
+          }
+          return { outcome: "not_promoted", run: rescheduled };
+        }
+        // Dependencies resolved — fall through to promote the run.
       }
     }
 
@@ -7664,6 +7888,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
+    if (options.skipQueuedRunDispatch) return [];
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
@@ -10251,6 +10476,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    // Ccrotate capacity preflight: if the pool is exhausted for this adapter,
+    // persist as a scheduled_retry rather than starting a doomed pod. Timer,
+    // automation, and assignment wakes go through the gate; manual/on_demand
+    // are user-initiated and pass through unconditionally.
+    const gateAppliesToWake =
+      source === "timer" ||
+      source === "automation" ||
+      source === "assignment";
+    if (gateAppliesToWake) {
+      const gateResult = await ccrotateGate.checkAdapter({
+        adapterType: agent.adapterType,
+        agentId,
+        now: new Date(),
+      });
+      if (!gateResult.allow) {
+        const resumeAtIso = gateResult.resumeAt ? gateResult.resumeAt.toISOString() : null;
+        const scheduledRetryAt =
+          gateResult.resumeAt ?? new Date(Date.now() + CCROTATE_CAPACITY_DEFAULT_RETRY_DELAY_MS);
+        await db.insert(heartbeatRuns).values({
+          companyId: agent.companyId,
+          agentId,
+          invocationSource: source,
+          triggerDetail,
+          status: "scheduled_retry",
+          scheduledRetryAt,
+          scheduledRetryReason: CCROTATE_CAPACITY_RETRY_REASON,
+          scheduledRetryAttempt: 0,
+          errorCode: "rate_limit_exhausted",
+          resultJson: {
+            errorFamily: "rate_limit_exhausted",
+            ...(resumeAtIso ? { retryNotBefore: resumeAtIso, transientRetryNotBefore: resumeAtIso } : {}),
+            ccrotateTarget: gateResult.target,
+            ccrotateReason: gateResult.reason,
+          },
+          contextSnapshot: {
+            ...enrichedContextSnapshot,
+            wakeSource: source,
+            wakeTriggerDetail: triggerDetail,
+            ccrotateTarget: gateResult.target,
+            ...(resumeAtIso ? { ccrotateResumeAt: resumeAtIso } : {}),
+          },
+        });
+        return null;
+      }
+    }
+
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(agent.companyId, issueId);
       if (activePauseHold) {
@@ -10574,25 +10845,196 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
 
+        // If there is an existing dep-blocked scheduled_retry whose blocker set no longer
+        // matches the current blockers, cancel it so we create a fresh one below.
+        if (
+          activeExecutionRun &&
+          activeExecutionRun.scheduledRetryReason === DEP_BLOCKED_RETRY_REASON &&
+          dependencyReadiness &&
+          !dependencyReadiness.isDependencyReady
+        ) {
+          const storedBlockerIds: unknown[] = Array.isArray(
+            parseObject(activeExecutionRun.contextSnapshot).unresolvedBlockerIssueIds,
+          )
+            ? (parseObject(activeExecutionRun.contextSnapshot).unresolvedBlockerIssueIds as unknown[])
+            : [];
+          const currentBlockerIds = dependencyReadiness.unresolvedBlockerIssueIds ?? [];
+          const storedSet = new Set(storedBlockerIds.map(String));
+          const currentSet = new Set(currentBlockerIds.map(String));
+          const setsMatch =
+            storedSet.size === currentSet.size && [...storedSet].every((id) => currentSet.has(id));
+          if (!setsMatch) {
+            const now = new Date();
+            const cancelled = await tx
+              .update(heartbeatRuns)
+              .set({
+                status: "cancelled",
+                finishedAt: now,
+                error: "Cancelled because the dependency blocker set changed before the scheduled retry became due",
+                errorCode: "dep_blockers_changed",
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  eq(heartbeatRuns.id, activeExecutionRun.id),
+                  eq(heartbeatRuns.status, "scheduled_retry"),
+                ),
+              )
+              .returning()
+              .then((rows) => rows[0] ?? null);
+            if (cancelled) {
+              if (activeExecutionRun.wakeupRequestId) {
+                await tx
+                  .update(agentWakeupRequests)
+                  .set({
+                    status: "cancelled",
+                    finishedAt: now,
+                    error: "Cancelled because the dependency blocker set changed",
+                    updatedAt: now,
+                  })
+                  .where(eq(agentWakeupRequests.id, activeExecutionRun.wakeupRequestId));
+              }
+              await tx
+                .update(issues)
+                .set({
+                  executionRunId: null,
+                  executionAgentNameKey: null,
+                  executionLockedAt: null,
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(issues.id, issue.id),
+                    eq(issues.executionRunId, activeExecutionRun.id),
+                  ),
+                );
+              activeExecutionRun = null;
+            }
+          }
+        }
+
+        if (
+          activeExecutionRun?.status === "scheduled_retry" &&
+          activeExecutionRun.scheduledRetryReason === DEP_BLOCKED_RETRY_REASON &&
+          dependencyReadiness?.isDependencyReady
+        ) {
+          const now = new Date();
+          const cancelled = await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: "Cancelled because dependency blockers resolved before the scheduled retry became due",
+              errorCode: "dep_blockers_resolved",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, activeExecutionRun.id),
+                eq(heartbeatRuns.status, "scheduled_retry"),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (cancelled) {
+            if (activeExecutionRun.wakeupRequestId) {
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "cancelled",
+                  finishedAt: now,
+                  error: "Cancelled because dependency blockers resolved",
+                  updatedAt: now,
+                })
+                .where(eq(agentWakeupRequests.id, activeExecutionRun.wakeupRequestId));
+            }
+            await tx
+              .update(issues)
+              .set({
+                executionRunId: null,
+                executionAgentNameKey: null,
+                executionLockedAt: null,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  eq(issues.id, issue.id),
+                  eq(issues.executionRunId, activeExecutionRun.id),
+                ),
+              );
+            activeExecutionRun = null;
+          }
+        }
+
+        if (
+          blockedInteractionWake &&
+          activeExecutionRun?.status === "scheduled_retry" &&
+          activeExecutionRun.scheduledRetryReason === DEP_BLOCKED_RETRY_REASON
+        ) {
+          // Keep the dependency retry parked, but do not let it absorb a
+          // verified human interaction wake. The interaction should run in its
+          // bounded mode even while the dependency remains unresolved.
+          activeExecutionRun = null;
+        }
+
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
-          await tx.insert(agentWakeupRequests).values({
-            companyId: agent.companyId,
-            agentId,
-            source,
-            triggerDetail,
-            reason: "issue_dependencies_blocked",
-            payload: {
-              ...(payload ?? {}),
-              issueId,
-              unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
-            },
-            status: "skipped",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-            finishedAt: new Date(),
-          });
-          return { kind: "skipped" as const };
+          const now = new Date();
+          const scheduledRetryAt = new Date(now.getTime() + DEP_BLOCKED_BASE_DELAY_MS);
+          const depBlockedSnapshot = {
+            ...enrichedContextSnapshot,
+            unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+            unresolvedBlockerCount: dependencyReadiness.unresolvedBlockerCount,
+          };
+          const wakeupRequest = await tx
+            .insert(agentWakeupRequests)
+            .values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_dependencies_blocked",
+              payload: {
+                ...(payload ?? {}),
+                issueId,
+                unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+              },
+              status: "scheduled",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+            })
+            .returning()
+            .then((rows) => rows[0]);
+          const scheduledRun = await tx
+            .insert(heartbeatRuns)
+            .values({
+              companyId: agent.companyId,
+              agentId,
+              invocationSource: source,
+              triggerDetail,
+              status: "scheduled_retry",
+              scheduledRetryAt,
+              scheduledRetryAttempt: 0,
+              scheduledRetryReason: DEP_BLOCKED_RETRY_REASON,
+              wakeupRequestId: wakeupRequest.id,
+              contextSnapshot: depBlockedSnapshot,
+            })
+            .returning()
+            .then((rows) => rows[0]);
+          await tx
+            .update(agentWakeupRequests)
+            .set({ runId: scheduledRun.id, updatedAt: now })
+            .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: scheduledRun.id,
+              executionAgentNameKey: agentNameKey,
+              executionLockedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(issues.id, issue.id));
+          return { kind: "dep_blocked_scheduled" as const, run: scheduledRun };
         }
 
         if (activeExecutionRun) {
@@ -10772,7 +11214,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "deferred" || outcome.kind === "skipped" || outcome.kind === "dep_blocked_scheduled") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
