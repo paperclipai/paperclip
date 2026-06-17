@@ -3,9 +3,10 @@
  *
  * The scheduler is the central coordinator for all plugin cron jobs. It
  * periodically ticks (default every 30 seconds), queries the `plugin_jobs`
- * table for jobs whose `nextRunAt` has passed, dispatches `runJob` RPC calls
- * to the appropriate worker processes, records each execution in the
- * `plugin_job_runs` table, and advances the scheduling pointer.
+ * table for jobs whose `nextRunAt` has passed, atomically claims each due
+ * schedule slot (advancing `nextRunAt`), dispatches `runJob` RPC calls to
+ * the appropriate worker processes, and records each execution in the
+ * `plugin_job_runs` table.
  *
  * ## Responsibilities
  *
@@ -14,17 +15,32 @@
  *
  * 2. **Cron parsing & next-run calculation** — Uses the lightweight built-in
  *    cron parser ({@link parseCron}, {@link nextCronTick}) to compute the
- *    `nextRunAt` timestamp after each run or when a new job is registered.
+ *    `nextRunAt` timestamp when a slot is claimed or a new job is registered.
  *
- * 3. **Overlap prevention** — Before dispatching a job, the scheduler checks
- *    for an existing `running` run for the same job. If one exists, the job
- *    is skipped for that tick.
+ * 3. **Overlap prevention** — Two layers prevent concurrent executions of the
+ *    same job:
  *
- * 4. **Job run recording** — Every execution creates a `plugin_job_runs` row:
+ *    a. **In-process guard** — The in-memory `activeJobs` set blocks a second
+ *       dispatch on the same replica within the same tick cycle.
+ *
+ *    b. **Cross-replica guard** — After winning the atomic CAS slot-claim, the
+ *       scheduler queries `plugin_job_runs` for any `running` row whose
+ *       `startedAt` is within the last {@link RUNNING_RUN_OVERLAP_GUARD_MS}
+ *       (6 h). If one exists, the claiming replica skips the fire, preventing
+ *       a long-running job from being double-dispatched when its cron period
+ *       elapses mid-execution. Rows older than the guard window are treated as
+ *       crashed-replica leftovers and do not block scheduling.
+ *
+ * 4. **Multi-replica dedup** — Scheduled dispatches claim the schedule slot
+ *    atomically (compare-and-swap on `nextRunAt`) BEFORE creating the run,
+ *    so when N replicas tick concurrently exactly one wins the CAS; the
+ *    cross-replica guard (§3.b) then covers the long-run overlap case.
+ *
+ * 5. **Job run recording** — Every execution creates a `plugin_job_runs` row:
  *    `queued` → `running` → `succeeded` | `failed`. Duration and error are
  *    captured.
  *
- * 5. **Lifecycle integration** — The scheduler exposes `registerPlugin()` and
+ * 6. **Lifecycle integration** — The scheduler exposes `registerPlugin()` and
  *    `unregisterPlugin()` so the host lifecycle manager can wire up job
  *    scheduling when plugins start/stop. On registration, the scheduler
  *    computes `nextRunAt` for all active jobs that don't already have one.
@@ -34,7 +50,7 @@
  * @see ./cron.ts — Cron parsing utilities
  */
 
-import { and, eq, lte, or } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { pluginJobs, pluginJobRuns } from "@paperclipai/db";
 import type { PluginJobStore } from "./plugin-job-store.js";
@@ -54,6 +70,15 @@ const DEFAULT_JOB_TIMEOUT_MS = 5 * 60 * 1_000;
 
 /** Maximum number of concurrent job executions across all plugins. */
 const DEFAULT_MAX_CONCURRENT_JOBS = 10;
+
+/**
+ * A run whose `startedAt` is older than this value is treated as a crashed-
+ * replica leftover and does NOT block the next scheduled dispatch. This
+ * prevents a permanently-`running` row (orphaned by a crashed replica) from
+ * parking the schedule forever, while still guarding against legitimate
+ * long-running executions within the window.
+ */
+const RUNNING_RUN_OVERLAP_GUARD_MS = 6 * 60 * 60 * 1_000; // 6 hours
 
 // ---------------------------------------------------------------------------
 // Types
@@ -258,8 +283,9 @@ export function createPluginJobScheduler(
       const now = new Date();
 
       // Query for jobs whose nextRunAt has passed and are active.
-      // We include jobs with null nextRunAt since they may have just been
-      // registered and need their first run calculated.
+      // Note: lte(nextRunAt, now) never matches NULL rows, so jobs with a
+      // null nextRunAt (e.g. missing or invalid schedule) are not included —
+      // they must be assigned a nextRunAt via registerPlugin / ensureNextRunTimestamps.
       const dueJobs = await db
         .select()
         .from(pluginJobs)
@@ -337,17 +363,98 @@ export function createPluginJobScheduler(
   // -----------------------------------------------------------------------
 
   /**
-   * Dispatch a single job run — create the run record, call the worker,
-   * record the result, and advance the schedule pointer.
+   * Dispatch a single job run — atomically claim the schedule slot, create
+   * the run record, call the worker, and record the result.
+   *
+   * The schedule pointer (`nextRunAt`) is advanced by the claim itself,
+   * BEFORE the run is created, so it advances exactly once per scheduled
+   * fire regardless of how many replicas observed the job as due.
    */
   async function dispatchJob(
     job: typeof pluginJobs.$inferSelect,
   ): Promise<void> {
-    const { id: jobId, pluginId, jobKey, schedule } = job;
+    const { id: jobId, pluginId, jobKey } = job;
     const jobLog = log.child({ jobId, pluginId, jobKey });
 
-    // Mark as active (overlap prevention)
+    // Mark as active FIRST and synchronously — before the first await.
+    // tick() pushes dispatch promises without awaiting them and relies on
+    // `activeJobs.size >= maxConcurrentJobs` between loop iterations, so the
+    // add must happen in the synchronous prefix of this function or a burst
+    // of due jobs would all dispatch before the counter ever moves. The
+    // matching delete lives in the outer finally so EVERY exit (claim lost,
+    // overlap skip, success, failure) releases the slot.
     activeJobs.add(jobId);
+
+    try {
+      // Atomic schedule-slot claim: advance next_run_at iff it still has the
+      // value this tick observed. With N replicas ticking concurrently, exactly
+      // one UPDATE matches; the rest see zero rows and skip. This is the
+      // multi-instance guard — the in-process activeJobs Set only bounds local
+      // concurrency.
+      const nextRunAt = computeNextRunAt(job);
+      const claimed = await db
+        .update(pluginJobs)
+        .set({ nextRunAt, updatedAt: new Date() })
+        .where(
+          and(
+            eq(pluginJobs.id, jobId),
+            job.nextRunAt === null
+              ? // Defensive: tick never selects null-nextRunAt rows (its
+                // lte(nextRunAt, now) predicate cannot match NULL), so this
+                // branch is unreachable from the tick loop.
+                isNull(pluginJobs.nextRunAt)
+              : eq(pluginJobs.nextRunAt, job.nextRunAt),
+          ),
+        )
+        .returning({ id: pluginJobs.id });
+
+      if (claimed.length === 0) {
+        jobLog.debug("job slot claimed elsewhere; skipping");
+        return;
+      }
+
+      // A run longer than its cron period leaves the job due again mid-run;
+      // the CAS above means exactly one replica claims that next slot, and this
+      // guard makes that claimant skip the fire instead of overlapping the
+      // still-running execution (same invariant the manual path enforces).
+      // Stale running rows (crashed replica) are ignored past the guard window
+      // so they cannot park the schedule forever.
+      const overlapCutoff = new Date(Date.now() - RUNNING_RUN_OVERLAP_GUARD_MS);
+      const runningRuns = await db
+        .select({ id: pluginJobRuns.id })
+        .from(pluginJobRuns)
+        .where(
+          and(
+            eq(pluginJobRuns.jobId, jobId),
+            eq(pluginJobRuns.status, "running"),
+            gt(pluginJobRuns.startedAt, overlapCutoff),
+          ),
+        );
+      if (runningRuns.length > 0) {
+        // warn, not debug: a recurring overlap means the job outlasts its cron
+        // period and fires are being dropped — operators should see that.
+        jobLog.warn(
+          { jobId, jobKey, pluginId, nextRunAt },
+          "scheduled fire skipped: previous run still in progress; slot advanced — recurring overlap means the job outlasts its cron period",
+        );
+        return;
+      }
+
+      await executeClaimedRun(job);
+    } finally {
+      activeJobs.delete(jobId);
+    }
+  }
+
+  /**
+   * Execute a scheduled run after the slot claim and overlap guard have
+   * passed: create the run record, call the worker, record the result.
+   */
+  async function executeClaimedRun(
+    job: typeof pluginJobs.$inferSelect,
+  ): Promise<void> {
+    const { id: jobId, pluginId, jobKey } = job;
+    const jobLog = log.child({ jobId, pluginId, jobKey });
 
     let runId: string | undefined;
     const startedAt = Date.now();
@@ -417,16 +524,19 @@ export function createPluginJobScheduler(
         }
       }
     } finally {
-      // Remove from active set
-      activeJobs.delete(jobId);
-
-      // 5. Always advance the schedule pointer (even on failure)
+      // 5. Record lastRunAt (even on failure). nextRunAt is NOT touched
+      //    here — it was already advanced by the atomic claim above, and
+      //    re-advancing it after the run would re-open the slot to races.
+      //    (activeJobs release happens in dispatchJob's finally.)
       try {
-        await advanceSchedulePointer(job);
+        await db
+          .update(pluginJobs)
+          .set({ lastRunAt: new Date(), updatedAt: new Date() })
+          .where(eq(pluginJobs.id, jobId));
       } catch (err) {
         jobLog.error(
           { err: err instanceof Error ? err.message : String(err) },
-          "failed to advance schedule pointer",
+          "failed to record lastRunAt",
         );
       }
     }
@@ -562,28 +672,26 @@ export function createPluginJobScheduler(
   // -----------------------------------------------------------------------
 
   /**
-   * Advance the `lastRunAt` and `nextRunAt` timestamps on a job after a run.
+   * Compute the next occurrence of a job's cron schedule (after now).
+   *
+   * Returns `null` when the schedule is missing or invalid — claiming the
+   * slot with a null `nextRunAt` parks the job until it is re-registered.
    */
-  async function advanceSchedulePointer(
+  function computeNextRunAt(
     job: typeof pluginJobs.$inferSelect,
-  ): Promise<void> {
-    const now = new Date();
-    let nextRunAt: Date | null = null;
+  ): Date | null {
+    if (!job.schedule) return null;
 
-    if (job.schedule) {
-      const validationError = validateCron(job.schedule);
-      if (validationError) {
-        log.warn(
-          { jobId: job.id, schedule: job.schedule, error: validationError },
-          "invalid cron schedule — cannot compute next run",
-        );
-      } else {
-        const cron = parseCron(job.schedule);
-        nextRunAt = nextCronTick(cron, now);
-      }
+    const validationError = validateCron(job.schedule);
+    if (validationError) {
+      log.warn(
+        { jobId: job.id, schedule: job.schedule, error: validationError },
+        "invalid cron schedule — cannot compute next run",
+      );
+      return null;
     }
 
-    await jobStore.updateRunTimestamps(job.id, now, nextRunAt);
+    return nextCronTick(parseCron(job.schedule), new Date());
   }
 
   /**
