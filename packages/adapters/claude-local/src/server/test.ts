@@ -22,16 +22,8 @@ import {
 import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { isBedrockModelId } from "./models.js";
-import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { appendClaudeStrictMcpConfigArg, buildClaudeProbePermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
-
-const CLAUDE_STRICT_MCP_CONFIG_ARG = "--strict-mcp-config";
-
-function appendClaudeStrictMcpConfigArg(args: string[], extraArgs: string[], strictMcpConfig: boolean): void {
-  if (!strictMcpConfig) return;
-  if (args.includes(CLAUDE_STRICT_MCP_CONFIG_ARG) || extraArgs.includes(CLAUDE_STRICT_MCP_CONFIG_ARG)) return;
-  args.push(CLAUDE_STRICT_MCP_CONFIG_ARG);
-}
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";

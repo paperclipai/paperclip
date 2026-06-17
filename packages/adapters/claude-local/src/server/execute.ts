@@ -61,11 +61,10 @@ import { prepareClaudeConfigSeed, resolveSharedClaudeConfigDir } from "./claude-
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
-import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import { appendClaudeStrictMcpConfigArg, buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const CLAUDE_STRICT_MCP_CONFIG_ARG = "--strict-mcp-config";
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -131,12 +130,6 @@ function isBedrockAuth(env: Record<string, string>): boolean {
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
   if (isBedrockAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
-}
-
-function appendClaudeStrictMcpConfigArg(args: string[], extraArgs: string[], strictMcpConfig: boolean): void {
-  if (!strictMcpConfig) return;
-  if (args.includes(CLAUDE_STRICT_MCP_CONFIG_ARG) || extraArgs.includes(CLAUDE_STRICT_MCP_CONFIG_ARG)) return;
-  args.push(CLAUDE_STRICT_MCP_CONFIG_ARG);
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
