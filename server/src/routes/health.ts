@@ -28,6 +28,61 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
   return timingSafeEqual(expected, provided);
 }
 
+function normalizeBaseUrl(rawUrl: string | undefined): string | null {
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/\/+$/, "");
+}
+
+function getMediaWorkerUrl(): string | null {
+  return normalizeBaseUrl(process.env.MEDIA_WORKER_URL ?? process.env.SINK_DINK_MEDIA_WORKER_URL);
+}
+
+function absoluteWorkerFileUrl(workerUrl: string, value: unknown): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const url = value.trim();
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${workerUrl}${url.startsWith("/") ? "" : "/"}${url}`;
+}
+
+type WorkerFile = {
+  file?: unknown;
+  url?: unknown;
+  [key: string]: unknown;
+};
+
+function normalizeWorkerFiles(workerUrl: string, data: Record<string, unknown>): Array<Record<string, unknown>> {
+  const files = Array.isArray(data.files) ? data.files : [];
+  return files
+    .filter((item): item is WorkerFile => item !== null && typeof item === "object")
+    .map((item) => ({
+      ...item,
+      absoluteUrl: absoluteWorkerFileUrl(workerUrl, item.url),
+    }));
+}
+
+async function insertSupabaseRows(table: string, rows: Array<Record<string, unknown>>): Promise<{ ok: boolean; skipped?: boolean; error?: string }> {
+  const supabaseUrl = normalizeBaseUrl(process.env.SUPABASE_URL);
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  if (!supabaseUrl || !serviceRoleKey) {
+    return { ok: true, skipped: true };
+  }
+
+  const response = await fetch(`${supabaseUrl}/rest/v1/${table}`, {
+    method: "POST",
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify(rows),
+  });
+
+  if (response.ok) return { ok: true };
+  return { ok: false, error: await response.text() };
+}
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -76,6 +131,145 @@ export function healthRoutes(
     }
 
     res.status(202).json({ status: "restart_requested" });
+  });
+
+  router.get("/sink-dink/remote-worker/status", async (_req, res) => {
+    const workerUrl = getMediaWorkerUrl();
+    const supabaseUrl = normalizeBaseUrl(process.env.SUPABASE_URL);
+    const hasSupabaseServiceRole = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY?.trim());
+
+    const baseStatus = {
+      ok: Boolean(workerUrl),
+      service: "sink-dink-remote-worker-bridge",
+      renderMode: process.env.PAPERCLIP_MEDIA_RENDER_MODE ?? "local",
+      workerUrlConfigured: Boolean(workerUrl),
+      workerUrl,
+      supabaseConfigured: Boolean(supabaseUrl && hasSupabaseServiceRole),
+      supabaseUrlConfigured: Boolean(supabaseUrl),
+      supabaseServiceRoleConfigured: hasSupabaseServiceRole,
+      humanApprovalRequired: true,
+      publishingBlocked: true,
+    };
+
+    if (!workerUrl) {
+      res.status(503).json({
+        ...baseStatus,
+        error: "MEDIA_WORKER_URL is not configured",
+      });
+      return;
+    }
+
+    try {
+      const response = await fetch(`${workerUrl}/health`, { method: "GET" });
+      const workerHealth = await response.json().catch(() => null);
+      res.status(response.ok ? 200 : 502).json({
+        ...baseStatus,
+        ok: response.ok,
+        workerHttpStatus: response.status,
+        workerHealth,
+      });
+    } catch (error) {
+      res.status(502).json({
+        ...baseStatus,
+        ok: false,
+        error: error instanceof Error ? error.message : "worker_health_failed",
+      });
+    }
+  });
+
+  router.post("/sink-dink/remote-worker/create", async (req, res) => {
+    const workerUrl = getMediaWorkerUrl();
+    if (!workerUrl) {
+      res.status(503).json({
+        ok: false,
+        error: "MEDIA_WORKER_URL is not configured",
+        humanApprovalRequired: true,
+        publishingBlocked: true,
+      });
+      return;
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const topic = typeof body.topic === "string" && body.topic.trim().length > 0
+      ? body.topic.trim()
+      : "SINK DINK India test topic";
+    const tone = typeof body.tone === "string" && body.tone.trim().length > 0
+      ? body.tone.trim()
+      : "respectful Hinglish";
+    const durationSec = typeof body.durationSec === "number" && Number.isFinite(body.durationSec)
+      ? body.durationSec
+      : 25;
+
+    try {
+      const workerResponse = await fetch(`${workerUrl}/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic,
+          tone,
+          durationSec,
+          mediaPack: body.mediaPack,
+        }),
+      });
+
+      const workerPayload = await workerResponse.json().catch(async () => ({
+        raw: await workerResponse.text().catch(() => ""),
+      })) as Record<string, unknown>;
+      const jobId = typeof workerPayload.jobId === "string" ? workerPayload.jobId : null;
+      const files = normalizeWorkerFiles(workerUrl, workerPayload);
+
+      const supabaseJobs = jobId
+        ? await insertSupabaseRows("sink_dink_jobs", [{
+            job_id: jobId,
+            source: "paperclip",
+            worker: "huggingface",
+            topic,
+            status: typeof workerPayload.status === "string" ? workerPayload.status : "created",
+            files,
+            qa: { workerHttpStatus: workerResponse.status },
+            approval_status: "pending_human_approval",
+          }])
+        : { ok: true, skipped: true };
+
+      const supabaseAudit = jobId
+        ? await insertSupabaseRows("sink_dink_audit_log", [{
+            event_type: "remote_worker_create",
+            job_id: jobId,
+            actor: "paperclip-render",
+            details: {
+              topic,
+              tone,
+              durationSec,
+              workerUrl,
+              workerHttpStatus: workerResponse.status,
+            },
+          }])
+        : { ok: true, skipped: true };
+
+      res.status(workerResponse.ok ? 200 : 502).json({
+        ok: workerResponse.ok,
+        service: "sink-dink-remote-worker-bridge",
+        jobId,
+        remoteStatus: workerPayload.status ?? null,
+        workerHttpStatus: workerResponse.status,
+        workerPayload,
+        files,
+        supabase: {
+          jobs: supabaseJobs,
+          audit: supabaseAudit,
+        },
+        humanApprovalRequired: true,
+        publishingBlocked: true,
+      });
+    } catch (error) {
+      res.status(502).json({
+        ok: false,
+        service: "sink-dink-remote-worker-bridge",
+        error: error instanceof Error ? error.message : "remote_worker_create_failed",
+        humanApprovalRequired: true,
+        publishingBlocked: true,
+      });
+    }
   });
 
   router.get("/", async (req, res) => {
