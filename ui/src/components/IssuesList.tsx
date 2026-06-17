@@ -41,6 +41,7 @@ import {
   resolveIssueWorkspaceName,
   type InboxIssueColumn,
 } from "../lib/inbox";
+import { isHumanControlWorkItemType } from "../lib/issue-work-items";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
 import {
   InboxIssueMetaLeading,
@@ -74,10 +75,6 @@ const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
 const INITIAL_ISSUE_ROW_RENDER_LIMIT = 100;
 const ISSUE_ROW_RENDER_BATCH_SIZE = 150;
 const ISSUE_SCROLL_LOAD_THRESHOLD_PX = 320;
-
-function isHumanControlWorkItemType(value: unknown) {
-  return value === "initiative" || value === "human_task";
-}
 
 function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | null {
   if (!element || typeof window === "undefined") return null;

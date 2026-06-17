@@ -25,6 +25,7 @@ import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects"
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
+import { isHumanControlWorkItemType } from "../lib/issue-work-items";
 import { formatMonitorOffset } from "../lib/issue-monitor";
 import { formatRetryReason } from "../lib/runRetryState";
 import { useRetryNowMutation } from "../hooks/useRetryNowMutation";
@@ -738,11 +739,14 @@ export function IssueProperties({
     return project ? projectUrl(project) : `/projects/${id}`;
   };
 
+  const isHumanControlIssue = isHumanControlWorkItemType(issue.workItemType);
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [assigneeOpen]);
   const recentAssigneeSelectionIds = useMemo(() => getRecentAssigneeSelectionIds(), [assigneeOpen]);
   const sortedAgents = useMemo(
-    () => sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
-    [agents, recentAssigneeIds],
+    () => isHumanControlIssue
+      ? []
+      : sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
+    [agents, isHumanControlIssue, recentAssigneeIds],
   );
   const recentAssigneeValues = useMemo(
     () => recentAssigneeSelectionIds,
@@ -763,7 +767,7 @@ export function IssueProperties({
     : null;
   const assigneeAdapterType = assignee?.adapterType ?? null;
   const assigneeAdapterOverrides = issue.assigneeAdapterOverrides ?? null;
-  const showAssigneeAdapterOptions = assigneeAdapterOverrides !== null;
+  const showAssigneeAdapterOptions = !isHumanControlIssue && assigneeAdapterOverrides !== null;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );

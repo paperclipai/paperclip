@@ -20,6 +20,7 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
+import { isHumanControlWorkItemType } from "../lib/issue-work-items";
 import { useToastActions } from "../context/ToastContext";
 import {
   assigneeValueFromSelection,
@@ -138,10 +139,6 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
 
 function isIssueWorkMode(value: unknown): value is IssueWorkMode {
   return value === "standard" || value === "planning";
-}
-
-function isHumanControlWorkItemType(value: unknown): value is "initiative" | "human_task" {
-  return value === "initiative" || value === "human_task";
 }
 
 function assigneeValueFromIssueDefaults(defaults: {

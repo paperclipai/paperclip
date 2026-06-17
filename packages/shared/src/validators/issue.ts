@@ -372,6 +372,9 @@ export const createIssueLabelSchema = z.object({
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
 export const updateIssueSchema = createIssueBaseSchema.partial().extend({
+  workMode: z.enum(ISSUE_WORK_MODES).optional(),
+  workItemType: z.enum(ISSUE_WORK_ITEM_TYPES).optional(),
+  priority: z.enum(ISSUE_PRIORITIES).optional(),
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),

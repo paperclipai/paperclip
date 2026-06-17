@@ -192,6 +192,14 @@ function buildCreateIssueActivityStatusDetails(
   };
 }
 
+function isHumanControlWorkItemType(value: unknown) {
+  return value === "initiative" || value === "human_task";
+}
+
+function issueAllowsAgentWakeups(issue: { workItemType?: string | null }) {
+  return !isHumanControlWorkItemType(issue.workItemType);
+}
+
 const SUCCESSFUL_RUN_HANDOFF_ACTIONS = [
   "issue.successful_run_handoff_required",
   "issue.successful_run_handoff_resolved",
@@ -3649,6 +3657,7 @@ export function issueRoutes(
     void (async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
+      const allowDirectAgentWakeups = issueAllowsAgentWakeups(issue);
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
         const wakeIssueId =
           wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
@@ -3657,9 +3666,9 @@ export function issueRoutes(
         wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
       };
 
-      if (executionStageWakeup) {
+      if (allowDirectAgentWakeups && executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId) {
+      } else if (allowDirectAgentWakeups && assigneeChanged && issue.assigneeAgentId) {
         // Master fork: wake agents even on backlog assignments — otherwise backlog items never start.
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
@@ -3691,6 +3700,7 @@ export function issueRoutes(
       }
 
       if (
+        allowDirectAgentWakeups &&
         !assigneeChanged &&
         (statusChangedFromBacklog || statusChangedFromBlockedToTodo || statusChangedFromClosedToTodo) &&
         issue.assigneeAgentId
@@ -3716,7 +3726,7 @@ export function issueRoutes(
         });
       }
 
-      if (commentBody && comment) {
+      if (allowDirectAgentWakeups && commentBody && comment) {
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
@@ -3820,6 +3830,7 @@ export function issueRoutes(
           for (const child of children) {
             if (
               child.assigneeAgentId &&
+              issueAllowsAgentWakeups(child) &&
               child.status !== "done" &&
               child.status !== "cancelled"
             ) {
@@ -4942,11 +4953,12 @@ export function issueRoutes(
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+      const allowDirectAgentWakeups = issueAllowsAgentWakeups(currentIssue);
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
       const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
+      if (allowDirectAgentWakeups && assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",
@@ -5003,10 +5015,12 @@ export function issueRoutes(
       }
 
       let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+      if (allowDirectAgentWakeups) {
+        try {
+          mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+        } catch (err) {
+          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+        }
       }
 
       for (const mentionedId of mentionedIds) {

@@ -2966,6 +2966,7 @@ export function issueService(db: Db) {
           id: issues.id,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
+          workItemType: issues.workItemType,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -3003,7 +3004,10 @@ export function issueService(db: Db) {
       }
 
       return candidates
-        .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
+        .filter((candidate) =>
+          candidate.assigneeAgentId
+          && !isHumanControlWorkItemType(candidate.workItemType)
+          && !["backlog", "done", "cancelled"].includes(candidate.status))
         .map((candidate) => {
           const blockers = blockersByIssueId.get(candidate.id) ?? [];
           return {
@@ -3023,6 +3027,7 @@ export function issueService(db: Db) {
         .map((candidate) => ({
           id: candidate.id,
           assigneeAgentId: candidate.assigneeAgentId!,
+          workItemType: candidate.workItemType,
           blockerIssueIds: candidate.blockerIssueIds,
         }));
     },
@@ -3033,12 +3038,18 @@ export function issueService(db: Db) {
           id: issues.id,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
+          workItemType: issues.workItemType,
           companyId: issues.companyId,
         })
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
-      if (!parent || !parent.assigneeAgentId || ["backlog", "done", "cancelled"].includes(parent.status)) {
+      if (
+        !parent
+        || !parent.assigneeAgentId
+        || isHumanControlWorkItemType(parent.workItemType)
+        || ["backlog", "done", "cancelled"].includes(parent.status)
+      ) {
         return null;
       }
 
@@ -3089,6 +3100,7 @@ export function issueService(db: Db) {
       return {
         id: parent.id,
         assigneeAgentId: parent.assigneeAgentId,
+        workItemType: parent.workItemType,
         childIssueIds: children.map((child) => child.id),
         childIssueSummaries,
         childIssueSummaryTruncated: children.length > childIssueSummaries.length,

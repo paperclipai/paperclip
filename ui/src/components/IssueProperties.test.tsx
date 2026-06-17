@@ -4,6 +4,7 @@ import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type {
+  Agent,
   ExecutionWorkspace,
   IssueExecutionPolicy,
   IssueExecutionState,
@@ -169,6 +170,36 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     ...overrides,
     workMode: overrides.workMode ?? "standard",
   };
+}
+
+function createAgent(overrides: Partial<Agent> = {}): Agent {
+  return {
+    id: "agent-1",
+    companyId: "company-1",
+    name: "Ada Agent",
+    urlKey: "ada-agent",
+    role: "engineer",
+    title: null,
+    icon: null,
+    status: "active",
+    reportsTo: null,
+    capabilities: null,
+    adapterType: "codex_local",
+    adapterConfig: {},
+    runtimeConfig: {},
+    defaultEnvironmentId: null,
+    budgetMonthlyCents: 0,
+    spentMonthlyCents: 0,
+    pauseReason: null,
+    pausedAt: null,
+    permissions: {},
+    lastHeartbeatAt: null,
+    metadata: null,
+    credentialId: null,
+    createdAt: new Date("2026-04-06T12:00:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+    ...overrides,
+  } as Agent;
 }
 
 function createLabel(overrides: Partial<IssueLabel> = {}): IssueLabel {
@@ -422,6 +453,24 @@ describe("IssueProperties", () => {
     await flush();
 
     expect(container.querySelector('[data-status-icon-state="covered"]')?.textContent).toBe("blocked");
+
+    act(() => root.unmount());
+  });
+
+  it("does not offer agent assignees for human-control issues", async () => {
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    const root = renderProperties(container, {
+      issue: createIssue({ workItemType: "human_task" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    const assigneeSearch = container.querySelector('input[placeholder="Search assignees..."]');
+    expect(assigneeSearch).not.toBeNull();
+    const assigneePicker = assigneeSearch?.parentElement;
+    expect(assigneePicker?.textContent).toContain("No assignee");
+    expect(assigneePicker?.textContent).not.toContain("Ada Agent");
 
     act(() => root.unmount());
   });

@@ -33,6 +33,7 @@ import {
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
+import { isHumanControlWorkItemType } from "../lib/issue-work-items";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   hasBlockingShortcutDialog,
@@ -1667,13 +1668,14 @@ export function IssueDetail() {
     () => buildCompanyUserLabelMap(companyMembers?.users),
     [companyMembers?.users],
   );
+  const isHumanControlIssue = isHumanControlWorkItemType(issue?.workItemType);
   const mentionOptions = useMemo<MentionOption[]>(() => {
     return buildMarkdownMentionOptions({
-      agents,
+      agents: isHumanControlIssue ? [] : agents,
       projects: orderedProjects,
       members: companyMembers?.users,
     });
-  }, [agents, companyMembers?.users, orderedProjects]);
+  }, [agents, companyMembers?.users, isHumanControlIssue, orderedProjects]);
 
   const resolvedProject = useMemo(
     () => (issue?.projectId ? orderedProjects.find((project) => project.id === issue.projectId) ?? issue.project ?? null : null),
@@ -1712,17 +1714,19 @@ export function IssueDetail() {
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
     options.push(...buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId] }));
-    const activeAgents = [...(agents ?? [])]
-      .filter((agent) => agent.status !== "terminated")
-      .sort((a, b) => a.name.localeCompare(b.name));
-    for (const agent of activeAgents) {
-      options.push({ id: `agent:${agent.id}`, label: agent.name });
+    if (!isHumanControlIssue) {
+      const activeAgents = [...(agents ?? [])]
+        .filter((agent) => agent.status !== "terminated")
+        .sort((a, b) => a.name.localeCompare(b.name));
+      for (const agent of activeAgents) {
+        options.push({ id: `agent:${agent.id}`, label: agent.name });
+      }
     }
     if (currentUserId) {
       options.push({ id: `user:${currentUserId}`, label: "Me" });
     }
     return options;
-  }, [agents, companyMembers?.users, currentUserId]);
+  }, [agents, companyMembers?.users, currentUserId, isHumanControlIssue]);
 
   const actualAssigneeValue = useMemo(
     () => assigneeValueFromSelection(issue ?? {}),
@@ -1730,13 +1734,15 @@ export function IssueDetail() {
   );
 
   const suggestedAssigneeValue = useMemo(
-    () =>
-      suggestedCommentAssigneeValue(
+    () => {
+      const value = suggestedCommentAssigneeValue(
         issue ?? {},
         mergeIssueComments(comments ?? [], optimisticComments),
         currentUserId,
-      ),
-    [issue, comments, optimisticComments, currentUserId],
+      );
+      return isHumanControlIssue && value.startsWith("agent:") ? "" : value;
+    },
+    [issue, comments, optimisticComments, currentUserId, isHumanControlIssue],
   );
 
   const threadComments = useMemo(
