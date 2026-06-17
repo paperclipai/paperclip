@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError, isOpenCodeInvalidMessageError } from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -73,5 +73,22 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+
+  it("detects invalid message errors from the Anthropic API", () => {
+    const realErrorLine = JSON.stringify({
+      type: "error",
+      sessionID: "ses_1419cb362ffe0Ad2qbDJufGWwQ",
+      error: {
+        message:
+          "Bad Request: invalid request: invalid message provided at index 130: must have non-empty content or tool calls",
+      },
+    });
+    expect(isOpenCodeInvalidMessageError(realErrorLine, "")).toBe(true);
+    expect(isOpenCodeInvalidMessageError("", "invalid message provided at index 42")).toBe(true);
+    expect(isOpenCodeInvalidMessageError("must have non-empty content or tool calls", "")).toBe(true);
+    expect(isOpenCodeInvalidMessageError("must have non empty content or tool calls", "")).toBe(true);
+    expect(isOpenCodeInvalidMessageError("session not found", "")).toBe(false);
+    expect(isOpenCodeInvalidMessageError("all good", "")).toBe(false);
   });
 });

@@ -50,7 +50,7 @@ import {
   scheduleOrphanReaper,
   PROCESS_HANDLE_GRACE_MS,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { isOpenCodeInvalidMessageError, isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -725,6 +725,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await onLog(
           "stdout",
           `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+        );
+        const retry = await runAttempt(null);
+        return toResult(retry, true);
+      }
+
+      if (
+        sessionId &&
+        initialFailed &&
+        isOpenCodeInvalidMessageError(initial.proc.stdout, initial.rawStderr)
+      ) {
+        await onLog(
+          "stdout",
+          `[paperclip] OpenCode session "${sessionId}" contains invalid messages (empty content); retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
         return toResult(retry, true);
