@@ -1073,6 +1073,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
 
 function CopyablePreBlock({ children, className }: { children: string; className?: string }) {
   const [copied, setCopied] = useState(false);
+  const toastActions = useOptionalToastActions();
   return (
     <div className="group/pre relative">
       <pre className={className}>{children}</pre>
@@ -1088,6 +1089,12 @@ function CopyablePreBlock({ children, className }: { children: string; className
           void copyTextToClipboard(children).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
+          }).catch((error) => {
+            toastActions?.pushToast({
+              title: "Copy failed",
+              body: error instanceof Error ? error.message : "Unable to copy text",
+              tone: "error",
+            });
           });
         }}
       >
@@ -1333,6 +1340,7 @@ function IssueChatUserMessage({
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const toastActions = useOptionalToastActions();
   const {
     isCurrentUser,
     authorName: resolvedAuthorName,
@@ -1456,6 +1464,12 @@ function IssueChatUserMessage({
                 void copyTextToClipboard(text).then(() => {
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
+                }).catch((error) => {
+                  toastActions?.pushToast({
+                    title: "Copy failed",
+                    body: error instanceof Error ? error.message : "Unable to copy message",
+                    tone: "error",
+                  });
                 });
               }}
             >
@@ -1568,6 +1582,7 @@ function IssueChatAssistantMessage({
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
   const [copied, setCopied] = useState(false);
+  const toastActions = useOptionalToastActions();
   const copyText = deleted ? "" : getThreadMessageCopyText(message);
 
   // Derive fold state synchronously during render (not in useEffect) so the
@@ -1689,6 +1704,12 @@ function IssueChatAssistantMessage({
                     void copyTextToClipboard(copyText).then(() => {
                       setCopied(true);
                       setTimeout(() => setCopied(false), 2000);
+                    }).catch((error) => {
+                      toastActions?.pushToast({
+                        title: "Copy failed",
+                        body: error instanceof Error ? error.message : "Unable to copy message",
+                        tone: "error",
+                      });
                     });
                   }}
                 >
@@ -1730,7 +1751,13 @@ function IssueChatAssistantMessage({
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem
                       onClick={() => {
-                        void copyTextToClipboard(copyText);
+                        void copyTextToClipboard(copyText).catch((error) => {
+                          toastActions?.pushToast({
+                            title: "Copy failed",
+                            body: error instanceof Error ? error.message : "Unable to copy message",
+                            tone: "error",
+                          });
+                        });
                       }}
                     >
                       <Copy className="mr-2 h-3.5 w-3.5" />
@@ -2370,6 +2397,7 @@ function SystemNoticeCommentRow({
   anchorId?: string;
 }) {
   const { onImageClick, agentMap, issueStatus, successfulRunHandoff } = useContext(IssueChatCtx);
+  const toastActions = useOptionalToastActions();
   const custom = message.metadata.custom as Record<string, unknown>;
   const presentation = isIssueCommentPresentation(custom.presentation) ? custom.presentation : null;
   const commentMetadata = isIssueCommentMetadata(custom.commentMetadata) ? custom.commentMetadata : null;
@@ -2422,6 +2450,12 @@ function SystemNoticeCommentRow({
     void copyTextToClipboard(bodyText).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }).catch((error) => {
+      toastActions?.pushToast({
+        title: "Copy failed",
+        body: error instanceof Error ? error.message : "Unable to copy system notice",
+        tone: "error",
+      });
     });
   };
 
@@ -2431,6 +2465,12 @@ function SystemNoticeCommentRow({
     void copyTextToClipboard(url).then(() => {
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2000);
+    }).catch((error) => {
+      toastActions?.pushToast({
+        title: "Copy failed",
+        body: error instanceof Error ? error.message : "Unable to copy system notice link",
+        tone: "error",
+      });
     });
   };
 

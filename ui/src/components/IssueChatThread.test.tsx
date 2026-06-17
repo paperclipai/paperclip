@@ -358,62 +358,76 @@ describe("IssueChatThread", () => {
       throw new Error("Clipboard API blocked");
     });
     const execCommand = vi.fn(() => true);
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, "execCommand");
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: clipboardWrite },
-    });
-    Object.defineProperty(window, "isSecureContext", {
-      configurable: true,
-      value: false,
     });
     Object.defineProperty(document, "execCommand", {
       configurable: true,
       value: execCommand,
     });
-    const root = createRoot(container);
 
-    act(() => {
-      root.render(
-        <MemoryRouter>
-          <IssueChatThread
-            comments={[{
-              id: "comment-copy",
-              companyId: "company-1",
-              issueId: "issue-1",
-              authorAgentId: null,
-              authorUserId: "user-1",
-              authorType: "user",
-              body: "Copy this comment",
-              presentation: null,
-              metadata: null,
-              createdAt: new Date("2026-04-06T12:00:00.000Z"),
-              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
-            }]}
-            linkedRuns={[]}
-            timelineEvents={[]}
-            liveRuns={[]}
-            onAdd={async () => {}}
-            showComposer={false}
-            enableLiveTranscriptPolling={false}
-          />
-        </MemoryRouter>,
-      );
-    });
+    try {
+      const root = createRoot(container);
 
-    const copyButton = container.querySelector('button[aria-label="Copy message"]') as HTMLButtonElement | null;
-    expect(copyButton).not.toBeNull();
+      act(() => {
+        root.render(
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[{
+                id: "comment-copy",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-1",
+                authorType: "user",
+                body: "Copy this comment",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:00:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+              }]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              showComposer={false}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>,
+        );
+      });
 
-    await act(async () => {
-      copyButton?.click();
-      await Promise.resolve();
-    });
+      const copyButton = container.querySelector('button[aria-label="Copy message"]') as HTMLButtonElement | null;
+      expect(copyButton).not.toBeNull();
 
-    expect(clipboardWrite).toHaveBeenCalledWith("Copy this comment");
-    expect(execCommand).toHaveBeenCalledWith("copy");
+      await act(async () => {
+        copyButton?.click();
+        await Promise.resolve();
+      });
 
-    act(() => {
-      root.unmount();
-    });
+      expect(clipboardWrite).toHaveBeenCalledWith("Copy this comment");
+      expect(execCommand).toHaveBeenCalledWith("copy");
+
+      act(() => {
+        root.unmount();
+      });
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, "clipboard", originalClipboard);
+      } else {
+        // @ts-expect-error test cleanup for optional browser API
+        delete navigator.clipboard;
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, "execCommand", originalExecCommand);
+      } else {
+        // @ts-expect-error test cleanup for optional browser API
+        delete document.execCommand;
+      }
+    }
   });
 
   it("renders footer content inside the thread viewport before the bottom anchor", () => {
