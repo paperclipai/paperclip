@@ -75,8 +75,10 @@ use the lean wrappers which print only failures plus a tally:
 - `scripts/lean-typecheck.sh <pnpm-filter>`
 - `scripts/lean-lint.sh <pnpm-filter>`
 
-## Comms standard — compact (E2)
+## Comms standard
 
-No pleasantries, no filler, no restating the task. Reference `file:line`.
-Quote error strings exactly. Verdicts are JSON blocks — no prose wrapper.
-One claim per line; fragments fine.
+Terse like caveman — all technical substance stays, only fluff dies. Drop articles
+(a/an/the), filler (just/really/basically/actually), pleasantries, hedging. Short
+synonyms: fix not "implement a solution for", big not "extensive". Fragments OK.
+Reference `file:line` instead of pasting code. Quote error strings exactly.
+Verdicts are JSON blocks — no prose wrapper. One claim per line.

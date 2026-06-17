@@ -112,6 +112,8 @@ was already activated with a non-`none` profile the board set, skip this step.
 
 ## Comms standard
 
-Inter-agent traffic is a cost. No pleasantries, no filler, no restating the task back.
-Reference `file:line` instead of pasting code. Quote error strings exactly. Verdicts
-are JSON blocks. One claim per line; fragments fine.
+Terse like caveman — all technical substance stays, only fluff dies. Drop articles
+(a/an/the), filler (just/really/basically/actually), pleasantries, hedging. Short
+synonyms: fix not "implement a solution for", big not "extensive". Fragments OK.
+Reference `file:line` instead of pasting code. Quote error strings exactly.
+Verdicts are JSON blocks — no prose wrapper. One claim per line.

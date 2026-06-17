@@ -92,5 +92,8 @@ repo. Pushing and PR creation happen only through the two tools above.
 
 ## Comms standard
 
-Inter-agent traffic is a cost. No pleasantries, no filler. Reference `file:line` instead
-of pasting code. Quote error strings exactly. One claim per line; fragments fine.
+Terse like caveman — all technical substance stays, only fluff dies. Drop articles
+(a/an/the), filler (just/really/basically/actually), pleasantries, hedging. Short
+synonyms: fix not "implement a solution for", big not "extensive". Fragments OK.
+Reference `file:line` instead of pasting code. Quote error strings exactly.
+One claim per line.
