@@ -372,6 +372,40 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(schema: z.ZodObje
   }, schema);
 }
 
+export const SYSTEM_RESERVED_ORIGIN_KINDS = [
+  "routine_execution",
+  "harness_liveness_escalation",
+  "stale_active_run_evaluation",
+  "issue_productivity_review",
+  "stranded_issue_recovery",
+  "blocker_attention_open_recovery",
+] as const;
+
+export type SystemReservedOriginKind = typeof SYSTEM_RESERVED_ORIGIN_KINDS[number];
+
+const SYSTEM_RESERVED_ORIGIN_KIND_SET: ReadonlySet<string> = new Set(SYSTEM_RESERVED_ORIGIN_KINDS);
+
+export function isSystemReservedOriginKind(value: string): boolean {
+  if (SYSTEM_RESERVED_ORIGIN_KIND_SET.has(value)) return true;
+  // Plugin operation origins are reserved for internal plugin orchestration.
+  // External callers may use namespaced values like "plugin:foo" but not the
+  // operation-level forms reserved for the orchestrator.
+  if (/^plugin:[^:]+:operation(?::.+)?$/.test(value)) return true;
+  return false;
+}
+
+function applyOriginKindReservationGuard<Schema extends z.ZodTypeAny>(schema: Schema): Schema {
+  return schema.superRefine((value: { originKind?: string | null }, ctx) => {
+    if (typeof value.originKind === "string" && isSystemReservedOriginKind(value.originKind)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `originKind "${value.originKind}" is reserved for internal use; external callers must use a namespaced value (e.g. "linear", "sentry", "plugin:<id>")`,
+        path: ["originKind"],
+      });
+    }
+  }) as unknown as Schema;
+}
+
 const createIssueBaseSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
@@ -394,25 +428,34 @@ const createIssueBaseSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+  originKind: z.string().trim().min(1).max(120).optional(),
+  originId: z.string().trim().min(1).max(500).optional().nullable(),
+  originFingerprint: z.string().trim().min(1).max(120).optional(),
 });
 
-export const createIssueInputSchema = createIssueBaseSchema.extend({
-  status: createIssueBaseSchema.shape.status.optional(),
-});
+export const createIssueInputSchema = applyOriginKindReservationGuard(
+  createIssueBaseSchema.extend({
+    status: createIssueBaseSchema.shape.status.optional(),
+  }),
+);
 
-export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema);
+export const createIssueSchema = applyOriginKindReservationGuard(
+  withCreateIssueStatusDefault(createIssueBaseSchema),
+);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
-export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
-  .omit({
-    parentId: true,
-    inheritExecutionWorkspaceFromIssueId: true,
-  })
-  .extend({
-    acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
-    blockParentUntilDone: z.boolean().optional().default(false),
-  }));
+export const createChildIssueSchema = applyOriginKindReservationGuard(
+  withCreateIssueStatusDefault(createIssueBaseSchema
+    .omit({
+      parentId: true,
+      inheritExecutionWorkspaceFromIssueId: true,
+    })
+    .extend({
+      acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      blockParentUntilDone: z.boolean().optional().default(false),
+    })),
+);
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
@@ -430,16 +473,19 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
-export const updateIssueSchema = createIssueBaseSchema.partial().extend({
-  requestDepth: issueRequestDepthInputSchema.optional(),
-  assigneeAgentId: z.string().trim().min(1).optional().nullable(),
-  comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
-  reviewRequest: issueReviewRequestSchema.optional().nullable(),
-  reopen: z.boolean().optional(),
-  resume: z.boolean().optional(),
-  interrupt: z.boolean().optional(),
-  hiddenAt: z.string().datetime().nullable().optional(),
-});
+export const updateIssueSchema = createIssueBaseSchema
+  .omit({ originKind: true, originId: true, originFingerprint: true })
+  .partial()
+  .extend({
+    requestDepth: issueRequestDepthInputSchema.optional(),
+    assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+    comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
+    reviewRequest: issueReviewRequestSchema.optional().nullable(),
+    reopen: z.boolean().optional(),
+    resume: z.boolean().optional(),
+    interrupt: z.boolean().optional(),
+    hiddenAt: z.string().datetime().nullable().optional(),
+  });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
