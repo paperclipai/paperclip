@@ -117,6 +117,14 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    activePluginOriginFingerprintIdx: uniqueIndex("issues_active_plugin_origin_fingerprint_uq")
+      .on(table.companyId, table.originKind, table.originFingerprint)
+      .where(
+        sql`${table.originKind} like 'plugin:%'
+          and ${table.originFingerprint} <> 'default'
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
     activeStaleRunEvaluationIdx: uniqueIndex("issues_active_stale_run_evaluation_uq")
       .on(table.companyId, table.originKind, table.originId)
       .where(

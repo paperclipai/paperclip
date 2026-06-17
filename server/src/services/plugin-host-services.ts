@@ -7,12 +7,13 @@ import {
   costEvents,
   heartbeatRuns,
   invites,
+  issueComments,
   issues as issuesTable,
   pluginLogs,
   principalPermissionGrants,
   projects as projectsTable,
 } from "@paperclipai/db";
-import { eq, and, like, desc, inArray, sql, isNull, isNotNull, gt, lte } from "drizzle-orm";
+import { eq, and, like, desc, inArray, notInArray, sql, isNull, isNotNull, gt, lte } from "drizzle-orm";
 import type {
   HostServices,
   Company,
@@ -686,6 +687,88 @@ export function buildHostServices(
     throw new Error(`Plugin may only use originKind values under ${defaultPluginOriginKind}`);
   };
 
+  const alertResourceLabelKeys = [
+    "cluster",
+    "namespace",
+    "persistentvolumeclaim",
+    "persistentvolume",
+    "volume",
+    "node",
+    "pod",
+    "container",
+    "deployment",
+    "daemonset",
+    "statefulset",
+    "replicaset",
+    "job",
+    "cronjob",
+    "service",
+    "ingress",
+    "endpoint",
+    "instance",
+  ];
+
+  const normalizeAlertFingerprintPart = (value: string) =>
+    value.trim().toLowerCase().replace(/[^a-z0-9._:/-]+/g, "-").replace(/^-+|-+$/g, "");
+
+  const normalizeOriginFingerprint = (value: string | null | undefined) => {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    return trimmed.length > 0 && trimmed !== "default" ? trimmed : null;
+  };
+
+  const collectAlertLabelCandidates = (text: string) => {
+    const labels = new Map<string, string>();
+    const add = (key: string, value: string) => {
+      const normalizedKey = key.trim().toLowerCase();
+      const normalizedValue = value.trim().replace(/^['"]|['"]$/g, "");
+      if (/^[a-z_][a-z0-9_]*$/.test(normalizedKey) && normalizedValue.length > 0) {
+        labels.set(normalizedKey, normalizedValue);
+      }
+    };
+    for (const match of text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"?([^"\s,}\]]+)"?/g)) {
+      add(match[1] ?? "", match[2] ?? "");
+    }
+    for (const match of text.matchAll(/["']([A-Za-z_][A-Za-z0-9_]*)["']\s*:\s*["']([^"']+)["']/g)) {
+      add(match[1] ?? "", match[2] ?? "");
+    }
+    for (const match of text.matchAll(/^\s*[-*]?\s*`?([A-Za-z_][A-Za-z0-9_]*)`?\s*:\s*`?([^`\n]+?)`?\s*$/gm)) {
+      add(match[1] ?? "", match[2] ?? "");
+    }
+    for (const line of text.split(/\r?\n/)) {
+      const cells = line
+        .trim()
+        .split("|")
+        .map((cell) => cell.trim())
+        .filter((cell) => cell.length > 0);
+      if (cells.length < 2) continue;
+      const [key, value] = cells;
+      if (!key || !value) continue;
+      if (/^-+$/.test(key.replace(/\s/g, "")) || /^-+$/.test(value.replace(/\s/g, ""))) continue;
+      if (key.toLowerCase() === "key" && value.toLowerCase() === "value") continue;
+      add(key.replace(/^`|`$/g, ""), value.replace(/^`|`$/g, ""));
+    }
+    return labels;
+  };
+
+  const deriveAlertOriginFingerprint = (input: {
+    originKind: string;
+    title: string;
+    description?: string | null;
+  }) => {
+    const isAlertIssue = input.originKind.endsWith(":alert") || pluginKey.toLowerCase().includes("alertmanager");
+    if (!isAlertIssue) return null;
+    const text = `${input.title}\n${input.description ?? ""}`;
+    const labels = collectAlertLabelCandidates(text);
+    const alertName = labels.get("alertname") ?? input.title.match(/\b[A-Z][A-Za-z0-9_]*\b/)?.[0] ?? null;
+    if (!alertName) return null;
+    const resourceParts = alertResourceLabelKeys
+      .filter((key) => labels.has(key))
+      .map((key) => `${key}=${normalizeAlertFingerprintPart(labels.get(key) ?? "")}`)
+      .filter((part) => !part.endsWith("="));
+    if (resourceParts.length === 0) return null;
+    return ["alert", normalizeAlertFingerprintPart(alertName), ...resourceParts].join(":");
+  };
+
   const assertReadableOriginFilter = (originKind: unknown) => {
     if (typeof originKind !== "string" || !originKind.startsWith("plugin:")) return;
     normalizePluginOriginKind(originKind);
@@ -710,6 +793,41 @@ export function buildHostServices(
       entityId: input.entityId,
       details: pluginActivityDetails(input.details, input.actor),
     });
+  };
+
+  const isUniqueConstraintViolation = (error: unknown, constraintName: string, depth = 0): boolean => {
+    if (!error || typeof error !== "object" || depth > 10) return false;
+    const record = error as Record<string, unknown>;
+    const code = record.code;
+    const constraint = record.constraint ?? record.constraint_name;
+    const message = typeof record.message === "string" ? record.message : "";
+    if (
+      code === "23505" &&
+      (constraint === constraintName || message.includes(constraintName))
+    ) {
+      return true;
+    }
+    return isUniqueConstraintViolation(record.cause, constraintName, depth + 1);
+  };
+
+  const findActiveOriginFingerprintIssue = async (
+    companyId: string,
+    originKind: string,
+    originFingerprint: string,
+  ) => {
+    const [existingIssue] = await db
+      .select()
+      .from(issuesTable)
+      .where(and(
+        eq(issuesTable.companyId, companyId),
+        eq(issuesTable.originKind, originKind),
+        eq(issuesTable.originFingerprint, originFingerprint),
+        notInArray(issuesTable.status, ["done", "cancelled"]),
+        isNull(issuesTable.hiddenAt),
+      ))
+      .orderBy(desc(issuesTable.createdAt), desc(issuesTable.id))
+      .limit(1);
+    return existingIssue ?? null;
   };
 
   const collectIssueSubtreeIds = async (companyId: string, rootIssueId: string) => {
@@ -1544,20 +1662,87 @@ export function buildHostServices(
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        const { actorAgentId, actorUserId, actorRunId, originKind, originFingerprint: rawOriginFingerprint, surfaceVisibility, ...issueInput } = params;
         const normalizedOriginKind = normalizePluginOriginKind(
           surfaceVisibility === "plugin_operation" && !originKind
             ? pluginOperationIssueOriginKind(pluginKey)
             : originKind,
         );
-        const issue = (await issues.create(companyId, {
-          ...(issueInput as any),
+        const originFingerprint = normalizeOriginFingerprint(rawOriginFingerprint) ?? normalizeOriginFingerprint(deriveAlertOriginFingerprint({
           originKind: normalizedOriginKind,
-          originId: params.originId ?? null,
-          originRunId: params.originRunId ?? actorRunId ?? null,
-          createdByAgentId: actorAgentId ?? null,
-          createdByUserId: actorUserId ?? null,
-        })) as Issue;
+          title: params.title,
+          description: params.description,
+        }));
+        const returnDeduplicatedIssue = async (existingIssue: typeof issuesTable.$inferSelect) => {
+          const isAlertDedupe = normalizedOriginKind.endsWith(":alert") || pluginKey.toLowerCase().includes("alertmanager");
+          const comment = [
+            isAlertDedupe
+              ? "Alert deduplicated by origin fingerprint."
+              : "Issue deduplicated by origin fingerprint.",
+            "",
+            `- Plugin: ${pluginKey}`,
+            `- Origin kind: ${normalizedOriginKind}`,
+            `- Origin fingerprint: ${originFingerprint}`,
+            `- Incoming title: ${params.title}`,
+          ].join("\n");
+          const [latestComment] = await db
+            .select({ body: issueComments.body })
+            .from(issueComments)
+            .where(and(eq(issueComments.issueId, existingIssue.id), isNull(issueComments.deletedAt)))
+            .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+            .limit(1);
+          if (latestComment?.body !== comment) {
+            await issues.addComment(existingIssue.id, comment, {
+              agentId: actorAgentId ?? undefined,
+              userId: actorUserId ?? undefined,
+              runId: actorRunId ?? null,
+            });
+          }
+          await logPluginActivity({
+            companyId,
+            action: "issue.deduplicated",
+            entityType: "issue",
+            entityId: existingIssue.id,
+            actor: { actorAgentId, actorUserId, actorRunId },
+            details: {
+              identifier: existingIssue.identifier,
+              originKind: normalizedOriginKind,
+              originId: existingIssue.originId,
+              originFingerprint,
+              incomingTitle: params.title,
+            },
+          });
+          return existingIssue as Issue;
+        };
+        if (originFingerprint) {
+          const existingIssue = await findActiveOriginFingerprintIssue(companyId, normalizedOriginKind, originFingerprint);
+          if (existingIssue) {
+            return returnDeduplicatedIssue(existingIssue);
+          }
+        }
+        let issue: Issue;
+        try {
+          issue = (await issues.create(companyId, {
+            ...(issueInput as any),
+            originKind: normalizedOriginKind,
+            originId: params.originId ?? null,
+            originRunId: params.originRunId ?? actorRunId ?? null,
+            ...(originFingerprint ? { originFingerprint } : {}),
+            createdByAgentId: actorAgentId ?? null,
+            createdByUserId: actorUserId ?? null,
+          })) as Issue;
+        } catch (err) {
+          if (
+            originFingerprint &&
+            isUniqueConstraintViolation(err, "issues_active_plugin_origin_fingerprint_uq")
+          ) {
+            const existingIssue = await findActiveOriginFingerprintIssue(companyId, normalizedOriginKind, originFingerprint);
+            if (existingIssue) {
+              return returnDeduplicatedIssue(existingIssue);
+            }
+          }
+          throw err;
+        }
         await logPluginActivity({
           companyId,
           action: "issue.created",
@@ -1569,6 +1754,7 @@ export function buildHostServices(
             identifier: issue.identifier,
             originKind: normalizedOriginKind,
             originId: issue.originId,
+            originFingerprint: issue.originFingerprint,
             billingCode: issue.billingCode,
             blockedByIssueIds: params.blockedByIssueIds ?? [],
           },

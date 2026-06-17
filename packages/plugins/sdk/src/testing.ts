@@ -1507,6 +1507,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           );
         }
         if (input?.originId) out = out.filter((issue) => issue.originId === input.originId);
+        if (input?.originFingerprint) out = out.filter((issue) => issue.originFingerprint === input.originFingerprint);
         if (input?.status) out = out.filter((issue) => issue.status === input.status);
         if (input?.offset) out = out.slice(input.offset);
         if (input?.limit) out = out.slice(0, input.limit);
@@ -1550,6 +1551,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           originKind,
           originId: input.originId ?? null,
           originRunId: input.originRunId ?? null,
+          originFingerprint: input.originFingerprint ?? null,
           requestDepth: input.requestDepth ?? 0,
           billingCode: input.billingCode ?? null,
           assigneeAdapterOverrides: input.assigneeAdapterOverrides ?? null,

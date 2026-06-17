@@ -973,6 +973,7 @@ export interface WorkerToHostMethods {
       originKind?: string;
       originKindPrefix?: string;
       originId?: string;
+      originFingerprint?: string;
       status?: string;
       includePluginOperations?: boolean;
       limit?: number;
@@ -1004,6 +1005,7 @@ export interface WorkerToHostMethods {
       originKind?: string | null;
       originId?: string | null;
       originRunId?: string | null;
+      originFingerprint?: string | null;
       blockedByIssueIds?: string[];
       labelIds?: string[];
       executionWorkspaceId?: string | null;
