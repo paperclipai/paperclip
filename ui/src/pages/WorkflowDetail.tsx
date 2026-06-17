@@ -809,6 +809,8 @@ export function WorkflowDetail() {
         : false;
     },
   });
+  const activityRunIds = workflowQuery.data?.runs.map((run) => run.id) ?? [];
+  const activeRunHandoffIds = runQuery.data?.handoffs.map((handoff) => handoff.id) ?? [];
 
   const activityQuery = useQuery({
     queryKey: [
@@ -816,11 +818,13 @@ export function WorkflowDetail() {
         selectedCompanyId ?? "",
         workflowId ?? "",
       ),
-      workflowQuery.data?.runs.map((run) => run.id).join(",") ?? "",
+      activityRunIds.join(","),
+      activeRunHandoffIds.join(","),
     ],
     queryFn: () =>
       workflowsApi.activity(selectedCompanyId!, workflowId!, {
-        runIds: workflowQuery.data?.runs.map((run) => run.id) ?? [],
+        runIds: activityRunIds,
+        handoffIds: activeRunHandoffIds,
       }),
     enabled: !!selectedCompanyId && !!workflowId,
     refetchInterval:
@@ -1319,7 +1323,7 @@ function PipelineCard({
   );
 
   return (
-    <Card className={cn(workflowPanelClassName, "overflow-hidden")}>
+    <Card className={workflowPanelClassName}>
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-sm font-semibold">Pipeline</CardTitle>
@@ -1448,7 +1452,7 @@ function WorkflowRunConsoleCard({
           <div className="rounded-lg border border-border/70 bg-neutral-950 p-3 font-mono text-xs">
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                stderr
+                {runDetail.error || runDetail.stderrExcerpt ? "stderr" : "result"}
               </span>
               <button
                 type="button"
@@ -1579,10 +1583,10 @@ function ActivityCard({
       </CardHeader>
       <CardContent className="space-y-3">
         {loading ? (
-        <div className="text-sm text-muted-foreground">Loading activity…</div>
-      ) : events.length === 0 ? (
-        <div className="text-sm text-muted-foreground">
-          No workflow activity yet.
+          <div className="text-sm text-muted-foreground">Loading activity…</div>
+        ) : events.length === 0 ? (
+          <div className="text-sm text-muted-foreground">
+            No workflow activity yet.
           </div>
         ) : (
           events.slice(0, 12).map((event) => (

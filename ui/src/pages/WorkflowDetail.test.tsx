@@ -269,6 +269,27 @@ const latestRunDetail = {
   error: null,
 };
 
+const latestRunDetailWithHandoff = {
+  ...latestRunDetail,
+  handoffs: [
+    {
+      id: "handoff-latest",
+      companyId: "company-1",
+      workflowRunId: "run-latest",
+      phaseKey: "phase-ghost",
+      kind: "response",
+      status: "closed",
+      promptMarkdown: "Please review the brief.",
+      responseMarkdown: "Looks good.",
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-06-10T10:02:30.000Z"),
+      updatedAt: new Date("2026-06-10T10:02:30.000Z"),
+      bridgeStatus: "closed",
+    },
+  ],
+};
+
 const olderRunDetail = {
   ...workflowDetail.runs[1],
   workflow: {
@@ -369,6 +390,19 @@ describe("WorkflowDetail page", () => {
     expect(container.textContent).toContain("Older brief");
     expect(container.textContent).not.toContain("latest stderr");
     expect(container.textContent).not.toContain("Latest brief");
+  });
+
+  it("includes active run handoff ids in the activity query", async () => {
+    getRunMock.mockResolvedValue(latestRunDetailWithHandoff);
+
+    await renderAt(container, "/workflows/workflow-1");
+    await flushReact();
+    await flushReact();
+
+    expect(activityMock).toHaveBeenCalledWith("company-1", "workflow-1", {
+      runIds: ["run-latest", "run-old"],
+      handoffIds: ["handoff-latest"],
+    });
   });
 
   it("returns to the latest run when the latest history row is clicked", async () => {
