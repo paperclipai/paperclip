@@ -52,6 +52,7 @@ import { pluginDatabaseService } from "./plugin-database.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+let pluginModuleImportCounter = 0;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -133,6 +134,12 @@ export function buildPluginWorkerEnv(input: {
     }
   }
   return env;
+}
+
+function createFreshFileImportSpecifier(filePath: string): string {
+  const url = pathToFileURL(filePath);
+  url.searchParams.set("paperclipCacheBust", `${Date.now()}-${++pluginModuleImportCounter}`);
+  return url.href;
 }
 
 // ---------------------------------------------------------------------------
@@ -989,11 +996,10 @@ export function pluginLoader(
     let raw: unknown;
 
     try {
-      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
-      const manifestUrl = pathToFileURL(manifestPath);
-      const manifestStat = await stat(manifestPath);
-      manifestUrl.searchParams.set("mtime", String(Math.trunc(manifestStat.mtimeMs)));
-      const mod = await import(manifestUrl.href) as Record<string, unknown>;
+      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests.
+      // Use a fresh file URL so local-path reinstall/upgrade reads the current
+      // manifest from disk instead of Node's process-lifetime ESM cache.
+      const mod = await import(createFreshFileImportSpecifier(manifestPath)) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
     } catch (err) {
