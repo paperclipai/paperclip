@@ -114,9 +114,10 @@ resources:
     memory: 4Gi
 
 # -- Health probe configuration. `httpGet` to `/healthz` with an explicit
-# `Host: 127.0.0.1:3100` header — Paperclip's hostname allowlist always accepts
+# `Host: 127.0.0.1` header — Paperclip's hostname allowlist always accepts
 # loopback (see server/src/middleware/private-hostname-guard.ts), while the
-# pod-IP Host header kubelet would otherwise send is rejected.
+# pod-IP Host header kubelet would otherwise send is rejected. The header is
+# port-agnostic (the guard strips any port), so it tracks `env.port` overrides.
 probes:
   # -- Liveness probe. Paperclip serves HTTP on the configured port once the embedded Postgres is up.
   liveness:
@@ -125,7 +126,7 @@ probes:
       port: http
       httpHeaders:
         - name: Host
-          value: 127.0.0.1:3100
+          value: 127.0.0.1
     initialDelaySeconds: 60
     periodSeconds: 30
     failureThreshold: 3
@@ -136,7 +137,7 @@ probes:
       port: http
       httpHeaders:
         - name: Host
-          value: 127.0.0.1:3100
+          value: 127.0.0.1
     initialDelaySeconds: 15
     periodSeconds: 10
     failureThreshold: 3
@@ -147,7 +148,7 @@ probes:
       port: http
       httpHeaders:
         - name: Host
-          value: 127.0.0.1:3100
+          value: 127.0.0.1
     periodSeconds: 10
     failureThreshold: 30
 
