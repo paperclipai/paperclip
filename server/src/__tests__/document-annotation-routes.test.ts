@@ -302,10 +302,10 @@ describe("document annotation routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("rejects agent cross-company annotation reads", async () => {
+  it("rejects agent cross-company annotation reads with a uniform 404", async () => {
     await request(await createApp("agent", otherCompanyId))
       .get(`/api/issues/${issueId}/documents/plan/annotations`)
-      .expect(403);
+      .expect(404);
   });
 
   it("adds annotation comments without waking the assignee and resolves threads", async () => {

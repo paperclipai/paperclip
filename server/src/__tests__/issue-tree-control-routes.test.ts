@@ -64,7 +64,7 @@ describe("issue tree control routes", () => {
     mockHeartbeatService.wakeup.mockResolvedValue(null);
   });
 
-  it("rejects cross-company preview requests before calling the preview service", async () => {
+  it("rejects cross-company preview requests with a uniform 404 before calling the preview service", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -77,7 +77,7 @@ describe("issue tree control routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/tree-control/preview")
       .send({ mode: "pause" });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockTreeControlService.preview).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });

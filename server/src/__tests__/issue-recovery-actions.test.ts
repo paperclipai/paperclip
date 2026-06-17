@@ -1169,7 +1169,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         outcome: "restored",
         sourceIssueStatus: "done",
       })
-      .expect(403);
+      .expect(404);
 
     const [actionRow] = await db
       .select()
