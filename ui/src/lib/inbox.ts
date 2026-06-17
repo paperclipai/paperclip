@@ -681,21 +681,6 @@ export function getInboxKeyboardSelectionIndex(
     : Math.max(previousIndex - 1, 0);
 }
 
-export function getLatestFailedRunsByAgent(runs: HeartbeatRun[]): HeartbeatRun[] {
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-  );
-  const latestByAgent = new Map<string, HeartbeatRun>();
-
-  for (const run of sorted) {
-    if (!latestByAgent.has(run.agentId)) {
-      latestByAgent.set(run.agentId, run);
-    }
-  }
-
-  return Array.from(latestByAgent.values()).filter((run) => FAILED_RUN_STATUSES.has(run.status));
-}
-
 export function normalizeTimestamp(value: string | Date | null | undefined): number {
   if (!value) return 0;
   const timestamp = new Date(value).getTime();
@@ -1215,7 +1200,7 @@ export function computeInboxBadgeData({
   approvals,
   joinRequests,
   dashboard,
-  heartbeatRuns,
+  latestFailedRuns,
   mineIssues,
   dismissedAlerts,
   dismissedAtByKey,
@@ -1224,7 +1209,7 @@ export function computeInboxBadgeData({
   approvals: Approval[];
   joinRequests: JoinRequest[];
   dashboard: DashboardSummary | undefined;
-  heartbeatRuns: HeartbeatRun[];
+  latestFailedRuns: HeartbeatRun[];
   mineIssues: Issue[];
   dismissedAlerts: Set<string>;
   dismissedAtByKey: ReadonlyMap<string, number>;
@@ -1236,7 +1221,7 @@ export function computeInboxBadgeData({
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
       !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
   ).length;
-  const failedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
+  const failedRuns = latestFailedRuns.filter(
     (run) => !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt),
   ).length;
   const visibleJoinRequests = joinRequests.filter(
