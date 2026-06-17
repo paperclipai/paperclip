@@ -55,7 +55,9 @@ export const issuesApi = {
       originKindPrefix?: string;
       originId?: string;
       descendantOf?: string;
+      workItemType?: string;
       includeRoutineExecutions?: boolean;
+      excludeRoutineExecutions?: boolean;
       includeBlockedBy?: boolean;
       q?: string;
       limit?: number;
@@ -81,7 +83,9 @@ export const issuesApi = {
     if (filters?.originKindPrefix) params.set("originKindPrefix", filters.originKindPrefix);
     if (filters?.originId) params.set("originId", filters.originId);
     if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
+    if (filters?.workItemType) params.set("workItemType", filters.workItemType);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+    if (filters?.excludeRoutineExecutions) params.set("excludeRoutineExecutions", "true");
     if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));
