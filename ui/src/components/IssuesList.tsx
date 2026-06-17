@@ -75,6 +75,10 @@ const INITIAL_ISSUE_ROW_RENDER_LIMIT = 100;
 const ISSUE_ROW_RENDER_BATCH_SIZE = 150;
 const ISSUE_SCROLL_LOAD_THRESHOLD_PX = 320;
 
+function isHumanControlWorkItemType(value: unknown) {
+  return value === "initiative" || value === "human_task";
+}
+
 function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | null {
   if (!element || typeof window === "undefined") return null;
   let current = element.parentElement;
@@ -1517,6 +1521,7 @@ export function IssuesList({
                   const parentIssue = issue.parentId ? issueById.get(issue.parentId) ?? null : null;
                   const issueBadge = issueBadgeById?.get(issue.id);
                   const isMutedIssue = mutedIssueIds?.has(issue.id) === true;
+                  const isHumanControlIssue = isHumanControlWorkItemType(issue.workItemType);
                   const assigneeUserProfile = issue.assigneeUserId
                     ? companyUserProfileMap.get(issue.assigneeUserId) ?? null
                     : null;
@@ -1779,6 +1784,7 @@ export function IssuesList({
                                       )}
                                       {(agents ?? [])
                                         .filter((agent) => {
+                                          if (isHumanControlIssue) return false;
                                           if (!assigneeSearch.trim()) return true;
                                           return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
                                         })

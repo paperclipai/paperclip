@@ -336,6 +336,61 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await expect(svc.list(companyId, { workItemType: "unknown" })).resolves.toEqual([]);
   });
 
+  it("prevents AI agent assignment for human control work items", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(svc.create(companyId, {
+      title: "Human follow-up",
+      status: "todo",
+      priority: "medium",
+      workItemType: "human_task",
+      assigneeAgentId: agentId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    await expect(svc.create(companyId, {
+      title: "Planning initiative",
+      status: "todo",
+      priority: "medium",
+      workItemType: "initiative",
+      assigneeAgentId: agentId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    const humanTaskId = randomUUID();
+    await db.insert(issues).values({
+      id: humanTaskId,
+      companyId,
+      title: "Existing human task",
+      status: "todo",
+      priority: "medium",
+      workItemType: "human_task",
+    });
+
+    await expect(svc.update(humanTaskId, {
+      assigneeAgentId: agentId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    await expect(svc.checkout(humanTaskId, agentId, ["todo"], null)).rejects.toMatchObject({ status: 422 });
+  });
+
   it("combines participation filtering with search", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

@@ -246,6 +246,7 @@ export function parseStatusFilter(input: string | readonly string[] | undefined)
 }
 
 const ISSUE_WORK_ITEM_TYPE_SET = new Set<string>(ISSUE_WORK_ITEM_TYPES);
+const HUMAN_CONTROL_WORK_ITEM_TYPES = new Set(["initiative", "human_task"]);
 
 export function parseWorkItemTypeFilter(input: string | readonly string[] | undefined): string[] {
   if (input == null) return [];
@@ -254,6 +255,15 @@ export function parseWorkItemTypeFilter(input: string | readonly string[] | unde
     .flatMap((entry) => (typeof entry === "string" ? entry.split(",") : []))
     .map((workItemType) => workItemType.trim())
     .filter((workItemType) => ISSUE_WORK_ITEM_TYPE_SET.has(workItemType));
+}
+
+function isHumanControlWorkItemType(value: unknown) {
+  return typeof value === "string" && HUMAN_CONTROL_WORK_ITEM_TYPES.has(value);
+}
+
+function assertAgentAssignmentAllowedForWorkItem(workItemType: unknown, assigneeAgentId: string | null | undefined) {
+  if (!assigneeAgentId || !isHumanControlWorkItemType(workItemType)) return;
+  throw unprocessable("Initiatives and human tasks cannot be assigned to AI agents. Create a linked AI execution issue instead.");
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -3161,6 +3171,7 @@ export function issueService(db: Db) {
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
+      assertAgentAssignmentAllowedForWorkItem(issueData.workItemType, data.assigneeAgentId);
       if (data.assigneeAgentId) {
         await assertAssignableAgent(companyId, data.assigneeAgentId);
       }
@@ -3422,10 +3433,12 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+      const nextWorkItemType = issueData.workItemType !== undefined ? issueData.workItemType : existing.workItemType;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
+      assertAgentAssignmentAllowedForWorkItem(nextWorkItemType, nextAssigneeAgentId);
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
@@ -3727,11 +3740,12 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, workItemType: issues.workItemType })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
+      assertAgentAssignmentAllowedForWorkItem(issueCompany.workItemType, agentId);
       await assertAssignableAgent(issueCompany.companyId, agentId);
 
       const now = new Date();
