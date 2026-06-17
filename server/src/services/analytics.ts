@@ -49,7 +49,7 @@ export function analyticsService(db: Db) {
           runDedupDistinctOn = sql`ce.heartbeat_run_id, ce.agent_id`;
           runDedupOrderBy = sql`ce.heartbeat_run_id, ce.agent_id, ce.id`;
           runDedupGroupBy = sql`agent_id`;
-          joinOn = sql`ra.agent_id = ca.agent_id`;
+          joinOn = sql`ra.agent_id IS NOT DISTINCT FROM ca.agent_id`;
           break;
         case "provider":
           costSelect = sql`NULL::text AS model, ce.provider, NULL::uuid AS agent_id, NULL::text AS agent_name, NULL::text AS task_type`;
@@ -57,7 +57,7 @@ export function analyticsService(db: Db) {
           runDedupDistinctOn = sql`ce.heartbeat_run_id, ce.provider`;
           runDedupOrderBy = sql`ce.heartbeat_run_id, ce.provider, ce.id`;
           runDedupGroupBy = sql`provider`;
-          joinOn = sql`ra.provider = ca.provider`;
+          joinOn = sql`ra.provider IS NOT DISTINCT FROM ca.provider`;
           break;
         case "taskType":
           costSelect = sql`NULL::text AS model, NULL::text AS provider, NULL::uuid AS agent_id, NULL::text AS agent_name, ce.billing_type AS task_type`;
@@ -65,7 +65,7 @@ export function analyticsService(db: Db) {
           runDedupDistinctOn = sql`ce.heartbeat_run_id, ce.billing_type`;
           runDedupOrderBy = sql`ce.heartbeat_run_id, ce.billing_type, ce.id`;
           runDedupGroupBy = sql`task_type`;
-          joinOn = sql`ra.task_type = ca.task_type`;
+          joinOn = sql`ra.task_type IS NOT DISTINCT FROM ca.task_type`;
           break;
         default: // model
           costSelect = sql`ce.model, ce.provider, NULL::uuid AS agent_id, NULL::text AS agent_name, NULL::text AS task_type`;
@@ -73,7 +73,7 @@ export function analyticsService(db: Db) {
           runDedupDistinctOn = sql`ce.heartbeat_run_id, ce.model, ce.provider`;
           runDedupOrderBy = sql`ce.heartbeat_run_id, ce.model, ce.provider, ce.id`;
           runDedupGroupBy = sql`model, provider`;
-          joinOn = sql`ra.model = ca.model AND ra.provider = ca.provider`;
+          joinOn = sql`ra.model IS NOT DISTINCT FROM ca.model AND ra.provider IS NOT DISTINCT FROM ca.provider`;
           break;
       }
 
@@ -102,7 +102,7 @@ export function analyticsService(db: Db) {
             SUM(ce.output_tokens) AS total_tokens_out,
             SUM(ce.cost_cents) AS estimated_cost_cents
           FROM cost_events ce
-          LEFT JOIN agents a ON ce.agent_id = a.id
+          LEFT JOIN agents a ON ce.agent_id = a.id AND a.company_id = ${companyId}
           WHERE ce.company_id = ${companyId}
             ${fromClause}
             ${toClause}
@@ -123,7 +123,7 @@ export function analyticsService(db: Db) {
             END AS latency_ms,
             COALESCE(hr.process_loss_retry_count, 0) AS retry_val
           FROM cost_events ce
-          LEFT JOIN heartbeat_runs hr ON ce.heartbeat_run_id = hr.id
+          LEFT JOIN heartbeat_runs hr ON ce.heartbeat_run_id = hr.id AND hr.company_id = ${companyId}
           WHERE ce.company_id = ${companyId}
             ${fromClause}
             ${toClause}
