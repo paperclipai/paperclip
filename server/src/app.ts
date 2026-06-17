@@ -1,10 +1,11 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
-import type { StorageService } from "./storage/types.js";
+import type { StorageProvider, StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
@@ -63,6 +64,10 @@ import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
+import {
+  createPluginArtifactReplication,
+  registerPluginReplicationForHealth,
+} from "./services/plugin-artifact-replication.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
@@ -151,6 +156,21 @@ export async function createApp(
     hostVersion?: string;
     localPluginDir?: string;
     pluginMigrationDb?: Db;
+    /**
+     * Storage provider for plugin tree snapshot replication
+     * (services/plugin-artifact-replication.ts). index.ts passes a provider
+     * when a shared (non-local_disk) storage provider is configured or
+     * PAPERCLIP_PLUGIN_SNAPSHOTS=true forces it (tests / shared-volume
+     * setups); null/undefined constructs the replication handle disabled.
+     */
+    pluginSnapshotStorageProvider?: StorageProvider | null;
+    /**
+     * Direct database connection string for the session-scoped
+     * `"plugin-install"` advisory lock taken around replicated plugin
+     * mutations (routes/plugins.ts). Required whenever
+     * `pluginSnapshotStorageProvider` is set.
+     */
+    pluginMutationLockUrl?: string;
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
@@ -310,6 +330,35 @@ export async function createApp(
       },
     },
   );
+  // Plugin snapshot replication: converges the runtime-installed plugin tree
+  // across replicas via generation snapshots in shared object storage. The
+  // handle always exists (disabled without a provider) so routes and health
+  // can depend on it unconditionally.
+  const pluginsMustSync = process.env.PAPERCLIP_PLUGINS_MUST_SYNC === "true";
+  if (opts.pluginSnapshotStorageProvider && !opts.pluginMutationLockUrl) {
+    throw new Error(
+      "pluginMutationLockUrl is required when pluginSnapshotStorageProvider is set (session-scoped plugin-install lock)",
+    );
+  }
+  // Armed after the initial loadAll(): a snapshot applied during startup is
+  // picked up by loadAll itself, and reconciling on top of it would
+  // double-start every worker.
+  let initialPluginLoadDone = false;
+  const pluginArtifactReplication = createPluginArtifactReplication({
+    db,
+    provider: opts.pluginSnapshotStorageProvider ?? null,
+    pluginsDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
+    replicaId: `${os.hostname()}-${process.pid}`,
+    mustSync: pluginsMustSync,
+    onApplySnapshot: async () => {
+      if (!initialPluginLoadDone) return;
+      await loader.reconcileLoadedPlugins();
+    },
+  });
+  registerPluginReplicationForHealth({
+    mustSync: pluginsMustSync,
+    isSynced: () => pluginArtifactReplication.isSynced(),
+  });
   api.use(
     pluginRoutes(
       db,
@@ -318,6 +367,10 @@ export async function createApp(
       { workerManager },
       { toolDispatcher },
       { workerManager },
+      {
+        replication: pluginArtifactReplication,
+        pluginMutationLockUrl: opts.pluginMutationLockUrl ?? "",
+      },
     ),
   );
   api.use(adapterRoutes());
@@ -538,6 +591,15 @@ export async function createApp(
     }
   };
   void ensureBundledKubernetesPlugin()
+    .then(() =>
+      // Converge onto the latest published plugin snapshot BEFORE activating
+      // plugins, so loadAll() boots from the cluster-current tree. A failed
+      // reconcile is logged, not fatal: the replica boots from its local tree
+      // and the periodic reconcile retries (mustSync gates readiness then).
+      pluginArtifactReplication.reconcile().catch((err) => {
+        logger.error({ err }, "plugin snapshot reconcile failed at startup");
+      }),
+    )
     .then(() => loader.loadAll())
     .then((result) => {
     if (!result) return;
@@ -548,12 +610,20 @@ export async function createApp(
     }
   }).catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
+  }).finally(() => {
+    // Arm hot-reload reconciles only after the initial load pass settled —
+    // see the flag's declaration for why.
+    initialPluginLoadDone = true;
   });
+  pluginArtifactReplication.start();
   let appServicesShutdown = false;
   const shutdownAppServices = () => {
     if (appServicesShutdown) return;
     appServicesShutdown = true;
     disableFeedbackExportFlushes();
+    // stop() unsubscribes, clears timers, and awaits any in-flight
+    // reconcile; fire-and-forget is fine in this sync shutdown hook.
+    void pluginArtifactReplication.stop();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();

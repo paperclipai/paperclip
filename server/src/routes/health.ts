@@ -7,6 +7,8 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { getRegisteredPluginReplication } from "../services/plugin-artifact-replication.js";
+import { getSchedulerHealth } from "../services/scheduler-leadership.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -76,6 +78,25 @@ export function healthRoutes(
     }
 
     res.status(202).json({ status: "restart_requested" });
+  });
+
+  /**
+   * GET /api/health/ready — readiness probe (vs. `GET /api/health`, which
+   * stays a liveness view: a healthy process that is deliberately held out
+   * of rotation must not be restarted by a liveness check).
+   *
+   * Readiness gate (PAPERCLIP_PLUGINS_MUST_SYNC, multi-replica): a replica
+   * that has not yet converged on the latest plugin snapshot must not be
+   * routed traffic — it would serve a stale plugin tree. Deliberately
+   * minimal: plugin-sync gate only, 200 whenever no gate applies.
+   */
+  router.get("/ready", (_req, res) => {
+    const pluginReplication = getRegisteredPluginReplication();
+    if (pluginReplication?.mustSync && !pluginReplication.isSynced()) {
+      res.status(503).json({ ready: false, reason: "plugin snapshot sync pending" });
+      return;
+    }
+    res.json({ ready: true });
   });
 
   router.get("/", async (req, res) => {
@@ -153,6 +174,11 @@ export function healthRoutes(
       });
     }
 
+    // Fetched before the redacted/full branch: the operator identifies the
+    // leader pod via unauthenticated probes; booleans only — the lease row
+    // (ids/hostnames) stays in the full-details view.
+    const scheduler = await getSchedulerHealth(db);
+
     if (!exposeFullDetails) {
       res.json({
         status: "ok",
@@ -161,6 +187,7 @@ export function healthRoutes(
         bootstrapStatus,
         bootstrapInviteActive,
         ...(devServer ? { devServer } : {}),
+        scheduler: { candidate: scheduler.candidate, isLeader: scheduler.isLeader },
       });
       return;
     }
@@ -177,6 +204,7 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       ...(devServer ? { devServer } : {}),
+      scheduler,
     });
   });
 

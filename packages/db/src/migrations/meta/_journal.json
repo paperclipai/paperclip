@@ -715,6 +715,27 @@
       "when": 1781490000000,
       "tag": "0101_plugin_company_id_tenant_isolation",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1781500000000,
+      "tag": "0102_plugin_webhook_delivery_dedup",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1781510000000,
+      "tag": "0103_scheduler_leader",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1781520000000,
+      "tag": "0104_plugin_artifact_generations",
+      "breakpoints": true
     }
   ]
 }
