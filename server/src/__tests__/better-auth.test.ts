@@ -6,6 +6,7 @@ import {
   deriveAuthCookiePrefix,
   deriveAuthTrustedOrigins,
   shouldDisableSecureAuthCookies,
+  shouldUseSecureCookiesForAutoMode,
 } from "../auth/better-auth.js";
 
 const ORIGINAL_INSTANCE_ID = process.env.PAPERCLIP_INSTANCE_ID;
@@ -47,6 +48,17 @@ describe("Better Auth cookie scoping", () => {
     expect(getCookies({
       advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: true }),
     } as BetterAuthOptions).sessionToken.name).toBe("paperclip-pap-worktree.session_token");
+  });
+
+  it("can force secure cookies for request-time auto-mode selection", () => {
+    process.env.PAPERCLIP_INSTANCE_ID = "pap-worktree";
+
+    expect(buildBetterAuthAdvancedOptions({
+      useSecureCookies: true,
+    })).toEqual({
+      cookiePrefix: "paperclip-pap-worktree",
+      useSecureCookies: true,
+    });
   });
 
   it("disables secure cookies for authenticated private auto-origin dev servers", () => {
@@ -182,5 +194,23 @@ describe("Better Auth cookie scoping", () => {
     ]));
     expect(trustedOrigins).not.toContain("https://board.example.test:3100");
     expect(trustedOrigins).not.toContain("http://board.example.test:3100");
+  });
+
+  it("trusts forwarded protocol from loopback-side proxies in auto mode", () => {
+    expect(shouldUseSecureCookiesForAutoMode(new Headers({
+      "x-forwarded-proto": "https",
+    }), {
+      protocol: "http",
+      remoteAddress: "::ffff:127.0.0.1",
+    })).toBe(true);
+  });
+
+  it("ignores spoofed forwarded protocol from non-loopback clients", () => {
+    expect(shouldUseSecureCookiesForAutoMode(new Headers({
+      "x-forwarded-proto": "https",
+    }), {
+      protocol: "http",
+      remoteAddress: "192.168.1.20",
+    })).toBe(false);
   });
 });

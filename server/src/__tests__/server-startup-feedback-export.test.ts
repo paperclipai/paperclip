@@ -8,6 +8,7 @@ const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 
 const {
   createAppMock,
+  createAutoModeBetterAuthInstancesMock,
   createBetterAuthInstanceMock,
   createDbMock,
   detectPortMock,
@@ -18,6 +19,7 @@ const {
   loadConfigMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
+  const createAutoModeBetterAuthInstancesMock = vi.fn(() => ({ secure: {}, insecure: {} }));
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({}) as never);
   const detectPortMock = vi.fn(async (port: number) => port);
@@ -39,6 +41,7 @@ const {
 
   return {
     createAppMock,
+    createAutoModeBetterAuthInstancesMock,
     createBetterAuthInstanceMock,
     createDbMock,
     detectPortMock,
@@ -192,11 +195,13 @@ vi.mock("../board-claim.js", () => ({
 }));
 
 vi.mock("../auth/better-auth.js", () => ({
+  createAutoModeBetterAuthInstances: createAutoModeBetterAuthInstancesMock,
   createBetterAuthHandler: vi.fn(() => undefined),
   createBetterAuthInstance: createBetterAuthInstanceMock,
   deriveAuthTrustedOrigins: deriveAuthTrustedOriginsMock,
   resolveBetterAuthSession: vi.fn(async () => null),
   resolveBetterAuthSessionFromHeaders: vi.fn(async () => null),
+  resolveBetterAuthSessionFromRequest: vi.fn(async () => null),
 }));
 
 import { startServer } from "../index.ts";
@@ -205,6 +210,7 @@ describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     loadConfigMock.mockReturnValue(buildTestConfig());
+    createAutoModeBetterAuthInstancesMock.mockReturnValue({ secure: {}, insecure: {} });
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
@@ -257,6 +263,7 @@ describe("startServer authenticated auth origin setup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     loadConfigMock.mockReturnValue(buildTestConfig());
+    createAutoModeBetterAuthInstancesMock.mockReturnValue({ secure: {}, insecure: {} });
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";

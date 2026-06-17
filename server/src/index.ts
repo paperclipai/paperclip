@@ -5,7 +5,7 @@
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -523,8 +523,8 @@ export async function startServer(): Promise<StartedServer> {
   let resolveSession:
     | ((req: ExpressRequest) => Promise<BetterAuthSessionResult | null>)
     | undefined;
-  let resolveSessionFromHeaders:
-    | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
+  let resolveSessionFromRequest:
+    | ((req: IncomingMessage) => Promise<BetterAuthSessionResult | null>)
     | undefined;
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
@@ -535,11 +535,12 @@ export async function startServer(): Promise<StartedServer> {
   }
   if (config.deploymentMode === "authenticated") {
     const {
+      createAutoModeBetterAuthInstances,
       createBetterAuthHandler,
       createBetterAuthInstance,
       deriveAuthTrustedOrigins,
       resolveBetterAuthSession,
-      resolveBetterAuthSessionFromHeaders,
+      resolveBetterAuthSessionFromRequest,
     } = await import("./auth/better-auth.js");
     const derivedTrustedOrigins = deriveAuthTrustedOrigins(config, { listenPort });
     const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
@@ -559,10 +560,12 @@ export async function startServer(): Promise<StartedServer> {
       },
       "Authenticated mode auth origin configuration",
     );
-    const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
+    const auth = config.authBaseUrlMode === "auto"
+      ? createAutoModeBetterAuthInstances(db as any, config, effectiveTrustedOrigins)
+      : createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
     betterAuthHandler = createBetterAuthHandler(auth);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
-    resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
+    resolveSessionFromRequest = (req) => resolveBetterAuthSessionFromRequest(auth, req);
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
   }
@@ -700,7 +703,7 @@ export async function startServer(): Promise<StartedServer> {
   
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
-    resolveSessionFromHeaders,
+    resolveSessionFromRequest,
   });
 
   void reconcilePersistedRuntimeServicesOnStartup(db as any)

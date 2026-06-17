@@ -79,19 +79,6 @@ function parseBearerToken(rawAuth: string | string[] | undefined) {
   return token.length > 0 ? token : null;
 }
 
-function headersFromIncomingMessage(req: IncomingMessage): Headers {
-  const headers = new Headers();
-  for (const [key, raw] of Object.entries(req.headers)) {
-    if (!raw) continue;
-    if (Array.isArray(raw)) {
-      for (const value of raw) headers.append(key, value);
-      continue;
-    }
-    headers.set(key, raw);
-  }
-  return headers;
-}
-
 async function authorizeUpgrade(
   db: Db,
   req: IncomingMessage,
@@ -99,7 +86,7 @@ async function authorizeUpgrade(
   url: URL,
   opts: {
     deploymentMode: DeploymentMode;
-    resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    resolveSessionFromRequest?: (req: IncomingMessage) => Promise<BetterAuthSessionResult | null>;
   },
 ): Promise<UpgradeContext | null> {
   const queryToken = url.searchParams.get("token")?.trim() ?? "";
@@ -116,11 +103,11 @@ async function authorizeUpgrade(
       };
     }
 
-    if (opts.deploymentMode !== "authenticated" || !opts.resolveSessionFromHeaders) {
+    if (opts.deploymentMode !== "authenticated" || !opts.resolveSessionFromRequest) {
       return null;
     }
 
-    const session = await opts.resolveSessionFromHeaders(headersFromIncomingMessage(req));
+    const session = await opts.resolveSessionFromRequest(req);
     const userId = session?.user?.id;
     if (!userId) return null;
 
@@ -180,7 +167,7 @@ export function setupLiveEventsWebSocketServer(
   db: Db,
   opts: {
     deploymentMode: DeploymentMode;
-    resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    resolveSessionFromRequest?: (req: IncomingMessage) => Promise<BetterAuthSessionResult | null>;
   },
 ) {
   const wss = new WebSocketServer({ noServer: true });
@@ -248,7 +235,7 @@ export function setupLiveEventsWebSocketServer(
 
     void authorizeUpgrade(db, req, companyId, url, {
       deploymentMode: opts.deploymentMode,
-      resolveSessionFromHeaders: opts.resolveSessionFromHeaders,
+      resolveSessionFromRequest: opts.resolveSessionFromRequest,
     })
       .then((context) => {
         if (!context) {
