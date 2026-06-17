@@ -1,5 +1,15 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback
+} from "react";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient
+} from "@tanstack/react-query";
 import type {
   Agent,
   AdapterEnvironmentTestResult,
@@ -7,39 +17,73 @@ import type {
   EnvBinding,
   Environment,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  supportedEnvironmentDriversForAdapter
+} from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
-import { agentsApi } from "../api/agents";
-import { environmentsApi } from "../api/environments";
-import { instanceSettingsApi } from "../api/instanceSettings";
-import { secretsApi } from "../api/secrets";
-import { assetsApi } from "../api/assets";
+import {
+  agentsApi
+} from "../api/agents";
+import {
+  environmentsApi
+} from "../api/environments";
+import {
+  instanceSettingsApi
+} from "../api/instanceSettings";
+import {
+  secretsApi
+} from "../api/secrets";
+import {
+  assetsApi
+} from "../api/assets";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL,
+  DEFAULT_CODEX_LOCAL_MODEL
 } from "@paperclipai/adapter-codex-local";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+import {
+  DEFAULT_CURSOR_LOCAL_MODEL
+} from "@paperclipai/adapter-cursor-local";
+import {
+  DEFAULT_GEMINI_LOCAL_MODEL
+} from "@paperclipai/adapter-gemini-local";
+import {
+  DEFAULT_OPENCODE_LOCAL_MODEL
+} from "@paperclipai/adapter-opencode-local";
 import {
   DEFAULT_MINIMAX_LOCAL_MODEL,
-  DEFAULT_MINIMAX_SECRET_ID,
-} from "@paperclipai/adapter-minimax-local";
-import {
-  DEFAULT_MINIMAX_LOCAL_MODEL,
-  DEFAULT_MINIMAX_SECRET_ID,
+  DEFAULT_MINIMAX_SECRET_ID
 } from "@paperclipai/adapter-minimax-local";
 import {
   Popover,
   PopoverContent,
-  PopoverTrigger,
+  PopoverTrigger
 } from "@/components/ui/popover";
-import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
-import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
-import { extractModelName, extractProviderId } from "../lib/model-utils";
-import { queryKeys } from "../lib/queryKeys";
-import { useCompany } from "../context/CompanyContext";
+import {
+  Button
+} from "@/components/ui/button";
+import {
+  FolderOpen,
+  Heart,
+  ChevronDown,
+  X
+} from "lucide-react";
+import {
+  asBoolean,
+  asFiniteNumber,
+  asObject,
+  cn
+} from "../lib/utils";
+import {
+  extractModelName,
+  extractProviderId
+} from "../lib/model-utils";
+import {
+  queryKeys
+} from "../lib/queryKeys";
+import {
+  useCompany
+} from "../context/CompanyContext";
 import {
   Field,
   ToggleField,
@@ -48,24 +92,59 @@ import {
   DraftInput,
   DraftNumberInput,
   help,
-  adapterLabels,
+  adapterLabels
 } from "./agent-config-primitives";
-import { ToggleSwitch } from "@/components/ui/toggle-switch";
-import { defaultCreateValues } from "./agent-config-defaults";
-import { getUIAdapter } from "../adapters";
-import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
-import { MarkdownEditor } from "./MarkdownEditor";
-import { ChoosePathButton } from "./PathInstructionsModal";
-import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
-import { ReportsToPicker } from "./ReportsToPicker";
-import { EnvVarEditor } from "./EnvVarEditor";
-import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
-import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
-import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
-import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
-import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-config-patch";
-import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
-import { filterAcpxModelsByAgent } from "../lib/acpx-model-filter";
+import {
+  ToggleSwitch
+} from "@/components/ui/toggle-switch";
+import {
+  defaultCreateValues
+} from "./agent-config-defaults";
+import {
+  getUIAdapter
+} from "../adapters";
+import {
+  ClaudeLocalAdvancedFields
+} from "../adapters/claude-local/config-fields";
+import {
+  MarkdownEditor
+} from "./MarkdownEditor";
+import {
+  ChoosePathButton
+} from "./PathInstructionsModal";
+import {
+  OpenCodeLogoIcon
+} from "./OpenCodeLogoIcon";
+import {
+  ReportsToPicker
+} from "./ReportsToPicker";
+import {
+  EnvVarEditor
+} from "./EnvVarEditor";
+import {
+  shouldShowLegacyWorkingDirectoryField
+} from "../lib/legacy-agent-config";
+import {
+  listAdapterOptions,
+  listVisibleAdapterTypes
+} from "../adapters/metadata";
+import {
+  getAdapterDisplay,
+  getAdapterLabel
+} from "../adapters/adapter-display-registry";
+import {
+  useDisabledAdaptersSync
+} from "../adapters/use-disabled-adapters";
+import {
+  buildAgentUpdatePatch,
+  type AgentConfigOverlay
+} from "../lib/agent-config-patch";
+import {
+  useAdapterCapabilities
+} from "../adapters/use-adapter-capabilities";
+import {
+  filterAcpxModelsByAgent
+} from "../lib/acpx-model-filter";
 
 /* ---- Create mode values ---- */
 
