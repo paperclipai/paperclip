@@ -67,6 +67,20 @@ function countMatches(value, pattern) {
   return Array.from(value.matchAll(pattern)).length;
 }
 
+function assertCcrotateServeSecretEnv(rendered, envName) {
+  assert.match(
+    rendered,
+    new RegExp(
+      `- name: ${escapeRegExp(envName)}\\n` +
+        "\\s+valueFrom:\\n" +
+        "\\s+secretKeyRef:\\n" +
+        "\\s+key: serveToken\\n" +
+        "\\s+name: paperclip-ccrotate-serve-secrets",
+    ),
+    `${envName} should inherit the ccrotate-serve bearer secret`,
+  );
+}
+
 test("runtimeCache mounts emptyDir and redirects regenerable caches", () => {
   const rendered = renderStatefulSet();
 
@@ -137,4 +151,19 @@ test("runtimeCache can be disabled for API tier rollback", () => {
   assert.doesNotMatch(rendered, /mountPath: "\/runtime-cache"/);
   assert.doesNotMatch(rendered, /\/runtime-cache\//);
   assert.doesNotMatch(rendered, /XDG_CACHE_HOME/);
+});
+
+test("Blockcast values inherit ccrotate-serve bearer for Anthropic agent traffic", () => {
+  const renderedStatefulSet = renderStatefulSet();
+  const renderedApiDeployment = renderApiDeployment();
+
+  for (const rendered of [renderedStatefulSet, renderedApiDeployment]) {
+    assertCcrotateServeSecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
+    assertCcrotateServeSecretEnv(rendered, "ANTHROPIC_API_KEY");
+    assert.doesNotMatch(
+      rendered,
+      /paperclip-ccrotate-board-token/,
+      "agent Anthropic env refs must not inherit the board-session bearer",
+    );
+  }
 });

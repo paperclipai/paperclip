@@ -22,14 +22,16 @@ describe("production Dockerfile k8s adapter runtime pins", () => {
     expect(dockerfile).toContain("Fixes BackendEngineerGo/Ally missing paperclip/hindsight/gbrain/linear/etc.");
   });
 
-  it("vendors the opencode_k8s adapter commit with crash, runtime-cache, and MCP header fixes", () => {
-    expect(dockerfile).toContain("ARG OPENCODE_K8S_REF=5d43c076e0232d9d11cdb2a9f0fce7aad7cfbdab");
+  it("vendors the opencode_k8s adapter commit with crash, runtime-cache, MCP header, and pod-stderr fixes", () => {
+    expect(dockerfile).toContain("ARG OPENCODE_K8S_REF=4b195304acfd7c5b693b2cfeb9a6cc9fdcda98dd");
     expect(dockerfile).toContain("type-crash");
     expect(dockerfile).toContain("5-strike adapter crashloop circuit-breaker");
     expect(dockerfile).toContain("writable home (/paperclip/.runtime-cache)");
     expect(dockerfile).toContain("EACCES mkdir '/runtime-cache'");
     expect(dockerfile).toContain("preserve headers when translating Claude-style");
     expect(dockerfile).toContain("Bearer-protected gbrain connects");
+    expect(dockerfile).toContain("recover the failed");
+    expect(dockerfile).toContain("pod's container stderr");
   });
 
   it("routes Paperclip Docker deploy builds through the dedicated deploy runner pool", () => {

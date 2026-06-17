@@ -226,26 +226,25 @@ env:
     # #216 per-worker backlog cap to shrink the burst envelope further.
     - name: NODE_OPTIONS
       value: "--max-old-space-size=6144"
-    # Anthropic routing for paperclip-spawned agent Job pods. Agents reach
-    # Anthropic through paperclip-public-tools → ccrotate-serve using the
-    # pcp_board_* bearer, so they don't need /paperclip/.ccrotate/ on disk.
-    # The claude_k8s adapter copies these valueFrom entries onto every Job
-    # pod it creates (inheritedEnvValueFrom). ANTHROPIC_AUTH_TOKEN is the
-    # Bearer-style var preferred by Claude Code / Anthropic SDK >=0.30;
-    # ANTHROPIC_API_KEY mirrors it for older SDK paths. Secret
-    # paperclip-ccrotate-board-token is pre-created out of band.
+    # Anthropic routing for paperclip-spawned agent Job pods. OpenCode points
+    # Anthropic traffic directly at ccrotate-serve inside the cluster, so these
+    # inherited env refs must use the ccrotate-serve bearer rather than a
+    # board-session bearer. The claude_k8s adapter copies these valueFrom
+    # entries onto every Job pod it creates (inheritedEnvValueFrom).
+    # ANTHROPIC_AUTH_TOKEN is the Bearer-style var preferred by Claude Code /
+    # Anthropic SDK >=0.30; ANTHROPIC_API_KEY mirrors it for older SDK paths.
     - name: ANTHROPIC_BASE_URL
       value: "https://paperclip.blockcast.net/ccrotate"
     - name: ANTHROPIC_AUTH_TOKEN
       valueFrom:
         secretKeyRef:
-          name: paperclip-ccrotate-board-token
-          key: token
+          name: paperclip-ccrotate-serve-secrets
+          key: serveToken
     - name: ANTHROPIC_API_KEY
       valueFrom:
         secretKeyRef:
-          name: paperclip-ccrotate-board-token
-          key: token
+          name: paperclip-ccrotate-serve-secrets
+          key: serveToken
 
 # Worker tier also runs plugin workers and scheduled plugin jobs. Linear's
 # periodic sync can transiently burn CPU over large BLO backlogs; keep enough
