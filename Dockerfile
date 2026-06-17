@@ -135,7 +135,13 @@ ARG CLAUDE_K8S_REF=6a7b9d532c8818c3bbd8777874dba9a7104e8fbf
 # Stops discarding completed work and re-billing redundant retries.
 # Bumped 2026-06-16 to 5d43c07: preserve headers when translating Claude-style
 # remote MCP entries into OpenCode config, so Bearer-protected gbrain connects.
-ARG OPENCODE_K8S_REF=5d43c076e0232d9d11cdb2a9f0fce7aad7cfbdab
+# Bumped 2026-06-17 to 4b19530 (master tip): BLO-10448 — recover the failed
+# pod's container stderr (one-shot non-follow log read, retries the previous
+# instance) and fold it into the run error, so the opaque "Pod exited: Error
+# (exit 1)" self-explains instead of needing a kubectl trip. PR
+# kkroo/paperclip-adapter-opencode-k8s#27; the pin was 2 behind tip so this
+# also picks up #26 (5d43c07 was the pre-merge sha; #26 merged at 09083e1).
+ARG OPENCODE_K8S_REF=4b195304acfd7c5b693b2cfeb9a6cc9fdcda98dd
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
