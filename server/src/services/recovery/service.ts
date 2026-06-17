@@ -554,7 +554,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
-    const [run, deferredWake] = await Promise.all([
+    const now = new Date();
+    const [run, deferredWake, scheduledMonitor] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -579,9 +580,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
+      // BLU-16005: a scheduled monitor whose next-check is still in the future
+      // is a live continuation path — the monitor scheduler will wake the
+      // assignee at monitorNextCheckAt. Perpetual-tracker EPICs (e.g. SOC 2
+      // BLU-9829) sit idle between scheduled checks with no heartbeat run and
+      // no deferred wake; without this they look stranded and the recovery
+      // sweep flips them to `blocked` + reassigns on every cycle. Bounded to
+      // future checks so a genuinely overdue/abandoned monitor is still
+      // recovered.
+      db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.id, issueId),
+            gt(issues.monitorNextCheckAt, now),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(run || deferredWake);
+    return Boolean(run || deferredWake || scheduledMonitor);
   }
 
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
