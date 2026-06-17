@@ -5274,6 +5274,28 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        // Back-link sweep: when a plan-root issue gains a projectId (null→set),
+        // propagate it (and its project workspace) to descendant leaves that still
+        // have none. Keyed on planRootIssueId, so leaves created before the project
+        // was attached can resolve the issue's worktree for gate review (see
+        // buildGateWorkspaceContext / resolveWorkspaceForRun). Idempotent; only
+        // touches still-null descendants.
+        if (!existing.projectId && updated.projectId) {
+          await tx
+            .update(issues)
+            .set({
+              projectId: updated.projectId,
+              projectWorkspaceId: updated.projectWorkspaceId,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.companyId, existing.companyId),
+                eq(issues.planRootIssueId, id),
+                isNull(issues.projectId),
+              ),
+            );
+        }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
