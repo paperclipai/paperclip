@@ -7,6 +7,7 @@ const DEFAULT_AGENT_BUNDLE_FILES = {
   architect: ["AGENTS.md"],
   "code-reviewer": ["AGENTS.md"],
   "wiring-expert": ["AGENTS.md"],
+  "completeness-critic": ["AGENTS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -14,13 +15,14 @@ type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
 // Seed bundles that are routed by the agent's derived urlKey (normalized name),
 // not its `role` column. Gate agents carry a generic role (architect/wiring →
 // "engineer", code-reviewer → "qa") but a distinct identity in their name, so the
-// seed must key on identity. Only these three keys are urlKey-routable; "default"
+// seed must key on identity. These four keys are urlKey-routable; "default"
 // and "ceo" stay role-driven so an agent merely named "Default"/"CEO" cannot
 // hijack a bundle.
 const IDENTITY_ROUTABLE_BUNDLE_ROLES = new Set<DefaultAgentBundleRole>([
   "architect",
   "code-reviewer",
   "wiring-expert",
+  "completeness-critic",
 ]);
 
 export function isIdentityRoutableBundleRole(value: string): value is DefaultAgentBundleRole {
