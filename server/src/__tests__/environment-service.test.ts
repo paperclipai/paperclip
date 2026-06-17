@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -426,6 +426,68 @@ describeEmbeddedPostgres("environmentService leases", () => {
       .from(environments)
       .where(eq(environments.driver, "sandbox"));
     expect(rows).toHaveLength(2);
+  });
+
+  it("reconciles pre-existing duplicate managed Kubernetes environments deterministically", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const olderCreatedAt = new Date("2026-01-01T00:00:00.000Z");
+    const newerCreatedAt = new Date("2026-01-02T00:00:00.000Z");
+    const [older, newer] = await db
+      .insert(environments)
+      .values([
+        {
+          companyId,
+          name: "Kubernetes Sandbox",
+          description: "Oldest managed row",
+          driver: "sandbox",
+          status: "active",
+          config: { provider: "kubernetes", backend: "job", inCluster: false },
+          metadata: { managedByPaperclip: true, managedKubernetesSandbox: true },
+          createdAt: olderCreatedAt,
+          updatedAt: olderCreatedAt,
+        },
+        {
+          companyId,
+          name: "Kubernetes Sandbox Duplicate",
+          description: "Legacy duplicate row missing managedByPaperclip",
+          driver: "sandbox",
+          status: "active",
+          config: { provider: "kubernetes", backend: "job", inCluster: false },
+          metadata: { managedKubernetesSandbox: true },
+          createdAt: newerCreatedAt,
+          updatedAt: newerCreatedAt,
+        },
+      ])
+      .returning();
+
+    const ensured = await svc.ensureKubernetesEnvironment(companyId, {
+      backend: "job",
+      inCluster: true,
+      runtimeClassName: "gvisor",
+    });
+
+    expect(ensured.id).toBe(older?.id);
+    expect(ensured.config.inCluster).toBe(true);
+    expect(ensured.config.runtimeClassName).toBe("gvisor");
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+      .orderBy(asc(environments.createdAt), asc(environments.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(older?.id);
+    expect(rows[0]?.id).not.toBe(newer?.id);
+    expect((rows[0]?.config as Record<string, unknown>)?.inCluster).toBe(true);
+    expect((rows[0]?.metadata as Record<string, unknown>)?.managedKubernetesSandbox).toBe(true);
   });
 
   it("does not treat a non-kubernetes sandbox environment as the managed k8s env", async () => {

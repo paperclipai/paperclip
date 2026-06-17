@@ -344,7 +344,6 @@ export function environmentService(db: Db) {
         if (row) {
           return toEnvironment(row);
         }
-
         const winner = await tx
           .select()
           .from(environments)
