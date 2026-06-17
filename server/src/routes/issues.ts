@@ -225,6 +225,30 @@ function inferVideoContentTypeFromFilename(filename: string | null | undefined):
   return null;
 }
 
+function inferOfficeContentTypeFromFilename(filename: string | null | undefined): string | null {
+  const lower = (filename ?? "").toLowerCase();
+  if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (lower.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (lower.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  if (lower.endsWith(".doc")) return "application/msword";
+  if (lower.endsWith(".xls")) return "application/vnd.ms-excel";
+  if (lower.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+  return null;
+}
+
+function inferAttachmentContentTypeFromFilename(filename: string | null | undefined): string | null {
+  return inferOfficeContentTypeFromFilename(filename) ?? inferVideoContentTypeFromFilename(filename);
+}
+
+function resolveUploadAttachmentContentType(input: {
+  contentType: string | null | undefined;
+  originalFilename?: string | null;
+}): string {
+  const contentType = normalizeContentType(input.contentType);
+  if (!GENERIC_ATTACHMENT_CONTENT_TYPES.has(contentType)) return contentType;
+  return inferAttachmentContentTypeFromFilename(input.originalFilename) ?? contentType;
+}
+
 function resolveAttachmentResponseContentType(input: {
   storedContentType: string | null | undefined;
   objectContentType?: string | null;
@@ -232,7 +256,7 @@ function resolveAttachmentResponseContentType(input: {
 }) {
   const storedContentType = normalizeContentType(input.storedContentType || input.objectContentType);
   if (!GENERIC_ATTACHMENT_CONTENT_TYPES.has(storedContentType)) return storedContentType;
-  return inferVideoContentTypeFromFilename(input.originalFilename) ?? storedContentType;
+  return inferAttachmentContentTypeFromFilename(input.originalFilename) ?? storedContentType;
 }
 
 function requiresPaperclipAttachmentMetadata(input: {
@@ -7313,7 +7337,7 @@ export function issueRoutes(
       res.status(400).json({ error: "Missing file field 'file'" });
       return;
     }
-    const contentType = normalizeContentType(file.mimetype);
+    const contentType = resolveUploadAttachmentContentType({ contentType: file.mimetype, originalFilename: file.originalname });
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: "Attachment is empty" });
       return;
