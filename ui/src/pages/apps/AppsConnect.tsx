@@ -80,6 +80,7 @@ export function AppsConnect() {
 
   const [step, setStep] = useState<Step>(prefill.link ? "key" : "gallery");
   const [entry, setEntry] = useState<AppGalleryEntry | null>(null);
+  const [galleryName, setGalleryName] = useState("");
   const [linkUrl, setLinkUrl] = useState(prefill.link);
   const [linkName, setLinkName] = useState(prefill.name);
   const [linkNeedsKey, setLinkNeedsKey] = useState(false);
@@ -111,8 +112,10 @@ export function AppsConnect() {
     mutationFn: () => {
       if (entry) {
         const sheetIds = isGoogleSheetsEntry(entry) ? parseGoogleSheetIds(googleSheetsLinks).ids : [];
+        const trimmedGalleryName = galleryName.trim();
         return toolsApi.connectApp(selectedCompanyId!, {
           galleryKey: entry.key,
+          name: trimmedGalleryName || undefined,
           credentialValues: credentials,
           configValues: isGoogleSheetsEntry(entry) ? { allowedSpreadsheetIds: sheetIds } : undefined,
           applicationId: prefill.applicationId,
@@ -210,6 +213,7 @@ export function AppsConnect() {
           apps={galleryQuery.data?.apps ?? []}
           onPick={(picked) => {
             setEntry(picked);
+            setGalleryName(picked.name);
             setLinkUrl("");
             setLinkName("");
             setLinkNeedsKey(false);
@@ -221,6 +225,7 @@ export function AppsConnect() {
           }}
           onUseLink={(url) => {
             setEntry(null);
+            setGalleryName("");
             setLinkUrl(url);
             setLinkName(defaultLinkName(url) ?? "");
             setLinkNeedsKey(false);
@@ -238,6 +243,8 @@ export function AppsConnect() {
       {step === "key" && entry && (
         <KeyStep
           entry={entry}
+          name={galleryName}
+          onNameChange={setGalleryName}
           values={credentials}
           onChange={setCredentials}
           googleSheetsLinks={googleSheetsLinks}
@@ -736,8 +743,33 @@ function SegmentedOption({
   );
 }
 
+function ConnectionNameField({
+  name,
+  onNameChange,
+}: {
+  name: string;
+  onNameChange: (next: string) => void;
+}) {
+  return (
+    <div>
+      <label className="text-sm font-medium text-foreground">Name</label>
+      <Input
+        value={name}
+        onChange={(e) => onNameChange(e.target.value)}
+        placeholder="My app"
+        className="mt-2 h-11"
+      />
+      <p className="mt-2 text-xs text-muted-foreground">
+        We filled this in from the app. Change it to tell connections apart.
+      </p>
+    </div>
+  );
+}
+
 function KeyStep({
   entry,
+  name,
+  onNameChange,
   values,
   onChange,
   googleSheetsLinks,
@@ -748,6 +780,8 @@ function KeyStep({
   onConnect,
 }: {
   entry: AppGalleryEntry;
+  name: string;
+  onNameChange: (next: string) => void;
   values: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
   googleSheetsLinks: string;
@@ -779,6 +813,8 @@ function KeyStep({
         </div>
 
         <div className="mt-8 space-y-6">
+          <ConnectionNameField name={name} onNameChange={onNameChange} />
+
           {robotEmail ? (
             <div>
               <label className="text-sm font-medium text-foreground">Share each sheet with this email</label>
@@ -850,6 +886,8 @@ function KeyStep({
       </div>
 
       <div className="mt-8 space-y-6">
+        <ConnectionNameField name={name} onNameChange={onNameChange} />
+
         {fields.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             This app doesn’t need a key. Just connect to continue.

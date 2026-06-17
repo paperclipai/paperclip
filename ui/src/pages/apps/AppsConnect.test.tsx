@@ -374,6 +374,113 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).not.toHaveBeenCalled();
   });
 
+  // PAP-11283: the gallery step exposes a Name field (default = app name) so a
+  // connection can be named at create time, matching the link flow.
+  function nameInputFrom(root: HTMLDivElement): HTMLInputElement | undefined {
+    return Array.from(root.querySelectorAll<HTMLInputElement>("input")).find(
+      (i) => i.getAttribute("placeholder") === "My app",
+    );
+  }
+
+  it("gallery key step defaults the Name field to the app name", async () => {
+    await render();
+
+    await act(async () => {
+      buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Connect Zapier");
+    expect(nameInputFrom(container)?.value).toBe("Zapier");
+  });
+
+  it("leaving the default name connects with the app name", async () => {
+    await render();
+
+    await act(async () => {
+      buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
+    await act(async () => setInputValue(keyField!, "secret-key"));
+    await flushReact();
+    await act(async () => {
+      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    const [, input] = connectAppMock.mock.calls[0];
+    expect(input).toMatchObject({ galleryKey: "zapier", name: "Zapier" });
+  });
+
+  it("a custom name in the gallery step is sent to the connect mutation", async () => {
+    await render();
+
+    await act(async () => {
+      buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    await act(async () => setInputValue(nameInputFrom(container)!, "Zapier (stdio smoke)"));
+    const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
+    await act(async () => setInputValue(keyField!, "secret-key"));
+    await flushReact();
+    await act(async () => {
+      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    const [, input] = connectAppMock.mock.calls[0];
+    expect(input).toMatchObject({ galleryKey: "zapier", name: "Zapier (stdio smoke)" });
+  });
+
+  it("a custom name on the Google Sheets step is sent to the connect mutation", async () => {
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [
+        {
+          key: "google-sheets",
+          name: "Google Sheets",
+          tagline: "Read and update selected spreadsheets.",
+          authKind: "none",
+          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
+          logoUrl: "https://example.com/sheets.png",
+          credentialFields: [],
+          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
+        },
+      ],
+    });
+    await render();
+
+    await act(async () => {
+      buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // Default is the app name.
+    expect(nameInputFrom(container)?.value).toBe("Google Sheets");
+    await act(async () => setInputValue(nameInputFrom(container)!, "Google Sheets (stdio smoke)"));
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    await act(async () =>
+      setTextareaValue(textarea!, "https://docs.google.com/spreadsheets/d/sheet_123/edit"),
+    );
+    await flushReact();
+    await act(async () => {
+      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    const [, input] = connectAppMock.mock.calls[0];
+    expect(input).toMatchObject({
+      galleryKey: "google-sheets",
+      name: "Google Sheets (stdio smoke)",
+      configValues: { allowedSpreadsheetIds: ["sheet_123"] },
+    });
+  });
+
   it("passes parsed Google Sheets IDs as connection config values", async () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [
