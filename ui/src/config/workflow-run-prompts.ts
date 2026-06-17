@@ -66,15 +66,28 @@ export function buildWorkflowRunnerConfig(
     ...(existingRunnerConfig ?? {}),
   };
   nextRunnerConfig.agentPath = input.agentPath.trim();
-  if (input.cwd.trim()) {
-    nextRunnerConfig.cwd = input.cwd.trim();
+  const cwd = input.cwd.trim();
+  const command = input.command.trim();
+  const model = input.model.trim();
+
+  if (cwd) {
+    nextRunnerConfig.cwd = cwd;
+  } else {
+    delete nextRunnerConfig.cwd;
   }
-  if (input.command.trim()) {
-    nextRunnerConfig.command = input.command.trim();
+
+  if (command) {
+    nextRunnerConfig.command = command;
+  } else {
+    delete nextRunnerConfig.command;
   }
-  if (input.model.trim()) {
-    nextRunnerConfig.model = input.model.trim();
+
+  if (model) {
+    nextRunnerConfig.model = model;
+  } else {
+    delete nextRunnerConfig.model;
   }
+
   nextRunnerConfig.promptTemplates = normalizeWorkflowPromptTemplates(input.promptTemplates);
   return nextRunnerConfig;
 }

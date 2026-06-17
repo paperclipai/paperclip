@@ -36,11 +36,13 @@ describe("workflow prompt templates config", () => {
     expect(hasIncompleteWorkflowPromptTemplates([])).toBe(false);
   });
 
-  it("preserves literal markdown when building the workflow runner config", () => {
+  it("preserves unrelated config and clears blank optional runner fields", () => {
     expect(
       buildWorkflowRunnerConfig(
         {
           cwd: "/tmp/workspace",
+          command: "/tmp/run.sh",
+          model: "gpt-4.1",
           customFlag: "keep-me",
         },
         {
@@ -57,8 +59,35 @@ describe("workflow prompt templates config", () => {
         },
       ),
     ).toEqual({
-      cwd: "/tmp/workspace",
       customFlag: "keep-me",
+      agentPath: "/tmp/agent.py",
+      promptTemplates: [
+        {
+          label: "Summarize",
+          promptMarkdown: "  Summarize the workflow input.\n\n  Keep the literal markdown.\n",
+        },
+      ],
+    });
+  });
+
+  it("preserves literal markdown when building the workflow runner config", () => {
+    expect(
+      buildWorkflowRunnerConfig(
+        {},
+        {
+          agentPath: "/tmp/agent.py",
+          cwd: "",
+          command: "",
+          model: "",
+          promptTemplates: [
+            {
+              label: "Summarize",
+              promptMarkdown: "  Summarize the workflow input.\n\n  Keep the literal markdown.\n",
+            },
+          ],
+        },
+      ),
+    ).toEqual({
       agentPath: "/tmp/agent.py",
       promptTemplates: [
         {

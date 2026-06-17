@@ -21,7 +21,7 @@ export function WorkflowRunPromptSuggestions({
         <div className="flex flex-wrap gap-2">
           {promptTemplates.map((prompt, index) => (
             <Button
-              key={`${prompt.label}-${index}`}
+              key={index}
               type="button"
               variant="outline"
               size="xs"
