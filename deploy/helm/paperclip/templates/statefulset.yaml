@@ -93,7 +93,7 @@ spec:
             - name: PAPERCLIP_INSTANCE_ID
               value: {{ .Values.env.instanceId | quote }}
             - name: PAPERCLIP_ALLOWED_HOSTNAMES
-              value: {{ prepend (.Values.env.extraAllowedHostnames | default list) "127.0.0.1" | join "," | quote }}
+              value: {{ include "paperclip.allowedHostnames" . | quote }}
             - name: PAPERCLIP_AGENT_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -103,10 +103,13 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           livenessProbe:
+            {{- include "paperclip.probeHttpGet" . | nindent 12 }}
             {{- toYaml .Values.probes.liveness | nindent 12 }}
           readinessProbe:
+            {{- include "paperclip.probeHttpGet" . | nindent 12 }}
             {{- toYaml .Values.probes.readiness | nindent 12 }}
           startupProbe:
+            {{- include "paperclip.probeHttpGet" . | nindent 12 }}
             {{- toYaml .Values.probes.startup | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
