@@ -203,7 +203,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       lastOutputSeq: opts.withOutput ? 3 : 0,
       lastOutputStream: opts.withOutput ? "stdout" : null,
       contextSnapshot: { issueId },
-      stdoutExcerpt: "OPENAI_API_KEY=sk-test-secret-value should not leak",
+      stdoutExcerpt: opts.noProcessMetadata ? null : "OPENAI_API_KEY=sk-test-secret-value should not leak",
       logBytes: 0,
     });
     if (opts.logChunk) {

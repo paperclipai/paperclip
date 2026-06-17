@@ -3163,6 +3163,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     enqueueWakeup,
     onWatchdogAutoCancelled: async (run) => {
       await releaseIssueExecutionAndPromote(run);
+      await releaseEnvironmentLeasesForRun({
+        runId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        status: run.status,
+        failureReason: run.error ?? undefined,
+      });
+      await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
       await finalizeAgentStatus(run.agentId, "cancelled");
       await startNextQueuedRunForAgent(run.agentId);
     },
@@ -6783,7 +6791,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
       .from(heartbeatRuns)
-      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .innerJoin(agents, and(eq(heartbeatRuns.agentId, agents.id), eq(heartbeatRuns.companyId, agents.companyId)))
       .where(and(
         eq(heartbeatRuns.status, "running"),
         inArray(agents.adapterType, [...PREMIUM_MANAGED_ADAPTER_TYPES]),
@@ -6821,13 +6829,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (runningCount >= policy.maxConcurrentRuns) {
       return null;
     }
-    if (isPremiumManagedAdapter(agent.adapterType)) {
-      const premiumRunningCount = await countRunningPremiumManagedRuns();
-      if (premiumRunningCount >= premiumManagedMaxConcurrentRuns()) {
-        return null;
-      }
-    }
-
     const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
@@ -6881,18 +6882,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    const claimedAt = new Date();
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    const claimWithAdmission = async () => {
+      if (isPremiumManagedAdapter(agent.adapterType)) {
+        const premiumRunningCount = await countRunningPremiumManagedRuns();
+        if (premiumRunningCount >= premiumManagedMaxConcurrentRuns()) {
+          return null;
+        }
+      }
+      const claimedAt = new Date();
+      return db
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    };
+    const claimed = isPremiumManagedAdapter(agent.adapterType)
+      ? await withAgentStartLock("__premium_managed_global__", claimWithAdmission)
+      : await claimWithAdmission();
     if (!claimed) return null;
+    const claimedAt = claimed.startedAt ?? new Date();
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -7739,13 +7752,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
       let availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
-      if (isPremiumManagedAdapter(agent.adapterType)) {
-        const premiumAvailableSlots = Math.max(
-          0,
-          premiumManagedMaxConcurrentRuns() - await countRunningPremiumManagedRuns(),
-        );
-        availableSlots = Math.min(availableSlots, premiumAvailableSlots);
-      }
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db

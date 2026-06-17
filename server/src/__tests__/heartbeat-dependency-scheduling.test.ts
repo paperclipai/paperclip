@@ -658,7 +658,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       expect(secondRunWhileFirstRunning?.status).toBe("queued");
       expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
     } finally {
-      process.env.PAPERCLIP_PREMIUM_MAX_CONCURRENT_RUNS = originalPremiumCap;
+      if (originalPremiumCap === undefined) {
+        delete process.env.PAPERCLIP_PREMIUM_MAX_CONCURRENT_RUNS;
+      } else {
+        process.env.PAPERCLIP_PREMIUM_MAX_CONCURRENT_RUNS = originalPremiumCap;
+      }
       finishFirstRun();
     }
   }, 40_000);

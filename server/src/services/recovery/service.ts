@@ -884,6 +884,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       !runningProcesses.has(run.id) &&
       !run.lastOutputAt &&
       (run.lastOutputSeq ?? 0) === 0 &&
+      !run.lastOutputStream &&
+      (run.lastOutputBytes ?? 0) === 0 &&
+      !run.stdoutExcerpt &&
+      !run.stderrExcerpt &&
       !run.logStore &&
       !run.logRef &&
       (run.logBytes ?? 0) === 0;
@@ -1250,7 +1254,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
           resultJson,
           updatedAt: input.now,
         })
-        .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId), eq(heartbeatRuns.status, "running")))
+        .where(and(
+          eq(heartbeatRuns.id, input.run.id),
+          eq(heartbeatRuns.companyId, input.run.companyId),
+          eq(heartbeatRuns.status, "running"),
+        ))
         .returning();
       if (!updatedRun) return null;
 
@@ -1392,7 +1400,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
           resultJson,
           updatedAt: input.now,
         })
-        .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId), eq(heartbeatRuns.status, "running")))
+        .where(and(
+          eq(heartbeatRuns.id, input.run.id),
+          eq(heartbeatRuns.companyId, input.run.companyId),
+          eq(heartbeatRuns.status, "running"),
+          isNull(heartbeatRuns.processStartedAt),
+          isNull(heartbeatRuns.processPid),
+          isNull(heartbeatRuns.processGroupId),
+          isNull(heartbeatRuns.lastOutputAt),
+          sql`coalesce(${heartbeatRuns.lastOutputSeq}, 0) = 0`,
+          isNull(heartbeatRuns.lastOutputStream),
+          sql`coalesce(${heartbeatRuns.lastOutputBytes}, 0) = 0`,
+          isNull(heartbeatRuns.stdoutExcerpt),
+          isNull(heartbeatRuns.stderrExcerpt),
+          isNull(heartbeatRuns.logStore),
+          isNull(heartbeatRuns.logRef),
+          sql`coalesce(${heartbeatRuns.logBytes}, 0) = 0`,
+        ))
         .returning();
       if (!updatedRun) return null;
 
@@ -1463,8 +1487,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         cleanup,
       },
     });
-    await finalizeAgentAfterSourceResolvedRun(finalizedRun, "cancelled");
-    await deps.onWatchdogAutoCancelled?.(finalizedRun);
+    if (deps.onWatchdogAutoCancelled) {
+      await deps.onWatchdogAutoCancelled(finalizedRun);
+    } else {
+      await finalizeAgentAfterSourceResolvedRun(finalizedRun, "cancelled");
+    }
     return { kind: "auto_cancelled" as const, runId: finalizedRun.id, evaluationIssueId: input.existingEvaluation?.id ?? null };
   }
 
@@ -1717,16 +1744,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     const silenceAgeMs = silenceAgeMsForRun(input.run, input.now);
-    if (isNoProcessCriticalSilentRun(input.run, input.now)) {
-      return autoCancelNoProcessSilentRun({
-        run: input.run,
-        runningAgent,
-        sourceIssue,
-        existingEvaluation: existing,
-        silenceAgeMs,
-        now: input.now,
-      });
-    }
     if (sourceIssue && isRecoveryOriginIssue(sourceIssue)) {
       await logActivity(db, {
         companyId: input.run.companyId,
@@ -1768,16 +1785,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       }
     }
 
+    // Dedup: if a reviewer has dismissed this run's silence as a false positive, don't
+    // auto-cancel or re-file. Terminal same-run evidence is folded first so resolved
+    // source issues can still close their existing watchdog work idempotently.
+    if (await hasDismissedFalsePositiveDecision(input.run.companyId, input.run.id)) {
+      return { kind: "skipped" as const };
+    }
+
+    if (isNoProcessCriticalSilentRun(input.run, input.now)) {
+      return autoCancelNoProcessSilentRun({
+        run: input.run,
+        runningAgent,
+        sourceIssue,
+        existingEvaluation: existing,
+        silenceAgeMs,
+        now: input.now,
+      });
+    }
+
     // Idle output is expected when the source issue is blocked — skip ticket creation entirely.
     if (sourceIssue?.status === "blocked") return { kind: "skipped" as const };
 
     // Dedup: if a reviewer has dismissed this run's silence as a false positive, don't re-file.
     // A "continue" decision with a snooze window is allowed to re-arm normally — only an
     // explicit dismissed_false_positive blocks all further alerts for this run.
-    if (await hasDismissedFalsePositiveDecision(input.run.companyId, input.run.id)) {
-      return { kind: "skipped" as const };
-    }
-
     // Dedup: if a prior evaluation issue for this run was closed `done` on the board
     // without going through the watchdog decision API, no dismissed_false_positive record exists
     // and the watchdog would re-fire every cycle. Auto-record the suppression now so future

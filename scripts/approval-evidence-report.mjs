@@ -65,6 +65,21 @@ async function fetchJson(url) {
   return { ok: true, status: response.status, body: json };
 }
 
+function summarizeLiveRuns(response) {
+  if (!response?.ok || !Array.isArray(response.body)) return response;
+  const counts = response.body.reduce((acc, run) => {
+    const status = typeof run?.status === "string" ? run.status : "unknown";
+    acc[status] = (acc[status] ?? 0) + 1;
+    return acc;
+  }, {});
+  return {
+    ...response,
+    runningObserved: counts.running ?? 0,
+    queuedObserved: counts.queued ?? 0,
+    statusCounts: counts,
+  };
+}
+
 function parseAheadBehind(output) {
   const [behind = "0", ahead = "0"] = output.split(/\s+/);
   return { ahead: Number(ahead), behind: Number(behind) };
@@ -106,7 +121,7 @@ async function main() {
   const dirtyTracked = trackedDirtyFiles();
   const changed = changedFiles();
   const health = await fetchJson(args.healthUrl);
-  const liveRuns = await fetchJson(args.liveRunsUrl);
+  const liveRuns = summarizeLiveRuns(await fetchJson(args.liveRunsUrl));
 
   const report = {
     schemaVersion: 1,
