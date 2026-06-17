@@ -97,6 +97,7 @@ import { logActivity } from "./activity-log.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
+import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
 
 type ActorInfo = {
@@ -4526,8 +4527,42 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .from(toolInvocations)
         .where(and(eq(toolInvocations.companyId, companyId), inArray(toolInvocations.id, invocationIds)));
       const invocationById = new Map(invocations.map((invocation) => [invocation.id, invocation]));
+      let visibleRequests = requests;
+      if (status === "pending") {
+        const invalidRequestIds = requests
+          .filter((request) => {
+            const invocation = invocationById.get(request.invocationId);
+            if (!invocation) return true;
+            try {
+              return !readSignedToolArgumentsPayload({
+                signedArguments: request.signedArguments,
+                invocationId: invocation.id,
+                toolName: invocation.toolName,
+              });
+            } catch {
+              return true;
+            }
+          })
+          .map((request) => request.id);
+        if (invalidRequestIds.length > 0) {
+          await db
+            .update(toolActionRequests)
+            .set({ status: "cancelled", resolvedAt: new Date(), updatedAt: new Date() })
+            .where(and(
+              eq(toolActionRequests.companyId, companyId),
+              eq(toolActionRequests.status, "pending"),
+              inArray(toolActionRequests.id, invalidRequestIds),
+            ));
+          const invalidIds = new Set(invalidRequestIds);
+          visibleRequests = requests.filter((request) => !invalidIds.has(request.id));
+        }
+      }
+      if (visibleRequests.length === 0) return [];
 
-      const connectionIds = [...new Set(invocations.map((invocation) => invocation.connectionId).filter(Boolean))] as string[];
+      const visibleInvocations = visibleRequests
+        .map((request) => invocationById.get(request.invocationId))
+        .filter((invocation): invocation is typeof toolInvocations.$inferSelect => Boolean(invocation));
+      const connectionIds = [...new Set(visibleInvocations.map((invocation) => invocation.connectionId).filter(Boolean))] as string[];
       const connections = connectionIds.length
         ? await db.select().from(toolConnections).where(inArray(toolConnections.id, connectionIds))
         : [];
@@ -4539,13 +4574,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         : [];
       const applicationById = new Map(applications.map((application) => [application.id, application]));
 
-      const catalogEntryIds = [...new Set(invocations.map((invocation) => invocation.catalogEntryId).filter(Boolean))] as string[];
+      const catalogEntryIds = [...new Set(visibleInvocations.map((invocation) => invocation.catalogEntryId).filter(Boolean))] as string[];
       const catalogEntries = catalogEntryIds.length
         ? await db.select().from(toolCatalogEntries).where(inArray(toolCatalogEntries.id, catalogEntryIds))
         : [];
       const catalogById = new Map(catalogEntries.map((entry) => [entry.id, entry]));
 
-      return requests.map((request) => {
+      return visibleRequests.map((request) => {
         const invocation = invocationById.get(request.invocationId);
         const connection = invocation?.connectionId ? connectionById.get(invocation.connectionId) : undefined;
         const application = connection?.applicationId ? applicationById.get(connection.applicationId) : undefined;

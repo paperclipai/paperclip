@@ -337,6 +337,43 @@ describeEmbeddedPostgres("tool gateway service", () => {
     });
   });
 
+  it("cancels a stale pending action request when direct approval sees an invalid signature", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note writes",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters: { noteId: "n1", body: "reviewed body" },
+    })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    await db
+      .update(toolActionRequests)
+      .set({ signedArguments: "stale-invalid-signature" })
+      .where(eq(toolActionRequests.id, actionRequest.id));
+
+    await expect(gateway.approveActionRequest({
+      companyId: company.id,
+      actionRequestId: actionRequest.id,
+      actor: { userId: "board-user" },
+    })).rejects.toMatchObject({
+      reasonCode: "action_request_invalidated",
+      message: "Tool action request is no longer approvable; refresh the review queue",
+    });
+    const [cancelled] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, actionRequest.id));
+    expect(cancelled.status).toBe("cancelled");
+  });
+
   it("declines a pending action request and rejects the invocation (PAP-10859)", async () => {
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({

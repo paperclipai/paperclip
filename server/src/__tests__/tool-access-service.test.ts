@@ -37,6 +37,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { classifyRisk, toolAccessService } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
+import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -1843,6 +1844,101 @@ describeEmbeddedPostgres("tool access service", () => {
         reasons: ["health", "quarantined_catalog_entries", "pending_action_requests"],
       }),
     ]);
+  });
+
+  it("cancels stale pending action requests with invalid signatures before listing the review queue", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "current-secret");
+    const company = await createCompany(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      name: `Action review app ${randomUUID()}`,
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: `Action review connection ${randomUUID()}`,
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: { url: "https://fixture.example/mcp" },
+    }).returning();
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application.id,
+      connectionId: connection.id,
+      name: "kv_set",
+      toolName: "kv_set",
+      title: "KV Set",
+      riskLevel: "write",
+      isWrite: true,
+      status: "active",
+      versionHash: "v1",
+      schemaHash: "s1",
+    }).returning();
+    const canonicalArguments = canonicalToolArguments({ key: "alpha", value: "one" });
+    const invocationValues = [1, 2, 3].map(() => ({
+      companyId: company.id,
+      applicationId: application.id,
+      connectionId: connection.id,
+      catalogEntryId: catalogEntry.id,
+      toolName: "kv_set",
+      argumentsHash: "args-hash",
+      argumentsSummary: { summary: canonicalArguments, sha256: "args-hash", sizeBytes: canonicalArguments.length },
+      policyDecision: "require_approval" as const,
+      approvalState: "pending" as const,
+      status: "awaiting_approval" as const,
+    }));
+    const [validInvocation, missingSignatureInvocation, oldSecretInvocation] =
+      await db.insert(toolInvocations).values(invocationValues).returning();
+    const validSignedArguments = signToolArguments({
+      invocationId: validInvocation.id,
+      toolName: validInvocation.toolName,
+      canonicalArguments,
+      signingSecret: "current-secret",
+    });
+    const oldSecretSignedArguments = signToolArguments({
+      invocationId: oldSecretInvocation.id,
+      toolName: oldSecretInvocation.toolName,
+      canonicalArguments,
+      signingSecret: "old-secret",
+    });
+    const [validRequest, missingSignatureRequest, oldSecretRequest] = await db.insert(toolActionRequests).values([
+      {
+        companyId: company.id,
+        invocationId: validInvocation.id,
+        status: "pending",
+        canonicalArgumentsHash: "args-hash",
+        canonicalArgumentsSummary: { summary: canonicalArguments, sha256: "args-hash", sizeBytes: canonicalArguments.length },
+        signedArguments: validSignedArguments,
+      },
+      {
+        companyId: company.id,
+        invocationId: missingSignatureInvocation.id,
+        status: "pending",
+        canonicalArgumentsHash: "args-hash",
+        canonicalArgumentsSummary: { summary: canonicalArguments, sha256: "args-hash", sizeBytes: canonicalArguments.length },
+        signedArguments: null,
+      },
+      {
+        companyId: company.id,
+        invocationId: oldSecretInvocation.id,
+        status: "pending",
+        canonicalArgumentsHash: "args-hash",
+        canonicalArgumentsSummary: { summary: canonicalArguments, sha256: "args-hash", sizeBytes: canonicalArguments.length },
+        signedArguments: oldSecretSignedArguments,
+      },
+    ]).returning();
+
+    const list = await toolAccessService(db).listActionRequests(company.id, "pending");
+    const rows = await db.select().from(toolActionRequests);
+    const statusById = new Map(rows.map((row) => [row.id, row.status]));
+
+    expect(list.map((item) => item.request.id)).toEqual([validRequest.id]);
+    expect(statusById.get(validRequest.id)).toBe("pending");
+    expect(statusById.get(missingSignatureRequest.id)).toBe("cancelled");
+    expect(statusById.get(oldSecretRequest.id)).toBe("cancelled");
   });
 
   it("tracks new profile tools, reviews mixed allow/block decisions, and clears pending counts", async () => {

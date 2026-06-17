@@ -92,7 +92,10 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
       pushToast({ title: "Allowed once", body: `${actionLabel(item)} can run this time.`, tone: "success" });
       invalidate();
     },
-    onError: (error) => failToast(pushToast, error),
+    onError: (error) => {
+      invalidate();
+      failToast(pushToast, error);
+    },
     onSettled: () => setResolving(null),
   });
 
@@ -112,7 +115,10 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
       invalidate();
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.trustRules(companyId) });
     },
-    onError: (error) => failToast(pushToast, error),
+    onError: (error) => {
+      invalidate();
+      failToast(pushToast, error);
+    },
     onSettled: () => setResolving(null),
   });
 
@@ -123,7 +129,10 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
       pushToast({ title: "Declined", body: `${actionLabel(item)} won’t run.`, tone: "info" });
       invalidate();
     },
-    onError: (error) => failToast(pushToast, error),
+    onError: (error) => {
+      invalidate();
+      failToast(pushToast, error);
+    },
     onSettled: () => setResolving(null),
   });
 

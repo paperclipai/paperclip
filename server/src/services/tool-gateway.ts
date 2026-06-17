@@ -3350,15 +3350,29 @@ export function createToolGatewayService(
       if (actionRequest.status !== "pending" && actionRequest.status !== "approved") {
         throw new ToolGatewayHttpError(409, "Tool action request is no longer pending", "action_not_pending");
       }
-      if (
-        !readSignedToolArgumentsPayload({
+      let signedPayload: ReturnType<typeof readSignedToolArgumentsPayload> = null;
+      try {
+        signedPayload = readSignedToolArgumentsPayload({
           signedArguments: actionRequest.signedArguments,
           invocationId: invocation.id,
           toolName: invocation.toolName,
           signingSecret: options.toolActionSigningSecret,
-        })
-      ) {
-        throw new ToolGatewayHttpError(409, "Tool action request signature is invalid", "signed_arguments_invalid");
+        });
+      } catch {
+        signedPayload = null;
+      }
+      if (!signedPayload) {
+        if (actionRequest.status === "pending") {
+          await db
+            .update(toolActionRequests)
+            .set({ status: "cancelled", resolvedAt: new Date(), updatedAt: new Date() })
+            .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "pending")));
+        }
+        throw new ToolGatewayHttpError(
+          409,
+          "Tool action request is no longer approvable; refresh the review queue",
+          "action_request_invalidated",
+        );
       }
       if (actionRequest.approvalId) {
         const [formalApproval] = await db
