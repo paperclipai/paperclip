@@ -3,7 +3,7 @@ name: Architect
 slug: architect
 title: Codebase Expert Architect
 role: engineer
-model: sonnet
+model: opus
 reportsTo: cto
 skills:
   - source-driven-development

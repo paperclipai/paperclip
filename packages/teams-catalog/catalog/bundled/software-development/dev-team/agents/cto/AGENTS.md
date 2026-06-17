@@ -3,7 +3,7 @@ name: CTO
 slug: cto
 title: Chief Technology Officer
 role: cto
-model: sonnet
+model: opus
 reportsTo: null
 skills:
   - dev-roles

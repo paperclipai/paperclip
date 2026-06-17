@@ -241,25 +241,26 @@ else
   echo "  CTO status: $STATUS"
 
   # -------------------------------------------------------------------------
-  # 6. Ensure CTO heartbeat enabled, maxConcurrentRuns=1, and model=sonnet (A5)
+  # 6. Ensure CTO heartbeat enabled, maxConcurrentRuns=1, model=opus
   # -------------------------------------------------------------------------
   echo "▶ Ensuring CTO heartbeat config and model tier…"
   curl -fsS -X PATCH "$API_BASE/agents/$CTO_ID" \
     -H 'Content-Type: application/json' \
-    -d '{"runtimeConfig":{"heartbeat":{"enabled":true,"maxConcurrentRuns":1}}}' > /dev/null
-  curl -fsS -X PATCH "$API_BASE/agents/$CTO_ID" \
-    -H 'Content-Type: application/json' \
-    -d '{"adapterConfig":{"model":"claude-sonnet-4-6"}}' > /dev/null
-  echo "  heartbeat.enabled=true  maxConcurrentRuns=1  model=claude-sonnet-4-6"
+    -d '{"runtimeConfig":{"heartbeat":{"enabled":true,"maxConcurrentRuns":1}},"adapterConfig":{"model":"claude-opus-4-8"}}' > /dev/null
+  echo "  heartbeat.enabled=true  maxConcurrentRuns=1  model=claude-opus-4-8"
 
   # -------------------------------------------------------------------------
   # 6b. Resume + enable heartbeat for all non-CTO agents.
-  #     After a budget-exhausted pilot, every agent ends up paused with
-  #     heartbeat disabled. Only the CTO is fixed above — the rest stay
-  #     paused and never pick up new gate tasks (the bug that stalled the
-  #     Architect on the first post-reset run, 2026-06-16).
+  #     CTO and Architect run on opus (decomposition + plan review quality).
+  #     All other agents (implementors, reviewers) run on sonnet.
   # -------------------------------------------------------------------------
   echo "▶ Resuming all gate agents and enabling heartbeats…"
+  ARCH_ID="$(printf '%s' "$AGENTS_JSON" | node -e '
+    const agents = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const list = Array.isArray(agents) ? agents : (agents.agents || []);
+    const arch = list.find(a => /architect/i.test(a.name));
+    process.stdout.write(arch ? arch.id : "");
+  ')"
   printf '%s' "$AGENTS_JSON" | node -e '
     const agents = JSON.parse(require("fs").readFileSync(0, "utf8"));
     const list = Array.isArray(agents) ? agents : (agents.agents || []);
@@ -272,10 +273,16 @@ else
     [[ -z "$AGENT_ID" ]] && continue
     curl -fsS -X POST "$API_BASE/agents/$AGENT_ID/resume" \
       -H 'Content-Type: application/json' > /dev/null 2>&1 || true
+    # Architect uses opus; all others use sonnet
+    if [[ "$AGENT_ID" == "$ARCH_ID" ]]; then
+      MODEL="claude-opus-4-8"
+    else
+      MODEL="claude-sonnet-4-6"
+    fi
     curl -fsS -X PATCH "$API_BASE/agents/$AGENT_ID" \
       -H 'Content-Type: application/json' \
-      -d '{"runtimeConfig":{"heartbeat":{"enabled":true,"maxConcurrentRuns":1}},"adapterConfig":{"model":"claude-sonnet-4-6"}}' > /dev/null
-    echo "  $AGENT_NAME: resumed, heartbeat=on, model=claude-sonnet-4-6"
+      -d "{\"runtimeConfig\":{\"heartbeat\":{\"enabled\":true,\"maxConcurrentRuns\":1}},\"adapterConfig\":{\"model\":\"$MODEL\"}}" > /dev/null
+    echo "  $AGENT_NAME: resumed, heartbeat=on, model=$MODEL"
   done
 fi
 
