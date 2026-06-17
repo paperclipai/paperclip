@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -328,4 +328,109 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("12345678-1234-4abc-9def-123456789012");
   });
 
+});
+
+describe("agent-scoped memory pinning", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("injects CLAUDE_CONFIG_DIR and creates canonical memory dir when agentHome is set", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-memory-"));
+    cleanupDirs.push(rootDir);
+    const agentHome = path.join(rootDir, "agent-home");
+    const instructionsPath = path.join(rootDir, "instructions.md");
+    await mkdir(agentHome, { recursive: true });
+    await writeFile(instructionsPath, "Do the work.\n", "utf8");
+
+    await execute({
+      runId: "run-memory-1",
+      agent: {
+        id: "agent-memory-1",
+        companyId: "company-1",
+        name: "Memory Agent",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "claude",
+        instructionsFilePath: instructionsPath,
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: agentHome,
+          source: "agent_home",
+          agentHome,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { env: Record<string, string> }]
+      | undefined;
+    expect(call?.[3].env.CLAUDE_CONFIG_DIR).toBe(path.join(agentHome, ".claude"));
+  });
+
+  it("creates a memory symlink from a different cwd to the canonical agent-home memory dir", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-memory-symlink-"));
+    cleanupDirs.push(rootDir);
+    const agentHome = path.join(rootDir, "agent-home");
+    const cwdDir = path.join(rootDir, "project-cwd");
+    const instructionsPath = path.join(rootDir, "instructions.md");
+    await mkdir(agentHome, { recursive: true });
+    await mkdir(cwdDir, { recursive: true });
+    await writeFile(instructionsPath, "Do the work.\n", "utf8");
+
+    await execute({
+      runId: "run-memory-2",
+      agent: {
+        id: "agent-memory-2",
+        companyId: "company-1",
+        name: "Memory Agent",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "claude",
+        instructionsFilePath: instructionsPath,
+        env: { QA_PROJECT_WORKSPACE_CWD: cwdDir },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: cwdDir,
+          source: "project_primary",
+          agentHome,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const agentClaudeDir = path.join(agentHome, ".claude");
+    const cwdStripped = cwdDir.startsWith("/") ? cwdDir.slice(1) : cwdDir;
+    const cwdSanitized = "-" + cwdStripped.replaceAll("/", "-").replaceAll(".", "-");
+    const cwdMemoryDir = path.join(agentClaudeDir, "projects", cwdSanitized, "memory");
+    const stat = await lstat(cwdMemoryDir);
+    expect(stat.isSymbolicLink()).toBe(true);
+  });
 });
