@@ -126,8 +126,11 @@ describe("agent local JWT", () => {
     expect(verifyLocalAgentJwt(tampered)).toBeNull();
   });
 
-  it("accepts legacy tokens signed with the master secret (backward compat)", () => {
+  it("accepts legacy tokens signed with the master secret when the fallback is explicitly enabled", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    // The master-secret fallback is now disabled by default; operators opt back
+    // in for one TTL during an upgrade by setting the flag to "false".
+    process.env[disableLegacyFallbackEnv] = "false";
     const masterSecret = process.env[secretEnv]!;
 
     // Hand-craft a token signed directly with the master secret, simulating a
@@ -189,13 +192,13 @@ describe("agent local JWT", () => {
     return `${signingInput}.${legacySig}`;
   }
 
-  it("accepts master-secret-signed tokens when PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK is unset", () => {
+  it("rejects master-secret-signed tokens by default when PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK is unset (secure default)", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
     delete process.env[disableLegacyFallbackEnv];
     const legacyToken = craftLegacyMasterSecretToken(process.env[secretEnv]!, "company-legacy");
-    const verified = verifyLocalAgentJwt(legacyToken);
-    expect(verified).not.toBeNull();
-    expect(verified!.company_id).toBe("company-legacy");
+    // Secure-by-default: with the flag unset the master-secret fallback is OFF,
+    // so a token signed with the raw master secret no longer authenticates.
+    expect(verifyLocalAgentJwt(legacyToken)).toBeNull();
   });
 
   it("rejects master-secret-signed tokens when PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK is enabled", () => {
