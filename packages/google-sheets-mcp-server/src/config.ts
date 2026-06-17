@@ -16,10 +16,23 @@ export interface GoogleSheetsMcpConfig {
   secretRedactions: string[];
 }
 
+export interface GoogleSheetsMcpHttpConfig {
+  mcpConfig: GoogleSheetsMcpConfig;
+  port: number;
+  host: string;
+  token: string | null;
+}
+
 export interface GoogleSheetsMcpConfigInput {
   serviceAccountJson?: string | null;
   serviceAccountJsonPath?: string | null;
   allowedSpreadsheetIds?: string | string[] | null;
+}
+
+export interface GoogleSheetsMcpHttpConfigInput extends GoogleSheetsMcpConfigInput {
+  port?: string | number | null;
+  host?: string | null;
+  token?: string | null;
 }
 
 function parseArgs(argv: string[]): GoogleSheetsMcpConfigInput {
@@ -45,6 +58,15 @@ function parseAllowedSpreadsheetIds(raw: string | string[] | null | undefined): 
   const values = Array.isArray(raw) ? raw : String(raw ?? "").split(/[\n,]/g);
   const ids = values.map((value) => value.trim()).filter(Boolean);
   return Array.from(new Set(ids));
+}
+
+function parsePort(raw: string | number | null | undefined): number {
+  if (raw === null || raw === undefined || raw === "") return 8849;
+  const port = typeof raw === "number" ? raw : Number.parseInt(raw, 10);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error(`Invalid port: ${raw}`);
+  }
+  return port;
 }
 
 function readServiceAccountJson(input: GoogleSheetsMcpConfigInput): { raw: string; source: string } {
@@ -93,6 +115,16 @@ export function createGoogleSheetsMcpConfig(input: GoogleSheetsMcpConfigInput): 
   };
 }
 
+export function createGoogleSheetsMcpHttpConfig(input: GoogleSheetsMcpHttpConfigInput): GoogleSheetsMcpHttpConfig {
+  const token = input.token?.trim();
+  return {
+    mcpConfig: createGoogleSheetsMcpConfig(input),
+    port: parsePort(input.port),
+    host: input.host?.trim() || "127.0.0.1",
+    token: token ? token : null,
+  };
+}
+
 export function readConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   argv: string[] = process.argv.slice(2),
@@ -104,5 +136,22 @@ export function readConfigFromEnv(
     allowedSpreadsheetIds: args.allowedSpreadsheetIds
       ?? env.GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS
       ?? env.GOOGLE_SHEETS_SPREADSHEET_IDS,
+  });
+}
+
+export function readHttpConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: string[] = process.argv.slice(2),
+): GoogleSheetsMcpHttpConfig {
+  const args = parseArgs(argv);
+  return createGoogleSheetsMcpHttpConfig({
+    serviceAccountJson: args.serviceAccountJson ?? env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON,
+    serviceAccountJsonPath: args.serviceAccountJsonPath ?? env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_PATH,
+    allowedSpreadsheetIds: args.allowedSpreadsheetIds
+      ?? env.GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS
+      ?? env.GOOGLE_SHEETS_SPREADSHEET_IDS,
+    port: env.PORT ?? env.GOOGLE_SHEETS_MCP_PORT,
+    host: env.GOOGLE_SHEETS_MCP_HOST,
+    token: env.GOOGLE_SHEETS_MCP_TOKEN,
   });
 }

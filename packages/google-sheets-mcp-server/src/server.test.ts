@@ -6,6 +6,18 @@ import { createGoogleSheetsMcpServer } from "./index.js";
 import type { GoogleSheetsClient } from "./google-client.js";
 import type { GoogleSheetsMcpConfig } from "./config.js";
 
+const expectedTools = [
+  "list_spreadsheets",
+  "get_spreadsheet_info",
+  "read_values",
+  "search_rows",
+  "append_rows",
+  "update_values",
+  "add_sheet_tab",
+  "clear_values",
+  "delete_rows",
+];
+
 function makeConfig(): GoogleSheetsMcpConfig {
   return {
     serviceAccount: {
@@ -69,11 +81,7 @@ describe("Google Sheets MCP server protocol", () => {
 
     try {
       const list = await mcpClient.listTools();
-      expect(list.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-        "list_spreadsheets",
-        "read_values",
-        "delete_rows",
-      ]));
+      expect(list.tools.map((tool) => tool.name)).toEqual(expectedTools);
       expect(list.tools.find((tool) => tool.name === "delete_rows")?.annotations).toMatchObject({
         readOnlyHint: false,
         destructiveHint: true,

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createGoogleSheetsMcpConfig, readConfigFromEnv } from "./config.js";
+import { createGoogleSheetsMcpConfig, readConfigFromEnv, readHttpConfigFromEnv } from "./config.js";
 
 const serviceAccount = {
   client_email: "service@example.test",
@@ -50,5 +50,39 @@ describe("Google Sheets MCP config", () => {
         allowedSpreadsheetIds: "",
       })
     ).toThrow("At least one allowed spreadsheet ID is required.");
+  });
+
+  it("reads HTTP host, port, and token while reusing MCP config env", () => {
+    const config = readHttpConfigFromEnv(
+      {
+        GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON: JSON.stringify(serviceAccount),
+        GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "sheet-1",
+        GOOGLE_SHEETS_MCP_PORT: "9911",
+        GOOGLE_SHEETS_MCP_HOST: "0.0.0.0",
+        GOOGLE_SHEETS_MCP_TOKEN: " local-token ",
+      } as NodeJS.ProcessEnv,
+      [],
+    );
+
+    expect(config.port).toBe(9911);
+    expect(config.host).toBe("0.0.0.0");
+    expect(config.token).toBe("local-token");
+    expect(config.mcpConfig.allowedSpreadsheetIds).toEqual(["sheet-1"]);
+  });
+
+  it("lets PORT override GOOGLE_SHEETS_MCP_PORT for platform hosts", () => {
+    const config = readHttpConfigFromEnv(
+      {
+        GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON: JSON.stringify(serviceAccount),
+        GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "sheet-1",
+        PORT: "8080",
+        GOOGLE_SHEETS_MCP_PORT: "9911",
+      } as NodeJS.ProcessEnv,
+      [],
+    );
+
+    expect(config.port).toBe(8080);
+    expect(config.host).toBe("127.0.0.1");
+    expect(config.token).toBeNull();
   });
 });
