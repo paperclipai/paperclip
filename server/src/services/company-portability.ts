@@ -44,6 +44,7 @@ import {
   deriveProjectUrlKey,
   envConfigSchema,
   normalizeAgentUrlKey,
+  workflowPromptTemplateSchema,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -401,6 +402,15 @@ function isSensitiveEnvKey(key: string) {
 function normalizePortableProjectEnv(value: unknown): AgentEnvConfig | null {
   const parsed = envConfigSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
+}
+
+function normalizeWorkflowPromptTemplates(runnerConfig: Record<string, unknown> | null | undefined) {
+  const rawTemplates = runnerConfig?.promptTemplates;
+  if (!Array.isArray(rawTemplates)) return undefined;
+  return rawTemplates.flatMap((template) => {
+    const parsed = workflowPromptTemplateSchema.safeParse(template);
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
 function extractPortableScopedEnvInputs(
@@ -2484,7 +2494,7 @@ function buildManifestFromPackageFiles(
   const workflowPaths = discoveredWorkflowPaths.sort();
 
   const manifest: CompanyPortabilityManifest = {
-    schemaVersion: 6,
+    schemaVersion: 7,
     generatedAt: new Date().toISOString(),
     source: opts?.sourceLabel ?? null,
     includes: {
@@ -2784,6 +2794,10 @@ function buildManifestFromPackageFiles(
       model: asString(parsed.model) ?? null,
       path: path.posix.dirname(workflowPath),
     };
+    const promptTemplates = normalizeWorkflowPromptTemplates(parsed);
+    if (promptTemplates !== undefined) {
+      entry.promptTemplates = promptTemplates;
+    }
     manifest.workflows.push(entry);
   }
 
@@ -3636,6 +3650,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         if (command) workflowEntry.command = command;
         const model = typeof runnerConfig.model === "string" ? runnerConfig.model : null;
         if (model) workflowEntry.model = model;
+        const promptTemplates = normalizeWorkflowPromptTemplates(runnerConfig);
+        if (promptTemplates !== undefined) {
+          workflowEntry.promptTemplates = promptTemplates;
+        }
         files[workflowPath] = buildYamlFile(workflowEntry);
 
         // Bundle managed workflow directory files (mirrors import materializeWorkflowBundle)
@@ -4784,6 +4802,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           ...(manifestWorkflow.workingDirectory ? { cwd: manifestWorkflow.workingDirectory } : {}),
           ...(manifestWorkflow.command ? { command: manifestWorkflow.command } : {}),
           ...(manifestWorkflow.model ? { model: manifestWorkflow.model } : {}),
+          ...(manifestWorkflow.promptTemplates !== undefined ? { promptTemplates: manifestWorkflow.promptTemplates } : {}),
         };
 
         if (wp.action === "skip") {

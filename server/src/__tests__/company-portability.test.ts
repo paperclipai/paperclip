@@ -2591,6 +2591,175 @@ describe("company portability", () => {
     }
   });
 
+  it("exports and imports workflow prompt templates through the portability manifest", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    workflowSvc.list.mockResolvedValueOnce([
+      {
+        id: "workflow-existing",
+        title: "Content Strategist",
+        description: "Plans content",
+        runnerConfig: {
+          agentPath: "agents/content-strategist",
+          cwd: "/workspace/content",
+          command: "python run.py",
+          model: "gemini-2.5-pro",
+          promptTemplates: [
+            {
+              label: "Summarize",
+              promptMarkdown: "Summarize the workflow input.",
+            },
+            {
+              label: "Checklist",
+              promptMarkdown: "Turn the workflow input into a checklist.",
+            },
+          ],
+        },
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: false, workflows: true },
+    });
+
+    expect(exported.manifest.workflows).toHaveLength(1);
+    expect(exported.manifest.workflows[0]).toMatchObject({
+      title: "Content Strategist",
+      description: "Plans content",
+      adkPath: "agents/content-strategist",
+      workingDirectory: "/workspace/content",
+      command: "python run.py",
+      model: "gemini-2.5-pro",
+      promptTemplates: [
+        {
+          label: "Summarize",
+          promptMarkdown: "Summarize the workflow input.",
+        },
+        {
+          label: "Checklist",
+          promptMarkdown: "Turn the workflow input into a checklist.",
+        },
+      ],
+    });
+
+    companySvc.create.mockResolvedValueOnce({ id: "company-imported", name: "Imported Paperclip" });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: { company: true, agents: false, projects: false, issues: false, workflows: true },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Imported Paperclip",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(workflowSvc.create).toHaveBeenCalledWith(
+      "company-imported",
+      expect.objectContaining({
+        title: "Content Strategist",
+        description: "Plans content",
+        status: "active",
+        runnerType: "google_adk",
+        runnerConfig: expect.objectContaining({
+          agentPath: "agents/content-strategist",
+          cwd: "/workspace/content",
+          command: "python run.py",
+          model: "gemini-2.5-pro",
+          promptTemplates: [
+            {
+              label: "Summarize",
+              promptMarkdown: "Summarize the workflow input.",
+            },
+            {
+              label: "Checklist",
+              promptMarkdown: "Turn the workflow input into a checklist.",
+            },
+          ],
+        }),
+      }),
+      { userId: "user-1" },
+    );
+  });
+
+  it("does not clear existing workflow prompt templates when importing a legacy manifest", async () => {
+    const portability = companyPortabilityService({} as any);
+    const existingWorkflow = {
+      id: "workflow-existing",
+      title: "Content Strategist",
+      description: "Plans content",
+      runnerConfig: {
+        agentPath: "agents/content-strategist",
+        cwd: "/workspace/content",
+        command: "python run.py",
+        model: "gemini-2.5-pro",
+        promptTemplates: [
+          {
+            label: "Keep me",
+            promptMarkdown: "Keep this template on update.",
+          },
+        ],
+      },
+    };
+
+    workflowSvc.list.mockImplementation(async () => [existingWorkflow]);
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: false, workflows: true },
+    });
+
+    const workflowPath = `${exported.manifest.workflows[0].path}/WORKFLOW.yaml`;
+    const legacyWorkflowYaml = [
+      `title: "${existingWorkflow.title}"`,
+      `description: "${existingWorkflow.description}"`,
+      `adkPath: "${existingWorkflow.runnerConfig.agentPath}"`,
+      `workingDirectory: "${existingWorkflow.runnerConfig.cwd}"`,
+      `command: "${existingWorkflow.runnerConfig.command}"`,
+      `model: "${existingWorkflow.runnerConfig.model}"`,
+    ].join("\n");
+    const legacyFiles = {
+      ...exported.files,
+      [workflowPath]: legacyWorkflowYaml,
+    };
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: legacyFiles,
+      },
+      include: { company: true, agents: false, projects: false, issues: false, workflows: true },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(workflowSvc.update).toHaveBeenCalledTimes(1);
+    expect(workflowSvc.update).toHaveBeenCalledWith(
+      "workflow-existing",
+      expect.objectContaining({
+        title: "Content Strategist",
+        description: "Plans content",
+        runnerConfig: expect.objectContaining({
+          agentPath: "agents/content-strategist",
+          cwd: "/workspace/content",
+          command: "python run.py",
+          model: "gemini-2.5-pro",
+        }),
+      }),
+      { userId: "user-1" },
+    );
+    expect(workflowSvc.update.mock.calls[0]?.[1]?.runnerConfig).not.toHaveProperty("promptTemplates");
+  });
+
   it("rejects dangerous adapter types on agent-safe imports", async () => {
     const portability = companyPortabilityService({} as any);
     const exported = await portability.exportBundle("company-1", {
