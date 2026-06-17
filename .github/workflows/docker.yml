@@ -30,9 +30,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
           # Full history and tags so `git describe` below can compute the
           # release version to stamp into the image.
           fetch-depth: 0
@@ -137,7 +138,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable=${{ inputs.ref == '' }}
+            type=raw,value=latest,enable=${{ inputs.ref == '' && github.ref_type == 'branch' }}
             type=raw,value=${{ inputs.ref }},enable=${{ inputs.ref != '' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
