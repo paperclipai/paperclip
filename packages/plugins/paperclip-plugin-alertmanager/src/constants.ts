@@ -34,6 +34,10 @@ export const DEFAULT_SEVERITY_TO_PRIORITY: Record<string, PaperclipPriority> = {
 export const DEFAULT_OWNER_MAP: OwnerMap = {
   class: {
     paperclip_claude_k8s: "support@blockcast.net",
+    // BLO-10699: byte-usage watermark alert on the shared `paperclip-data`
+    // CephFS PVC (PaperclipDataVolumeNearlyFull/Critical). Routes to support
+    // so a filling shared HOME is owned, not unassigned.
+    paperclip_data_volume: "support@blockcast.net",
   },
 };
 

@@ -17,7 +17,7 @@ describe("production Dockerfile k8s adapter runtime pins", () => {
   });
 
   it("vendors the claude_k8s adapter commit with shared MCP baseline injection and resume guard", () => {
-    expect(dockerfile).toContain("ARG CLAUDE_K8S_REF=af5df8448e02f3b152ddb0d8e40c558d371a0ebd");
+    expect(dockerfile).toContain("ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98");
     expect(dockerfile).toContain("always materialize the shared MCP baseline");
     expect(dockerfile).toContain("Fixes BackendEngineerGo/Ally missing paperclip/hindsight/gbrain/linear/etc.");
     expect(dockerfile).toContain("only pass --resume to Claude when the");
@@ -25,7 +25,7 @@ describe("production Dockerfile k8s adapter runtime pins", () => {
   });
 
   it("vendors the opencode_k8s adapter commit with crash, runtime-cache, MCP header, and pod-stderr fixes", () => {
-    expect(dockerfile).toContain("ARG OPENCODE_K8S_REF=4b195304acfd7c5b693b2cfeb9a6cc9fdcda98dd");
+    expect(dockerfile).toContain("ARG OPENCODE_K8S_REF=cac7d0b53fa420beb756919561004f1b5b709fa2");
     expect(dockerfile).toContain("type-crash");
     expect(dockerfile).toContain("5-strike adapter crashloop circuit-breaker");
     expect(dockerfile).toContain("writable home (/paperclip/.runtime-cache)");
