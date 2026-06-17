@@ -197,6 +197,17 @@ console.log(JSON.stringify({ type: "result", session_id: "22222222-2222-4222-822
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeFakeClaudeSuccessThenNonZeroExitCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "claude-session-1", result: "all done", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+process.exit(143);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 async function setupExecuteEnv(
   root: string,
   options?: { commandWriter?: (commandPath: string) => Promise<void> },
@@ -563,6 +574,43 @@ describe("claude execute", () => {
       expect(result.errorCode).not.toBe("max_turns_exhausted");
       expect(result.resultJson?.stopReason).not.toBe("max_turns_exhausted");
       expect(result.clearSession).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats subtype=success as a successful run even when the CLI exits non-zero", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-success-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeFakeClaudeSuccessThenNonZeroExitCommand,
+    });
+    try {
+      const result = await execute({
+        runId: "run-success-nonzero",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {},
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+
+      expect(result.errorMessage).toBeNull();
+      expect(result.exitCode).toBe(0);
+      expect(result.summary).toBe("all done");
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

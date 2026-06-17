@@ -53,6 +53,7 @@ import {
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
   isClaudeTransientUpstreamError,
+  isClaudeSuccessResult,
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
@@ -878,7 +879,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const poisonedPreviousMessageId = isClaudePoisonedPreviousMessageIdError(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // The Claude CLI's own `result` event is the authoritative outcome. A
+    // non-zero process exit *after* a `subtype=success` result (e.g. SIGTERM
+    // during the grace window, or EPIPE once the log consumer closes on long
+    // runs) must not flip a successful run to failed — otherwise the harness
+    // records "Claude run failed: subtype=success" and eventually errors the agent.
+    const claudeReportedSuccess = isClaudeSuccessResult(parsed);
+    const failed =
+      !claudeReportedSuccess && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
     // Validate-before-persist guard: never persist a sessionId whose transcript
     // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
     // session id; if the last entry contains a non-`msg_`-prefixed
@@ -944,7 +952,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     return {
-      exitCode: proc.exitCode,
+      exitCode: claudeReportedSuccess ? 0 : proc.exitCode,
       signal: proc.signal,
       timedOut: false,
       errorMessage,
