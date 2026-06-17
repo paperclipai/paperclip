@@ -167,11 +167,17 @@ async function connectSandbox(config: NovitaDriverConfig, sandboxId: string) {
   return await Sandbox.connect(sandboxId, sandboxOpts(config));
 }
 
+function isSandboxNotFoundError(error: unknown): boolean {
+  const message = formatErrorMessage(error).toLowerCase();
+  return message.includes("not found") || message.includes("404");
+}
+
 async function getSandboxOrNull(config: NovitaDriverConfig, sandboxId: string) {
   try {
     return await connectSandbox(config, sandboxId);
-  } catch {
-    return null;
+  } catch (error) {
+    if (isSandboxNotFoundError(error)) return null;
+    throw error;
   }
 }
 
