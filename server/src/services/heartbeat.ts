@@ -159,6 +159,7 @@ import {
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import { tryAdvisoryXactLock } from "./advisory-locks.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -197,6 +198,7 @@ import {
 } from "./low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { PROCESS_REPLICA_ID } from "../replica-id.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -234,6 +236,123 @@ const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+
+/**
+ * Guard for status-conditioned cancel transitions: the cancel UPDATE only
+ * applies while the run is still in the expected status (and, for running
+ * rows, still claimed by the expected replica). Zero matched rows means the
+ * row moved concurrently (e.g. an executor atomically claimed it between a
+ * caller's status check and the cancel) — the transition and ALL of its
+ * side effects are skipped.
+ */
+type RunCancelGuard =
+  | { status: "queued" }
+  | { status: "running"; claimedBy: string };
+/**
+ * A foreign executor's claimed run counts as orphaned once its
+ * executor_heartbeat_at is older than this: executors re-stamp claims every
+ * 15s (run-executor heartbeat loop), so 90s = 3 missed beats + margin for
+ * clock skew and pool contention.
+ */
+export const EXECUTOR_HEARTBEAT_STALE_MS = 90_000;
+/**
+ * Cadence of the process-wide claim heartbeat (startClaimHeartbeats below).
+ * Matches the run-executor loop's default so EXECUTOR_HEARTBEAT_STALE_MS
+ * keeps meaning "3 missed beats + margin" for every locally executing run.
+ */
+export const CLAIM_HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
+ * Run ids currently executing inside THIS process, across ALL
+ * heartbeatService instances (route handlers construct their own instances;
+ * the scheduler runtime and the run-executor closure hold others).
+ * Module-scoped like `runningProcesses` so the orphan reaper and the
+ * process-wide claim heartbeat see every local execution regardless of which
+ * instance dispatched it.
+ */
+export const activeRunExecutions = new Set<string>();
+
+/**
+ * One pass of the process-wide claim heartbeat: re-stamp
+ * executor_heartbeat_at (+ updated_at, so the legacy own-claim staleness
+ * check stays fresh too) for every locally executing run still claimed by
+ * this replica. This gives runs dispatched through the per-agent immediate
+ * path (startNextQueuedRunForAgent / executeRun) the same liveness signal
+ * the run-executor loop gives its batch claims, so foreign reapers leave
+ * live local runs alone once they outlive EXECUTOR_HEARTBEAT_STALE_MS.
+ */
+export async function runClaimHeartbeatPass(db: Db, replicaId: string = PROCESS_REPLICA_ID): Promise<void> {
+  if (activeRunExecutions.size === 0) return;
+  const runIds = [...activeRunExecutions];
+  const now = new Date();
+  await db
+    .update(heartbeatRuns)
+    .set({ executorHeartbeatAt: now, updatedAt: now })
+    .where(
+      and(
+        inArray(heartbeatRuns.id, runIds),
+        eq(heartbeatRuns.claimedBy, replicaId),
+        eq(heartbeatRuns.status, "running"),
+      ),
+    );
+}
+
+let claimHeartbeatTimer: NodeJS.Timeout | null = null;
+let claimHeartbeatInFlight: Promise<void> | null = null;
+let claimHeartbeatStarted = false;
+
+/**
+ * Always-on per-process claim heartbeat. Started from index.ts REGARDLESS of
+ * PAPERCLIP_RUN_EXECUTOR: replicas that never batch-claim still execute runs
+ * locally via agent routes and internal dispatch chains, and those claims
+ * would otherwise be stamped exactly once at claim time and falsely reaped
+ * by a foreign leader after EXECUTOR_HEARTBEAT_STALE_MS. setTimeout chain
+ * (never setInterval) so passes cannot overlap; unref'd so it never holds
+ * the process open.
+ */
+export function startClaimHeartbeats(
+  db: Db,
+  replicaId: string = PROCESS_REPLICA_ID,
+  intervalMs: number = CLAIM_HEARTBEAT_INTERVAL_MS,
+): void {
+  if (claimHeartbeatStarted) return;
+  claimHeartbeatStarted = true;
+  const schedule = () => {
+    if (!claimHeartbeatStarted) return;
+    claimHeartbeatTimer = setTimeout(tick, intervalMs);
+    claimHeartbeatTimer.unref();
+  };
+  const tick = () => {
+    claimHeartbeatTimer = null;
+    claimHeartbeatInFlight = runClaimHeartbeatPass(db, replicaId)
+      .catch((err) => {
+        // Missed beats are tolerated up to EXECUTOR_HEARTBEAT_STALE_MS.
+        logger.warn({ err, replicaId }, "process-wide claim heartbeat pass failed");
+      })
+      .finally(() => {
+        claimHeartbeatInFlight = null;
+        schedule();
+      });
+  };
+  schedule();
+}
+
+/** Shutdown counterpart of startClaimHeartbeats. Idempotent. */
+export async function stopClaimHeartbeats(): Promise<void> {
+  claimHeartbeatStarted = false;
+  if (claimHeartbeatTimer) {
+    clearTimeout(claimHeartbeatTimer);
+    claimHeartbeatTimer = null;
+  }
+  if (claimHeartbeatInFlight) await claimHeartbeatInFlight;
+}
+/**
+ * A queued run may be batch-claimed and released back at most this many
+ * times before the claim path stops re-queueing it and escalates to a
+ * run failure (mirroring the reaper's dead-run transition). Guards against
+ * pathological claim/release churn looping forever.
+ */
+const MAX_RUN_CLAIM_ATTEMPTS = 5;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 export {
@@ -3095,9 +3214,28 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  /**
+   * Identity stamped into heartbeat_runs.claimed_by for runs this instance
+   * claims (per-agent claims AND executor batch claims), and the partition
+   * key the reaper uses to tell own claims from foreign executors' claims.
+   * Defaults to the shared process replica id (same string the scheduler
+   * leadership uses as leader_id).
+   */
+  replicaId?: string;
+  /**
+   * Workspace-affinity seam for the executor batch-claim path: return false
+   * to release a claimed run back to the queue because THIS replica cannot
+   * execute it (e.g. the run resumes a workspace that lives on another
+   * replica's local disk). Defaults to accepting every run — execution
+   * workspaces carry no host binding today, so affinity cannot be derived
+   * from data yet.
+   */
+  canExecuteRunHere?: (run: typeof heartbeatRuns.$inferSelect) => boolean | Promise<boolean>;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  const replicaId = options.replicaId ?? PROCESS_REPLICA_ID;
+  const canExecuteRunHere = options.canExecuteRunHere ?? (() => true);
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -3118,7 +3256,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const activeRunExecutions = new Set<string>();
+  // Uses the module-level process-wide activeRunExecutions set so the
+  // zombie-coalesce liveness view covers claims made through ANY service
+  // instance in this process, not just this one.
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -4617,11 +4757,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId: string,
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    onlyIf?: RunCancelGuard,
   ) {
+    const conditions = [eq(heartbeatRuns.id, runId)];
+    if (onlyIf) {
+      conditions.push(eq(heartbeatRuns.status, onlyIf.status));
+      if (onlyIf.status === "running") {
+        conditions.push(eq(heartbeatRuns.claimedBy, onlyIf.claimedBy));
+      }
+    }
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId))
+      .where(and(...conditions))
       .returning()
       .then((rows) => rows[0] ?? null);
 
@@ -6741,19 +6889,61 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
-  async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
-    if (run.status !== "queued") return run;
+  type QueuedRunClaimValidation =
+    | { ok: true }
+    | {
+        /**
+         * Validation failed. "cancelled": the run took one of the existing
+         * side-effectful failure transitions (it is now terminal).
+         * "unchanged": the failure transition did NOT apply (the cancel
+         * sub-update matched nothing) — the current per-run claim path would
+         * have left such a run queued, so batch claimers must release their
+         * claim back to queued.
+         */
+        ok: false;
+        outcome: "cancelled" | "unchanged";
+      };
+
+  /**
+   * The pre-claim gate shared by claimQueuedRun (per-agent / executeRun
+   * path) and claimRunsForExecution (executor batch path). Failure paths
+   * perform the existing side-effectful transitions (cancellations with
+   * their wakeup/issue-lock/event side effects) exactly as the historical
+   * claimQueuedRun did.
+   */
+  async function validateQueuedRunForClaim(
+    run: typeof heartbeatRuns.$inferSelect,
+    companyAgents: AgentOrgRow[] | undefined,
+    opts: {
+      /**
+       * Caller context for the cancel transitions. The sweep and the per-run
+       * pre-claim path validate rows they expect to still be queued; the
+       * executor batch path validates rows it just claimed (running, owned
+       * by this replica). Every cancel inside is conditioned on this guard
+       * so a concurrent claim (or re-claim by another executor) can never
+       * have its run cancelled from underneath it.
+       */
+      cancelOnlyIf: RunCancelGuard;
+    },
+  ): Promise<QueuedRunClaimValidation> {
+    const cancelOnlyIf = opts.cancelOnlyIf;
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
-      return null;
+      const cancelled = await cancelRunInternal(run.id, "Cancelled because the agent no longer exists", {
+        onlyIf: cancelOnlyIf,
+      });
+      return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
     }
     const invokability = companyAgents
       ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents)
       : await getAgentInvokability(agent);
     if (!invokability.invokable) {
-      await cancelRunInternal(run.id, `Cancelled because the agent is not invokable: ${invokability.reason}`);
-      return null;
+      const cancelled = await cancelRunInternal(
+        run.id,
+        `Cancelled because the agent is not invokable: ${invokability.reason}`,
+        { onlyIf: cancelOnlyIf },
+      );
+      return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
     }
 
     const context = parseObject(run.contextSnapshot);
@@ -6762,8 +6952,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
-      await cancelRunInternal(run.id, budgetBlock.reason);
-      return null;
+      const cancelled = await cancelRunInternal(run.id, budgetBlock.reason, { onlyIf: cancelOnlyIf });
+      return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
     }
 
     const issueId = readNonEmptyString(context.issueId);
@@ -6778,46 +6968,77 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         contextSnapshot: context,
       });
       if (activePauseHold && !treeHoldInteractionWake) {
-        await cancelRunInternal(run.id, "Cancelled because issue is held by an active subtree pause hold");
-        await logActivity(db, {
-          companyId: run.companyId,
-          actorType: "system",
-          actorId: "system",
-          agentId: run.agentId,
-          runId: run.id,
-          action: "issue.tree_hold_run_interrupted",
-          entityType: "heartbeat_run",
-          entityId: run.id,
-          details: {
-            issueId,
-            holdId: activePauseHold.holdId,
-            rootIssueId: activePauseHold.rootIssueId,
-            source: "heartbeat.claim_queued_run",
-            securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
-          },
+        const cancelled = await cancelRunInternal(run.id, "Cancelled because issue is held by an active subtree pause hold", {
+          onlyIf: cancelOnlyIf,
         });
-        return null;
+        if (cancelled) {
+          await logActivity(db, {
+            companyId: run.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: run.agentId,
+            runId: run.id,
+            action: "issue.tree_hold_run_interrupted",
+            entityType: "heartbeat_run",
+            entityId: run.id,
+            details: {
+              issueId,
+              holdId: activePauseHold.holdId,
+              rootIssueId: activePauseHold.rootIssueId,
+              source: "heartbeat.claim_queued_run",
+              securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
+            },
+          });
+        }
+        return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
       }
 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
       if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
-        await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
-        logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
-        return null;
+        const cancelled = await cancelQueuedRunForBlockedDependencies(
+          run,
+          issueId,
+          readiness?.unresolvedBlockerIssueIds ?? [],
+          cancelOnlyIf,
+        );
+        if (cancelled) {
+          logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
+        }
+        return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
       }
 
       const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
-        await cancelQueuedRunForStaleIssue(run, issueId, staleness);
-        logger.info(
-          { runId: run.id, issueId, errorCode: staleness.errorCode },
-          "claimQueuedRun: cancelled stale queued run",
-        );
-        return null;
+        const cancelled = await cancelQueuedRunForStaleIssue(run, issueId, staleness, cancelOnlyIf);
+        if (cancelled) {
+          logger.info(
+            { runId: run.id, issueId, errorCode: staleness.errorCode },
+            "claimQueuedRun: cancelled stale queued run",
+          );
+        }
+        return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
       }
     }
+
+    return { ok: true };
+  }
+
+  /**
+   * Per-run claim used by the immediate-dispatch paths (API-triggered
+   * startNextQueuedRunForAgent and executeRun). The claim UPDATE also stamps
+   * the executor-claim columns with THIS replica so the reaper treats
+   * locally dispatched runs and executor-claimed runs uniformly.
+   */
+  async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
+    if (run.status !== "queued") return run;
+    // The snapshot may be stale: an executor can batch-claim the run while
+    // we validate, so cancels only apply to rows still queued.
+    const validation = await validateQueuedRunForClaim(run, companyAgents, {
+      cancelOnlyIf: { status: "queued" },
+    });
+    if (!validation.ok) return null;
 
     const claimedAt = new Date();
     const claimed = await db
@@ -6826,11 +7047,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: "running",
         startedAt: run.startedAt ?? claimedAt,
         updatedAt: claimedAt,
+        claimedBy: replicaId,
+        claimedAt,
+        executorHeartbeatAt: claimedAt,
+        claimAttempts: sql`${heartbeatRuns.claimAttempts} + 1`,
       })
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
       .returning()
       .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
+
+    await finalizeClaimedRun(claimed);
+    return claimed;
+  }
+
+  /**
+   * Post-claim side effects shared by claimQueuedRun and the executor batch
+   * claim path: lifecycle events, wakeup claim, and the lazy issue
+   * execution-lock stamp.
+   */
+  async function finalizeClaimedRun(claimed: typeof heartbeatRuns.$inferSelect) {
+    const claimedAt = claimed.claimedAt ? new Date(claimed.claimedAt) : new Date();
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -6877,32 +7114,316 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ),
         );
     }
+  }
 
-    return claimed;
+  /**
+   * Executor batch claim. One SKIP LOCKED statement claims up to `limit`
+   * queued runs of active companies (oldest first), then each claimed run is
+   * re-validated with the SAME gates the per-run claim path applies:
+   *
+   * - claim_attempts beyond MAX_RUN_CLAIM_ATTEMPTS → escalate to a run
+   *   failure (the reaper's dead-run transition) instead of re-queueing.
+   * - non-invokable agent: cancel when terminated/invalid-chain (the
+   *   scheduler's existing cancelActiveForAgent semantics), otherwise (e.g.
+   *   paused) release back to queued without consuming a claim attempt —
+   *   the per-agent scheduler path leaves those queued today.
+   * - per-agent maxConcurrentRuns: claims beyond the agent's free slots are
+   *   released back without consuming a claim attempt (waiting on a busy
+   *   agent is not claim churn).
+   * - canExecuteRunHere (workspace-affinity seam): release, attempt counted,
+   *   so a run NO replica accepts eventually escalates loudly.
+   * - validateQueuedRunForClaim: failures take the existing cancellation
+   *   transitions; when a failure transition does not apply the claim is
+   *   released back to queued (claim_attempts stays incremented).
+   *
+   * Returns the run ids that survived and are now owned by this replica.
+   */
+  async function claimRunsForExecution(limit: number, claimReplicaId: string = replicaId): Promise<string[]> {
+    if (!Number.isFinite(limit) || limit <= 0) return [];
+    const claimedRows = (await db.execute(sql`
+      UPDATE heartbeat_runs
+      SET status = 'running',
+          claimed_by = ${claimReplicaId},
+          claimed_at = now(),
+          executor_heartbeat_at = now(),
+          claim_attempts = claim_attempts + 1,
+          started_at = COALESCE(started_at, now()),
+          updated_at = now()
+      FROM (
+        SELECT hr.id
+        FROM heartbeat_runs hr
+        JOIN companies c ON c.id = hr.company_id
+        WHERE hr.status = 'queued' AND c.status = 'active'
+        ORDER BY hr.created_at
+        LIMIT ${Math.floor(limit)}
+        FOR UPDATE OF hr SKIP LOCKED
+      ) s
+      WHERE heartbeat_runs.id = s.id
+      RETURNING heartbeat_runs.id
+    `)) as unknown as Array<{ id: string }>;
+    if (claimedRows.length === 0) return [];
+
+    const claimedIds = claimedRows.map((row) => row.id);
+    const fetched = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.id, claimedIds));
+    const rowById = new Map(fetched.map((row) => [row.id, row]));
+
+    // Group in claim order so per-agent slot allocation is deterministic.
+    const byAgent = new Map<string, Array<typeof heartbeatRuns.$inferSelect>>();
+    for (const id of claimedIds) {
+      const row = rowById.get(id);
+      if (!row) continue;
+      const group = byAgent.get(row.agentId);
+      if (group) group.push(row);
+      else byAgent.set(row.agentId, [row]);
+    }
+
+    const survivors: string[] = [];
+    const companyAgentsByCompany = new Map<string, AgentOrgRow[]>();
+
+    for (const [agentId, agentRuns] of byAgent) {
+      let pending: Array<typeof heartbeatRuns.$inferSelect> = [];
+      for (const run of agentRuns) {
+        if (run.claimAttempts > MAX_RUN_CLAIM_ATTEMPTS) {
+          await escalateClaimAttemptsExhausted(run);
+        } else {
+          pending.push(run);
+        }
+      }
+      if (pending.length === 0) continue;
+
+      const agent = await getAgent(agentId);
+      if (agent) {
+        const invokability = await getAgentInvokability(agent);
+        if (!invokability.invokable) {
+          if (shouldCancelRunsForNonInvokableAgent(invokability)) {
+            for (const run of pending) {
+              // Post-claim context: only cancel while the row is still OUR
+              // claim — a reap/re-claim by another executor keeps its run.
+              await cancelRunInternal(run.id, `Cancelled because the agent is not invokable: ${invokability.reason}`, {
+                onlyIf: { status: "running", claimedBy: claimReplicaId },
+              });
+            }
+          } else {
+            // e.g. paused agent: the scheduler leaves these queued today —
+            // release the claim and do not consume a claim attempt.
+            for (const run of pending) {
+              await releaseClaimedRunToQueue(run.id, claimReplicaId, { restoreAttempt: true });
+            }
+          }
+          continue;
+        }
+
+        // Per-agent concurrency: countRunningRunsForAgent already includes
+        // this batch's claims, so free slots for the batch are computed
+        // against the pre-batch running count.
+        const policy = parseHeartbeatPolicy(agent);
+        const runningCount = await countRunningRunsForAgent(agentId);
+        const preBatchRunning = Math.max(0, runningCount - pending.length);
+        const batchSlots = Math.max(0, policy.maxConcurrentRuns - preBatchRunning);
+        const overflow = pending.slice(batchSlots);
+        pending = pending.slice(0, batchSlots);
+        for (const run of overflow) {
+          logger.debug(
+            { runId: run.id, agentId, maxConcurrentRuns: policy.maxConcurrentRuns },
+            "executor claim released: agent at max concurrent runs",
+          );
+          await releaseClaimedRunToQueue(run.id, claimReplicaId, { restoreAttempt: true });
+        }
+      }
+      // Agent missing: fall through — validateQueuedRunForClaim performs the
+      // existing "agent no longer exists" cancellation per run.
+
+      let companyAgents: AgentOrgRow[] | undefined;
+      if (agent) {
+        companyAgents = companyAgentsByCompany.get(agent.companyId);
+        if (!companyAgents) {
+          companyAgents = await listCompanyAgentOrgRows(agent.companyId);
+          companyAgentsByCompany.set(agent.companyId, companyAgents);
+        }
+      }
+
+      for (const run of pending) {
+        if (!(await canExecuteRunHere(run))) {
+          logger.debug({ runId: run.id, replicaId: claimReplicaId }, "executor claim released: run not executable on this replica");
+          await releaseClaimedRunToQueue(run.id, claimReplicaId);
+          continue;
+        }
+        // Post-claim context: the row is running and owned by us. Cancels
+        // assert that ownership so a reap/re-claim by ANOTHER executor in
+        // the meantime never gets its run cancelled from underneath it.
+        const validation = await validateQueuedRunForClaim(run, companyAgents, {
+          cancelOnlyIf: { status: "running", claimedBy: claimReplicaId },
+        });
+        if (!validation.ok) {
+          if (validation.outcome === "unchanged") {
+            // The per-run claim path would have left this run queued.
+            await releaseClaimedRunToQueue(run.id, claimReplicaId);
+          }
+          continue;
+        }
+        await finalizeClaimedRun(run);
+        survivors.push(run.id);
+      }
+    }
+
+    return survivors;
+  }
+
+  /**
+   * Release a batch-claimed run back to the queue. `restoreAttempt` undoes
+   * the claim_attempts increment for releases that are not claim churn
+   * (agent busy / paused) so the attempt bound only counts pathological
+   * claim/release loops.
+   */
+  async function releaseClaimedRunToQueue(
+    runId: string,
+    claimReplicaId: string,
+    opts?: { restoreAttempt?: boolean },
+  ) {
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "queued",
+        claimedBy: null,
+        claimedAt: null,
+        executorHeartbeatAt: null,
+        ...(opts?.restoreAttempt
+          ? { claimAttempts: sql`GREATEST(${heartbeatRuns.claimAttempts} - 1, 0)` }
+          : {}),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, runId),
+          eq(heartbeatRuns.claimedBy, claimReplicaId),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      );
+  }
+
+  /** Re-stamp executor_heartbeat_at for claims this replica still owns. */
+  async function heartbeatExecutorClaims(runIds: string[], claimReplicaId: string = replicaId) {
+    if (runIds.length === 0) return;
+    const now = new Date();
+    // updated_at is bumped too so the legacy own-claim staleness check in
+    // reapOrphanedRuns keeps treating actively heartbeaten runs as fresh.
+    await db
+      .update(heartbeatRuns)
+      .set({ executorHeartbeatAt: now, updatedAt: now })
+      .where(
+        and(
+          inArray(heartbeatRuns.id, runIds),
+          eq(heartbeatRuns.claimedBy, claimReplicaId),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      );
+  }
+
+  /** Drain path: return this replica's still-running claims to the queue. */
+  async function releaseExecutorClaims(runIds: string[], claimReplicaId: string = replicaId) {
+    if (runIds.length === 0) return;
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "queued",
+        claimedBy: null,
+        claimedAt: null,
+        executorHeartbeatAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          inArray(heartbeatRuns.id, runIds),
+          eq(heartbeatRuns.claimedBy, claimReplicaId),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      );
+  }
+
+  /**
+   * A run that keeps getting claimed and released is failed loudly instead
+   * of looping forever. Mirrors reapOrphanedRuns' dead-run transition
+   * (without the local-process handling, which cannot apply to a run that
+   * never started executing).
+   */
+  async function escalateClaimAttemptsExhausted(run: typeof heartbeatRuns.$inferSelect) {
+    const message = `Run was claimed ${run.claimAttempts} times without executing; failing instead of re-queueing`;
+    logger.error(
+      { runId: run.id, agentId: run.agentId, claimAttempts: run.claimAttempts },
+      "heartbeat run exceeded executor claim-attempt bound; escalating to failure",
+    );
+    const agent = await getAgent(run.agentId);
+    const now = new Date();
+    let finalizedRun = await setRunStatus(run.id, "failed", {
+      error: message,
+      errorCode: "claim_attempts_exhausted",
+      finishedAt: now,
+      ...(agent
+        ? {
+            resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
+              resultJson: parseObject(run.resultJson),
+              errorCode: "claim_attempts_exhausted",
+              errorMessage: message,
+            }),
+          }
+        : {}),
+    });
+    await setWakeupStatus(run.wakeupRequestId, "failed", {
+      finishedAt: now,
+      error: message,
+    });
+    if (!finalizedRun) finalizedRun = await getRun(run.id);
+    if (!finalizedRun) return;
+    await releaseEnvironmentLeasesForRun({
+      runId: finalizedRun.id,
+      companyId: finalizedRun.companyId,
+      agentId: finalizedRun.agentId,
+      status: finalizedRun.status,
+      failureReason: finalizedRun.error ?? undefined,
+    });
+    await releaseIssueExecutionAndPromote(finalizedRun);
+    await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "error",
+      message,
+      payload: { claimAttempts: run.claimAttempts },
+    });
+    await finalizeAgentStatus(run.agentId, "failed");
+    await startNextQueuedRunForAgent(run.agentId);
   }
 
   async function cancelQueuedRunForBlockedDependencies(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     unresolvedBlockerIssueIds: string[],
+    onlyIf?: RunCancelGuard,
   ) {
     const now = new Date();
     const reason =
       "Cancelled because issue dependencies are still blocked; Paperclip will wake the assignee when blockers resolve";
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: now,
-      error: reason,
-      errorCode: "issue_dependencies_blocked",
-      resultJson: {
-        ...parseObject(run.resultJson),
-        stopReason: "issue_dependencies_blocked",
-        effectiveTimeoutSec: 0,
-        timeoutConfigured: false,
-        timeoutSource: "dependency_gate",
-        timeoutFired: false,
+    const cancelled = await setRunStatus(
+      run.id,
+      "cancelled",
+      {
+        finishedAt: now,
+        error: reason,
+        errorCode: "issue_dependencies_blocked",
+        resultJson: {
+          ...parseObject(run.resultJson),
+          stopReason: "issue_dependencies_blocked",
+          effectiveTimeoutSec: 0,
+          timeoutConfigured: false,
+          timeoutSource: "dependency_gate",
+          timeoutFired: false,
+        },
       },
-    });
-    if (!cancelled) return null;
+      onlyIf,
+    );
+    if (!cancelled) {
+      logger.debug({ runId: run.id, issueId }, "blocked-dependency cancel skipped: run moved concurrently");
+      return null;
+    }
 
     await setWakeupStatus(run.wakeupRequestId, "skipped", {
       finishedAt: now,
@@ -7093,22 +7614,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     staleness: Extract<QueuedRunStaleness, { stale: true }>,
+    onlyIf?: RunCancelGuard,
   ) {
     const now = new Date();
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: now,
-      error: staleness.reason,
-      errorCode: staleness.errorCode,
-      resultJson: {
-        ...parseObject(run.resultJson),
-        stopReason: staleness.errorCode,
-        effectiveTimeoutSec: 0,
-        timeoutConfigured: false,
-        timeoutSource: "stale_queued_run_gate",
-        timeoutFired: false,
+    const cancelled = await setRunStatus(
+      run.id,
+      "cancelled",
+      {
+        finishedAt: now,
+        error: staleness.reason,
+        errorCode: staleness.errorCode,
+        resultJson: {
+          ...parseObject(run.resultJson),
+          stopReason: staleness.errorCode,
+          effectiveTimeoutSec: 0,
+          timeoutConfigured: false,
+          timeoutSource: "stale_queued_run_gate",
+          timeoutFired: false,
+        },
       },
-    });
-    if (!cancelled) return null;
+      onlyIf,
+    );
+    if (!cancelled) {
+      logger.debug({ runId: run.id, issueId }, "stale-issue cancel skipped: run moved concurrently");
+      return null;
+    }
 
     await setWakeupStatus(run.wakeupRequestId, "skipped", {
       finishedAt: now,
@@ -7430,17 +7960,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      const foreignClaim = run.claimedBy !== null && run.claimedBy !== replicaId;
+      if (foreignClaim) {
+        // Another replica's executor owns this run. Our in-memory maps and
+        // local pid checks say nothing about it — the ONLY orphan signal is
+        // its executor heartbeat going stale (owner beats every 15s;
+        // EXECUTOR_HEARTBEAT_STALE_MS = 3 missed beats + margin).
+        const beatAt = run.executorHeartbeatAt ?? run.claimedAt ?? run.updatedAt;
+        const beatMs = beatAt ? new Date(beatAt).getTime() : 0;
+        if (now.getTime() - beatMs < EXECUTOR_HEARTBEAT_STALE_MS) continue;
+      } else {
+        // Own claim with a fresh beat: alive by definition. This process
+        // stamps executor_heartbeat_at at claim time and re-stamps it every
+        // CLAIM_HEARTBEAT_INTERVAL_MS while the run executes locally, so a
+        // fresh beat shields the window between the claim UPDATE and
+        // activeRunExecutions.add, and claims this process made through any
+        // service instance. Safe because replica ids are unique per process:
+        // a restarted process never matches its predecessor's claims.
+        if (run.claimedBy === replicaId) {
+          const beatAt = run.executorHeartbeatAt ?? run.claimedAt;
+          const beatMs = beatAt ? new Date(beatAt).getTime() : 0;
+          if (now.getTime() - beatMs < EXECUTOR_HEARTBEAT_STALE_MS) continue;
+        }
 
-      // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
+        // Own (or legacy unclaimed) run: existing local-process logic.
+        if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+
+        // Apply staleness threshold to avoid false positives
+        if (staleThresholdMs > 0) {
+          const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+          if (now.getTime() - refTime < staleThresholdMs) continue;
+        }
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
-      const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      // Recorded pids belong to the dead foreign replica, never to this
+      // host: skip local liveness probes and process termination for them
+      // (a colliding local pid must not be killed or treated as detached).
+      const processPidAlive = !foreignClaim && tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
+      const processGroupAlive = !foreignClaim && tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
@@ -7541,6 +8099,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  /**
+   * Leader-side queue hygiene. Historically this claimed AND dispatched
+   * queued runs on the leader; execution now belongs to the per-replica run
+   * executors (claimRunsForExecution), so this sweep only mirrors the
+   * validation the old claim loop performed — dead/stale/blocked queued
+   * runs are still cancelled promptly on the scheduler tick, while valid
+   * runs are left queued for executors to claim.
+   */
   async function resumeQueuedRuns() {
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -7553,8 +8119,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
     for (const agentId of agentIds) {
-      await startNextQueuedRunForAgent(agentId);
+      await sweepQueuedRunsForAgent(agentId).catch((err) => {
+        logger.error({ err, agentId }, "queued-run validation sweep failed for agent");
+      });
     }
+  }
+
+  /**
+   * Validation-only counterpart of startNextQueuedRunForAgent: identical
+   * agent gating, prioritization, and examination boundary (stop once
+   * availableSlots runs validated clean), but without claiming or
+   * dispatching anything.
+   */
+  async function sweepQueuedRunsForAgent(agentId: string) {
+    return withAgentStartLock(agentId, async () => {
+      const outcome = await tryAdvisoryXactLock(db, `agent-start:${agentId}`, async () => {
+        const agent = await getAgent(agentId);
+        if (!agent) return;
+        const invokability = await getAgentInvokability(agent);
+        if (!invokability.invokable) {
+          if (shouldCancelRunsForNonInvokableAgent(invokability)) {
+            await cancelActiveForAgentInternal(agentId, `Cancelled because the agent is not invokable: ${invokability.reason}`);
+          }
+          return;
+        }
+        const policy = parseHeartbeatPolicy(agent);
+        const runningCount = await countRunningRunsForAgent(agentId);
+        const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+        if (availableSlots <= 0) return;
+
+        const queuedRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        if (queuedRuns.length === 0) return;
+
+        const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
+        const prioritizedRuns = await prioritizeQueuedRunsForAgent(agent, queuedRuns);
+        let validated = 0;
+        for (const queuedRun of prioritizedRuns) {
+          // Same examination boundary as the historical claim loop: runs
+          // beyond the agent's free slots were never validated.
+          if (validated >= availableSlots) break;
+          // An executor may have batch-claimed this run since the select;
+          // never run cancellation gates against a run someone now owns.
+          // The freshness check narrows the window, and the queued-only
+          // cancel guard closes the remaining check/cancel race.
+          const fresh = await getRun(queuedRun.id);
+          if (!fresh || fresh.status !== "queued") continue;
+          const validation = await validateQueuedRunForClaim(fresh, companyAgents, {
+            cancelOnlyIf: { status: "queued" },
+          });
+          if (validation.ok) validated += 1;
+        }
+      });
+      if (!outcome.acquired) {
+        logger.debug({ agentId }, "queued-run sweep skipped; another replica holds the start lock");
+      }
+    });
   }
 
   async function reconcileStrandedAssignedIssues() {
@@ -7663,81 +8286,106 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  /**
+   * Scheduling order shared by the per-agent dispatch path and the leader
+   * validation sweep: dependency-ready in_progress issues first, then ready
+   * non-in_progress, then issueless runs, then dependency-blocked runs;
+   * issue priority and FIFO inside each rank.
+   */
+  async function prioritizeQueuedRunsForAgent(
+    agent: typeof agents.$inferSelect,
+    queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
+  ) {
+    const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
+    const queuedIssueIds = [...new Set(
+      queuedRuns
+        .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
+        .filter((issueId): issueId is string => Boolean(issueId)),
+    )];
+    const issueRows = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        priority: issues.priority,
+      })
+      .from(issues)
+      .where(
+        queuedIssueIds.length > 0
+          ? and(eq(issues.companyId, agent.companyId), inArray(issues.id, queuedIssueIds))
+          : sql`false`,
+      );
+    const issueById = new Map(issueRows.map((row) => [row.id, row]));
+    return [...queuedRuns].sort((left, right) => {
+      const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
+      const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
+      const leftReadiness = leftIssueId ? dependencyReadiness.get(leftIssueId) : null;
+      const rightReadiness = rightIssueId ? dependencyReadiness.get(rightIssueId) : null;
+      const leftReady = leftIssueId ? (leftReadiness?.isDependencyReady ?? true) : true;
+      const rightReady = rightIssueId ? (rightReadiness?.isDependencyReady ?? true) : true;
+      const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
+      const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
+      const leftRank = leftIssueId ? (leftReady ? (leftIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
+      const rightRank = rightIssueId ? (rightReady ? (rightIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
+      const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
+      if (leftPriorityRank !== rightPriorityRank) return leftPriorityRank - rightPriorityRank;
+      return left.createdAt.getTime() - right.createdAt.getTime();
+    });
+  }
+
   async function startNextQueuedRunForAgent(agentId: string) {
     return withAgentStartLock(agentId, async () => {
-      const agent = await getAgent(agentId);
-      if (!agent) return [];
-      const invokability = await getAgentInvokability(agent);
-      if (!invokability.invokable) {
-        if (shouldCancelRunsForNonInvokableAgent(invokability)) {
-          await cancelActiveForAgentInternal(agentId, `Cancelled because the agent is not invokable: ${invokability.reason}`);
+      // Cross-replica: if another replica is concurrently starting runs for
+      // this agent, skip — its pass will start what fits, and the next
+      // heartbeat tick (or API retry) covers anything left queued. Skipping
+      // beats blocking here: this section claims runs and counts slots, and
+      // two replicas doing that concurrently overrun per-agent concurrency.
+      const outcome = await tryAdvisoryXactLock(db, `agent-start:${agentId}`, async () => {
+        const agent = await getAgent(agentId);
+        if (!agent) return [];
+        const invokability = await getAgentInvokability(agent);
+        if (!invokability.invokable) {
+          if (shouldCancelRunsForNonInvokableAgent(invokability)) {
+            await cancelActiveForAgentInternal(agentId, `Cancelled because the agent is not invokable: ${invokability.reason}`);
+          }
+          return [];
         }
+        const policy = parseHeartbeatPolicy(agent);
+        const runningCount = await countRunningRunsForAgent(agentId);
+        const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+        if (availableSlots <= 0) return [];
+
+        const queuedRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        if (queuedRuns.length === 0) return [];
+
+        const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
+        const prioritizedRuns = await prioritizeQueuedRunsForAgent(agent, queuedRuns);
+
+        const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+        for (const queuedRun of prioritizedRuns) {
+          if (claimedRuns.length >= availableSlots) break;
+          const claimed = await claimQueuedRun(queuedRun, companyAgents);
+          if (claimed) claimedRuns.push(claimed);
+        }
+        if (claimedRuns.length === 0) return [];
+
+        for (const claimedRun of claimedRuns) {
+          void executeRun(claimedRun.id).catch((err) => {
+            logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+          });
+        }
+        return claimedRuns;
+      });
+      if (!outcome.acquired) {
+        logger.debug({ agentId }, "agent start skipped; another replica holds the start lock");
         return [];
       }
-      const policy = parseHeartbeatPolicy(agent);
-      const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
-      if (availableSlots <= 0) return [];
-
-      const queuedRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
-        .orderBy(asc(heartbeatRuns.createdAt));
-      if (queuedRuns.length === 0) return [];
-
-      const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
-      const queuedIssueIds = [...new Set(
-        queuedRuns
-          .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
-          .filter((issueId): issueId is string => Boolean(issueId)),
-      )];
-      const issueRows = await db
-        .select({
-          id: issues.id,
-          status: issues.status,
-          priority: issues.priority,
-        })
-        .from(issues)
-        .where(
-          queuedIssueIds.length > 0
-            ? and(eq(issues.companyId, agent.companyId), inArray(issues.id, queuedIssueIds))
-            : sql`false`,
-        );
-      const issueById = new Map(issueRows.map((row) => [row.id, row]));
-      const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
-        const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
-        const leftReadiness = leftIssueId ? dependencyReadiness.get(leftIssueId) : null;
-        const rightReadiness = rightIssueId ? dependencyReadiness.get(rightIssueId) : null;
-        const leftReady = leftIssueId ? (leftReadiness?.isDependencyReady ?? true) : true;
-        const rightReady = rightIssueId ? (rightReadiness?.isDependencyReady ?? true) : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId ? (leftReady ? (leftIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
-        const rightRank = rightIssueId ? (rightReady ? (rightIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank) return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
-      });
-
-      const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
-        if (claimed) claimedRuns.push(claimed);
-      }
-      if (claimedRuns.length === 0) return [];
-
-      for (const claimedRun of claimedRuns) {
-        void executeRun(claimedRun.id).catch((err) => {
-          logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
-        });
-      }
-      return claimedRuns;
+      return outcome.result;
     });
   }
 
@@ -11020,11 +11668,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
     eventPayload?: Record<string, unknown>;
+    /**
+     * Status-conditioned cancel: the transition only applies while the run
+     * is still in the expected state (and claim). When the conditional
+     * UPDATE matches nothing the row moved concurrently — the cancel is
+     * skipped entirely with NONE of its side effects, returning null.
+     */
+    onlyIf?: RunCancelGuard;
   };
 
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
+    if (options.onlyIf && run.status !== options.onlyIf.status) {
+      logger.debug(
+        { runId, status: run.status, expectedStatus: options.onlyIf.status },
+        "cancelRun skipped: run no longer in the caller's expected status",
+      );
+      return null;
+    }
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
     const agent = await getAgent(run.agentId);
     const errorCode = options.errorCode ?? "cancelled";
@@ -11039,31 +11701,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       : options.resultJson;
 
-    const running = runningProcesses.get(run.id);
-    try {
-      if (running) {
-        await terminateHeartbeatRunProcess({
-          pid: running.child.pid ?? run.processPid,
-          processGroupId: running.processGroupId ?? run.processGroupId,
-          graceMs: Math.max(1, running.graceSec) * 1000,
-        });
-      } else if (run.processPid || run.processGroupId) {
-        await terminateHeartbeatRunProcess({
-          pid: run.processPid,
-          processGroupId: run.processGroupId,
-        });
+    const terminateRunProcess = async () => {
+      const running = runningProcesses.get(run.id);
+      try {
+        if (running) {
+          await terminateHeartbeatRunProcess({
+            pid: running.child.pid ?? run.processPid,
+            processGroupId: running.processGroupId ?? run.processGroupId,
+            graceMs: Math.max(1, running.graceSec) * 1000,
+          });
+        } else if (run.processPid || run.processGroupId) {
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          });
+        }
+      } finally {
+        runningProcesses.delete(run.id);
       }
-    } finally {
-      runningProcesses.delete(run.id);
-    }
+    };
 
     const finishedAt = new Date();
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt,
-      error: reason,
-      errorCode,
-      ...(resultJson ? { resultJson } : {}),
-    });
+    let cancelled: typeof heartbeatRuns.$inferSelect | null;
+    if (options.onlyIf) {
+      // Conditional transition FIRST; side effects (process termination,
+      // wakeup/event/lock updates below) only when it actually matched.
+      cancelled = await setRunStatus(
+        run.id,
+        "cancelled",
+        {
+          finishedAt,
+          error: reason,
+          errorCode,
+          ...(resultJson ? { resultJson } : {}),
+        },
+        options.onlyIf,
+      );
+      if (!cancelled) {
+        logger.debug(
+          { runId, expectedStatus: options.onlyIf.status },
+          "cancelRun skipped: run moved concurrently before the conditional cancel applied",
+        );
+        return null;
+      }
+      await terminateRunProcess();
+    } else {
+      await terminateRunProcess();
+      cancelled = await setRunStatus(run.id, "cancelled", {
+        finishedAt,
+        error: reason,
+        errorCode,
+        ...(resultJson ? { resultJson } : {}),
+      });
+    }
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt,
@@ -11442,6 +12132,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     retryScheduledRetryNow,
 
     resumeQueuedRuns,
+
+    executeRun,
+    claimRunsForExecution,
+    heartbeatExecutorClaims,
+    releaseExecutorClaims,
+    // Exposed for the sweep/claim race tests: the shared pre-claim
+    // validation gate with its caller-context cancel guard.
+    validateQueuedRunForClaim,
 
     scheduleBoundedRetry: async (
       runId: string,

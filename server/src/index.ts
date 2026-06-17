@@ -4,8 +4,10 @@
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
+import os from "node:os";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -28,6 +30,7 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  type Db,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
@@ -40,6 +43,8 @@ import {
   bootstrapExecutionPolicyFromEnv,
   heartbeatService,
   instanceSettingsService,
+  startClaimHeartbeats,
+  stopClaimHeartbeats,
   reconcileCloudUpstreamRunsOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
@@ -50,13 +55,22 @@ import {
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
-import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { createRunExecutor, type RunExecutor } from "./services/run-executor.js";
+import { PROCESS_REPLICA_ID } from "./replica-id.js";
+import {
+  createSchedulerLeadership,
+  registerSchedulerLeadershipForHealth,
+  type SchedulerLeadership,
+} from "./services/scheduler-leadership.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { trySessionAdvisoryLock, withAdvisoryXactLock } from "./services/advisory-locks.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -97,6 +111,167 @@ export interface StartedServer {
   listenPort: number;
   apiUrl: string;
   databaseUrl: string;
+}
+
+/**
+ * The heartbeat/routines scheduler runtime, started and stopped by scheduler
+ * leadership transitions. `start()` reruns the startup recovery chain on
+ * every leadership ACQUISITION — that is the failover recovery by design:
+ * a newly promoted leader reaps orphans and revalidates queued work left
+ * behind by the previous leader before it begins ticking.
+ *
+ * `heartbeat` is the replica's shared always-on heartbeat-service instance
+ * (also used by the run executor). Sharing one instance matters: the
+ * orphaned-run reaper skips runs found in the instance's in-memory
+ * active-execution set, so the leader must reap with the SAME instance the
+ * executor dispatches through.
+ */
+function createSchedulerRuntime(
+  db: Db,
+  heartbeat: ReturnType<typeof heartbeatService>,
+  pluginWorkerManager: PluginWorkerManager,
+  intervalMs: number,
+) {
+  let tickTimer: ReturnType<typeof setInterval> | null = null;
+  let stopped = false;
+  return {
+    async start() {
+      stopped = false;
+      const routines = routineService(db as any, { pluginWorkerManager });
+
+      // Reap orphaned running runs at startup while in-memory execution state is empty,
+      // then resume any persisted queued runs that were waiting on the previous process.
+      void heartbeat
+        .reapOrphanedRuns()
+        .then(() => heartbeat.promoteDueScheduledRetries())
+        .then(async (promotion) => {
+          await heartbeat.resumeQueuedRuns();
+          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+          if (
+            promotion.promoted > 0 ||
+            reconciled.assignmentDispatched > 0 ||
+            reconciled.dispatchRequeued > 0 ||
+            reconciled.continuationRequeued > 0 ||
+            reconciled.successfulRunHandoffEscalated > 0 ||
+            reconciled.escalated > 0
+          ) {
+            logger.warn(
+              { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+              "startup heartbeat recovery changed assigned issue state",
+            );
+          }
+        })
+        .then(async () => {
+          const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+          if (reconciled.escalationsCreated > 0) {
+            logger.warn({ ...reconciled }, "startup issue-graph liveness reconciliation created escalations");
+          }
+        })
+        .then(async () => {
+          const scanned = await heartbeat.scanSilentActiveRuns();
+          if (scanned.created > 0 || scanned.escalated > 0) {
+            logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
+          }
+        })
+        .then(async () => {
+          const swept = await heartbeat.sweepStaleIssueLocks();
+          if (swept.cleared > 0) {
+            logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
+          }
+        })
+        .then(async () => {
+          const reviewed = await heartbeat.reconcileProductivityReviews();
+          if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+            logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "startup heartbeat recovery failed");
+        });
+      tickTimer = setInterval(() => {
+        if (stopped) return;
+        void heartbeat
+          .tickTimers(new Date())
+          .then((result) => {
+            if (result.enqueued > 0) {
+              logger.info({ ...result }, "heartbeat timer tick enqueued runs");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "heartbeat timer tick failed");
+          });
+
+        void routines
+          .tickScheduledTriggers(new Date())
+          .then((result) => {
+            if (result.triggered > 0) {
+              logger.info({ ...result }, "routine scheduler tick enqueued runs");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "routine scheduler tick failed");
+          });
+
+        // Periodically reap orphaned runs (5-min staleness threshold) and make sure
+        // persisted queued work is still being driven forward.
+        void heartbeat
+          .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+          .then(() => heartbeat.promoteDueScheduledRetries())
+          .then(async (promotion) => {
+            await heartbeat.resumeQueuedRuns();
+            const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+            if (
+              promotion.promoted > 0 ||
+              reconciled.assignmentDispatched > 0 ||
+              reconciled.dispatchRequeued > 0 ||
+              reconciled.continuationRequeued > 0 ||
+              reconciled.successfulRunHandoffEscalated > 0 ||
+              reconciled.escalated > 0
+            ) {
+              logger.warn(
+                { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+                "periodic heartbeat recovery changed assigned issue state",
+              );
+            }
+          })
+          .then(async () => {
+            const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+            if (reconciled.escalationsCreated > 0) {
+              logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
+            }
+          })
+          .then(async () => {
+            const scanned = await heartbeat.scanSilentActiveRuns();
+            if (scanned.created > 0 || scanned.escalated > 0) {
+              logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+            }
+          })
+          .then(async () => {
+            const swept = await heartbeat.sweepStaleIssueLocks();
+            if (swept.cleared > 0) {
+              logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
+            }
+          })
+          .then(async () => {
+            const reviewed = await heartbeat.reconcileProductivityReviews();
+            if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+              logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "periodic heartbeat recovery failed");
+          });
+      }, intervalMs);
+    },
+    async stop() {
+      stopped = true;
+      if (tickTimer) {
+        clearInterval(tickTimer);
+        tickTimer = null;
+      }
+      // In-flight tick promises complete on their own; no new ticks start.
+    },
+  };
 }
 
 export async function startServer(): Promise<StartedServer> {
@@ -246,13 +421,21 @@ export async function startServer(): Promise<StartedServer> {
   const LOCAL_BOARD_USER_NAME = "Board";
   
   async function ensureLocalTrustedBoardPrincipal(db: any): Promise<void> {
+    // N replicas boot concurrently in local_trusted mode; the check-then-insert
+    // sequences below race without cross-replica mutual exclusion.
+    await withAdvisoryXactLock(db, "local-board-bootstrap", async () => {
+      await ensureLocalTrustedBoardPrincipalLocked(db);
+    });
+  }
+
+  async function ensureLocalTrustedBoardPrincipalLocked(db: any): Promise<void> {
     const now = new Date();
     const existingUser = await db
       .select({ id: authUsers.id })
       .from(authUsers)
       .where(eq(authUsers.id, LOCAL_BOARD_USER_ID))
       .then((rows: Array<{ id: string }>) => rows[0] ?? null);
-  
+
     if (!existingUser) {
       await db.insert(authUsers).values({
         id: LOCAL_BOARD_USER_ID,
@@ -264,7 +447,7 @@ export async function startServer(): Promise<StartedServer> {
         updatedAt: now,
       });
     }
-  
+
     const role = await db
       .select({ id: instanceUserRoles.id })
       .from(instanceUserRoles)
@@ -276,7 +459,7 @@ export async function startServer(): Promise<StartedServer> {
         role: "instance_admin",
       });
     }
-  
+
     const companyRows = await db.select({ id: companies.id }).from(companies);
     for (const company of companyRows) {
       const membership = await db
@@ -576,6 +759,15 @@ export async function startServer(): Promise<StartedServer> {
   });
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
+  // Plugin snapshot replication is active when a shared (non-local_disk)
+  // storage provider is configured, or explicitly forced via
+  // PAPERCLIP_PLUGIN_SNAPSHOTS=true (tests / shared-volume setups).
+  const pluginSnapshotsActive =
+    config.storageProvider !== "local_disk" ||
+    process.env.PAPERCLIP_PLUGIN_SNAPSHOTS === "true";
+  const pluginSnapshotStorageProvider = pluginSnapshotsActive
+    ? createStorageProviderFromConfig(config)
+    : null;
   const feedback = feedbackService(db as any, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
@@ -594,6 +786,26 @@ export async function startServer(): Promise<StartedServer> {
     }
 
     databaseBackupInFlight = true;
+    // Acquire the cross-replica lock under an explicit catch: the main
+    // try/finally (which resets the flag) only starts below, so a throwing
+    // acquisition (e.g. connection failure) must reset the flag here or it
+    // would leak `true` and block all future backups on this replica.
+    let lock: Awaited<ReturnType<typeof trySessionAdvisoryLock>>;
+    try {
+      lock = await trySessionAdvisoryLock(activeDatabaseConnectionString, "database-backup");
+    } catch (err) {
+      databaseBackupInFlight = false;
+      throw err;
+    }
+    if (!lock.acquired) {
+      databaseBackupInFlight = false;
+      const message = "Database backup already in progress on another replica";
+      if (trigger === "scheduled") {
+        logger.warn("Skipping scheduled database backup because another replica is backing up");
+        return null;
+      }
+      throw conflict(message);
+    }
     const startedAt = new Date();
     const startedAtMs = Date.now();
     const label = trigger === "scheduled" ? "Automatic" : "Manual";
@@ -636,6 +848,7 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
       throw err;
     } finally {
+      await lock.release().catch(() => {});
       databaseBackupInFlight = false;
     }
   };
@@ -661,6 +874,8 @@ export async function startServer(): Promise<StartedServer> {
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
     pluginMigrationDb: pluginMigrationDb as any,
+    pluginSnapshotStorageProvider,
+    pluginMutationLockUrl: activeDatabaseConnectionString,
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,
@@ -750,149 +965,69 @@ export async function startServer(): Promise<StartedServer> {
     throw err;
   }
 
+  // One always-on heartbeat-service instance per replica, shared by the run
+  // executor (every replica) and the leader-gated scheduler runtime. It is
+  // constructed OUTSIDE the leadership gate on purpose: executors run on
+  // every replica regardless of who holds the scheduler lease.
+  const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+
+  // Every replica with HEARTBEAT_SCHEDULER_ENABLED (default) campaigns for the
+  // scheduler lease; only the elected leader runs the heartbeat/routines
+  // scheduler (triggering + queue hygiene). On failover the new leader reruns
+  // the recovery chain before ticking. HEARTBEAT_SCHEDULER_ENABLED=false opts
+  // the replica out of the election entirely (traffic-only).
+  let schedulerLeadership: SchedulerLeadership | null = null;
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
-    const routines = routineService(db as any, { pluginWorkerManager });
-
-    // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
-    // into a dead "running" row during startup recovery.
-    await (async () => {
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-          const result = await heartbeat.reapOrphanedRuns();
-          logger.info(
-            { reaped: result.reaped, runIds: result.runIds },
-            "startup reap of orphaned heartbeat runs complete",
-          );
-          break;
-        } catch (err) {
-          if (attempt < 2) {
-            logger.warn({ err, attempt }, "startup reap failed, retrying");
-          } else {
-            logger.error(
-              { err },
-              "startup reap of orphaned heartbeat runs failed after retry — periodic reaper will serve as degraded backstop",
-            );
-          }
-        }
-      }
-
-      const promotion = await heartbeat.promoteDueScheduledRetries();
-      await heartbeat.resumeQueuedRuns();
-      const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-      if (
-        promotion.promoted > 0 ||
-        reconciled.assignmentDispatched > 0 ||
-        reconciled.dispatchRequeued > 0 ||
-        reconciled.continuationRequeued > 0 ||
-        reconciled.successfulRunHandoffEscalated > 0 ||
-        reconciled.escalated > 0
-      ) {
-        logger.warn(
-          { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-          "startup heartbeat recovery changed assigned issue state",
-        );
-      }
-
-      const issueGraphReconciled = await heartbeat.reconcileIssueGraphLiveness();
-      if (issueGraphReconciled.escalationsCreated > 0) {
-        logger.warn(
-          { ...issueGraphReconciled },
-          "startup issue-graph liveness reconciliation created escalations",
-        );
-      }
-
-      const scanned = await heartbeat.scanSilentActiveRuns();
-      if (scanned.created > 0 || scanned.escalated > 0) {
-        logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
-      }
-
-      const swept = await heartbeat.sweepStaleIssueLocks();
-      if (swept.cleared > 0) {
-        logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
-      }
-
-      const reviewed = await heartbeat.reconcileProductivityReviews();
-      if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-        logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
-      }
-    })().catch((err) => {
-      logger.error({ err }, "startup heartbeat recovery failed");
+    const schedulerRuntime = createSchedulerRuntime(
+      db as any,
+      heartbeat,
+      pluginWorkerManager,
+      config.heartbeatSchedulerIntervalMs,
+    );
+    schedulerLeadership = createSchedulerLeadership({
+      db: db as any,
+      // Same string heartbeat_runs.claimed_by uses, so lease rows and run
+      // claims correlate per replica.
+      leaderId: PROCESS_REPLICA_ID,
+      hostname: os.hostname(),
+      onAcquired: () => schedulerRuntime.start(),
+      onLost: () => schedulerRuntime.stop(),
     });
+    schedulerLeadership.start();
+    registerSchedulerLeadershipForHealth(schedulerLeadership);
+  } else {
+    logger.info(
+      "heartbeat scheduler candidacy disabled (HEARTBEAT_SCHEDULER_ENABLED=false); this replica serves traffic only",
+    );
+  }
 
-    setInterval(() => {
-      void heartbeat
-        .tickTimers(new Date())
-        .then((result) => {
-          if (result.enqueued > 0) {
-            logger.info({ ...result }, "heartbeat timer tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "heartbeat timer tick failed");
-        });
+  // Run execution is split from scheduling: EVERY replica runs an executor
+  // loop that batch-claims queued runs (SKIP LOCKED) and executes them,
+  // heartbeating its claims so other replicas' reapers leave them alone.
+  // PAPERCLIP_RUN_EXECUTOR=false opts a replica out (traffic-only replicas
+  // may also skip executing).
+  // Always-on per-process claim heartbeat: re-stamps executor_heartbeat_at
+  // for EVERY run executing inside this process (per-agent immediate
+  // dispatch from routes and internal chains included), not just the
+  // executor loop's batch claims. Runs regardless of PAPERCLIP_RUN_EXECUTOR
+  // so traffic-only replicas' locally dispatched runs are never falsely
+  // reaped by a foreign leader.
+  startClaimHeartbeats(db as any, PROCESS_REPLICA_ID);
 
-      void routines
-        .tickScheduledTriggers(new Date())
-        .then((result) => {
-          if (result.triggered > 0) {
-            logger.info({ ...result }, "routine scheduler tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "routine scheduler tick failed");
-        });
-  
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
-      void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-        .then(() => heartbeat.promoteDueScheduledRetries())
-        .then(async (promotion) => {
-          await heartbeat.resumeQueuedRuns();
-          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-          if (
-            promotion.promoted > 0 ||
-            reconciled.assignmentDispatched > 0 ||
-            reconciled.dispatchRequeued > 0 ||
-            reconciled.continuationRequeued > 0 ||
-            reconciled.successfulRunHandoffEscalated > 0 ||
-            reconciled.escalated > 0
-          ) {
-            logger.warn(
-              { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-              "periodic heartbeat recovery changed assigned issue state",
-            );
-          }
-        })
-        .then(async () => {
-          const reconciled = await heartbeat.reconcileIssueGraphLiveness();
-          if (reconciled.escalationsCreated > 0) {
-            logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
-          }
-        })
-        .then(async () => {
-          const scanned = await heartbeat.scanSilentActiveRuns();
-          if (scanned.created > 0 || scanned.escalated > 0) {
-            logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
-          }
-        })
-        .then(async () => {
-          const swept = await heartbeat.sweepStaleIssueLocks();
-          if (swept.cleared > 0) {
-            logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
-          }
-        })
-        .then(async () => {
-          const reviewed = await heartbeat.reconcileProductivityReviews();
-          if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-            logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "periodic heartbeat recovery failed");
-        });
-    }, config.heartbeatSchedulerIntervalMs);
+  let runExecutor: RunExecutor | null = null;
+  if (config.runExecutorEnabled) {
+    runExecutor = createRunExecutor({
+      replicaId: PROCESS_REPLICA_ID,
+      claimRuns: (limit) => heartbeat.claimRunsForExecution(limit),
+      executeRun: (runId) => heartbeat.executeRun(runId),
+      heartbeatClaims: (runIds) => heartbeat.heartbeatExecutorClaims(runIds),
+      releaseClaims: (runIds) => heartbeat.releaseExecutorClaims(runIds),
+    });
+    runExecutor.start();
+  } else {
+    logger.info(
+      "run executor disabled (PAPERCLIP_RUN_EXECUTOR=false); this replica does not execute queued runs",
+    );
   }
   
   if (config.databaseBackupEnabled) {
@@ -994,6 +1129,36 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      // Drain the run executor BEFORE resigning leadership: stop() waits for
+      // in-flight runs (releasing leftovers back to queued), and resigning
+      // first would let the next leader's recovery chain reap/redispatch
+      // runs this replica is still finishing. Drain first, then hand over.
+      if (runExecutor) {
+        try {
+          await runExecutor.stop();
+        } catch (err) {
+          logger.warn({ err, signal }, "failed to drain run executor during shutdown");
+        }
+      }
+
+      // Stop the process-wide claim heartbeat after the executor drain so
+      // in-flight runs stay heartbeaten while they finish.
+      try {
+        await stopClaimHeartbeats();
+      } catch (err) {
+        logger.warn({ err, signal }, "failed to stop claim heartbeats during shutdown");
+      }
+
+      // Resign scheduler leadership next so another replica can take over
+      // within retryMs instead of waiting out the lease TTL.
+      if (schedulerLeadership) {
+        try {
+          await schedulerLeadership.stop();
+        } catch (err) {
+          logger.warn({ err, signal }, "failed to resign scheduler leadership during shutdown");
+        }
+      }
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
