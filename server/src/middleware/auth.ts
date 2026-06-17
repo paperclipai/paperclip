@@ -106,6 +106,21 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    const deploymentInstallToken = process.env.PAPERCLIP_DEPLOYMENT_INSTALL_TOKEN?.trim();
+    if (deploymentInstallToken && constantTimeStringEqual(token, deploymentInstallToken)) {
+      req.actor = {
+        type: "board",
+        userId: "deployment-installer",
+        userName: "Deployment Installer",
+        userEmail: null,
+        isInstanceAdmin: true,
+        runId: runIdHeader || undefined,
+        source: "board_key",
+      };
+      next();
+      return;
+    }
+
     const boardKey = await boardAuth.findBoardApiKeyByToken(token);
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
