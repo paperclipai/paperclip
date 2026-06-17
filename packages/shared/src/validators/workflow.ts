@@ -28,13 +28,25 @@ export const workflowHandoffStatusSchema = z.enum([
   "cancelled",
 ]);
 
-const workflowRunnerConfigSchema = z.object({
+export const workflowPromptTemplateSchema = z.object({
+  label: z.string().trim().min(1).max(200),
+  promptMarkdown: z.string()
+    .min(1)
+    .max(100_000)
+    .refine((value) => value.trim().length > 0, {
+      message: "Prompt template body cannot be blank.",
+    }),
+});
+export type WorkflowPromptTemplate = z.infer<typeof workflowPromptTemplateSchema>;
+
+export const workflowRunnerConfigSchema = z.object({
   agentPath: z.string().trim().min(1),
   command: z.string().trim().min(1).optional(),
   cwd: z.string().trim().min(1).optional(),
   model: z.string().trim().optional(),
   instructionsFilePath: z.string().trim().min(1).optional(),
   promptTemplate: z.string().optional(),
+  promptTemplates: z.array(workflowPromptTemplateSchema).optional(),
   extraArgs: z.array(z.string()).optional(),
   timeoutSec: z.number().int().min(1).max(86_400).optional(),
   graceSec: z.number().int().min(1).max(600).optional(),
@@ -70,7 +82,9 @@ export const createWorkflowSchema = z.object({
 
 export type CreateWorkflow = z.infer<typeof createWorkflowSchema>;
 
-export const updateWorkflowSchema = createWorkflowSchema.partial();
+export const updateWorkflowSchema = createWorkflowSchema.partial().extend({
+  runnerConfig: workflowRunnerConfigSchema.partial().optional(),
+});
 export type UpdateWorkflow = z.infer<typeof updateWorkflowSchema>;
 
 export const runWorkflowSchema = z.object({

@@ -16,6 +16,7 @@ import {
   Repeat,
   Save,
   ShieldCheck,
+  PersonStanding,
   TerminalSquare,
   UserRound,
   Workflow as WorkflowIcon,
@@ -36,6 +37,12 @@ import {
   RunTranscriptView,
   type TranscriptMode,
 } from "../components/transcript/RunTranscriptView";
+import {
+  WorkflowPromptTemplatesEditor,
+  type WorkflowPromptTemplateDraft,
+  createWorkflowPromptTemplateDraft,
+} from "../components/WorkflowPromptTemplatesEditor";
+import { WorkflowRunPromptSuggestions } from "../components/WorkflowRunPromptSuggestions";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
@@ -49,6 +56,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  buildWorkflowRunnerConfig,
+  hasIncompleteWorkflowPromptTemplates,
+  readWorkflowPromptTemplates,
+} from "../config/workflow-run-prompts";
 
 type WorkflowEditDraft = {
   title: string;
@@ -58,6 +70,7 @@ type WorkflowEditDraft = {
   cwd: string;
   command: string;
   model: string;
+  promptTemplates: WorkflowPromptTemplateDraft[];
 };
 
 function toDraft(detail: WorkflowDetailType): WorkflowEditDraft {
@@ -81,6 +94,9 @@ function toDraft(detail: WorkflowDetailType): WorkflowEditDraft {
       typeof detail.runnerConfig.model === "string"
         ? detail.runnerConfig.model
         : "",
+    promptTemplates: readWorkflowPromptTemplates(detail.runnerConfig).map(
+      (template) => createWorkflowPromptTemplateDraft(template),
+    ),
   };
 }
 
@@ -677,7 +693,7 @@ function GraphHumanNode({
       )}
     >
       <div className="mb-3 flex items-center gap-3">
-        <StickFigure />
+        <PersonStanding className="h-10 w-10 text-foreground" aria-hidden />
         <div>
           <div className="text-sm font-semibold text-foreground">
             {handoff.kind === "approval" ? "Human approval" : "Human response"}
@@ -749,24 +765,6 @@ function GraphHumanNode({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function StickFigure() {
-  return (
-    <svg
-      viewBox="0 0 48 48"
-      className="h-10 w-10 text-foreground"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-    >
-      <circle cx="24" cy="10" r="5" />
-      <path d="M24 15v13" />
-      <path d="M14 22l10 6 10-6" />
-      <path d="M18 40l6-12 6 12" />
-    </svg>
   );
 }
 
@@ -857,22 +855,23 @@ export function WorkflowDetail() {
   };
 
   const saveMutation = useMutation({
-    mutationFn: () =>
-      workflowsApi.update(workflowId!, {
+    mutationFn: () => {
+      if (hasIncompletePromptTemplates) {
+        throw new Error("Fill in every prompt template before saving.");
+      }
+      return workflowsApi.update(workflowId!, {
         title: editDraft!.title.trim(),
         description: editDraft!.description.trim() || null,
         status: editDraft!.status,
-        runnerConfig: {
-          agentPath: editDraft!.agentPath.trim(),
-          ...(editDraft!.cwd.trim() ? { cwd: editDraft!.cwd.trim() } : {}),
-          ...(editDraft!.command.trim()
-            ? { command: editDraft!.command.trim() }
-            : {}),
-          ...(editDraft!.model.trim()
-            ? { model: editDraft!.model.trim() }
-            : {}),
-        },
-      }),
+        runnerConfig: buildWorkflowRunnerConfig(workflowQuery.data?.runnerConfig ?? {}, {
+          agentPath: editDraft!.agentPath,
+          cwd: editDraft!.cwd,
+          command: editDraft!.command,
+          model: editDraft!.model,
+          promptTemplates: editDraft!.promptTemplates,
+        }),
+      });
+    },
     onSuccess: async () => {
       await refreshAll();
       pushToast({ title: "Workflow updated" });
@@ -944,6 +943,12 @@ export function WorkflowDetail() {
 
   const workflow = workflowQuery.data;
   const runDetail = runQuery.data ?? null;
+  const workflowPromptTemplates = readWorkflowPromptTemplates(
+    workflow.runnerConfig,
+  );
+  const hasIncompletePromptTemplates = hasIncompleteWorkflowPromptTemplates(
+    editDraft.promptTemplates,
+  );
   const pipelinePhases = runDetail?.phases.length
     ? runDetail.phases
     : workflow.pipelineDefinition.phases.map(
@@ -1017,6 +1022,10 @@ export function WorkflowDetail() {
                 <CardTitle className="text-base">Run workflow</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
+                <WorkflowRunPromptSuggestions
+                  promptTemplates={workflowPromptTemplates}
+                  onSelectPrompt={setInputMarkdown}
+                />
                 <Textarea
                   value={inputMarkdown}
                   onChange={(event) => setInputMarkdown(event.target.value)}
@@ -1149,18 +1158,34 @@ export function WorkflowDetail() {
                       setEditDraft((current) =>
                         current
                           ? { ...current, model: event.target.value }
-                          : current,
+                      : current,
                       )
                     }
                   />
                 </div>
+                <WorkflowPromptTemplatesEditor
+                  value={editDraft.promptTemplates}
+                  onChange={(next) =>
+                    setEditDraft((current) =>
+                      current
+                        ? { ...current, promptTemplates: next }
+                        : current,
+                    )
+                  }
+                />
+                {hasIncompletePromptTemplates ? (
+                  <p className="text-xs text-muted-foreground">
+                    Fill in every prompt template before saving.
+                  </p>
+                ) : null}
                 <div className="flex justify-end">
                   <Button
                     onClick={() => saveMutation.mutate()}
                     disabled={
                       saveMutation.isPending ||
                       !editDraft.title.trim() ||
-                      !editDraft.agentPath.trim()
+                      !editDraft.agentPath.trim() ||
+                      hasIncompletePromptTemplates
                     }
                   >
                     <Save className="mr-1.5 h-4 w-4" />

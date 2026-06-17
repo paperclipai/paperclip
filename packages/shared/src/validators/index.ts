@@ -253,6 +253,8 @@ export {
   type UpdateGoal,
 } from "./goal.js";
 export {
+  workflowPromptTemplateSchema,
+  workflowRunnerConfigSchema,
   workflowRunnerTypeSchema,
   workflowStatusSchema,
   workflowRunStatusSchema,
@@ -276,6 +278,7 @@ export {
   type CreateWorkflowHandoff,
   type ResolveWorkflowHandoff,
   type CreateWorkflowDeliverable,
+  type WorkflowPromptTemplate,
 } from "./workflow.js";
 
 export {

@@ -17,6 +17,10 @@ export interface CompanyPortabilityWorkflowManifestEntry {
   workingDirectory: string | null;
   command: string | null;
   model: string | null;
+  promptTemplates?: Array<{
+    label: string;
+    promptMarkdown: string;
+  }>;
   /** Directory path within the source bundle (e.g. "workflows/content-strategist"). */
   path: string;
 }

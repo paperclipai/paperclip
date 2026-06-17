@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { routineVariableSchema } from "./routine.js";
+import { workflowPromptTemplateSchema } from "./workflow.js";
 
 export const portabilityIncludeSchema = z
   .object({
@@ -158,6 +159,7 @@ export const portabilityWorkflowManifestEntrySchema = z.object({
   workingDirectory: z.string().nullable().optional(),
   command: z.string().nullable().optional(),
   model: z.string().nullable().optional(),
+  promptTemplates: z.array(workflowPromptTemplateSchema).optional(),
   path: z.string().optional().default(""),
 });
 

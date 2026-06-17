@@ -671,16 +671,25 @@ export function workflowService(db: Db) {
     update: async (id: string, patch: UpdateWorkflow, actor: { userId: string | null }) => {
       const existing = await db.select().from(workflows).where(eq(workflows.id, id)).then((rows) => rows[0] ?? null);
       if (!existing) return null;
+      const existingRunnerConfig = (existing.runnerConfig as Record<string, unknown> | null) ?? {};
+      const nextRunnerConfig = patch.runnerConfig === undefined
+        ? undefined
+        : {
+            ...existingRunnerConfig,
+            ...patch.runnerConfig,
+          };
       const updated = await db.update(workflows).set({
         ...(patch.title !== undefined ? { title: patch.title } : {}),
         ...(patch.description !== undefined ? { description: patch.description } : {}),
         ...(patch.status !== undefined ? { status: patch.status } : {}),
-        ...(patch.runnerConfig !== undefined ? { runnerConfig: patch.runnerConfig } : {}),
+        ...(nextRunnerConfig !== undefined ? { runnerConfig: nextRunnerConfig } : {}),
         updatedByUserId: actor.userId ?? "board",
         updatedAt: new Date(),
       }).where(eq(workflows.id, id)).returning().then((rows) => rows[0] ?? null);
       if (!updated) return null;
-      const shouldRefresh = patch.runnerConfig !== undefined;
+      const shouldRefresh = patch.runnerConfig !== undefined
+        && typeof patch.runnerConfig.agentPath === "string"
+        && patch.runnerConfig.agentPath !== (existingRunnerConfig.agentPath as string | undefined);
       if (!shouldRefresh) return toWorkflow(updated);
       const refreshed = await refreshWorkflowAnalysis(updated);
       return refreshed.workflow;
