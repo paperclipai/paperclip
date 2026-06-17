@@ -468,6 +468,20 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.process.executeCommand).not.toHaveBeenCalled();
   });
 
+  it("reports the minimum @daytonaio/sdk version boundary (GH#7317)", async () => {
+    // The SDK was bumped from ^0.171.0 (semver 0.x, meaning >=0.171.0 <0.172.0)
+    // to ^0.183.0 to access the fixes shipped in 0.172.0–0.183.x.
+    // This test pins the intent so a future accidental downgrade surfaces
+    // as a CI failure here rather than a silent runtime regression.
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const pkgPath = fileURLToPath(new URL("../package.json", import.meta.url));
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
+      dependencies: Record<string, string>;
+    };
+    expect(pkg.dependencies["@daytonaio/sdk"]).toBe("^0.183.0");
+  });
+
   it("returns a timed out execute result when the Daytona SDK times out", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
