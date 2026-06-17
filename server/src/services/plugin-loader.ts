@@ -86,6 +86,7 @@ const ADAPTER_ENV_PASSTHROUGH = [
   "GOOGLE_API_KEY",
   "GEMINI_API_KEY",
   "OPENROUTER_API_KEY",
+  "DEEPSEEK_API_KEY",
 ];
 
 export function buildPluginWorkerEnv(input: {

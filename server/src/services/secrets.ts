@@ -67,6 +67,7 @@ const PROVIDER_KEY_ENV_NAMES = [
   "GEMINI_API_KEY",
   "OPENROUTER_API_KEY",
   "PERPLEXITY_API_KEY",
+  "DEEPSEEK_API_KEY",
 ] as const;
 const SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
