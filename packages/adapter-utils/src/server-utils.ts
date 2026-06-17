@@ -1885,6 +1885,15 @@ export async function ensurePaperclipSkillSymlink(
     return "skipped";
   }
 
+  // Only repair broken symlinks — if the linked path still exists it is a
+  // valid custom symlink or an already-cleaned-up catalog dir; leave it alone.
+  // Stale catalog dirs are cleaned before this point by deleteSkill /
+  // upsertImportedSkills, so a missing linkedPath is the broken-symlink case.
+  const linkedPathExists = await fs.stat(resolvedLinkedPath).then(() => true).catch(() => false);
+  if (linkedPathExists) {
+    return "skipped";
+  }
+
   await fs.unlink(target);
   await linkSkill(source, target);
   return "repaired";
