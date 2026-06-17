@@ -432,7 +432,9 @@ export async function createApp(
     lifecycle,
     async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
   );
-  void loader.loadAll().then((result) => {
+  void ensureBundledLlmWikiPlugin({ loader, lifecycle, pluginRegistry }).catch((err) => {
+    logger.error({ err }, "Failed to auto-install bundled LLM Wiki plugin");
+  }).then(() => loader.loadAll()).then((result) => {
     if (!result) return;
     for (const loaded of result.results) {
       if (devWatcher && loaded.success && loaded.plugin.packagePath) {
@@ -454,4 +456,40 @@ export async function createApp(
   });
 
   return app;
+}
+
+async function ensureBundledLlmWikiPlugin({
+  loader,
+  lifecycle,
+  pluginRegistry,
+}: {
+  loader: ReturnType<typeof pluginLoader>;
+  lifecycle: ReturnType<typeof pluginLifecycleManager>;
+  pluginRegistry: ReturnType<typeof pluginRegistryService>;
+}) {
+  const pluginKey = "paperclipai.plugin-llm-wiki";
+  const existing = await pluginRegistry.getByKey(pluginKey);
+  if (existing && existing.status !== "uninstalled") {
+    if (existing.status === "installed") {
+      await lifecycle.load(existing.id);
+    }
+    return;
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), "packages/plugins/plugin-llm-wiki"),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../packages/plugins/plugin-llm-wiki"),
+  ];
+  const pluginPath = candidates.find((candidate) =>
+    fs.existsSync(path.join(candidate, "package.json")) &&
+    fs.existsSync(path.join(candidate, "dist/manifest.js")) &&
+    fs.existsSync(path.join(candidate, "dist/worker.js")),
+  );
+  if (!pluginPath) return;
+
+  const discovered = await loader.installPlugin({ localPath: pluginPath });
+  const installed = discovered.manifest ? await pluginRegistry.getByKey(discovered.manifest.id) : null;
+  if (!installed) return;
+  await lifecycle.load(installed.id);
+  logger.info({ pluginKey, pluginPath }, "Auto-installed bundled LLM Wiki plugin");
 }
