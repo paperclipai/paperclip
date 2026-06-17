@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Eye, Flag, X } from "lucide-react";
+import { Eye, Flag, Star, X } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -39,6 +39,8 @@ interface IssueRowProps {
   onMarkRead?: () => void;
   onArchive?: () => void;
   archiveDisabled?: boolean;
+  isFavorite?: boolean;
+  onToggleFavorite?: () => void;
   className?: string;
 }
 
@@ -62,6 +64,8 @@ export function IssueRow({
   onMarkRead,
   onArchive,
   archiveDisabled,
+  isFavorite = false,
+  onToggleFavorite,
   className,
 }: IssueRowProps) {
   const issuePathId = issue.identifier ?? issue.id;
@@ -162,8 +166,39 @@ export function IssueRow({
           ) : null}
         </span>
       </span>
+      {onToggleFavorite ? (
+        <span className="ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center self-center sm:order-3">
+          <button
+            type="button"
+            data-slot="icon-button"
+            data-testid="issue-row-favorite"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onToggleFavorite();
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              event.stopPropagation();
+              onToggleFavorite();
+            }}
+            aria-pressed={isFavorite}
+            aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
+            title={isFavorite ? "Remove from favorites" : "Add to favorites"}
+            className={cn(
+              "inline-flex h-4 w-4 items-center justify-center rounded-md transition-colors",
+              isFavorite
+                ? "text-amber-500"
+                : "text-muted-foreground/50 opacity-0 hover:text-amber-500 focus-visible:opacity-100 group-hover:opacity-100",
+            )}
+          >
+            <Star className={cn("h-3.5 w-3.5", isFavorite ? "fill-current" : null)} />
+          </button>
+        </span>
+      ) : null}
       {(desktopTrailing || trailingMeta) ? (
-        <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
+        <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-4 sm:flex sm:gap-3">
           {desktopTrailing}
           {trailingMeta ? (
             <span className="text-xs text-muted-foreground">{trailingMeta}</span>

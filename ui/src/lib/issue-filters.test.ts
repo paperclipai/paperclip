@@ -98,6 +98,32 @@ describe("issue filters", () => {
     })).toBe(1);
   });
 
+  it("filters issues to favorited ids when favorites-only is enabled", () => {
+    const issues = [
+      makeIssue({ id: "fav-issue" }),
+      makeIssue({ id: "plain-issue" }),
+    ];
+
+    const filtered = applyIssueFilters(
+      issues,
+      { ...defaultIssueFilterState, favoritesOnly: true },
+      null,
+      false,
+      undefined,
+      {},
+      new Set(["fav-issue"]),
+    );
+
+    expect(filtered.map((issue) => issue.id)).toEqual(["fav-issue"]);
+  });
+
+  it("counts the favorites-only filter as an active filter group", () => {
+    expect(countActiveIssueFilters({
+      ...defaultIssueFilterState,
+      favoritesOnly: true,
+    })).toBe(1);
+  });
+
   it("does not treat default project workspaces as workspace filter matches", () => {
     const issue = makeIssue({
       id: "default-workspace-issue",

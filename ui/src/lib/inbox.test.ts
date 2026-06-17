@@ -1052,6 +1052,7 @@ describe("inbox helpers", () => {
         projects: ["project-1"],
         workspaces: ["workspace-1"],
         liveOnly: true,
+        favoritesOnly: false,
         hideRoutineExecutions: false,
       },
     });
@@ -1067,6 +1068,7 @@ describe("inbox helpers", () => {
         projects: [],
         workspaces: [],
         liveOnly: false,
+        favoritesOnly: false,
         hideRoutineExecutions: true,
       },
     });
@@ -1101,6 +1103,7 @@ describe("inbox helpers", () => {
         projects: ["project-1"],
         workspaces: ["workspace-1"],
         liveOnly: false,
+        favoritesOnly: false,
         hideRoutineExecutions: false,
       },
     });

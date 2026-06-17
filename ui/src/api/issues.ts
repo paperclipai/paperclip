@@ -127,6 +127,12 @@ export const issuesApi = {
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
+  listFavorites: (companyId: string) =>
+    api.get<{ issueIds: string[] }>(`/companies/${companyId}/favorites`),
+  addFavorite: (id: string) =>
+    api.post<{ id: string; favorited: boolean; favoritedAt: string | null }>(`/issues/${id}/favorite`, {}),
+  removeFavorite: (id: string) =>
+    api.delete<{ id: string; favorited: boolean; removed: boolean }>(`/issues/${id}/favorite`),
   archiveFromInbox: (id: string) =>
     api.post<{ id: string; archivedAt: Date }>(`/issues/${id}/inbox-archive`, {}),
   unarchiveFromInbox: (id: string) =>

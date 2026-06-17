@@ -4173,6 +4173,85 @@ export function issueRoutes(
     res.json({ id: issue.id, removed });
   });
 
+  router.get("/companies/:companyId/favorites", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const issueIds = await svc.listFavoriteIssueIds(companyId, req.actor.userId);
+    res.json({ issueIds });
+  });
+
+  router.post("/issues/:id/favorite", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const favorite = await svc.addFavorite(issue.companyId, issue.id, req.actor.userId, new Date());
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.favorited",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { userId: req.actor.userId, favoritedAt: favorite?.favoritedAt },
+    });
+    res.json({ id: issue.id, favorited: true, favoritedAt: favorite?.favoritedAt ?? null });
+  });
+
+  router.delete("/issues/:id/favorite", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const removed = await svc.removeFavorite(issue.companyId, issue.id, req.actor.userId);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.unfavorited",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { userId: req.actor.userId },
+    });
+    res.json({ id: issue.id, favorited: false, removed });
+  });
+
   router.post("/issues/:id/inbox-archive", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);

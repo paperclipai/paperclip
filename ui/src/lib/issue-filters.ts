@@ -19,6 +19,7 @@ export type IssueFilterState = {
   projects: string[];
   workspaces: string[];
   liveOnly?: boolean;
+  favoritesOnly?: boolean;
   hideRoutineExecutions: boolean;
 };
 
@@ -31,6 +32,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   projects: [],
   workspaces: [],
   liveOnly: false,
+  favoritesOnly: false,
   hideRoutineExecutions: false,
 };
 
@@ -72,6 +74,7 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     projects: normalizeIssueFilterValueArray(candidate.projects),
     workspaces: normalizeIssueFilterValueArray(candidate.workspaces),
     liveOnly: candidate.liveOnly === true,
+    favoritesOnly: candidate.favoritesOnly === true,
     hideRoutineExecutions: candidate.hideRoutineExecutions === true,
   };
 }
@@ -125,10 +128,14 @@ export function applyIssueFilters(
   enableRoutineVisibilityFilter = false,
   liveIssueIds?: ReadonlySet<string>,
   workspaceContext: IssueFilterWorkspaceContext = {},
+  favoriteIssueIds?: ReadonlySet<string>,
 ): Issue[] {
   let result = issues;
   if (state.liveOnly) {
     result = result.filter((issue) => liveIssueIds?.has(issue.id) === true);
+  }
+  if (state.favoritesOnly) {
+    result = result.filter((issue) => favoriteIssueIds?.has(issue.id) === true);
   }
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) {
     result = result.filter((issue) => issue.originKind !== "routine_execution");
@@ -182,6 +189,7 @@ export function countActiveIssueFilters(
   if (state.projects.length > 0) count += 1;
   if (state.workspaces.length > 0) count += 1;
   if (state.liveOnly) count += 1;
+  if (state.favoritesOnly) count += 1;
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) count += 1;
   return count;
 }

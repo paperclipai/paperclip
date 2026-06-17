@@ -174,6 +174,23 @@ describe("IssueScheduledRetryCard", () => {
     expect(text).toContain("Automatic retry due now");
   });
 
+  it("renders without throwing when scheduledRetryAt is an invalid date", () => {
+    // Regression: `new Date(invalid).toISOString()` throws a RangeError, which previously
+    // crashed the entire Activity tab (TON-2167).
+    expect(() =>
+      renderWithProviders(
+        <IssueScheduledRetryCard
+          issueId="issue-1"
+          scheduledRetry={{ ...baseRetry, scheduledRetryAt: "not-a-real-date" }}
+        />,
+      ),
+    ).not.toThrow();
+    const text = getCard()?.textContent ?? "";
+    expect(text).toContain("Retry scheduled");
+    // No relative-time hint is derivable from a bad timestamp, so it falls back.
+    expect(text).toContain("Automatic retry pending schedule");
+  });
+
   it("invokes retry-now and shows promoted state on success", async () => {
     retryNowMock.mockResolvedValue(buildRetryResponse("promoted"));
     renderWithProviders(

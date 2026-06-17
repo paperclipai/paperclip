@@ -25,6 +25,7 @@ import {
   issueComments,
   issueDocuments,
   issueReadStates,
+  issueFavorites,
   issueThreadInteractions,
   issues,
   labels,
@@ -4287,6 +4288,55 @@ export function issueService(db: Db) {
         )
         .returning();
       return deleted.length > 0;
+    },
+
+    addFavorite: async (companyId: string, issueId: string, userId: string, favoritedAt: Date = new Date()) => {
+      const now = new Date();
+      const [row] = await db
+        .insert(issueFavorites)
+        .values({
+          companyId,
+          issueId,
+          userId,
+          favoritedAt,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [issueFavorites.companyId, issueFavorites.issueId, issueFavorites.userId],
+          set: {
+            favoritedAt,
+            updatedAt: now,
+          },
+        })
+        .returning();
+      return row;
+    },
+
+    removeFavorite: async (companyId: string, issueId: string, userId: string) => {
+      const deleted = await db
+        .delete(issueFavorites)
+        .where(
+          and(
+            eq(issueFavorites.companyId, companyId),
+            eq(issueFavorites.issueId, issueId),
+            eq(issueFavorites.userId, userId),
+          ),
+        )
+        .returning();
+      return deleted.length > 0;
+    },
+
+    listFavoriteIssueIds: async (companyId: string, userId: string): Promise<string[]> => {
+      const rows = await db
+        .select({ issueId: issueFavorites.issueId })
+        .from(issueFavorites)
+        .where(
+          and(
+            eq(issueFavorites.companyId, companyId),
+            eq(issueFavorites.userId, userId),
+          ),
+        );
+      return rows.map((r) => r.issueId);
     },
 
     archiveInbox: async (companyId: string, issueId: string, userId: string, archivedAt: Date = new Date()) => {

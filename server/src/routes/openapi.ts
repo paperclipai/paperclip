@@ -1600,6 +1600,33 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/favorite",
+  tags: ["issues"],
+  summary: "Favorite an issue for the current user",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/issues/{id}/favorite",
+  tags: ["issues"],
+  summary: "Remove the current user's favorite from an issue",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/favorites",
+  tags: ["issues"],
+  summary: "List the current user's favorited issues in a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/issues/{id}/feedback-votes",
   tags: ["issues"],
