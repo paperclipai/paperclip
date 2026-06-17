@@ -447,6 +447,38 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("submits the work item type from dialog defaults", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Work hub task",
+      workItemType: "human_task",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Work hub task",
+        workItemType: "human_task",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
   it("applies project and execution workspace defaults for normal new issues", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {

@@ -38,6 +38,9 @@ import type {
   IssueRelationIssueSummary,
 } from "@paperclipai/shared";
 import {
+  ISSUE_WORK_ITEM_TYPES,
+} from "@paperclipai/shared/constants";
+import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
@@ -240,6 +243,17 @@ export function parseStatusFilter(input: string | readonly string[] | undefined)
     .flatMap((entry) => (typeof entry === "string" ? entry.split(",") : []))
     .map((status) => status.trim())
     .filter(Boolean);
+}
+
+const ISSUE_WORK_ITEM_TYPE_SET = new Set<string>(ISSUE_WORK_ITEM_TYPES);
+
+export function parseWorkItemTypeFilter(input: string | readonly string[] | undefined): string[] {
+  if (input == null) return [];
+  const entries = Array.isArray(input) ? input : typeof input === "string" ? [input] : [];
+  return entries
+    .flatMap((entry) => (typeof entry === "string" ? entry.split(",") : []))
+    .map((workItemType) => workItemType.trim())
+    .filter((workItemType) => ISSUE_WORK_ITEM_TYPE_SET.has(workItemType));
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -2503,7 +2517,8 @@ export function issueService(db: Db) {
     clearExecutionRunIfTerminal,
 
     list: async (companyId: string, filters?: IssueFilters) => {
-      const requestedWorkItemType = filters?.workItemType?.trim();
+      const requestedWorkItemType = filters?.workItemType?.trim() ?? "";
+      const requestedWorkItemTypes = parseWorkItemTypeFilter(requestedWorkItemType);
       const conditions = [eq(issues.companyId, companyId)];
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
@@ -2519,6 +2534,16 @@ export function issueService(db: Db) {
         unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId ?? awaitingDecisionForUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
       const supportsWorkItemTypeColumn = await hasWorkItemTypeColumnInIssuesTable();
+      if (requestedWorkItemType && requestedWorkItemTypes.length === 0) {
+        return [];
+      }
+      if (
+        requestedWorkItemTypes.length > 0 &&
+        !supportsWorkItemTypeColumn &&
+        !requestedWorkItemTypes.includes("ai_task")
+      ) {
+        return [];
+      }
       const rawSearch = filters?.q?.trim() ?? "";
       const hasSearch = rawSearch.length > 0;
       const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
@@ -2612,8 +2637,10 @@ export function issueService(db: Db) {
         conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
       }
       if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
-      if (requestedWorkItemType && supportsWorkItemTypeColumn) {
-        conditions.push(eq(issues.workItemType, requestedWorkItemType));
+      if (requestedWorkItemTypes.length === 1 && supportsWorkItemTypeColumn) {
+        conditions.push(eq(issues.workItemType, requestedWorkItemTypes[0]!));
+      } else if (requestedWorkItemTypes.length > 1 && supportsWorkItemTypeColumn) {
+        conditions.push(inArray(issues.workItemType, requestedWorkItemTypes));
       }
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));

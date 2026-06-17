@@ -13,18 +13,18 @@ import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
-import { BriefcaseBusiness, Bot, Users, ArrowLeftRight } from "lucide-react";
-import type { Issue } from "@paperclipai/shared";
+import { BriefcaseBusiness, Users, ArrowLeftRight } from "lucide-react";
+import type { Issue, IssueWorkItemType } from "@paperclipai/shared";
 
 const WORK_HUB_PAGE_SIZE = 500;
+const WORK_HUB_WORK_ITEM_TYPES = ["initiative", "human_task"] as const satisfies readonly IssueWorkItemType[];
 
-type WorkItemFilter = "all" | "initiative" | "human_task" | "ai_task";
+type WorkItemFilter = "all" | "initiative" | "human_task";
 
-const FILTER_CONFIG: Record<WorkItemFilter, { label: string; icon: typeof BriefcaseBusiness; workItemTypes: string[] }> = {
-  all: { label: "All Work", icon: ArrowLeftRight, workItemTypes: [] },
+const FILTER_CONFIG: Record<WorkItemFilter, { label: string; icon: typeof BriefcaseBusiness; workItemTypes: readonly IssueWorkItemType[] }> = {
+  all: { label: "All Work", icon: ArrowLeftRight, workItemTypes: WORK_HUB_WORK_ITEM_TYPES },
   initiative: { label: "Initiatives", icon: BriefcaseBusiness, workItemTypes: ["initiative"] },
   human_task: { label: "Human Tasks", icon: Users, workItemTypes: ["human_task"] },
-  ai_task: { label: "AI Execution", icon: Bot, workItemTypes: ["ai_task"] },
 };
 
 function mergeIssuePagesStable(pages: Issue[][]): Issue[] {
@@ -56,13 +56,12 @@ export function WorkHub() {
   const activeFilter: WorkItemFilter = filterParam === "all"
     || filterParam === "initiative"
     || filterParam === "human_task"
-    || filterParam === "ai_task"
     ? filterParam
     : "all";
   const filterConfig = FILTER_CONFIG[activeFilter];
-  const workItemTypeParam = filterConfig.workItemTypes.length > 0
-    ? filterConfig.workItemTypes.join(",")
-    : undefined;
+  const workItemTypeParam = filterConfig.workItemTypes.join(",");
+  const createWorkItemType: IssueWorkItemType = activeFilter === "initiative" ? "initiative" : "human_task";
+  const createIssueLabel = activeFilter === "initiative" ? "Initiative" : "Human Task";
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Work Hub" }]);
@@ -111,11 +110,11 @@ export function WorkHub() {
     queryFn: ({ pageParam }) => issuesApi.list(selectedCompanyId!, {
       participantAgentId: undefined,
       workspaceId: undefined,
-      includeRoutineExecutions: true,
+      excludeRoutineExecutions: true,
+      workItemType: workItemTypeParam,
       limit: WORK_HUB_PAGE_SIZE,
       offset: pageParam,
-      ...(workItemTypeParam ? { workItemType: workItemTypeParam } : {}),
-    } as Parameters<typeof issuesApi.list>[1]),
+    }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
       getNextPageOffset(lastPage.length, lastPageParam),
@@ -194,10 +193,12 @@ export function WorkHub() {
           liveIssueIds={liveIssueIds}
           viewStateKey="paperclip:workhub-view"
           issueLinkState={issueLinkState}
+          searchFilters={{ workItemType: workItemTypeParam, excludeRoutineExecutions: true }}
+          baseCreateIssueDefaults={{ workItemType: createWorkItemType }}
+          createIssueLabel={createIssueLabel}
           hasMoreIssues={hasMore}
           onLoadMoreIssues={loadMoreIssues}
           onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-          enableRoutineVisibilityFilter
         />
       </div>
     </div>

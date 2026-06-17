@@ -29,6 +29,7 @@ import {
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  parseWorkItemTypeFilter,
 } from "../services/issues.ts";
 import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
@@ -40,6 +41,10 @@ describe("issue list limit helpers", () => {
     expect(clampIssueListLimit(0)).toBe(1);
     expect(clampIssueListLimit(25.9)).toBe(25);
     expect(clampIssueListLimit(ISSUE_LIST_MAX_LIMIT + 10)).toBe(ISSUE_LIST_MAX_LIMIT);
+  });
+
+  it("parses comma-separated work item filters and ignores unknown values", () => {
+    expect(parseWorkItemTypeFilter("initiative,human_task,unknown")).toEqual(["initiative", "human_task"]);
   });
 });
 
@@ -275,6 +280,60 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       activityIssueId,
     ]));
     expect(resultIds.has(excludedIssueId)).toBe(false);
+  });
+
+  it("filters issue lists by one or more work item types", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const initiativeId = randomUUID();
+    const humanTaskId = randomUUID();
+    const aiTaskId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: initiativeId,
+        companyId,
+        title: "Planning initiative",
+        status: "todo",
+        priority: "medium",
+        workItemType: "initiative",
+      },
+      {
+        id: humanTaskId,
+        companyId,
+        title: "Human follow-up",
+        status: "todo",
+        priority: "medium",
+        workItemType: "human_task",
+      },
+      {
+        id: aiTaskId,
+        companyId,
+        title: "AI execution",
+        status: "todo",
+        priority: "medium",
+        workItemType: "ai_task",
+      },
+    ]);
+
+    const workHubIds = (await svc.list(companyId, {
+      workItemType: "initiative,human_task",
+    })).map((issue) => issue.id);
+    expect(new Set(workHubIds)).toEqual(new Set([initiativeId, humanTaskId]));
+
+    const humanTaskIds = (await svc.list(companyId, {
+      workItemType: "human_task",
+    })).map((issue) => issue.id);
+    expect(humanTaskIds).toEqual([humanTaskId]);
+
+    await expect(svc.list(companyId, { workItemType: "unknown" })).resolves.toEqual([]);
   });
 
   it("combines participation filtering with search", async () => {

@@ -51,6 +51,18 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("passes work item and routine exclusion filters through to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", {
+      workItemType: "initiative,human_task",
+      excludeRoutineExecutions: true,
+      limit: 500,
+    });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?workItemType=initiative%2Chuman_task&excludeRoutineExecutions=true&limit=500",
+    );
+  });
+
   it("posts recovery action resolution to the source issue endpoint", async () => {
     await issuesApi.resolveRecoveryAction("issue-1", {
       actionId: "00000000-0000-0000-0000-0000000000aa",
