@@ -276,14 +276,18 @@ async function applyPendingMigrationsManually(
 
       await runInTransaction(sql, async () => {
         for (const statement of splitMigrationStatements(migrationContent)) {
+          await sql.unsafe("SAVEPOINT __migration_stmt");
           try {
             await sql.unsafe(statement);
+            await sql.unsafe("RELEASE SAVEPOINT __migration_stmt");
           } catch (err: unknown) {
+            // Roll back to savepoint so the transaction remains usable.
+            await sql.unsafe("ROLLBACK TO SAVEPOINT __migration_stmt");
             // Layer 2: ignore idempotency errors — the object already exists.
-            // Codes: 42P07 relation exists, 42701 column exists,
+            // Codes: 42P07 relation exists, 42701 column exists, 42710 duplicate object (constraint/index),
             //        42P16 invalid_table_definition (constraint), 42723 duplicate_function.
             const code = (err as { code?: string }).code;
-            if (code !== "42P07" && code !== "42701" && code !== "42P16" && code !== "42723") {
+            if (code !== "42P07" && code !== "42701" && code !== "42710" && code !== "42P16" && code !== "42723") {
               throw err;
             }
           }
