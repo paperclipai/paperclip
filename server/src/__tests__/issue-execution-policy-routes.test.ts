@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
+  create: vi.fn(),
   createChild: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -199,6 +200,19 @@ describe("issue execution policy routes", () => {
       },
       parentBlockerAdded: false,
     });
+    mockIssueService.create.mockImplementation(async (companyId: string, input: Record<string, unknown>) => ({
+      id: input.id ?? "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      companyId,
+      identifier: "PAP-1008",
+      title: input.title ?? "Created issue",
+      status: input.status ?? "backlog",
+      assigneeAgentId: input.assigneeAgentId ?? null,
+      assigneeUserId: input.assigneeUserId ?? null,
+      createdByUserId: input.createdByUserId ?? null,
+      executionPolicy: input.executionPolicy ?? null,
+      executionState: null,
+      updatedAt: new Date(),
+    }));
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async (input: { actor?: { type?: string; source?: string }; action?: string }) => {
       const allowed = input.actor?.type === "board" && input.actor.source === "local_implicit"
@@ -478,6 +492,198 @@ describe("issue execution policy routes", () => {
     expect(updatePatch.assigneeUserId).toBeUndefined();
     expect(updatePatch.executionState).toBeUndefined();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("preserves a standing allowExecution override when creating an issue", async () => {
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Standing maintenance",
+        executionPolicy: {
+          standing: {
+            allowExecution: true,
+            reason: "Operator requested maintenance run",
+          },
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        executionPolicy: expect.objectContaining({
+          stages: [],
+          standing: {
+            allowExecution: true,
+            reason: "Operator requested maintenance run",
+          },
+        }),
+      }),
+    );
+  });
+
+  it("preserves a standing allowTerminal override when creating an issue", async () => {
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Standing retirement",
+        executionPolicy: {
+          standing: {
+            allowTerminal: true,
+            reason: "Registry retired by operator",
+          },
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        executionPolicy: expect.objectContaining({
+          stages: [],
+          standing: {
+            allowTerminal: true,
+            reason: "Registry retired by operator",
+          },
+        }),
+      }),
+    );
+  });
+
+  it("preserves a standing allowTerminal override when updating an issue", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1009",
+      title: "Standing terminal override",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          standing: {
+            allowTerminal: true,
+            reason: "Registry retired by operator",
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        executionPolicy: expect.objectContaining({
+          stages: [],
+          standing: {
+            allowTerminal: true,
+            reason: "Registry retired by operator",
+          },
+        }),
+      }),
+    );
+  });
+
+  it("preserves a standing allowExecution override when updating an issue", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1011",
+      title: "Standing execution override",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          standing: {
+            allowExecution: true,
+            reason: "Operator requested maintenance run",
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        executionPolicy: expect.objectContaining({
+          stages: [],
+          standing: {
+            allowExecution: true,
+            reason: "Operator requested maintenance run",
+          },
+        }),
+      }),
+    );
+  });
+
+  it("rejects standing policy updates without a reason before service mutation", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1010",
+      title: "Invalid standing override",
+      executionPolicy: null,
+      executionState: null,
+    });
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: { standing: { allowExecution: true } } });
+
+    expect(res.status).toBe(400);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects unauthorized standing policy creation without calling the issue service", async () => {
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "other-company",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Unauthorized standing override",
+        executionPolicy: {
+          standing: {
+            allowExecution: true,
+            reason: "Operator requested maintenance run",
+          },
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.create).not.toHaveBeenCalled();
   });
 
   it("triggers a scheduled monitor immediately from the dedicated route", async () => {

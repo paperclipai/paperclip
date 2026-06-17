@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -52,8 +53,9 @@ function agentActor(companyId: string, agentId: string): Express.Request["actor"
 async function createApp(db: Db, actor: Express.Request["actor"]) {
   process.env.PAPERCLIP_LOG_DIR = "/tmp/paperclip-test-home/logs";
   process.env.PAPERCLIP_IN_WORKTREE = "false";
-  const [{ activityRoutes }, { issueRoutes }] = await Promise.all([
+  const [{ activityRoutes }, { companyRoutes }, { issueRoutes }] = await Promise.all([
     import("../routes/activity.js"),
+    import("../routes/companies.js"),
     import("../routes/issues.js"),
   ]);
   const app = express();
@@ -63,6 +65,7 @@ async function createApp(db: Db, actor: Express.Request["actor"]) {
     next();
   });
   app.use("/api", issueRoutes(db, {} as any));
+  app.use("/api/companies", companyRoutes(db, {} as any));
   app.use("/api", activityRoutes(db));
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(err.status ?? 500).json({ error: err.message ?? "Internal server error" });
@@ -306,8 +309,20 @@ describeEmbeddedPostgres("permissions upgrade visibility and route boundaries", 
 
     const openAssignment = await request(app)
       .post(`/api/companies/${company.id}/issues`)
-      .send({ title: "Assignable after upgrade", assigneeAgentId: openTargetAgent.id });
+      .send({
+        title: "Assignable after upgrade",
+        description: "Operational note with token sk-test-boundary-secret that must stay out of activity details.",
+        assigneeAgentId: openTargetAgent.id,
+      });
     expect(openAssignment.status, JSON.stringify(openAssignment.body)).toBe(201);
+    expect(openAssignment.status).not.toBe(404);
+
+    const createdActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, openAssignment.body.id))
+      .then((rows) => rows[0] ?? null);
+    expect(JSON.stringify(createdActivity?.details ?? {})).not.toContain("sk-test-boundary-secret");
 
     const deniedPrivateAssignment = await request(app)
       .post(`/api/companies/${company.id}/issues`)

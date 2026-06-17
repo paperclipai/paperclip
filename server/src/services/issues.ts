@@ -54,6 +54,8 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  isDependencyWatcherIssueOriginKind,
+  isStandingIssueOriginKind,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -88,6 +90,35 @@ import {
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+
+function readStandingIssueOverride(policy: unknown, key: "allowTerminal" | "allowExecution") {
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) return false;
+  const standing = (policy as Record<string, unknown>).standing;
+  if (!standing || typeof standing !== "object" || Array.isArray(standing)) return false;
+  const record = standing as Record<string, unknown>;
+  const reason = typeof record.reason === "string" ? record.reason.trim() : "";
+  return record[key] === true && reason.length > 0;
+}
+
+function assertStandingIssueStatusAllowed(input: {
+  originKind: string | null | undefined;
+  status: string | null | undefined;
+  executionPolicy: unknown;
+}) {
+  if (!isStandingIssueOriginKind(input.originKind) || !input.status) return;
+  if (input.status === "done" && !readStandingIssueOverride(input.executionPolicy, "allowTerminal")) {
+    throw unprocessable("Standing issues require executionPolicy.standing.allowTerminal with a reason before moving to done");
+  }
+}
+
+function assertStandingIssueCheckoutAllowed(issue: {
+  originKind: string | null;
+  executionPolicy: unknown;
+}) {
+  if (!isStandingIssueOriginKind(issue.originKind)) return;
+  if (readStandingIssueOverride(issue.executionPolicy, "allowExecution")) return;
+  throw conflict("Standing issues are parked by design and require executionPolicy.standing.allowExecution with a reason before checkout");
+}
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -3940,9 +3971,85 @@ export function issueService(db: Db) {
     });
   }
 
+  async function cleanupDependencyWatchersForCancelledChains(input: {
+    companyId: string;
+    cancelledIssueId: string;
+    actorAgentId?: string | null;
+    actorUserId?: string | null;
+  }, dbOrTx: any = db) {
+    const watcherEdges = await dbOrTx
+      .select({
+        watcherId: issues.id,
+        watcherOriginKind: issues.originKind,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(and(
+        eq(issueRelations.companyId, input.companyId),
+        eq(issueRelations.type, "blocks"),
+        eq(issueRelations.relatedIssueId, input.cancelledIssueId),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ));
+
+    const changed: Array<{ issueId: string; action: "cancelled" | "parked" }> = [];
+    for (const watcher of watcherEdges) {
+      if (!isDependencyWatcherIssueOriginKind(watcher.watcherOriginKind)) continue;
+      const downstream = await dbOrTx
+        .select({
+          issueId: issueRelations.relatedIssueId,
+          status: issues.status,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+        .where(and(
+          eq(issueRelations.companyId, input.companyId),
+          eq(issueRelations.type, "blocks"),
+          eq(issueRelations.issueId, watcher.watcherId),
+        ));
+      if (downstream.length === 0 || downstream.some((row: { status: string }) => row.status !== "cancelled")) {
+        continue;
+      }
+
+      const now = new Date();
+      const external = watcher.watcherOriginKind === "external_dependency_watcher";
+      const nextStatus = external ? "backlog" : "cancelled";
+      const [updated] = await dbOrTx
+        .update(issues)
+        .set({
+          status: nextStatus,
+          ...(external ? { assigneeAgentId: null, assigneeUserId: null } : { cancelledAt: now }),
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.id, watcher.watcherId),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ))
+        .returning({ id: issues.id });
+      if (!updated) continue;
+
+      await dbOrTx.insert(issueComments).values({
+        companyId: input.companyId,
+        issueId: watcher.watcherId,
+        authorAgentId: input.actorAgentId ?? null,
+        authorUserId: input.actorUserId ?? null,
+        body: external
+          ? "Dependency watcher parked automatically because all downstream Paperclip issues are cancelled. External dependency remains uncontrolled."
+          : "Dependency watcher cancelled automatically because all downstream issues are cancelled.",
+      });
+      changed.push({ issueId: watcher.watcherId, action: external ? "parked" : "cancelled" });
+    }
+    return changed;
+  }
+
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
+    cleanupDependencyWatchersForCancelledChains,
 
     list: async (companyId: string, filters?: IssueFilters) => {
       if (filters?.attention === "blocked") {
@@ -5053,6 +5160,11 @@ export function issueService(db: Db) {
           issueNumber,
           identifier,
         } as typeof issues.$inferInsert;
+        assertStandingIssueStatusAllowed({
+          originKind: values.originKind,
+          status: values.status,
+          executionPolicy: values.executionPolicy,
+        });
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }
@@ -5127,6 +5239,15 @@ export function issueService(db: Db) {
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
       }
+      const nextOriginKind = issueData.originKind !== undefined ? issueData.originKind : existing.originKind;
+      const nextExecutionPolicy = issueData.executionPolicy !== undefined
+        ? issueData.executionPolicy
+        : existing.executionPolicy;
+      assertStandingIssueStatusAllowed({
+        originKind: nextOriginKind,
+        status: issueData.status,
+        executionPolicy: nextExecutionPolicy,
+      });
 
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
@@ -5407,6 +5528,14 @@ export function issueService(db: Db) {
               );
           }
         }
+        if (issueData.status === "cancelled" && existing.status !== "cancelled") {
+          await cleanupDependencyWatchersForCancelledChains({
+            companyId: existing.companyId,
+            cancelledIssueId: updated.id,
+            actorAgentId: actorAgentId ?? null,
+            actorUserId: actorUserId ?? null,
+          }, tx);
+        }
         return enriched;
       };
 
@@ -5479,11 +5608,16 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({
+          companyId: issues.companyId,
+          originKind: issues.originKind,
+          executionPolicy: issues.executionPolicy,
+        })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
+      assertStandingIssueCheckoutAllowed(issueCompany);
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();

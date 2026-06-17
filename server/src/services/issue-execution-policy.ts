@@ -314,11 +314,17 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
-  return {
+  const strippedPolicy = normalizeIssueExecutionPolicy({
     mode: policy.mode,
     commentRequired: policy.commentRequired,
     stages: policy.stages,
+    reviewPreset: policy.reviewPreset,
+    authorizationPolicy: policy.authorizationPolicy,
+    standing: policy.standing,
+  });
+  if (!strippedPolicy) return null;
+  return {
+    ...strippedPolicy,
   };
 }
 
@@ -389,8 +395,21 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
+  const standing = parsed.data.standing &&
+    (typeof parsed.data.standing.allowTerminal === "boolean" || typeof parsed.data.standing.allowExecution === "boolean") &&
+    parsed.data.standing.reason.trim().length > 0
+    ? {
+      ...(typeof parsed.data.standing.allowTerminal === "boolean"
+        ? { allowTerminal: parsed.data.standing.allowTerminal }
+        : {}),
+      ...(typeof parsed.data.standing.allowExecution === "boolean"
+        ? { allowExecution: parsed.data.standing.allowExecution }
+        : {}),
+      reason: parsed.data.standing.reason.trim(),
+    }
+    : null;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
+  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy && !standing) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
@@ -399,6 +418,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
+    ...(standing ? { standing } : {}),
   };
 }
 

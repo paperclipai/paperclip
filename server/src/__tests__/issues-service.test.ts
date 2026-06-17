@@ -3458,6 +3458,191 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
   });
 });
 
+describeEmbeddedPostgres("issueService dependency watcher cleanup", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-watcher-cleanup-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedIssue(companyId: string, input: {
+    title: string;
+    status?: string;
+    originKind?: string;
+  }) {
+    return db.insert(issues).values({
+      companyId,
+      title: input.title,
+      status: input.status ?? "todo",
+      priority: "medium",
+      originKind: input.originKind ?? "manual",
+    }).returning().then((rows) => rows[0]!);
+  }
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Watcher Cleanup Co",
+      issuePrefix: `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function seedAgent(companyId: string) {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Watcher Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return agentId;
+  }
+
+  async function block(companyId: string, watcherId: string, downstreamId: string) {
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: watcherId,
+      relatedIssueId: downstreamId,
+      type: "blocks",
+    });
+  }
+
+  it("cancels an internal watcher when all downstream dependencies are cancelled", async () => {
+    const companyId = await seedCompany();
+    const watcher = await seedIssue(companyId, {
+      title: "Watch upstream dependency",
+      originKind: "dependency_watcher",
+    });
+    const downstream = await seedIssue(companyId, { title: "Downstream task" });
+    await block(companyId, watcher.id, downstream.id);
+
+    await svc.update(downstream.id, { status: "cancelled" });
+
+    const updatedWatcher = await db.select().from(issues).where(eq(issues.id, watcher.id)).then((rows) => rows[0]);
+    expect(updatedWatcher?.status).toBe("cancelled");
+    expect(updatedWatcher?.cancelledAt).not.toBeNull();
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, watcher.id));
+    expect(comments[0]?.body).toContain("all downstream issues are cancelled");
+  });
+
+  it("leaves a watcher active when at least one downstream dependency is still active", async () => {
+    const companyId = await seedCompany();
+    const watcher = await seedIssue(companyId, {
+      title: "Watch mixed dependencies",
+      originKind: "dependency_watcher",
+    });
+    const cancelled = await seedIssue(companyId, { title: "Cancelled downstream" });
+    const active = await seedIssue(companyId, { title: "Still active downstream", status: "todo" });
+    await block(companyId, watcher.id, cancelled.id);
+    await block(companyId, watcher.id, active.id);
+
+    await svc.update(cancelled.id, { status: "cancelled" });
+
+    const updatedWatcher = await db.select().from(issues).where(eq(issues.id, watcher.id)).then((rows) => rows[0]);
+    expect(updatedWatcher?.status).toBe("todo");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, watcher.id));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("parks an external uncontrolled watcher instead of cancelling it", async () => {
+    const companyId = await seedCompany();
+    const watcher = await seedIssue(companyId, {
+      title: "Watch external repository",
+      status: "blocked",
+      originKind: "external_dependency_watcher",
+    });
+    const downstream = await seedIssue(companyId, { title: "Downstream task" });
+    await block(companyId, watcher.id, downstream.id);
+
+    await svc.update(downstream.id, { status: "cancelled" });
+
+    const updatedWatcher = await db.select().from(issues).where(eq(issues.id, watcher.id)).then((rows) => rows[0]);
+    expect(updatedWatcher?.status).toBe("backlog");
+    expect(updatedWatcher?.cancelledAt).toBeNull();
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, watcher.id));
+    expect(comments[0]?.body).toContain("External dependency remains uncontrolled");
+  });
+
+  it("requires explicit standing closure override before marking standing issues done", async () => {
+    const companyId = await seedCompany();
+    const standing = await seedIssue(companyId, {
+      title: "Operations registry",
+      originKind: "registry_issue",
+    });
+
+    await expect(svc.update(standing.id, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+    });
+    await expect(svc.update(standing.id, {
+      status: "done",
+      executionPolicy: { standing: { allowTerminal: true, reason: "Registry retired by operator" } },
+    })).resolves.toMatchObject({ status: "done" });
+    const updated = await db.select().from(issues).where(eq(issues.id, standing.id)).then((rows) => rows[0]);
+    expect(updated?.executionPolicy).toMatchObject({
+      standing: { allowTerminal: true, reason: "Registry retired by operator" },
+    });
+  });
+
+  it("blocks checkout of parked standing issues unless execution is explicitly allowed", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const standing = await seedIssue(companyId, {
+      title: "Standing log",
+      originKind: "standing_issue",
+    });
+    await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, standing.id));
+
+    await expect(svc.checkout(standing.id, agentId, ["todo"], randomUUID())).rejects.toMatchObject({
+      status: 409,
+    });
+
+    await svc.update(standing.id, {
+      executionPolicy: { standing: { allowExecution: true, reason: "Operator requested maintenance run" } },
+    });
+    const updated = await db.select().from(issues).where(eq(issues.id, standing.id)).then((rows) => rows[0]);
+    expect(updated?.executionPolicy).toMatchObject({
+      standing: { allowExecution: true, reason: "Operator requested maintenance run" },
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+    await expect(svc.checkout(standing.id, agentId, ["todo"], runId)).resolves.toMatchObject({
+      status: "in_progress",
+    });
+  });
+});
+
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;

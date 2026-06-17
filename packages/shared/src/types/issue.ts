@@ -449,6 +449,11 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  standing?: {
+    allowTerminal?: boolean;
+    allowExecution?: boolean;
+    reason: string;
+  };
 }
 
 export interface IssueExecutionMonitorState {
