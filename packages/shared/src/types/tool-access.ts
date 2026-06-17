@@ -8,6 +8,7 @@ import type {
   ToolCatalogEntryStatus,
   ToolConnectionHealthStatus,
   ToolConnectionKind,
+  ToolConnectionLifecycleEventType,
   ToolInvocationApprovalState,
   ToolInvocationStatus,
   ToolMcpGatewayContextScopeType,
@@ -38,6 +39,7 @@ export type {
   ToolCatalogEntryStatus,
   ToolConnectionHealthStatus,
   ToolConnectionKind,
+  ToolConnectionLifecycleEventType,
   ToolInvocationApprovalState,
   ToolInvocationStatus,
   ToolMcpGatewayContextScopeType,
@@ -601,10 +603,32 @@ export interface ToolAppsAttentionResponse {
   };
 }
 
-/** Recent tool-call events for a single app connection (App detail · Recent activity). */
+/**
+ * A connection-level lifecycle event (install, pause/resume, allowlist change,
+ * reconnect/disconnect, new-actions quarantine) surfaced on the per-app
+ * Activity tab alongside tool-call events (PAP-11284). Derived from the
+ * company activity log rows scoped to a single tool connection.
+ */
+export interface ToolConnectionLifecycleEvent {
+  id: string;
+  connectionId: string;
+  type: ToolConnectionLifecycleEventType;
+  actorType: ToolActorType;
+  /** Raw actor id (user id, agent id, or "board"/"system"); use actorDisplayName for rendering. */
+  actorId: string | null;
+  agentId: string | null;
+  /** Server-resolved display name for the actor (agent name or user name/email), null when unknown. */
+  actorDisplayName: string | null;
+  /** Event-specific structured detail, e.g. `{ added, removed }` for allowlist or `{ count }` for quarantine. */
+  details: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+/** Recent tool-call and lifecycle events for a single app connection (App detail · Recent activity). */
 export interface ToolConnectionActivityResponse {
   connectionId: string;
   events: ToolCallEvent[];
+  lifecycleEvents: ToolConnectionLifecycleEvent[];
   issues: Record<string, {
     identifier: string;
     title: string;

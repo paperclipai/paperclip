@@ -1226,6 +1226,43 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("tags a pause PATCH with a lifecycle activity row the Activity tab can surface", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const app = createRouteApp(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      name: "Google Sheets",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Sheets",
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: { url: "https://sheets.example/mcp" },
+      transportConfig: { url: "https://sheets.example/mcp" },
+    }).returning();
+
+    const res = await request(app)
+      .patch(`/api/tool-connections/${connection.id}`)
+      .send({ enabled: false });
+    expect(res.status).toBe(200);
+
+    const rows = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, company.id), eq(activityLog.entityId, connection.id)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.details).toMatchObject({ lifecycle: "paused", enabled: false });
+
+    const activity = await service.listConnectionActivity(connection.id, company.id, 20);
+    expect(activity.lifecycleEvents.map((event) => event.type)).toEqual(["app_paused"]);
+  });
+
   it("allows same-company Google Sheets updates and derives the env mirror from the allowlist", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -3509,6 +3546,136 @@ describeEmbeddedPostgres("tool access service", () => {
       resolvedByAgentId: null,
       resolvedByUserId: "board-user",
     });
+  });
+
+  it("surfaces connection lifecycle events on the activity timeline", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: "CodexCoder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      name: "Google Sheets",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Google Sheets (stdio smoke)",
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: { url: "https://sheets.example/mcp" },
+      transportConfig: { url: "https://sheets.example/mcp" },
+    }).returning();
+    await db.insert(authUsers).values({
+      id: "lifecycle-user",
+      name: "Dotta",
+      email: "dotta@example.com",
+      emailVerified: true,
+      createdAt: new Date("2026-06-12T09:00:00Z"),
+      updatedAt: new Date("2026-06-12T09:00:00Z"),
+    });
+
+    await db.insert(activityLog).values([
+      {
+        companyId: company.id,
+        actorType: "user",
+        actorId: "lifecycle-user",
+        action: "tool_app.connected",
+        entityType: "tool_connection",
+        entityId: connection.id,
+        details: { galleryKey: "google-sheets" },
+        createdAt: new Date("2026-06-12T10:00:00Z"),
+      },
+      {
+        companyId: company.id,
+        actorType: "user",
+        actorId: "lifecycle-user",
+        action: "tool_connection.updated",
+        entityType: "tool_connection",
+        entityId: connection.id,
+        details: { lifecycle: "paused", enabled: false },
+        createdAt: new Date("2026-06-12T10:01:00Z"),
+      },
+      {
+        companyId: company.id,
+        actorType: "user",
+        actorId: "lifecycle-user",
+        action: "tool_connection.updated",
+        entityType: "tool_connection",
+        entityId: connection.id,
+        details: { lifecycle: "allowlist_changed", added: 2, removed: 0, total: 2 },
+        createdAt: new Date("2026-06-12T10:02:00Z"),
+      },
+      {
+        // A plain settings update (no lifecycle tag) must stay out of the feed.
+        companyId: company.id,
+        actorType: "user",
+        actorId: "lifecycle-user",
+        action: "tool_connection.updated",
+        entityType: "tool_connection",
+        entityId: connection.id,
+        details: { status: "active", enabled: true },
+        createdAt: new Date("2026-06-12T10:03:00Z"),
+      },
+      {
+        companyId: company.id,
+        actorType: "user",
+        actorId: "board",
+        action: "tool_connection.archived",
+        entityType: "tool_connection",
+        entityId: connection.id,
+        details: { transport: "remote_http" },
+        createdAt: new Date("2026-06-12T10:04:00Z"),
+      },
+    ]);
+
+    await db.insert(toolAccessAuditEvents).values([
+      {
+        companyId: company.id,
+        connectionId: connection.id,
+        actorType: "system",
+        action: "tool_connection.catalog_refresh",
+        outcome: "success",
+        details: { discoveredCount: 5, quarantinedCount: 3 },
+        createdAt: new Date("2026-06-12T10:05:00Z"),
+      },
+      {
+        // A refresh that quarantined nothing should not appear.
+        companyId: company.id,
+        connectionId: connection.id,
+        actorType: "system",
+        action: "tool_connection.catalog_refresh",
+        outcome: "success",
+        details: { discoveredCount: 5, quarantinedCount: 0 },
+        createdAt: new Date("2026-06-12T09:59:00Z"),
+      },
+    ]);
+
+    const activity = await service.listConnectionActivity(connection.id, company.id, 20);
+
+    expect(activity.lifecycleEvents.map((event) => event.type)).toEqual([
+      "actions_quarantined",
+      "disconnected",
+      "allowlist_changed",
+      "app_paused",
+      "app_connected",
+    ]);
+
+    const byType = Object.fromEntries(activity.lifecycleEvents.map((event) => [event.type, event]));
+    expect(byType.app_connected?.actorDisplayName).toBe("Dotta");
+    expect(byType.app_paused?.actorDisplayName).toBe("Dotta");
+    expect(byType.allowlist_changed?.details).toMatchObject({ added: 2, removed: 0 });
+    expect(byType.disconnected?.actorDisplayName).toBe("The board");
+    expect(byType.actions_quarantined?.details).toMatchObject({ count: 3 });
   });
 
   it("rejects runtime controls for non-local runtime kinds", async () => {

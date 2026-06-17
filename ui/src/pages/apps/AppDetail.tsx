@@ -361,10 +361,13 @@ export function AppDetail() {
       {activeTab === "activity" && (
         <ActivityPanel
           events={activityQuery.data?.events ?? []}
+          lifecycleEvents={activityQuery.data?.lifecycleEvents ?? []}
           issues={activityQuery.data?.issues ?? {}}
           actionRequests={activityQuery.data?.actionRequests ?? {}}
           loading={activityQuery.isLoading}
           agents={agents}
+          connectionId={connectionId}
+          appName={appName}
         />
       )}
       {activeTab === "advanced" && (

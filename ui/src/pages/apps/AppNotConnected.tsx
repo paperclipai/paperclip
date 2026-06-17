@@ -160,13 +160,25 @@ export function AppNotConnected() {
         previousConnection ? (
           <ActivityPanel
             events={activityQuery.data?.events ?? []}
+            lifecycleEvents={activityQuery.data?.lifecycleEvents ?? []}
             issues={activityQuery.data?.issues ?? {}}
             actionRequests={activityQuery.data?.actionRequests ?? {}}
             loading={activityQuery.isLoading}
             agents={agentsQuery.data ?? []}
+            connectionId={previousConnection.id}
+            appName={appName}
           />
         ) : (
-          <ActivityPanel events={[]} issues={{}} actionRequests={{}} loading={false} agents={[]} />
+          <ActivityPanel
+            events={[]}
+            lifecycleEvents={[]}
+            issues={{}}
+            actionRequests={{}}
+            loading={false}
+            agents={[]}
+            connectionId=""
+            appName={appName}
+          />
         )
       )}
       {activeTab === "advanced" && (

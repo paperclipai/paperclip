@@ -259,6 +259,8 @@ export type {
   ToolActionRequestListItem,
   ToolActionRequestsResponse,
   ToolConnectionActivityResponse,
+  ToolConnectionLifecycleEvent,
+  ToolConnectionLifecycleEventType,
   ToolConnection,
   ToolConnectionHealthStatus,
   ToolConnectionTransport,

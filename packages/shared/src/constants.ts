@@ -894,6 +894,22 @@ export type ToolAuditEventType = (typeof TOOL_AUDIT_EVENT_TYPES)[number];
 export const TOOL_AUDIT_OUTCOMES = ["pending", "success", "failure", "denied", "timeout", "cancelled"] as const;
 export type ToolAuditOutcome = (typeof TOOL_AUDIT_OUTCOMES)[number];
 
+/**
+ * Connection-level lifecycle events surfaced on the per-app Activity tab
+ * alongside tool-call events (PAP-11284). These are derived from the
+ * company activity log rows scoped to a single tool connection.
+ */
+export const TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES = [
+  "app_connected",
+  "app_paused",
+  "app_resumed",
+  "allowlist_changed",
+  "reconnected",
+  "disconnected",
+  "actions_quarantined",
+] as const;
+export type ToolConnectionLifecycleEventType = (typeof TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES)[number];
+
 export const TOOL_RUNTIME_KINDS = ["remote_session", "local_stdio"] as const;
 export type ToolRuntimeKind = (typeof TOOL_RUNTIME_KINDS)[number];
 

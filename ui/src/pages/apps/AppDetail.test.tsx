@@ -501,6 +501,91 @@ describe("AppDetail", () => {
     expect(container.textContent).not.toContain("mcp.app-gallery-link");
   });
 
+  it("renders connection lifecycle events humanized on the timeline", async () => {
+    mockParams.tab = "activity";
+    listConnectionActivityMock.mockResolvedValue({
+      events: [
+        {
+          id: "evt-1",
+          eventType: "call_completed",
+          agentId: "agent-1",
+          issueId: null,
+          actionRequestId: null,
+          toolName: "Get value",
+          outcome: "success",
+          createdAt: new Date("2026-06-12T10:30:00Z"),
+        },
+      ],
+      lifecycleEvents: [
+        {
+          id: "life-connected",
+          connectionId: "conn-1",
+          type: "app_connected",
+          actorType: "user",
+          actorId: "board-user",
+          agentId: null,
+          actorDisplayName: "Dotta",
+          details: null,
+          createdAt: new Date("2026-06-12T09:00:00Z"),
+        },
+        {
+          id: "life-paused",
+          connectionId: "conn-1",
+          type: "app_paused",
+          actorType: "user",
+          actorId: "board-user",
+          agentId: null,
+          actorDisplayName: "Dotta",
+          details: { enabled: false },
+          createdAt: new Date("2026-06-12T11:00:00Z"),
+        },
+        {
+          id: "life-allowlist",
+          connectionId: "conn-1",
+          type: "allowlist_changed",
+          actorType: "user",
+          actorId: "board-user",
+          agentId: null,
+          actorDisplayName: "Dotta",
+          details: { added: 1, removed: 0, total: 2 },
+          createdAt: new Date("2026-06-12T10:45:00Z"),
+        },
+        {
+          id: "life-quarantine",
+          connectionId: "conn-1",
+          type: "actions_quarantined",
+          actorType: "system",
+          actorId: null,
+          agentId: null,
+          actorDisplayName: null,
+          details: { count: 2 },
+          createdAt: new Date("2026-06-12T10:50:00Z"),
+        },
+      ],
+      issues: {},
+      actionRequests: {},
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Dotta connected GitHub");
+    expect(container.textContent).toContain("Dotta paused this app");
+    expect(container.textContent).toContain("Dotta added 1 sheet to the allowlist");
+    expect(container.textContent).toContain("2 new actions need review");
+    // Lifecycle rows deep-link to the Setup tab; quarantine uses the review label.
+    expect(container.querySelector('a[href="/apps/conn-1/setup"]')).toBeTruthy();
+    expect(container.textContent).toContain("Review in Setup");
+
+    // Merged timeline: the newest event (the pause at 11:00) renders before the
+    // tool call at 10:30, which renders before the connect at 09:00.
+    const pausedAt = container.textContent?.indexOf("Dotta paused this app") ?? -1;
+    const usedAt = container.textContent?.indexOf("Coder used Get value") ?? -1;
+    const connectedAt = container.textContent?.indexOf("Dotta connected GitHub") ?? -1;
+    expect(pausedAt).toBeGreaterThanOrEqual(0);
+    expect(pausedAt).toBeLessThan(usedAt);
+    expect(usedAt).toBeLessThan(connectedAt);
+  });
+
   it("keeps the header and reconnect banner across tabs", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(connection({

@@ -1,8 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { and, asc, desc, eq, gte, inArray, lt, max, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, max, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agents,
   authUsers,
   companySecretBindings,
@@ -59,6 +60,8 @@ import type {
   ToolActionRequestListItem,
   ToolActionRequestStatus,
   ToolConnectionActivityResponse,
+  ToolConnectionLifecycleEvent,
+  ToolConnectionLifecycleEventType,
   ToolAppConnectionActionSummary,
   ToolExampleInstallResult,
   ToolExampleSmokeCheck,
@@ -664,6 +667,47 @@ function toToolCallEvent(row: typeof toolCallEvents.$inferSelect): ToolCallEvent
 function userFallbackName(userId: string): string {
   if (userId === "local-board") return "Board";
   return userId;
+}
+
+/** Activity-log actions that map to a connection lifecycle event on the Activity tab (PAP-11284). */
+const LIFECYCLE_ACTIVITY_LOG_ACTIONS = [
+  "tool_app.connected",
+  "tool_app.oauth_connected",
+  "tool_example.installed",
+  "tool_app.reconnected",
+  "tool_connection.archived",
+  "tool_connection.updated",
+] as const;
+
+/**
+ * Map a connection-scoped activity-log row to a lifecycle event type, or null
+ * when it isn't an operator-visible lifecycle change. A `tool_connection.updated`
+ * row only surfaces when the route tagged it with a `lifecycle` discriminator
+ * (pause/resume/allowlist); plain settings edits stay out of the feed.
+ */
+function activityLogActionToLifecycleType(
+  action: string,
+  details: Record<string, unknown> | null,
+): ToolConnectionLifecycleEventType | null {
+  switch (action) {
+    case "tool_app.connected":
+    case "tool_app.oauth_connected":
+    case "tool_example.installed":
+      return "app_connected";
+    case "tool_app.reconnected":
+      return "reconnected";
+    case "tool_connection.archived":
+      return "disconnected";
+    case "tool_connection.updated": {
+      const lifecycle = typeof details?.lifecycle === "string" ? details.lifecycle : null;
+      if (lifecycle === "paused") return "app_paused";
+      if (lifecycle === "resumed") return "app_resumed";
+      if (lifecycle === "allowlist_changed") return "allowlist_changed";
+      return null;
+    }
+    default:
+      return null;
+  }
 }
 
 function denialReasonForDecision(
@@ -3955,6 +3999,137 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     };
   }
 
+  /**
+   * Build the connection lifecycle timeline for the Activity tab (PAP-11284) by
+   * surfacing two existing audit sources scoped to this connection:
+   *  - `activity_log` rows (connect / pause / resume / allowlist / reconnect / disconnect)
+   *  - `tool_access_audit_events` catalog refreshes that quarantined new actions
+   * Actors are resolved to display names (agent name or user name/email).
+   */
+  async function listConnectionLifecycleEvents(
+    connection: typeof toolConnections.$inferSelect,
+    limit: number,
+  ): Promise<ToolConnectionLifecycleEvent[]> {
+    const [logRows, quarantineRows] = await Promise.all([
+      db
+        .select()
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, connection.companyId),
+            eq(activityLog.entityType, "tool_connection"),
+            eq(activityLog.entityId, connection.id),
+            inArray(activityLog.action, [...LIFECYCLE_ACTIVITY_LOG_ACTIONS]),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt))
+        .limit(limit),
+      db
+        .select()
+        .from(toolAccessAuditEvents)
+        .where(
+          and(
+            eq(toolAccessAuditEvents.companyId, connection.companyId),
+            eq(toolAccessAuditEvents.connectionId, connection.id),
+            eq(toolAccessAuditEvents.action, "tool_connection.catalog_refresh"),
+            sql`(${toolAccessAuditEvents.details}->>'quarantinedCount')::int > 0`,
+          ),
+        )
+        .orderBy(desc(toolAccessAuditEvents.createdAt))
+        .limit(limit),
+    ]);
+
+    type Pending = {
+      id: string;
+      type: ToolConnectionLifecycleEventType;
+      actorType: ToolConnectionLifecycleEvent["actorType"];
+      actorId: string | null;
+      agentId: string | null;
+      details: Record<string, unknown> | null;
+      createdAt: Date;
+    };
+    const pending: Pending[] = [];
+
+    for (const row of logRows) {
+      const type = activityLogActionToLifecycleType(row.action, row.details ?? null);
+      if (!type) continue;
+      pending.push({
+        id: row.id,
+        type,
+        actorType: (row.actorType as Pending["actorType"]) ?? "system",
+        actorId: row.actorId ?? null,
+        agentId: row.agentId ?? null,
+        details: row.details ?? null,
+        createdAt: row.createdAt,
+      });
+    }
+
+    for (const row of quarantineRows) {
+      const count = Number((row.details as Record<string, unknown> | null)?.quarantinedCount ?? 0);
+      pending.push({
+        id: row.id,
+        type: "actions_quarantined",
+        actorType: (row.actorType as Pending["actorType"]) ?? "system",
+        actorId: row.actorId ?? null,
+        agentId: null,
+        details: { count: Number.isFinite(count) ? count : 0 },
+        createdAt: row.createdAt,
+      });
+    }
+
+    pending.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const limited = pending.slice(0, limit);
+
+    // Resolve actor display names in batch. Agent actors carry their id in
+    // `agentId` (activity log) or `actorId` (audit events); user actors carry a
+    // user id in `actorId`.
+    const agentIds = new Set<string>();
+    const userIds = new Set<string>();
+    for (const item of limited) {
+      if (item.agentId) agentIds.add(item.agentId);
+      if (item.actorType === "agent" && item.actorId) agentIds.add(item.actorId);
+      if (item.actorType === "user" && item.actorId && item.actorId !== "board") userIds.add(item.actorId);
+    }
+    const agentRows = agentIds.size
+      ? await db
+        .select({ id: agents.id, name: agents.name })
+        .from(agents)
+        .where(and(eq(agents.companyId, connection.companyId), inArray(agents.id, [...agentIds])))
+      : [];
+    const userRows = userIds.size
+      ? await db
+        .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+        .from(authUsers)
+        .where(inArray(authUsers.id, [...userIds]))
+      : [];
+    const agentNames = new Map(agentRows.map((agent) => [agent.id, agent.name]));
+    const userNames = new Map(
+      userRows.map((user) => [user.id, user.name?.trim() || user.email?.trim() || user.id]),
+    );
+
+    return limited.map((item) => {
+      let actorDisplayName: string | null = null;
+      if (item.agentId) actorDisplayName = agentNames.get(item.agentId) ?? null;
+      else if (item.actorType === "agent" && item.actorId) actorDisplayName = agentNames.get(item.actorId) ?? null;
+      else if (item.actorType === "user" && item.actorId) {
+        actorDisplayName = item.actorId === "board"
+          ? "The board"
+          : userNames.get(item.actorId) ?? userFallbackName(item.actorId);
+      }
+      return {
+        id: item.id,
+        connectionId: connection.id,
+        type: item.type,
+        actorType: item.actorType,
+        actorId: item.actorId,
+        agentId: item.agentId,
+        actorDisplayName,
+        details: item.details,
+        createdAt: item.createdAt,
+      };
+    });
+  }
+
   return {
     approvedStdioTemplates: async (companyId: string): Promise<ToolStdioCommandTemplate[]> => {
       const adminTemplates = await db
@@ -4498,9 +4673,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         ]),
       );
 
+      const lifecycleEvents = await listConnectionLifecycleEvents(connection, safeLimit);
+
       return {
         connectionId: connection.id,
         events,
+        lifecycleEvents,
         issues: issueMap,
         actionRequests: actionRequestMap,
       };
