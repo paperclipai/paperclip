@@ -6,7 +6,7 @@ metadata:
     {{- include "paperclip.labels" . | nindent 4 }}
 spec:
   replicas: 1
-  serviceName: {{ include "paperclip.fullname" . }}-headless
+  serviceName: {{ include "paperclip.headlessServiceName" . }}
   podManagementPolicy: OrderedReady
   updateStrategy:
     type: RollingUpdate
