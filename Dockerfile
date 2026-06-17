@@ -113,7 +113,11 @@ WORKDIR /vendor
 # Bumped 2026-06-16 to 6a7b9d5: always materialize the shared MCP baseline
 # into claude_k8s Job pods, even when an agent has no adapterConfig.mcpServers.
 # Fixes BackendEngineerGo/Ally missing paperclip/hindsight/gbrain/linear/etc.
-ARG CLAUDE_K8S_REF=6a7b9d532c8818c3bbd8777874dba9a7104e8fbf
+# Bumped 2026-06-17 to af5df84: only pass --resume to Claude when the
+# corresponding local Claude JSONL session exists. Paperclip runtime UUIDs
+# without a Claude session file now start fresh instead of failing with
+# "No conversation found with session ID".
+ARG CLAUDE_K8S_REF=af5df8448e02f3b152ddb0d8e40c558d371a0ebd
 # Re-pinned 2026-06-14 to kkroo/paperclip-adapter-opencode-k8s master a533d11
 # (was 168688e): BLO-10448 — a transient k8s status-read error during the
 # completion poll was mislabeled as a deadline, surfacing as the bogus
