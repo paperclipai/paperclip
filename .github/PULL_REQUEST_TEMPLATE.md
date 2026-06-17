@@ -85,6 +85,7 @@
 - [ ] I have added or updated tests where applicable
 - [ ] If this change affects the UI, I have included before/after screenshots
 - [ ] I have updated relevant documentation to reflect my changes
+- [ ] For merge, deploy, or runtime activation approval, I have included current machine-verifiable evidence tied to the exact commit/config being approved
 - [ ] I have considered and documented any risks above
 - [ ] All Paperclip CI gates are green
 - [ ] Greptile is 5/5 with no open P2s, recommendations, or follow-ups

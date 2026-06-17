@@ -32,6 +32,29 @@ Before touching runtime, service, or database settings:
 
 Never print database URLs, passwords, tokens, cookies, or webhook URLs in logs or issue comments.
 
+## Approval Evidence Gate
+
+No Help2day or Paperclip agent may request human approval for a merge, deploy, service restart, database restart, or runtime activation unless it can present current, machine-verifiable evidence tied to the exact commit and configuration being approved.
+
+Before requesting approval, provide:
+
+- exact git branch and commit SHA,
+- upstream comparison showing whether the branch is ahead or behind,
+- tracked working-tree state,
+- changed-file summary for the approval scope,
+- relevant local validation commands and results,
+- live service health for runtime changes,
+- database target and PostgreSQL pending-restart state for database changes,
+- rollback path.
+
+Use the local evidence helper when possible:
+
+```bash
+node scripts/approval-evidence-report.mjs --require-clean
+```
+
+If the working tree is intentionally dirty, the approval request must name the dirty files and explain why they are excluded from the approval scope. Approval requests without current evidence should be treated as incomplete, not ready for a human decision.
+
 ## Agent Concurrency Levels
 
 Use the global premium/local adapter cap as the primary safety valve. Per-agent limits are secondary and should prevent one agent from monopolizing the host.
