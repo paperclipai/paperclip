@@ -62,7 +62,7 @@
   {
     "dir": "packages/skills-catalog",
     "name": "@paperclipai/skills-catalog",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "packages/teams-catalog",
