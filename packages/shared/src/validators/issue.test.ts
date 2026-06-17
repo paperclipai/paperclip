@@ -92,6 +92,25 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
+  it("allows restored recovery resolutions to intentionally park the source issue in backlog", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "restored",
+        sourceIssueStatus: "backlog",
+      }),
+    ).toMatchObject({
+      outcome: "restored",
+      sourceIssueStatus: "backlog",
+    });
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "false_positive",
+        sourceIssueStatus: "backlog",
+      }).success,
+    ).toBe(false);
+  });
+
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({
