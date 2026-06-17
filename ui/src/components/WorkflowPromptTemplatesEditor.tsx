@@ -93,7 +93,7 @@ export function WorkflowPromptTemplatesEditor({
       </div>
 
       {value.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
+        <div className="rounded-xl border border-dashed border-border/60 bg-background/40 px-4 py-6 text-sm text-muted-foreground">
           No prompt templates yet. Add one to enable run suggestions.
         </div>
       ) : (
@@ -106,7 +106,7 @@ export function WorkflowPromptTemplatesEditor({
                 key={template.id}
                 role="group"
                 aria-label={`Prompt template ${index + 1}`}
-                className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3"
+                className="space-y-3 rounded-xl border border-border/60 bg-background/40 p-3"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">

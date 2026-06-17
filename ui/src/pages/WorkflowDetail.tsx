@@ -10,6 +10,8 @@ import { Link, useParams } from "@/lib/router";
 import {
   Bot,
   Check,
+  ChevronDown,
+  ChevronRight,
   Download,
   LoaderCircle,
   Play,
@@ -48,6 +50,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { StatusBadge } from "../components/StatusBadge";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDateTime, formatFileSize, relativeTime } from "../lib/utils";
@@ -72,6 +75,11 @@ type WorkflowEditDraft = {
   model: string;
   promptTemplates: WorkflowPromptTemplateDraft[];
 };
+
+const workflowPanelClassName =
+  "overflow-hidden rounded-2xl border border-border/70 bg-card/90 shadow-sm gap-4 py-5";
+const workflowPillClassName =
+  "rounded-full border border-border/60 bg-background/40 px-3 py-1 text-xs text-muted-foreground";
 
 function toDraft(detail: WorkflowDetailType): WorkflowEditDraft {
   return {
@@ -775,6 +783,7 @@ export function WorkflowDetail() {
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const [editDraft, setEditDraft] = useState<WorkflowEditDraft | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [inputMarkdown, setInputMarkdown] = useState("");
   const [handoffResponses, setHandoffResponses] = useState<
     Record<string, string>
@@ -788,10 +797,11 @@ export function WorkflowDetail() {
   });
 
   const latestRunId = workflowQuery.data?.latestRun?.id ?? null;
+  const activeRunId = selectedRunId ?? latestRunId;
   const runQuery = useQuery({
-    queryKey: queryKeys.workflows.run(latestRunId ?? ""),
-    queryFn: () => workflowsApi.getRun(latestRunId!),
-    enabled: !!latestRunId,
+    queryKey: queryKeys.workflows.run(activeRunId ?? ""),
+    queryFn: () => workflowsApi.getRun(activeRunId!),
+    enabled: !!activeRunId,
     refetchInterval: (query) => {
       const run = query.state.data as WorkflowRunDetail | undefined;
       return run && ["queued", "running", "awaiting_human"].includes(run.status)
@@ -799,6 +809,8 @@ export function WorkflowDetail() {
         : false;
     },
   });
+  const activityRunIds = workflowQuery.data?.runs.map((run) => run.id) ?? [];
+  const activeRunHandoffIds = runQuery.data?.handoffs.map((handoff) => handoff.id) ?? [];
 
   const activityQuery = useQuery({
     queryKey: [
@@ -806,18 +818,20 @@ export function WorkflowDetail() {
         selectedCompanyId ?? "",
         workflowId ?? "",
       ),
-      workflowQuery.data?.runs.map((run) => run.id).join(",") ?? "",
-      runQuery.data?.handoffs.map((handoff) => handoff.id).join(",") ?? "",
+      activityRunIds.join(","),
+      activeRunHandoffIds.join(","),
     ],
     queryFn: () =>
       workflowsApi.activity(selectedCompanyId!, workflowId!, {
-        runIds: workflowQuery.data?.runs.map((run) => run.id) ?? [],
-        handoffIds: runQuery.data?.handoffs.map((handoff) => handoff.id) ?? [],
+        runIds: activityRunIds,
+        handoffIds: activeRunHandoffIds,
       }),
     enabled: !!selectedCompanyId && !!workflowId,
     refetchInterval:
-      runQuery.data &&
-      ["queued", "running", "awaiting_human"].includes(runQuery.data.status)
+      workflowQuery.data?.latestRun &&
+      ["queued", "running", "awaiting_human"].includes(
+        workflowQuery.data.latestRun.status,
+      )
         ? 4000
         : false,
   });
@@ -834,7 +848,11 @@ export function WorkflowDetail() {
     }
   }, [setBreadcrumbs, workflowQuery.data]);
 
-  const refreshAll = async () => {
+  useEffect(() => {
+    setSelectedRunId(null);
+  }, [workflowId]);
+
+  const refreshWorkflowData = async () => {
     if (!workflowId || !selectedCompanyId) return;
     await Promise.all([
       queryClient.invalidateQueries({
@@ -843,15 +861,24 @@ export function WorkflowDetail() {
       queryClient.invalidateQueries({
         queryKey: queryKeys.workflows.list(selectedCompanyId),
       }),
-      latestRunId
-        ? queryClient.invalidateQueries({
-            queryKey: queryKeys.workflows.run(latestRunId),
-          })
-        : Promise.resolve(),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflows.activity(selectedCompanyId, workflowId),
+      }),
       queryClient.invalidateQueries({
         queryKey: queryKeys.deliverables.list(selectedCompanyId),
       }),
     ]);
+  };
+
+  const refreshSelectedRun = async () => {
+    if (!activeRunId) return;
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.workflows.run(activeRunId),
+    });
+  };
+
+  const refreshAll = async () => {
+    await Promise.all([refreshWorkflowData(), refreshSelectedRun()]);
   };
 
   const saveMutation = useMutation({
@@ -890,7 +917,8 @@ export function WorkflowDetail() {
       workflowsApi.run(workflowId!, { inputMarkdown: inputMarkdown.trim() }),
     onSuccess: async () => {
       setInputMarkdown("");
-      await refreshAll();
+      setSelectedRunId(null);
+      await refreshWorkflowData();
       pushToast({ title: "Workflow run queued" });
     },
     onError: (error) => {
@@ -956,7 +984,7 @@ export function WorkflowDetail() {
           ({
             id: phase.key,
             companyId: workflow.companyId,
-            workflowRunId: workflow.latestRun?.id ?? "definition",
+            workflowRunId: activeRunId ?? "definition",
             phaseKey: phase.key,
             label: phase.label,
             kind: phase.kind,
@@ -976,25 +1004,53 @@ export function WorkflowDetail() {
             updatedAt: workflow.updatedAt,
           }) satisfies WorkflowPhase,
       );
+  const activeRunStatus = runDetail?.status ?? workflow.latestRun?.status ?? null;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">{workflow.title}</h1>
-          <p className="text-sm text-muted-foreground">
-            Google ADK workflow with an inferred read-only pipeline and
-            workflow-backed deliverables.
-          </p>
+    <div className="relative isolate space-y-6">
+      <div className="pointer-events-none absolute inset-x-0 top-[-4rem] -z-10 h-72 bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.08),transparent_35%),radial-gradient(circle_at_top_right,_rgba(6,182,212,0.06),transparent_28%)]" />
+
+      <div className="relative overflow-hidden rounded-2xl border border-border/70 bg-card/90 p-5 shadow-sm">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.06),transparent_32%),radial-gradient(circle_at_bottom_right,_rgba(6,182,212,0.05),transparent_28%)]" />
+        <div className="relative flex flex-wrap items-start justify-between gap-4">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusBadge status={workflow.status} />
+              {activeRunStatus ? <StatusBadge status={activeRunStatus} /> : null}
+              <span className="text-xs text-muted-foreground">
+                {workflow.runnerType.replaceAll("_", " ")}
+              </span>
+            </div>
+            <div className="space-y-1">
+              <h1 className="text-xl font-bold leading-tight">{workflow.title}</h1>
+              <p className="max-w-3xl text-sm text-muted-foreground">
+                {workflow.description?.trim() ||
+                  "Google ADK workflow with an inferred read-only pipeline and workflow-backed deliverables."}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <span className={workflowPillClassName}>
+                Runs {workflow.runs.length}
+              </span>
+              {workflow.latestRun ? (
+                <span className={workflowPillClassName}>
+                  Latest {relativeTime(workflow.latestRun.createdAt)}
+                </span>
+              ) : null}
+              <span className={workflowPillClassName}>
+                Updated {relativeTime(workflow.updatedAt)}
+              </span>
+            </div>
+          </div>
+          {workflow.latestDeliverable ? (
+            <Button asChild variant="outline" className="shrink-0">
+              <Link to={`/deliverables/${workflow.latestDeliverable.id}`}>
+                <Download className="mr-1.5 h-4 w-4" />
+                Latest deliverable
+              </Link>
+            </Button>
+          ) : null}
         </div>
-        {workflow.latestDeliverable ? (
-          <Button asChild variant="outline">
-            <Link to={`/deliverables/${workflow.latestDeliverable.id}`}>
-              <Download className="mr-1.5 h-4 w-4" />
-              Latest deliverable
-            </Link>
-          </Button>
-        ) : null}
       </div>
 
       <div className="space-y-6">
@@ -1017,9 +1073,9 @@ export function WorkflowDetail() {
 
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
           <div className="space-y-6">
-            <Card>
+            <Card className={workflowPanelClassName}>
               <CardHeader>
-                <CardTitle className="text-base">Run workflow</CardTitle>
+                <CardTitle className="text-sm font-semibold">Run workflow</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <WorkflowRunPromptSuggestions
@@ -1052,7 +1108,11 @@ export function WorkflowDetail() {
 
             <WorkflowRunConsoleCard runDetail={runDetail} />
 
-            <RunHistoryCard workflow={workflow} runDetail={runDetail} />
+            <RunHistoryCard
+              workflow={workflow}
+              activeRunId={activeRunId}
+              onSelectRun={setSelectedRunId}
+            />
 
             <ActivityCard
               events={activityQuery.data ?? []}
@@ -1061,9 +1121,9 @@ export function WorkflowDetail() {
           </div>
 
           <div className="space-y-6">
-            <Card>
+            <Card className={workflowPanelClassName}>
               <CardHeader>
-                <CardTitle className="text-base">Workflow settings</CardTitle>
+                <CardTitle className="text-sm font-semibold">Workflow settings</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
@@ -1195,9 +1255,9 @@ export function WorkflowDetail() {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className={workflowPanelClassName}>
               <CardHeader>
-                <CardTitle className="text-base">Latest deliverables</CardTitle>
+                <CardTitle className="text-sm font-semibold">Active run deliverables</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
                 {runDetail?.deliverables.length ? (
@@ -1205,7 +1265,7 @@ export function WorkflowDetail() {
                     <Link
                       key={deliverable.id}
                       to={`/deliverables/${deliverable.id}`}
-                      className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm no-underline transition-colors hover:bg-muted/40"
+                      className="flex items-center justify-between rounded-lg border border-border/60 bg-background/40 px-3 py-2 text-sm no-underline transition-colors hover:bg-background/60"
                     >
                       <span className="truncate">{deliverable.title}</span>
                       <span className="text-xs text-muted-foreground">
@@ -1263,13 +1323,13 @@ function PipelineCard({
   );
 
   return (
-    <Card className="overflow-hidden">
+    <Card className={workflowPanelClassName}>
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle className="text-base">Pipeline</CardTitle>
-          <div className="text-sm text-muted-foreground">
+          <CardTitle className="text-sm font-semibold">Pipeline</CardTitle>
+          <div className="text-xs text-muted-foreground">
             {runDetail
-              ? `Latest run ${runDetail.status.replaceAll("_", " ")}`
+              ? `Active run ${runDetail.status.replaceAll("_", " ")}`
               : `${workflow.pipelineDefinition.phases.length} inferred phases`}
           </div>
         </div>
@@ -1301,9 +1361,14 @@ function WorkflowRunConsoleCard({
   runDetail: WorkflowRunDetail | null;
 }) {
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
+  const [stderrOpen, setStderrOpen] = useState(true);
 
   useEffect(() => {
     setTranscriptMode("nice");
+  }, [runDetail?.id]);
+
+  useEffect(() => {
+    setStderrOpen(true);
   }, [runDetail?.id]);
 
   const consoleEntries = runDetail?.consoleEntries ?? [];
@@ -1318,9 +1383,9 @@ function WorkflowRunConsoleCard({
 
   if (!runDetail) {
     return (
-      <Card>
+      <Card className={workflowPanelClassName}>
         <CardHeader>
-          <CardTitle className="text-base">Operator console</CardTitle>
+          <CardTitle className="text-sm font-semibold">Operator console</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="text-sm text-muted-foreground">
@@ -1336,10 +1401,10 @@ function WorkflowRunConsoleCard({
   );
 
   return (
-    <Card>
+    <Card className={workflowPanelClassName}>
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <CardTitle className="flex items-center gap-2 text-base">
+          <CardTitle className="flex items-center gap-2 text-sm font-semibold">
             <TerminalSquare className="h-4 w-4" />
             Operator console
           </CardTitle>
@@ -1374,7 +1439,7 @@ function WorkflowRunConsoleCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="rounded-2xl border border-border/70 bg-background/40 p-3 sm:p-4">
+        <div className="max-h-80 overflow-y-auto rounded-lg border border-border/70 bg-neutral-950 p-3 font-mono text-xs">
           <RunTranscriptView
             entries={transcript}
             mode={transcriptMode}
@@ -1384,24 +1449,42 @@ function WorkflowRunConsoleCard({
         </div>
 
         {runDetail.error || runDetail.stderrExcerpt || runDetail.resultJson ? (
-          <div className="space-y-3 rounded-2xl border border-border/30 bg-muted/30 p-4">
-            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              {runDetail.error || runDetail.stderrExcerpt ? "Stderr details" : "Run details"}
+          <div className="rounded-lg border border-border/70 bg-neutral-950 p-3 font-mono text-xs">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                {runDetail.error || runDetail.stderrExcerpt ? "stderr" : "result"}
+              </span>
+              <button
+                type="button"
+                className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                onClick={() => setStderrOpen((value) => !value)}
+                aria-label={stderrOpen ? "Collapse stderr details" : "Expand stderr details"}
+              >
+                {stderrOpen ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronRight className="h-4 w-4" />
+                )}
+              </button>
             </div>
-            {runDetail.error ? (
-              <div className="text-sm text-red-700 dark:text-red-200">
-                {runDetail.error}
+            {stderrOpen ? (
+              <div className="mt-2 max-h-80 space-y-3 overflow-y-auto">
+                {runDetail.error ? (
+                  <div className="whitespace-pre-wrap break-words text-red-400">
+                    {runDetail.error}
+                  </div>
+                ) : null}
+                {runDetail.stderrExcerpt ? (
+                  <pre className="whitespace-pre-wrap break-words text-foreground/90">
+                    {runDetail.stderrExcerpt}
+                  </pre>
+                ) : null}
+                {runDetail.resultJson ? (
+                  <pre className="whitespace-pre-wrap break-words text-foreground/90">
+                    {JSON.stringify(runDetail.resultJson, null, 2)}
+                  </pre>
+                ) : null}
               </div>
-            ) : null}
-            {runDetail.stderrExcerpt ? (
-              <pre className="overflow-x-auto whitespace-pre-wrap rounded-xl bg-background/80 p-3 text-xs text-foreground/80">
-                {runDetail.stderrExcerpt}
-              </pre>
-            ) : null}
-            {runDetail.resultJson ? (
-              <pre className="overflow-x-auto whitespace-pre-wrap rounded-xl bg-background/80 p-3 text-xs text-foreground">
-                {JSON.stringify(runDetail.resultJson, null, 2)}
-              </pre>
             ) : null}
           </div>
         ) : null}
@@ -1412,30 +1495,50 @@ function WorkflowRunConsoleCard({
 
 function RunHistoryCard({
   workflow,
-  runDetail,
+  activeRunId,
+  onSelectRun,
 }: {
   workflow: WorkflowDetailType;
-  runDetail: WorkflowRunDetail | null;
+  activeRunId: string | null;
+  onSelectRun: (runId: string | null) => void;
 }) {
+  const latestRunId = workflow.latestRun?.id ?? null;
+
   return (
-    <Card>
+    <Card className={workflowPanelClassName}>
       <CardHeader>
-        <CardTitle className="text-base">Run history</CardTitle>
+        <CardTitle className="text-sm font-semibold">Run history</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         {workflow.runs.length === 0 ? (
           <div className="text-sm text-muted-foreground">No runs yet.</div>
         ) : (
           workflow.runs.map((run) => {
-            const isLatest = runDetail?.id === run.id;
+            const isSelected = activeRunId === run.id;
+            const isLatest = latestRunId === run.id;
             return (
-              <div
+              <button
                 key={run.id}
-                className={`rounded-xl border p-3 ${isLatest ? "border-amber-500/40 bg-amber-500/5" : "border-border"}`}
+                type="button"
+                aria-pressed={isSelected}
+                onClick={() => onSelectRun(isLatest ? null : run.id)}
+                className={cn(
+                  "w-full rounded-xl border p-3 text-left transition-colors",
+                  isSelected
+                    ? "border-cyan-500/40 bg-cyan-500/10"
+                    : isLatest
+                      ? "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15"
+                      : "border-border/60 bg-background/40 hover:bg-background/60",
+                )}
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm font-medium">
-                    {run.status.replaceAll("_", " ")}
+                  <div className="flex items-center gap-2 text-sm font-semibold">
+                    <span>{run.status.replaceAll("_", " ")}</span>
+                    {isLatest ? (
+                      <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                        Latest
+                      </span>
+                    ) : null}
                   </div>
                   <div
                     className="text-xs text-muted-foreground"
@@ -1457,7 +1560,7 @@ function RunHistoryCard({
                     ? ` · Finished ${formatDateTime(run.finishedAt)}`
                     : ""}
                 </div>
-              </div>
+              </button>
             );
           })
         )}
@@ -1474,9 +1577,9 @@ function ActivityCard({
   loading: boolean;
 }) {
   return (
-    <Card>
+    <Card className={workflowPanelClassName}>
       <CardHeader>
-        <CardTitle className="text-base">Activity</CardTitle>
+        <CardTitle className="text-sm font-semibold">Activity</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         {loading ? (
@@ -1487,7 +1590,7 @@ function ActivityCard({
           </div>
         ) : (
           events.slice(0, 12).map((event) => (
-            <div key={event.id} className="rounded-xl border border-border p-3">
+            <div key={event.id} className="rounded-xl border border-border/60 bg-background/40 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-sm font-medium">
                   {event.action.replaceAll(".", " ")}
