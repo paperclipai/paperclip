@@ -146,6 +146,7 @@ describe("environment routes", () => {
     mockIssueService.getById.mockReset();
     mockProjectService.getById.mockReset();
     mockEnvironmentService.list.mockReset();
+    mockEnvironmentService.list.mockResolvedValue([]);
     mockEnvironmentService.getById.mockReset();
     mockEnvironmentService.create.mockReset();
     mockEnvironmentService.update.mockReset();
@@ -418,6 +419,27 @@ describe("environment routes", () => {
         entityId: environment.id,
       }),
     );
+  });
+
+  it("returns conflict when creating a second local environment", async () => {
+    mockEnvironmentService.list.mockResolvedValue([createEnvironment()]);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/environments")
+      .send({
+        name: "Another Local",
+        driver: "local",
+        config: {},
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("A local environment already exists for this company.");
+    expect(mockEnvironmentService.create).not.toHaveBeenCalled();
   });
 
   it("allows non-admin board users with environments:manage to create environments", async () => {

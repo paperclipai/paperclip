@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import type { IncomingMessage } from "node:http";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -190,6 +191,13 @@ function makeAttachment(contentType: string, originalFilename: string) {
   };
 }
 
+function parseBinaryResponse(res: IncomingMessage, callback: (error: Error | null, body?: Buffer) => void) {
+  const chunks: Buffer[] = [];
+  res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+  res.on("end", () => callback(null, Buffer.concat(chunks)));
+  res.on("error", callback);
+}
+
 describe("normalizeIssueAttachmentMaxBytes", () => {
   it("keeps the process-level attachment cap as the final cap", async () => {
     const previous = process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
@@ -362,7 +370,10 @@ describe("issue attachment routes", () => {
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/html", "report.html"));
 
     const app = await createApp(storage);
-    const res = await request(app).get("/api/attachments/attachment-1/content");
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .buffer(true)
+      .parse(parseBinaryResponse);
 
     expect(res.status).toBe(200);
     expect([
@@ -410,6 +421,25 @@ describe("issue attachment routes", () => {
       "issues/issue-1/clip.mp4",
       { range: { start: 1, end: 3 } },
     );
+  });
+
+  it("serves mp4 attachments inline when stored with a generic binary content type", async () => {
+    const storage = createStorageService(Buffer.from("abcdef"));
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment("application/octet-stream", "clip.mp4"),
+      byteSize: 6,
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .set("Range", "bytes=1-3");
+
+    expect(res.status).toBe(206);
+    expect(res.headers["content-type"]).toContain("video/mp4");
+    expect(res.headers["content-disposition"]).toBe('inline; filename="clip.mp4"');
+    expect(res.headers["content-range"]).toBe("bytes 1-3/6");
+    expect(Buffer.from(res.body).toString("utf8")).toBe("bcd");
   });
 
   it("forces video downloads when the download path is requested", async () => {
