@@ -67,7 +67,7 @@ describe("GET /health", () => {
   it("returns 200 when the fast database probe fails but schema probes succeed", async () => {
     const executeMock = vi.fn()
       .mockRejectedValueOnce(new Error("transient SELECT 1 failure"))
-      .mockResolvedValue([{ "?column?": 1 }]);
+      .mockResolvedValue([{ exists: true }]);
     const db = {
       execute: executeMock,
     } as unknown as Db;
