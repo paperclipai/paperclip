@@ -60,7 +60,11 @@ RUN node scripts/patch-media-output-low-resource.mjs
 # NOTE: Gemini direct API patch script is intentionally not executed here.
 # The previous build hook broke Docker deploy due nested generated template strings.
 # Keep the script in the repo for future repair, but do not run it during production build.
-RUN pnpm run build
+# Production-targeted build: avoid plugin examples and smoke-test packages in Render.
+RUN pnpm run preflight:workspace-links \
+  && pnpm --filter @paperclipai/ui build \
+  && pnpm --filter @paperclipai/server... build \
+  && pnpm --filter @paperclipai/server prepare:ui-dist
 RUN node scripts/patch-production-workspace-exports.mjs
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN test -f packages/db/dist/index.js || (echo "ERROR: db build output missing" && exit 1)
