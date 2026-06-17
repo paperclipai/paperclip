@@ -768,6 +768,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       identifier: "CLOSED-3",
       originKind: "harness_liveness_escalation",
       originId: incidentKey,
+      updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000), // outside 24h cooldown window
     });
 
     const result = await heartbeat.reconcileIssueGraphLiveness();
@@ -799,6 +800,39 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(false);
     expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
+  });
+
+  it("suppresses a new escalation when a matching escalation was closed within the cooldown window", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+    const incidentKey = [
+      "harness_liveness",
+      companyId,
+      blockedIssueId,
+      "blocked_by_unassigned_issue",
+      blockerIssueId,
+    ].join(":");
+    const recentlyClosedId = randomUUID();
+
+    await db.insert(issues).values({
+      id: recentlyClosedId,
+      companyId,
+      title: "Recently closed escalation",
+      status: "done",
+      priority: "high",
+      parentId: blockedIssueId,
+      assigneeAgentId: managerId,
+      issueNumber: 3,
+      identifier: "RCLOSED-3",
+      originKind: "harness_liveness_escalation",
+      originId: incidentKey,
+      // updatedAt defaults to now — within the 24h cooldown window
+    });
+
+    const result = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(result.escalationsCreated).toBe(0);
   });
 
   it("removes closed liveness escalations from blocker relations during reconciliation", async () => {
