@@ -58,6 +58,7 @@ import {
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { StorageService } from "../storage/types.js";
 import { agentPortraitService } from "../services/agent-portraits.js";
+import { logger } from "../middleware/logger.js";
 import { environmentService } from "../services/environments.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -2053,6 +2054,21 @@ export function agentRoutes(
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
+
+    // Auto-generate the GLASSHOUSE portrait on hire (fire-and-forget): never block or fail the
+    // hire, gated on object storage being available (portraits is non-null only on the control
+    // plane where GEMINI_API_KEY + storage live). The animated-eyes fallback covers the brief gap
+    // while Imagen runs. The portrait attaches to the stable agent.id, so it survives approval.
+    if (portraits) {
+      void portraits
+        .generateForAgent(companyId, agent.id, {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        })
+        .catch((err) => {
+          logger.warn({ err, agentId: agent.id }, "auto portrait generation on hire failed");
+        });
+    }
 
     if (requiresApproval) {
       const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
