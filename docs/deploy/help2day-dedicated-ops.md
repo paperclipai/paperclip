@@ -55,6 +55,57 @@ node scripts/approval-evidence-report.mjs --require-clean
 
 If the working tree is intentionally dirty, the approval request must name the dirty files and explain why they are excluded from the approval scope. Approval requests without current evidence should be treated as incomplete, not ready for a human decision.
 
+## Repository And Posting Identity
+
+Before opening, updating, or commenting on GitHub/Vercel work, prove the exact target:
+
+- Help2day product work belongs in the active Help2day repository/worktree.
+- Paperclip platform/runtime work belongs in the Paperclip platform repository.
+- Do not add Help2day workflows or app code to the Paperclip platform repository, or Paperclip cron/runtime workflows to the Help2day app repository, unless the issue explicitly requires cross-repo work and the runtime schema proves that target.
+
+Use the Help2day/Paperclip posting identity:
+
+- GitHub user: `gboyles2paperclipAI`
+- Commit author email: `285433492+gboyles2paperclipAI@users.noreply.github.com`
+- Vercel account: `gboyles2paperclipai`
+
+Before posting or pushing:
+
+```bash
+git remote -v
+git branch --show-current
+git status --short --untracked-files=no
+git config user.name
+git config user.email
+gh auth status -h github.com
+```
+
+If a PR is authored from the wrong account, wrong repository, wrong branch base, or a disjoint dependency tree, do not ask Grant to approve it. Close or supersede it with a clean branch from the verified base.
+
+## Runtime Target Verification
+
+When an issue asks for cron, routine, database seed, deploy, or runtime activation, verify the implementation surface before changing files:
+
+- current service host and service unit,
+- active database host and database name without printing credentials,
+- relevant table/schema names from the running database,
+- existing scripts, routes, and scheduler paths in the current repo,
+- exact branch/commit being deployed or tested.
+
+The default for local Paperclip platform automation is a host-level script with locking and log evidence when the product runtime has no matching built-in scheduler route. Do not invent GitHub Actions as a fallback without proving the target repository and secrets model are correct.
+
+## Permanent Watcher Issues
+
+Issues with `executionPolicy.permanentWatcher=true` are long-running monitor/watchdog records. Their valid steady state is usually `in_progress`, not `done`.
+
+Recovery logic must not treat a successful maintenance run on a permanent watcher as a missing disposition. If a permanent watcher is mistakenly blocked:
+
+- verify `executionPolicy.permanentWatcher=true`,
+- verify there is no customer-impacting failure behind the block,
+- resolve the recovery action as restored,
+- return the issue to its designated watcher owner,
+- leave a comment with the exact recovery-action id and code/test evidence.
+
 ## Agent Concurrency Levels
 
 Use the global premium/local adapter cap as the primary safety valve. Per-agent limits are secondary and should prevent one agent from monopolizing the host.
@@ -180,3 +231,27 @@ If queued work rises while running count stays below cap, check:
 - scheduler/watchdog logs,
 - database connectivity,
 - service restarts.
+
+## Board Triage Rules
+
+Use first-class blockers only for dependencies that really prevent completion. Do not keep an issue blocked because of stale comments after the dependency is done.
+
+For every blocked issue, the current comment or blocker must identify:
+
+- exact blocker issue, PR, deployment, credential, or provider action,
+- current machine-verifiable evidence,
+- who can remove the blocker,
+- the next safe action,
+- why an agent cannot complete it independently.
+
+For KB publishing work, separate repository readiness from production publishing readiness. If code/content is merged but the deployed app cannot access the production database, mark the publishing ticket blocked on the Vercel/database access gate instead of repeatedly asking for generic approval.
+
+After any supervisor board repair, immediately check live and queued runs for the repaired issue ids. Cancel stale queued/running runs whose instructions were generated before the repair, especially when:
+
+- an issue was just moved to `done`,
+- an issue was just moved to `blocked`,
+- the assignee was cleared,
+- a blocker chain was corrected,
+- the run is about to perform deploy/restart/database work based on stale evidence.
+
+Do not trust the board state until a second read-back confirms no stale run rewrote the status after the repair.
