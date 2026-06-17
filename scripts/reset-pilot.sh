@@ -58,10 +58,10 @@ echo ""
 #    5M: enough for a full dev_team chain per agent; still stops a genuine
 #    runaway cold-resume loop (which would burn 4-5M per agent per replay).
 # ---------------------------------------------------------------------------
-echo "▶ Ensuring instance guards allow full pilot chains (agentMonthlyTokens → 5M)…"
+echo "▶ Ensuring instance guards allow full pilot chains (agentMonthlyTokens → 5M, companyMonthlyTokens → 20M)…"
 GUARDS_RESULT="$(curl -fsS -X PATCH "$API_BASE/instance/settings/guards" \
   -H 'Content-Type: application/json' \
-  -d '{"budget":{"agentMonthlyTokens":5000000}}')" || {
+  -d '{"budget":{"agentMonthlyTokens":5000000,"companyMonthlyTokens":20000000}}')" || {
     echo "✗ failed to update instance guards (PATCH /instance/settings/guards was rejected)." >&2
     echo "  Refusing to continue: the budget cap would stay at its old value (≤500k), and the" >&2
     echo "  hard-stop would trip mid-chain on the first real review pass — the HIVA-17 failure." >&2
@@ -274,8 +274,8 @@ else
       -H 'Content-Type: application/json' > /dev/null 2>&1 || true
     curl -fsS -X PATCH "$API_BASE/agents/$AGENT_ID" \
       -H 'Content-Type: application/json' \
-      -d '{"runtimeConfig":{"heartbeat":{"enabled":true,"maxConcurrentRuns":1}}}' > /dev/null
-    echo "  $AGENT_NAME: resumed, heartbeat.enabled=true"
+      -d '{"runtimeConfig":{"heartbeat":{"enabled":true,"maxConcurrentRuns":1}},"adapterConfig":{"model":"claude-sonnet-4-6"}}' > /dev/null
+    echo "  $AGENT_NAME: resumed, heartbeat=on, model=claude-sonnet-4-6"
   done
 fi
 

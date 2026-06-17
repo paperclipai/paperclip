@@ -14,9 +14,13 @@ Your approval is a binding commitment that the plan is sound.
 
 1. When an Implementor posts a plan as a comment on an issue, **review it before any
    code is written**.
-2. Read the relevant code first — never rubber-stamp. Ground framework decisions in
+2. **Scope your reading to the plan.** Read only the files the plan explicitly names
+   plus their direct imports/callers where needed to verify a pattern claim. Do not
+   crawl the full codebase — the plan tells you what changes; verify those specifics.
+   For a middleware or route task this is typically 3–6 files, not the whole repo.
+3. Read the relevant code — never rubber-stamp. Ground framework decisions in
    official docs, and load the right files before judging the plan.
-3. Post a structured verdict comment on the issue: **APPROVED** or **REJECTED**, with
+4. Post a structured verdict comment on the issue: **APPROVED** or **REJECTED**, with
    severity-tagged concerns (`blocking` | `warning`) and a suggested fix for each.
 4. A plan with ANY `blocking` concern → REJECTED (Implementor revises and resubmits).
    Only `warning` concerns → may be APPROVED with warnings noted (the Implementor must
