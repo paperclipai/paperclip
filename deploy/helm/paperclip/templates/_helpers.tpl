@@ -31,6 +31,37 @@ for the "-headless" suffix (9 chars) so the resulting DNS label stays within the
 {{- end }}
 
 {{/*
+Allowed hostnames the server accepts on its Host header: the loopback address
+(always prepended — the server uses allowedHostnames[0] to build
+PAPERCLIP_API_URL) plus any operator-configured extras. Single source of truth
+for the PAPERCLIP_ALLOWED_HOSTNAMES env var and the health-probe Host header.
+*/}}
+{{- define "paperclip.allowedHostnames" -}}
+{{- prepend (.Values.env.extraAllowedHostnames | default list) "127.0.0.1" | join "," -}}
+{{- end }}
+
+{{/*
+Host header for health probes: allowedHostnames[0] — the prepended loopback,
+always accepted by the private-hostname guard.
+*/}}
+{{- define "paperclip.probeHost" -}}
+{{- include "paperclip.allowedHostnames" . | splitList "," | first -}}
+{{- end }}
+
+{{/*
+Shared httpGet block for all health probes: hits /healthz on the http port with
+the Host header derived from the allowed-hostnames list.
+*/}}
+{{- define "paperclip.probeHttpGet" -}}
+httpGet:
+  path: /healthz
+  port: http
+  httpHeaders:
+    - name: Host
+      value: {{ include "paperclip.probeHost" . | quote }}
+{{- end }}
+
+{{/*
 Chart name and version label.
 */}}
 {{- define "paperclip.chart" -}}
