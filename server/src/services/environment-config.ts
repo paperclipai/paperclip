@@ -368,7 +368,7 @@ export function normalizeEnvironmentConfig(input: {
 export function normalizeEnvironmentConfigForProbe(input: {
   db: Db;
   companyId: string;
-  actorType: "board" | "agent";
+  actorType: "board" | "agent" | "none";
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
   pluginWorkerManager?: PluginWorkerManager;
