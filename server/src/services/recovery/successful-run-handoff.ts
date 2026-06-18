@@ -74,6 +74,12 @@ export function noticeMetadataReferencesRecoveryAction(
   );
 }
 
+export const ROUTINE_SILENT_SENTINEL = "[ROUTINE:SILENT]";
+
+export function commentHasRoutineSilentSentinel(body: string) {
+  return body.includes(ROUTINE_SILENT_SENTINEL);
+}
+
 export type SuccessfulRunHandoffDecision =
   | {
       kind: "enqueue";
@@ -352,10 +358,12 @@ export function decideSuccessfulRunHandoff(input: {
   hasPauseHold: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
+  hasRoutineSilentComment?: boolean;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
   if (run.status !== "succeeded") return { kind: "skip", reason: "source run did not succeed" };
+  if (input.hasRoutineSilentComment) return { kind: "skip", reason: "run produced [ROUTINE:SILENT] sentinel — routine scan completed without issue action" };
   if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
   if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
   if (isCommentDrivenWake(run)) return { kind: "skip", reason: "comment-driven wake already owns the next action" };

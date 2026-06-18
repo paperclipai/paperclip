@@ -57,6 +57,7 @@ export {
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   isSuccessfulRunHandoffRequiredNoticeBody,
+  commentHasRoutineSilentSentinel,
 } from "./successful-run-handoff.js";
 export type {
   SuccessfulRunHandoffNotice,
