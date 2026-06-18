@@ -960,4 +960,26 @@ describe("Done transition guard", () => {
     expect(res.status).toBe(422);
     expect(mockExecFilePromise).toHaveBeenCalledTimes(5);
   });
+
+  it("blocks transition to done when bypass comment containing bypass keywords is too long", async () => {
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockDocumentService.listIssueDocuments.mockResolvedValue([{ key: "plan" }]);
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        body: "This is a very long code review report or automated warning that happens to quote the phrase not new implementation work inside its body but it is too long to be a valid waiver.",
+        authorType: "user"
+      }
+    ]);
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Linked implementation PR/work product is required");
+  });
 });

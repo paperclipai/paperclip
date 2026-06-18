@@ -1758,6 +1758,7 @@ export function issueRoutes(
     const hasEvidenceRecordLabel = labelNames.some((name: string) => /evidence-record|finding-record/i.test(name));
     const hasEvidenceRecordComment = comments.some((c: any) =>
       c.authorType === "user" &&
+      (c.body || "").length < 100 &&
       /\b(evidence record|finding record|completed qa finding record|not new implementation|no implementation is approved|remediation is not approved)\b/i.test(c.body || "")
     );
     const isExplicitEvidenceRecord = hasEvidenceRecordLabel || hasEvidenceRecordComment;
@@ -1801,6 +1802,7 @@ export function issueRoutes(
 
     const hasWaiver = comments.some((c: any) =>
       c.authorType === "user" &&
+      (c.body || "").length < 100 &&
       /approved waiver|waiver approved/i.test(c.body || "")
     );
     if (hasWaiver) {
