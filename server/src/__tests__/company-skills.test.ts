@@ -201,30 +201,11 @@ describe("project workspace skill discovery", () => {
         "---",
         "",
         "# Folded Metadata Skill",
-=======
-  it("parses YAML block-scalar descriptions from SKILL.md frontmatter", async () => {
-    const workspace = await makeTempDir("paperclip-block-scalar-skill-");
-    await fs.mkdir(workspace, { recursive: true });
-    await fs.writeFile(
-      path.join(workspace, "SKILL.md"),
-      [
-        "---",
-        "name: Block Scalar Skill",
-        "description: >",
-        "  First line",
-        "  second line",
-        "",
-        "  Third paragraph",
-        "---",
-        "",
-        "# Block Scalar Skill",
->>>>>>> e3f43a267 (Fix block-scalar skill descriptions)
         "",
       ].join("\n"),
       "utf8",
     );
 
-<<<<<<< HEAD
     const literalWorkspace = await makeTempDir("paperclip-literal-skill-yaml-");
     await fs.mkdir(literalWorkspace, { recursive: true });
     await fs.writeFile(
