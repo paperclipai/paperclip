@@ -376,6 +376,15 @@ const plugin = definePlugin({
   async onEnvironmentResumeLease(
     params: PluginEnvironmentResumeLeaseParams,
   ): Promise<PluginEnvironmentLease> {
+    if (!params.providerLeaseId) {
+      return {
+        providerLeaseId: null,
+        metadata: {
+          provider: "novita",
+          expired: true,
+        },
+      };
+    }
     const config = parseNovitaDriverConfig(params.config);
     const sandbox = await getSandboxOrNull(config, params.providerLeaseId);
     if (!sandbox) {
