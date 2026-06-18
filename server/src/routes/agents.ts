@@ -2867,11 +2867,13 @@ export function agentRoutes(
     }
     if (touchesAdapterConfiguration) {
       const agentEnv = asRecord(agent.adapterConfig)?.env;
-      await secretsSvc.syncEnvBindingsForTarget?.(
-        agent.companyId,
-        { targetType: "agent", targetId: agent.id },
-        agentEnv,
-      );
+      if (agentEnv) {
+        await secretsSvc.syncEnvBindingsForTarget?.(
+          agent.companyId,
+          { targetType: "agent", targetId: agent.id },
+          agentEnv,
+        );
+      }
     }
 
     await logActivity(db, {
