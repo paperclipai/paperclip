@@ -11,6 +11,7 @@ describe("isGitRepoUrl", () => {
     expect(isGitRepoUrl("https://git.example.com/org/repo")).toBe(true);
     expect(isGitRepoUrl("http://git.local/org/repo.git")).toBe(true);
     expect(isGitRepoUrl("http://gitea.lan/repo.git")).toBe(true);
+    expect(isGitRepoUrl("https://git.example.com/repo")).toBe(true);
   });
 
   it("rejects empty, non-URL, non-HTTP, and host-only values", () => {
@@ -18,6 +19,12 @@ describe("isGitRepoUrl", () => {
     expect(isGitRepoUrl("not a url")).toBe(false);
     expect(isGitRepoUrl("git@github.com:org/repo.git")).toBe(false);
     expect(isGitRepoUrl("https://git.example.com")).toBe(false);
+  });
+
+  it("rejects public host profile URLs without a repo segment", () => {
+    expect(isGitRepoUrl("https://github.com/myorg")).toBe(false);
+    expect(isGitRepoUrl("https://gitlab.com/mygroup")).toBe(false);
+    expect(isGitRepoUrl("https://bitbucket.org/workspace")).toBe(false);
   });
 });
 

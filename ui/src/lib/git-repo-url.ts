@@ -1,9 +1,16 @@
+const PUBLIC_GIT_HOSTS_REQUIRING_OWNER = new Set(["github.com", "gitlab.com", "bitbucket.org"]);
+
+function requiredPathSegmentsForHost(hostname: string): number {
+  return PUBLIC_GIT_HOSTS_REQUIRING_OWNER.has(hostname.toLowerCase()) ? 2 : 1;
+}
+
 export function isGitRepoUrl(value: string): boolean {
   try {
     const parsed = new URL(value.trim());
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
     if (!parsed.hostname) return false;
-    return parsed.pathname.split("/").filter(Boolean).length >= 1;
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    return segments.length >= requiredPathSegmentsForHost(parsed.hostname);
   } catch {
     return false;
   }

@@ -845,7 +845,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                 placeholder="https://git.example.com/org/repo"
               />
               {isPlainHttpGitRepoUrl(workspaceRepoUrl) && (
-                <p className="text-xs text-amber-600 dark:text-amber-300">
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">
                   This URL uses an unencrypted connection. Use HTTPS if your Git server supports it.
                 </p>
               )}
