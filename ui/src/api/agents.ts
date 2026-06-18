@@ -75,7 +75,7 @@ export interface AgentPermissionUpdate {
 }
 
 export interface AgentWakeRequest {
-  source?: "timer" | "assignment" | "on_demand" | "automation";
+  source?: "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
   reason?: string | null;
   payload?: Record<string, unknown> | null;

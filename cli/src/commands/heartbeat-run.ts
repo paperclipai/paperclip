@@ -62,6 +62,7 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
   if (!HEARTBEAT_SOURCES.includes(opts.source as HeartbeatSource)) {
     console.error(pc.red(`Invalid heartbeat source: ${opts.source}`));
     console.error(pc.gray(`Allowed sources: ${HEARTBEAT_SOURCES.join(", ")}`));
+    process.exitCode = 1;
     return;
   }
   const source = opts.source as HeartbeatSource;
