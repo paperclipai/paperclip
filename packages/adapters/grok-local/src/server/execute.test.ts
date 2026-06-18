@@ -186,4 +186,71 @@ describe("grok_local execute", () => {
     expect(await pathExists(path.join(root, "Agents.md"))).toBe(false);
     expect(await pathExists(path.join(root, ".claude", "skills", "paperclip"))).toBe(false);
   });
+
+  it("does not stage manager-only skills for IC roles", async () => {
+    const root = await makeTempRoot();
+    const paperclipSkillSource = path.join(root, "runtime-skills", "paperclip");
+    const managerSkillSource = path.join(root, "runtime-skills", "office-hours");
+    await fs.mkdir(paperclipSkillSource, { recursive: true });
+    await fs.mkdir(managerSkillSource, { recursive: true });
+    await fs.writeFile(path.join(paperclipSkillSource, "SKILL.md"), "---\nname: paperclip\ndescription: test\n---\n", "utf8");
+    await fs.writeFile(path.join(managerSkillSource, "SKILL.md"), "---\nname: office-hours\ndescription: test\n---\n", "utf8");
+
+    runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+      expect(await pathExists(path.join(root, ".claude", "skills", "paperclip", "SKILL.md"))).toBe(true);
+      expect(await pathExists(path.join(root, ".claude", "skills", "office-hours", "SKILL.md"))).toBe(false);
+      await options.onLog?.("stdout", '{"type":"text","data":"done"}\n');
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "text", data: "done" }),
+          JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-2", requestId: "req-2" }),
+        ].join("\n"),
+        stderr: "",
+      };
+    });
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-role-filter",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        role: "engineer",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        cwd: root,
+        paperclipRuntimeSkills: [
+          {
+            key: "paperclipai/paperclip/paperclip",
+            runtimeName: "paperclip",
+            source: paperclipSkillSource,
+            required: true,
+          },
+          {
+            key: "paperclipai/paperclip/office-hours",
+            runtimeName: "office-hours",
+            source: managerSkillSource,
+            required: true,
+          },
+        ],
+      },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    };
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+  });
 });
