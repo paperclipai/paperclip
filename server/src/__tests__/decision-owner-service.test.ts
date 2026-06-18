@@ -92,7 +92,7 @@ describeEmbeddedPostgres("decision owner resolution", () => {
     });
   }
 
-  it("prefers explicit user, then source comment author, then root human requester", async () => {
+  it("prefers explicit user, then root human requester, then source comment author", async () => {
     const { companyId, childIssueId } = await seedIssueTree();
     const sourceCommentId = randomUUID();
     await seedActiveCompanyUser(companyId, "explicit-user");
@@ -123,17 +123,17 @@ describeEmbeddedPostgres("decision owner resolution", () => {
       issueIds: [childIssueId],
       currentUserId: "current-user",
     })).resolves.toMatchObject({
-      userId: "thomas-user",
-      source: "source_comment_author",
+      userId: "jonas-user",
+      source: "root_human_requester",
     });
 
     await expect(resolveDecisionOwnerUserId(db, {
       companyId,
-      issueIds: [childIssueId],
+      sourceCommentId,
       currentUserId: "current-user",
     })).resolves.toMatchObject({
-      userId: "jonas-user",
-      source: "root_human_requester",
+      userId: "thomas-user",
+      source: "source_comment_author",
     });
   });
 

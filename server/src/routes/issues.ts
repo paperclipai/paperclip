@@ -1854,6 +1854,9 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options: {
+      allowCheckoutManagerBoundaryOverride?: boolean;
+    } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1862,15 +1865,24 @@ export function issueRoutes(
       return false;
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    let hasCheckoutManagementOverride = false;
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
-      return false;
+      hasCheckoutManagementOverride = options.allowCheckoutManagerBoundaryOverride === true &&
+        issue.assigneeAgentId !== null &&
+        await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId);
+      if (!hasCheckoutManagementOverride) {
+        res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+        return false;
+      }
     }
     if (issue.assigneeAgentId === null) {
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
-      if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+      if (
+        hasCheckoutManagementOverride ||
+        await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)
+      ) {
         return true;
       }
       if (issue.status === "in_progress") {
@@ -1921,6 +1933,19 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  function isHumanReviewRoutingCorrectionRequest(body: unknown) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const record = body as Record<string, unknown>;
+    const allowedKeys = new Set(["assigneeAgentId", "assigneeUserId", "status", "comment"]);
+    if (Object.keys(record).some((key) => !allowedKeys.has(key))) return false;
+    return (
+      record.assigneeAgentId === null &&
+      typeof record.assigneeUserId === "string" &&
+      record.assigneeUserId.trim().length > 0 &&
+      record.status === "in_review"
+    );
   }
 
   function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
@@ -4828,7 +4853,11 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (
+      !(await assertAgentIssueMutationAllowed(req, res, existing, {
+        allowCheckoutManagerBoundaryOverride: isHumanReviewRoutingCorrectionRequest(req.body),
+      }))
+    ) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
