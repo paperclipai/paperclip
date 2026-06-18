@@ -1,7 +1,15 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
+
+function isInsideOsTmpDir(targetPath: string): boolean {
+  const tmpRoot = path.resolve(os.tmpdir());
+  const resolved = path.resolve(targetPath);
+  return resolved === tmpRoot || resolved.startsWith(`${tmpRoot}${path.sep}`);
+}
 
 export async function databaseCheck(config: PaperclipConfig, configPath?: string): Promise<CheckResult> {
   if (config.database.mode === "postgres") {
@@ -40,6 +48,28 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
     const reportedPath = dataDir;
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(reportedPath, { recursive: true });
+    }
+
+    // A worktree-mode instance whose data dir lives under the OS temp dir is a red
+    // flag: this is what happens when PAPERCLIP_HOME / PAPERCLIP_IN_WORKTREE leak
+    // into a PRIMARY instance's environment and silently relocate it to a throwaway
+    // temp home, so it boots an empty DB and locks everyone out. (Intentional
+    // ephemeral/CI instances that don't set PAPERCLIP_IN_WORKTREE are not flagged.)
+    if (isInsideOsTmpDir(dataDir) && process.env.PAPERCLIP_IN_WORKTREE === "true") {
+      return {
+        name: "Database",
+        status: "warn",
+        message:
+          `Embedded PostgreSQL data dir is inside the OS temp directory (${dataDir}) ` +
+          "while running in worktree mode (PAPERCLIP_IN_WORKTREE=true). Data stored here is " +
+          "ephemeral and will be lost on reboot or a temp cleanup. If this is your primary " +
+          "instance, PAPERCLIP_HOME / PAPERCLIP_IN_WORKTREE likely leaked into its environment, " +
+          "pointing it at a throwaway worktree home instead of your real data.",
+        canRepair: false,
+        repairHint:
+          "If this is the primary instance, unset PAPERCLIP_HOME and PAPERCLIP_IN_WORKTREE " +
+          "(or pass --data-dir <persistent path>) and restart so it uses the persistent instance.",
+      };
     }
 
     return {
