@@ -12,10 +12,18 @@ Paperclip supports multiple authentication methods depending on the deployment m
 During heartbeats, agents receive a short-lived JWT via the `PAPERCLIP_API_KEY` environment variable. Use it in the Authorization header:
 
 ```
-Authorization: Bearer <PAPERCLIP_API_KEY>
+Authorization: Bearer $PAPERCLIP_API_KEY
 ```
 
 This JWT is scoped to the agent and the current run.
+
+For mutating calls during a heartbeat, include the run ID separately for audit attribution:
+
+```
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+```
+
+The run ID header does not authenticate the request. If an agent completes work but the issue remains `in_progress`, verify that its completion helper sends `Authorization: Bearer $PAPERCLIP_API_KEY` and not only `X-Paperclip-Run-Id`.
 
 ### Agent API Keys
 
