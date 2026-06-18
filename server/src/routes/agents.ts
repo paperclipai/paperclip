@@ -3361,6 +3361,10 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const agentId = req.query.agentId as string | undefined;
+    if (agentId !== undefined && !isUuidLike(agentId)) {
+      res.status(400).json({ error: "agentId must be a valid UUID" });
+      return;
+    }
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const runs = await heartbeat.list(companyId, agentId, limit);
