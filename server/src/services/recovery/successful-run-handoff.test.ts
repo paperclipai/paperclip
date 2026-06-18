@@ -315,6 +315,68 @@ describe("successful run handoff decision", () => {
     expect(noticeMetadataReferencesRecoveryAction(notice.metadata, "88888888-8888-4888-8888-888888888888")).toBe(false);
   });
 
+  it("skips routine-execution pickup whose only evidence is a comment on its own issue", () => {
+    const routineIssue = { ...issue, originKind: "routine_execution" } as any;
+    expect(decide({
+      issue: routineIssue,
+      runEvidence: {
+        ownIssueCommentsCreated: 1,
+        otherIssueCommentsCreated: 0,
+        documentRevisionsCreated: 0,
+        workProductsCreated: 0,
+        toolOrActionEventsCreated: 0,
+      },
+    })).toEqual({
+      kind: "skip",
+      reason: "routine pickup own-issue comment is not productive evidence",
+    });
+  });
+
+  it("still enqueues for routine-execution pickup with non-bookkeeping tool/action events", () => {
+    const routineIssue = { ...issue, originKind: "routine_execution" } as any;
+    const decision = decide({
+      issue: routineIssue,
+      runEvidence: {
+        ownIssueCommentsCreated: 1,
+        otherIssueCommentsCreated: 0,
+        documentRevisionsCreated: 0,
+        workProductsCreated: 0,
+        toolOrActionEventsCreated: 3,
+      },
+    });
+    expect(decision.kind).toBe("enqueue");
+  });
+
+  it("still enqueues for routine-execution pickup that commented on a different issue", () => {
+    const routineIssue = { ...issue, originKind: "routine_execution" } as any;
+    const decision = decide({
+      issue: routineIssue,
+      runEvidence: {
+        ownIssueCommentsCreated: 1,
+        otherIssueCommentsCreated: 1,
+        documentRevisionsCreated: 0,
+        workProductsCreated: 0,
+        toolOrActionEventsCreated: 0,
+      },
+    });
+    expect(decision.kind).toBe("enqueue");
+  });
+
+  it("does not skip non-routine issues even when only own-issue comments exist", () => {
+    const manualIssue = { ...issue, originKind: "manual" } as any;
+    const decision = decide({
+      issue: manualIssue,
+      runEvidence: {
+        ownIssueCommentsCreated: 1,
+        otherIssueCommentsCreated: 0,
+        documentRevisionsCreated: 0,
+        workProductsCreated: 0,
+        toolOrActionEventsCreated: 0,
+      },
+    });
+    expect(decision.kind).toBe("enqueue");
+  });
+
   it("recognizes new notices and legacy markdown headings for fallback deduplication", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody(SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY)).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);

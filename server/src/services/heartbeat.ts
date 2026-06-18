@@ -151,6 +151,7 @@ import {
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
 } from "./recovery/index.js";
+import type { SuccessfulRunHandoffEvidenceInput } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import {
   recoveryAssigneeAdapterOverrides,
@@ -4897,6 +4898,82 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return `[${label}](/${prefix}/issues/${label})`;
   }
 
+  async function collectSuccessfulRunHandoffEvidence(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+  ): Promise<SuccessfulRunHandoffEvidenceInput> {
+    const [
+      ownCommentStats,
+      otherCommentStats,
+      documentStats,
+      workProductStats,
+      eventStats,
+    ] = await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, run.companyId),
+            eq(issueComments.createdByRunId, run.id),
+            eq(issueComments.issueId, issueId),
+          ),
+        )
+        .then((rows) => rows[0]),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, run.companyId),
+            eq(issueComments.createdByRunId, run.id),
+            sql`${issueComments.issueId} <> ${issueId}`,
+          ),
+        )
+        .then((rows) => rows[0]),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(documentRevisions)
+        .where(
+          and(
+            eq(documentRevisions.companyId, run.companyId),
+            eq(documentRevisions.createdByRunId, run.id),
+          ),
+        )
+        .then((rows) => rows[0]),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueWorkProducts)
+        .where(
+          and(
+            eq(issueWorkProducts.companyId, run.companyId),
+            eq(issueWorkProducts.createdByRunId, run.id),
+          ),
+        )
+        .then((rows) => rows[0]),
+      db
+        .select({
+          count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
+        })
+        .from(heartbeatRunEvents)
+        .where(
+          and(
+            eq(heartbeatRunEvents.companyId, run.companyId),
+            eq(heartbeatRunEvents.runId, run.id),
+          ),
+        )
+        .then((rows) => rows[0]),
+    ]);
+
+    return {
+      ownIssueCommentsCreated: ownCommentStats?.count ?? 0,
+      otherIssueCommentsCreated: otherCommentStats?.count ?? 0,
+      documentRevisionsCreated: documentStats?.count ?? 0,
+      workProductsCreated: workProductStats?.count ?? 0,
+      toolOrActionEventsCreated: eventStats?.count ?? 0,
+    };
+  }
+
   async function buildDetectedSuccessfulRunProgressSummary(run: typeof heartbeatRuns.$inferSelect) {
     const resultJson = parseObject(run.resultJson);
     const candidates = [
@@ -4964,6 +5041,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
         projectId: issues.projectId,
+        originKind: issues.originKind,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -4976,6 +5054,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : null;
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const detectedProgressSummary = await buildDetectedSuccessfulRunProgressSummary(run);
+    const runEvidence = issue ? await collectSuccessfulRunHandoffEvidence(run, issue.id) : null;
 
     const [
       activeExecutionPath,
@@ -5121,6 +5200,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       livenessState: run.livenessState as RunLivenessState | null,
       detectedProgressSummary,
       taskKey,
+      runEvidence,
       hasActiveExecutionPath: Boolean(activeExecutionPath),
       hasQueuedWake: Boolean(queuedWake),
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
