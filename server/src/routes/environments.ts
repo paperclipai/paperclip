@@ -434,6 +434,7 @@ export function environmentRoutes(
       const actor = getActorInfo(req);
       const normalizedConfig = await normalizeEnvironmentConfigForProbe({
         db,
+        companyId,
         driver: req.body.driver,
         config: req.body.config,
         pluginWorkerManager: options.pluginWorkerManager,

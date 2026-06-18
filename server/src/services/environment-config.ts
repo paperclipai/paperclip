@@ -264,6 +264,31 @@ async function resolveConfigSecretRefsForRuntime(input: {
   return nextConfig;
 }
 
+async function resolveConfigSecretRefsForProbe(input: {
+  db: Db;
+  companyId: string;
+  config: Record<string, unknown>;
+  schema: Record<string, unknown> | null;
+}): Promise<Record<string, unknown>> {
+  const secrets = secretService(input.db);
+  let nextConfig = { ...input.config };
+  for (const path of collectSecretRefPaths(input.schema)) {
+    const current = readConfigValueAtPath(nextConfig, path);
+    if (typeof current !== "string") continue;
+    const trimmed = current.trim();
+    if (!isUuidSecretRef(trimmed)) continue;
+    // Unsaved draft probes do not have an environment record yet, so they
+    // cannot rely on environment-bound secret resolution. Resolve directly for
+    // this ephemeral board-only probe and never persist the plaintext value.
+    nextConfig = writeConfigValueAtPath(
+      nextConfig,
+      path,
+      await secrets.resolveSecretValue(input.companyId, trimmed, "latest"),
+    );
+  }
+  return nextConfig;
+}
+
 export async function collectEnvironmentSecretRefs(input: {
   db: Db;
   environment: Pick<Environment, "id" | "driver" | "config">;
@@ -338,6 +363,7 @@ export function normalizeEnvironmentConfig(input: {
 
 export function normalizeEnvironmentConfigForProbe(input: {
   db: Db;
+  companyId: string;
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
   pluginWorkerManager?: PluginWorkerManager;
@@ -370,9 +396,19 @@ export function normalizeEnvironmentConfigForProbe(input: {
       workerManager: input.pluginWorkerManager,
       provider: parsed.data.provider,
       config: stripSandboxProviderEnvelope(parsed.data),
-    }).then((validated) => ({
+    }).then(async (validated) => ({
       provider: parsed.data.provider,
-      ...validated.normalizedConfig,
+      ...(await resolveConfigSecretRefsForProbe({
+        db: input.db,
+        companyId: input.companyId,
+        config: validated.normalizedConfig,
+        schema:
+          validated.driver.configSchema &&
+          typeof validated.driver.configSchema === "object" &&
+          !Array.isArray(validated.driver.configSchema)
+            ? validated.driver.configSchema as Record<string, unknown>
+            : null,
+      })),
     }));
   }
 

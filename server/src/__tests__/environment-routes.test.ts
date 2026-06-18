@@ -1392,4 +1392,88 @@ describe("environment routes", () => {
     );
     expect(JSON.stringify(mockLogActivity.mock.calls[0][1].details)).not.toContain("unsaved-test-key");
   });
+
+  it("resolves selected secret refs before probing unsaved provider config", async () => {
+    mockSecretService.resolveSecretValue.mockResolvedValue("resolved-provider-key");
+    mockValidatePluginSandboxProviderConfig.mockResolvedValue({
+      normalizedConfig: {
+        template: "base",
+        apiKey: "11111111-1111-1111-1111-111111111111",
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+      pluginId: "plugin-secure",
+      pluginKey: "acme.secure-sandbox-provider",
+      driver: {
+        driverKey: "secure-plugin",
+        kind: "sandbox_provider",
+        displayName: "Secure Sandbox",
+        configSchema: {
+          type: "object",
+          properties: {
+            template: { type: "string" },
+            apiKey: { type: "string", format: "secret-ref" },
+            timeoutMs: { type: "number" },
+            reuseLease: { type: "boolean" },
+          },
+        },
+      },
+    });
+    mockProbeEnvironment.mockResolvedValue({
+      ok: true,
+      driver: "sandbox",
+      summary: "Secure sandbox provider is ready.",
+      details: { provider: "secure-plugin" },
+    });
+    const pluginWorkerManager = {};
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+      runId: "run-1",
+    }, { pluginWorkerManager });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/environments/probe-config")
+      .send({
+        name: "Draft Secure Sandbox",
+        driver: "sandbox",
+        config: {
+          provider: "secure-plugin",
+          template: "base",
+          apiKey: "11111111-1111-1111-1111-111111111111",
+          timeoutMs: 300000,
+          reuseLease: true,
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockEnvironmentService.create).not.toHaveBeenCalled();
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockSecretService.resolveSecretValue).toHaveBeenCalledWith(
+      "company-1",
+      "11111111-1111-1111-1111-111111111111",
+      "latest",
+    );
+    expect(mockProbeEnvironment).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        id: "unsaved",
+        driver: "sandbox",
+        config: expect.objectContaining({
+          apiKey: "resolved-provider-key",
+        }),
+      }),
+      expect.objectContaining({
+        pluginWorkerManager,
+        resolvedConfig: expect.objectContaining({
+          driver: "sandbox",
+          config: expect.objectContaining({
+            apiKey: "resolved-provider-key",
+          }),
+        }),
+      }),
+    );
+    expect(JSON.stringify(mockLogActivity.mock.calls[0][1].details)).not.toContain("resolved-provider-key");
+  });
 });
