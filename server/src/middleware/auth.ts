@@ -9,6 +9,7 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
+import { isSafeMethod, requestHasTrustedBoardOrigin } from "./board-origin.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -22,8 +23,16 @@ interface ActorMiddlewareOptions {
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
-    req.actor =
-      opts.deploymentMode === "local_trusted"
+    if (opts.deploymentMode === "local_trusted") {
+      // The board UI runs in a real browser at a known host/port, so its
+      // mutating requests always carry a matching Origin or Referer.
+      // A local agent shelling out via raw curl with no Bearer token also
+      // has no Origin/Referer — without this gate it would be implicitly
+      // promoted to the board actor (the RES-1295 impersonation hole).
+      // Safe methods still resolve as the board so read-only browse keeps
+      // working from any local tool. See RES-1298 / RES-1297 for context.
+      const browserOriginated = isSafeMethod(req.method) || requestHasTrustedBoardOrigin(req);
+      req.actor = browserOriginated
         ? {
             type: "board",
             userId: "local-board",
@@ -33,6 +42,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             source: "local_implicit",
           }
         : { type: "none", source: "none" };
+    } else {
+      req.actor = { type: "none", source: "none" };
+    }
 
     const runIdHeader = req.header("x-paperclip-run-id");
 

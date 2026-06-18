@@ -432,6 +432,22 @@ GET /api/companies/{companyId}/issues?q=dockerfile
 
 Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
 
+## Auth Regression Pitfall: Local-Implicit Over-Block
+
+**When:** Late-stage security middleware additions to prevent agent curl impersonation.
+
+**The trap:** Auth guards added post-deploy to restrict mutations on `/api/issues`, `/api/agents`, `/api/companies` may reject `local_implicit` actor (board user in local_trusted mode) along with impersonating agents, locking out legitimate board access.
+
+**Why it happens:** Both board user and impersonating agent have `source: "local_implicit"` when no Bearer token is sent. Middleware cannot distinguish between them.
+
+**Recovery:** See `references/auth-regression-local-implicit-overblock.md` — includes diagnosis, threat model gap, two recovery paths (revert WIP vs. fix design), and lessons on security guard validation.
+
+**Prevention:** Before adding auth middleware that rejects trusted actors:
+1. Validate against actual attacker scenarios (not just "bad actors might exist")
+2. Verify legitimate user flow still works (board access must not break)
+3. Ensure scope is narrow (only block the attack, not collateral)
+4. Add escape hatch or dry-run against real traffic first
+
 ## Full Reference
 
 For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`
