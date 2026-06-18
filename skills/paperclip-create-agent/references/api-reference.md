@@ -41,7 +41,6 @@ Request body matches agent create shape:
   "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
   "adapterType": "claude_local",
   "adapterConfig": {
-    "cwd": "/absolute/path",
     "model": "claude-sonnet-4-5-20250929"
   },
   "instructionsBundle": {
@@ -85,6 +84,8 @@ If company setting disables required approval, `approval` is `null` and the agen
 
 `desiredSkills` accepts company skill ids, canonical keys, or a unique slug. The server resolves and stores canonical company skill keys.
 Leave timer heartbeats disabled by default. Only set `runtimeConfig.heartbeat.enabled=true` and include an `intervalSec` when the role truly needs scheduled recurring work or the user explicitly requested it.
+
+Do not include `adapterConfig.cwd` in new hire payloads. It is a deprecated legacy fallback for local adapters (`claude_local`, `codex_local`, `cursor_local`, `gemini_local`, `opencode_local`, `pi_local`, `acpx_local`); Paperclip leases an execution workspace per issue. The hire and direct-create endpoints drop this field for new agents (logged as `agent.hire_dropped_deprecated_field` / `agent.create_dropped_deprecated_field` for audit). Existing agents that still carry `cwd` are preserved by the PATCH path.
 
 ## Approval Lifecycle
 

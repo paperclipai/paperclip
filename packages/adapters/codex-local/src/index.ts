@@ -70,7 +70,7 @@ export const agentConfigurationDoc = `# codex_local agent configuration
 Adapter: codex_local
 
 Core fields:
-- cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
+- cwd (string, optional, **deprecated**): legacy working directory fallback for the agent process. New agents must not set this — Paperclip leases an execution workspace per issue. The hire and direct-create endpoints drop this field for new agents (logged for audit); existing agents that still carry it are preserved.
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
 - modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
