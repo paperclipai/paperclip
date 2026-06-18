@@ -36,4 +36,6 @@ export interface ActivityPanelProps {
   agents: Agent[];
   connectionId: string;
   appName: string;
+  /** Maps a user principalId → display name, for "tested as" attribution on Test-tab calls. */
+  userLabelById?: Map<string, string>;
 }

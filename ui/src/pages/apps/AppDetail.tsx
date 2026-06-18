@@ -19,6 +19,9 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
+import { accessApi } from "@/api/access";
+import { authApi } from "@/api/auth";
+import { buildCompanyUserLabelMap } from "@/lib/company-members";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -86,6 +89,17 @@ export function AppDetail() {
     queryFn: () => toolsApi.listConnectionActivity(connectionId, 20),
     enabled: !!connectionId && activeTab === "activity",
   });
+  // Resolve who ran Test-tab calls ("<User> tested as <Agent>") in the Activity feed (PAP-11415).
+  const userDirectoryQuery = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId ?? "__none__"),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId && activeTab === "activity",
+  });
+  const sessionQuery = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    enabled: activeTab === "activity",
+  });
 
   const connection = connectionQuery.data;
   const appName = connection ? humanizeConnectionDisplayName(connection) : "App";
@@ -113,6 +127,15 @@ export function AppDetail() {
   );
   const access = useMemo(() => accessFrom(profile), [profile]);
   const agents = agentsQuery.data ?? [];
+  const userLabelById = useMemo(() => {
+    const labels = buildCompanyUserLabelMap(userDirectoryQuery.data?.users);
+    const session = sessionQuery.data;
+    // Prefer the viewer's own profile name for their own test runs ("Dotta", not a fallback).
+    if (session?.user?.id && session.user.name?.trim()) {
+      labels.set(session.user.id, session.user.name.trim());
+    }
+    return labels;
+  }, [userDirectoryQuery.data, sessionQuery.data]);
   const logoEntry = useMemo(
     () => galleryEntryFor(galleryQuery.data?.apps ?? [], connection),
     [galleryQuery.data, connection],
@@ -372,6 +395,7 @@ export function AppDetail() {
           agents={agents}
           connectionId={connectionId}
           appName={appName}
+          userLabelById={userLabelById}
         />
       )}
       {activeTab === "advanced" && (

@@ -36,6 +36,7 @@ function RecentActivity({
   agents,
   connectionId,
   appName,
+  userLabelById,
 }: ActivityPanelProps) {
   const nameById = useMemo(() => new Map(agents.map((a) => [a.id, a.name])), [agents]);
 
@@ -47,6 +48,7 @@ function RecentActivity({
           event,
           nameById.get(event.agentId ?? "") ?? null,
           event.actionRequestId ? actionRequests[event.actionRequestId] : undefined,
+          isTestEvent(event) ? resolveActorLabel(event.actorId, userLabelById) : null,
         );
         return {
           key: `call:${event.id}`,
@@ -69,7 +71,7 @@ function RecentActivity({
     return [...callRows, ...lifecycleRows].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
-  }, [events, lifecycleEvents, issues, actionRequests, nameById, connectionId, appName]);
+  }, [events, lifecycleEvents, issues, actionRequests, nameById, connectionId, appName, userLabelById]);
 
   return (
     <section className="space-y-2">
@@ -133,12 +135,39 @@ const HUMANIZED_EVENTS = new Set<ToolCallEvent["eventType"]>([
   "approval_resolved",
 ]);
 
-function humanizeEvent(
+/**
+ * A row is a prosumer Test-tab call (vs. a real heartbeat-driven agent run) when
+ * the gateway tagged the audit event `metadata.source === "test"` (PAP-11349).
+ */
+export function isTestEvent(event: ToolCallEvent): boolean {
+  return (event.metadata as { source?: unknown } | null)?.source === "test";
+}
+
+/** Display name for the human who ran a Test-tab call, from the company directory. */
+export function resolveActorLabel(
+  actorId: string | null,
+  userLabelById: Map<string, string> | undefined,
+): string {
+  if (actorId) {
+    const label = userLabelById?.get(actorId);
+    if (label) return label;
+    if (actorId === "local-board") return "Board";
+  }
+  return "Someone";
+}
+
+export function humanizeEvent(
   event: ToolCallEvent,
   agentName: string | null,
   actionRequest?: ActivityPanelProps["actionRequests"][string],
+  /** When set, this row is a Test-tab call run by the named user; prefix accordingly. */
+  testRunnerLabel?: string | null,
 ): { primary: string } {
-  const who = agentName ?? "An agent";
+  // For Test-tab calls, surface "<User> tested as <Agent>" so prosumer test runs are
+  // distinguishable from real heartbeat agent activity in the audit trail (PAP-11415).
+  const who = testRunnerLabel
+    ? `${testRunnerLabel} tested as ${agentName ?? "an agent"}`
+    : agentName ?? "An agent";
   // The raw gateway tool name is prefixed (e.g. `mcp.app-gallery-link-…:kv-set`);
   // humanize it to "Kv Set" to match the cross-app Activity view (PAP-11105).
   const action = event.toolName ? humanizeConnectionDisplayName(event.toolName) : "an action";
@@ -152,7 +181,11 @@ function humanizeEvent(
     case "call_failed":
       return { primary: `${action} didn't work for ${lower(who)}` };
     case "call_denied":
-      return { primary: `Blocked ${action} - it isn't turned on` };
+      return {
+        primary: testRunnerLabel
+          ? `${who} - ${action} is turned off`
+          : `Blocked ${action} - it isn't turned on`,
+      };
     case "approval_requested":
       return { primary: `${who} asked before running ${action}` };
     case "approval_resolved":
