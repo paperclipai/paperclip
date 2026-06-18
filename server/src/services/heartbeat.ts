@@ -7200,7 +7200,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const nextStatus =
       runningCount > 0
         ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
+        : outcome === "succeeded" || outcome === "cancelled" || outcome === "timed_out"
           ? "idle"
           : "error";
 
@@ -9423,7 +9423,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      // A terminal Claude SDK result (type=result, any is_error) means Claude itself
+      // completed — the adapter infrastructure did not crash. Only "adapter_failed"
+      // (unrecognised process crash, manifest mismatch, etc.) should pin the agent in
+      // error so new wakeups are blocked. All other failed outcomes return to idle.
+      const agentFinalizeOutcome =
+        outcome === "failed" && adapterResult.errorCode !== "adapter_failed"
+          ? "succeeded"
+          : outcome;
+      await finalizeAgentStatus(agent.id, agentFinalizeOutcome);
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
