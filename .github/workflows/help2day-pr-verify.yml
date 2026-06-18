@@ -1,0 +1,94 @@
+name: Help2day PR Verify
+
+on:
+  pull_request:
+    branches:
+      - help2day/main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: help2day-pr-verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Help2day PR Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck shared package
+        run: pnpm --filter @paperclipai/shared typecheck
+
+      - name: Typecheck db package
+        run: pnpm --filter @paperclipai/db typecheck
+
+      - name: Check diff whitespace
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --check "$BASE_SHA...$HEAD_SHA"
+          else
+            git diff --check
+          fi
+
+      - name: Fail if conflict markers exist in PR diff
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          start_marker="$(printf '<%.0s' {1..7})"
+          middle_marker="$(printf '=%.0s' {1..7})"
+          end_marker="$(printf '>%.0s' {1..7})"
+          if git diff --unified=0 "$BASE_SHA...$HEAD_SHA" | awk '
+            index($0, "+" start_marker) == 1 || $0 == "+" middle_marker || index($0, "+" end_marker) == 1 {
+              print
+              found = 1
+            }
+            END { exit found ? 0 : 1 }
+          ' start_marker="$start_marker" middle_marker="$middle_marker" end_marker="$end_marker"; then
+            echo "Conflict markers found in PR diff."
+            exit 1
+          fi
+
+      - name: Print PR change summary
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "Changed files: $(git diff --name-only "$BASE_SHA...$HEAD_SHA" | wc -l)"
+          echo "Commits: $(git rev-list --count "$BASE_SHA..$HEAD_SHA")"
+
+      - name: Print dispatch change summary
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "Changed files: 0"
+          echo "Commits: 1"
