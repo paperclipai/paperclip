@@ -16,11 +16,13 @@ const buildTargets = [
   {
     name: "@paperclipai/shared",
     output: path.join(rootDir, "packages/shared/dist/index.js"),
+    sourceDir: path.join(rootDir, "packages/shared/src"),
     tsconfig: path.join(rootDir, "packages/shared/tsconfig.json"),
   },
   {
     name: "@paperclipai/plugin-sdk",
     output: path.join(rootDir, "packages/plugins/sdk/dist/index.js"),
+    sourceDir: path.join(rootDir, "packages/plugins/sdk/src"),
     tsconfig: path.join(rootDir, "packages/plugins/sdk/tsconfig.json"),
   },
 ];
@@ -29,8 +31,33 @@ if (!fs.existsSync(tscCliPath)) {
   throw new Error(`TypeScript CLI not found at ${tscCliPath}`);
 }
 
-function allOutputsExist() {
-  return buildTargets.every((target) => fs.existsSync(target.output));
+function newestSourceMtimeMs(sourceDir) {
+  let newest = 0;
+
+  function visit(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(entryPath);
+        continue;
+      }
+      if (!/\.(tsx?|json)$/.test(entry.name)) continue;
+      newest = Math.max(newest, fs.statSync(entryPath).mtimeMs);
+    }
+  }
+
+  visit(sourceDir);
+  return newest;
+}
+
+function needsBuild(target) {
+  if (!fs.existsSync(target.output)) return true;
+  const outputMtime = fs.statSync(target.output).mtimeMs;
+  return newestSourceMtimeMs(target.sourceDir) > outputMtime;
+}
+
+function allOutputsCurrent() {
+  return buildTargets.every((target) => !needsBuild(target));
 }
 
 function sleep(ms) {
@@ -43,7 +70,7 @@ function waitForLockRelease() {
     if (!fs.existsSync(lockDir)) {
       return;
     }
-    if (allOutputsExist()) {
+    if (allOutputsCurrent()) {
       return;
     }
     sleep(lockPollMs);
@@ -52,7 +79,7 @@ function waitForLockRelease() {
   throw new Error(`Timed out waiting for plugin build dependency lock at ${lockDir}`);
 }
 
-if (allOutputsExist()) {
+if (allOutputsCurrent()) {
   process.exit(0);
 }
 
@@ -67,7 +94,7 @@ try {
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
       waitForLockRelease();
-      if (!allOutputsExist()) {
+      if (!allOutputsCurrent()) {
         throw new Error("Plugin build dependency lock released before all outputs were created");
       }
       process.exit(0);
@@ -76,7 +103,7 @@ try {
   }
 
   for (const target of buildTargets) {
-    if (fs.existsSync(target.output)) {
+    if (!needsBuild(target)) {
       continue;
     }
 

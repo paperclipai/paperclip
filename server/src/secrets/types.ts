@@ -1,4 +1,8 @@
-import type { SecretProvider, SecretProviderDescriptor } from "@paperclipai/shared";
+import type {
+  SecretProvider,
+  SecretProviderConfigDiscoveryPreviewResult,
+  SecretProviderDescriptor,
+} from "@paperclipai/shared";
 import type { DeploymentMode } from "@paperclipai/shared";
 
 export interface StoredSecretVersionMaterial {
@@ -152,6 +156,13 @@ export interface SecretProviderModule {
     nextToken?: string | null;
     pageSize?: number;
   }): Promise<RemoteSecretListResult>;
+  discoverProviderConfigs?(input: {
+    companyId: string;
+    providerConfig: SecretProviderVaultRuntimeConfig;
+    query?: string | null;
+    nextToken?: string | null;
+    pageSize?: number;
+  }): Promise<SecretProviderConfigDiscoveryPreviewResult>;
   resolveVersion(input: {
     material: StoredSecretVersionMaterial;
     externalRef: string | null;

@@ -35,6 +35,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/grok-local",
+    "name": "@paperclipai/adapter-grok-local",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true
@@ -55,6 +60,16 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/skills-catalog",
+    "name": "@paperclipai/skills-catalog",
+    "publishFromCi": false
+  },
+  {
+    "dir": "packages/teams-catalog",
+    "name": "@paperclipai/teams-catalog",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/db",
     "name": "@paperclipai/db",
     "publishFromCi": true
@@ -63,6 +78,11 @@
     "dir": "packages/plugins/sdk",
     "name": "@paperclipai/plugin-sdk",
     "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/plugin-workspace-diff",
+    "name": "@paperclipai/plugin-workspace-diff",
+    "publishFromCi": false
   },
   {
     "dir": "server",
@@ -103,6 +123,21 @@
     "dir": "packages/plugins/sandbox-providers/e2b",
     "name": "@paperclipai/plugin-e2b",
     "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/modal",
+    "name": "@paperclipai/plugin-modal",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/kubernetes",
+    "name": "@paperclipai/plugin-kubernetes",
+    "publishFromCi": false
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/novita",
+    "name": "@paperclipai/plugin-novita-sandbox",
+    "publishFromCi": false
   },
   {
     "dir": "ui",

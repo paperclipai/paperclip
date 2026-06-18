@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, createRef, forwardRef, useImperativeHandle, useState } from "react";
+import { flushSync } from "react-dom";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -14,8 +15,6 @@ import {
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
 } from "./IssueChatThread";
-import { ToastProvider } from "../context/ToastContext";
-import { ToastViewport } from "./ToastViewport";
 import type {
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
@@ -32,6 +31,14 @@ import type {
   IssueChatLinkedRun,
   IssueChatTranscriptEntry,
 } from "../lib/issue-chat-messages";
+
+function flushAct<T>(callback: () => T): T {
+  let result: T | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  return result as T;
+}
 
 function hasSmoothScrollBehavior(arg: unknown) {
   return typeof arg === "object"
@@ -346,6 +353,39 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders footer content inside the thread viewport before the bottom anchor", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+            footer={<div>Sibling footer</div>}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const viewport = container.querySelector('[data-testid="thread-viewport"]');
+    const footer = container.querySelector('[data-testid="issue-chat-thread-footer"]');
+    expect(viewport).not.toBeNull();
+    expect(footer).not.toBeNull();
+    expect(footer?.textContent).toBe("Sibling footer");
+    expect(footer?.parentElement).toBe(viewport);
+    expect(footer?.nextElementSibling?.textContent).toBe("");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders the composer in planning mode when the issue is in planning mode", () => {
     const root = createRoot(container);
 
@@ -376,14 +416,14 @@ describe("IssueChatThread", () => {
     );
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute("data-pending-work-mode")).toBe("planning");
-    expect(toggle?.textContent).toContain("Planning");
+    expect(toggle?.textContent).toContain("Plan mode");
 
     act(() => {
       root.unmount();
     });
   });
 
-  it("hides the planning chip on a standard issue and exposes the toggle through the menu", () => {
+  it("shows a persistent neutral mode chip on a standard issue and toggles to planning through its menu", () => {
     const root = createRoot(container);
     const onWorkModeChange = vi.fn();
 
@@ -404,40 +444,37 @@ describe("IssueChatThread", () => {
       );
     });
 
-    expect(
-      container.querySelector('[data-testid="issue-chat-composer-work-mode-toggle"]'),
-    ).toBeNull();
+    // The mode chip is always present (mockup rev 5) — neutral "Agent mode" here.
+    const chip = container.querySelector(
+      '[data-testid="issue-chat-composer-work-mode-toggle"]',
+    ) as HTMLButtonElement | null;
+    expect(chip).not.toBeNull();
+    expect(chip?.getAttribute("data-pending-work-mode")).toBe("standard");
+    expect(chip?.textContent).toContain("Agent mode");
+
     const composer = container.querySelector('[data-testid="issue-chat-composer"]');
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
     expect(composer?.className).not.toContain("amber");
 
-    const menuTrigger = container.querySelector(
-      '[data-testid="issue-chat-composer-work-mode-menu"]',
-    ) as HTMLButtonElement | null;
-    expect(menuTrigger).not.toBeNull();
     act(() => {
-      menuTrigger?.click();
+      chip?.click();
     });
 
     const menuItem = document.querySelector(
       '[data-testid="issue-chat-composer-work-mode-menu-toggle"]',
     ) as HTMLButtonElement | null;
     expect(menuItem).not.toBeNull();
-    expect(menuItem?.textContent).toContain("Switch to planning");
+    expect(menuItem?.textContent).toContain("Switch to plan mode");
 
     act(() => {
       menuItem?.click();
     });
 
+    // Local pending switch only — does not mutate the issue until submit.
     expect(onWorkModeChange).not.toHaveBeenCalled();
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("planning");
     expect(composer?.className).toContain("amber");
-
-    const visibleChip = container.querySelector(
-      '[data-testid="issue-chat-composer-work-mode-toggle"]',
-    );
-    expect(visibleChip).not.toBeNull();
-    expect(visibleChip?.textContent).toContain("Planning");
+    expect(chip?.textContent).toContain("Plan mode");
 
     act(() => {
       root.unmount();
@@ -742,6 +779,14 @@ describe("IssueChatThread", () => {
     ) as HTMLButtonElement | undefined;
     expect(jump).toBeDefined();
 
+    // Flush the on-load auto-scroll-to-latest (PAP-97) so this test measures
+    // only the jump-to-latest interaction, not the initial mount scroll.
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    elementScrollToMock.mockClear();
+    scrollIntoViewMock.mockClear();
+
     act(() => {
       jump?.click();
     });
@@ -762,6 +807,65 @@ describe("IssueChatThread", () => {
       root.unmount();
     });
     scrollHost.remove();
+  });
+
+  // PAP-97: on first thread load we land on the latest comment instead of the
+  // top of the thread (board rev-2 feedback for PAP-95). No deep-link hash and
+  // no user interaction — the scroll must happen purely from mounting.
+  it("auto-scrolls to the latest comment on initial load (PAP-97)", () => {
+    vi.useFakeTimers();
+    container.remove();
+    const scrollHost = document.createElement("main");
+    scrollHost.id = "main-content";
+    scrollHost.style.overflowY = "auto";
+    scrollHost.style.overflow = "auto";
+    scrollHost.style.height = "640px";
+    document.body.appendChild(scrollHost);
+    container = document.createElement("div");
+    scrollHost.appendChild(container);
+
+    const elementScrollToMock = vi.fn();
+    scrollHost.scrollTo = elementScrollToMock as unknown as typeof scrollHost.scrollTo;
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    const scrollIntoViewMock = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoViewMock as unknown as typeof Element.prototype.scrollIntoView;
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // No jump click — let the mount auto-scroll's rAF + settle ticks run.
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    const scrolledToLatest =
+      elementScrollToMock.mock.calls.some(([arg]) => hasSmoothScrollBehavior(arg))
+      || scrollIntoViewMock.mock.calls.length > 0;
+    expect(scrolledToLatest).toBe(true);
+
+    Element.prototype.scrollIntoView = originalScrollIntoView;
+    act(() => {
+      root.unmount();
+    });
+    scrollHost.remove();
+    vi.useRealTimers();
   });
 
   // Regression for PAP-2672: when the merged feed ends with a non-comment row
@@ -1225,6 +1329,216 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders a genuine agent comment in the conference-room neutral bubble (PAP-97 rev 7)", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-agent-bubble",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: "agent-1",
+              authorUserId: null,
+              body: "Here is my agent reply.",
+              authorType: "agent" as const,
+              presentation: null,
+              metadata: null,
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // Conference-room canonical agent bubble: bg-card + border + tail corner.
+    const bubble = Array.from(container.querySelectorAll("div")).find(
+      (el) =>
+        el.className.includes("bg-card")
+        && el.className.includes("border-border")
+        && el.className.includes("[border-radius:14px_14px_14px_4px]"),
+    );
+    expect(bubble).toBeDefined();
+    expect(bubble?.textContent).toContain("Here is my agent reply.");
+    // Neutral, not the human liveness-blue bubble.
+    expect(bubble?.className).not.toContain("bg-[#2563EB]");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("confirms and invokes delete only for the current user's normal comments", async () => {
+    const root = createRoot(container);
+    const onDeleteComment = vi.fn(async () => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "comment-owned",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-board",
+                body: "Delete me",
+                authorType: "user",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:00:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+              },
+              {
+                id: "comment-other",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-other",
+                body: "Do not delete",
+                authorType: "user",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:01:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+              },
+            ]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onDeleteComment={onDeleteComment}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const deleteButtons = Array.from(container.querySelectorAll("button[aria-label='Delete comment']"));
+    expect(deleteButtons).toHaveLength(1);
+
+    await act(async () => {
+      deleteButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain("Delete comment?");
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent === "Delete comment");
+    expect(confirmButton).toBeTruthy();
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onDeleteComment).toHaveBeenCalledWith("comment-owned");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders deleted comments as tombstones without the original body", () => {
+    const root = createRoot(container);
+
+    flushAct(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-deleted",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              body: "Sensitive deleted body",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              deletedAt: new Date("2026-04-06T12:05:00.000Z"),
+              deletedByType: "user",
+              deletedByUserId: "user-board",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+            }]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onDeleteComment={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("You deleted this comment");
+    expect(container.textContent).not.toContain("Sensitive deleted body");
+    expect(container.querySelector("button[aria-label='Delete comment']")).toBeNull();
+    expect(container.querySelector("button[aria-label='Copy message']")).toBeNull();
+
+    flushAct(() => {
+      root.unmount();
+    });
+  });
+
+  it("clears a deleted comment deep-link hash instead of highlighting it", () => {
+    const root = createRoot(container);
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+
+    flushAct(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/issues/PAP-1#comment-comment-deleted"]}>
+          <IssueChatThread
+            comments={[{
+              id: "comment-deleted",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              body: "Sensitive deleted body",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              deletedAt: new Date("2026-04-06T12:05:00.000Z"),
+              deletedByType: "user",
+              deletedByUserId: "user-board",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+            }]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/issues/PAP-1");
+
+    replaceStateSpy.mockRestore();
+    flushAct(() => {
+      root.unmount();
+    });
+  });
+
   it("shows explicit follow-up badges and event copy", () => {
     const root = createRoot(container);
 
@@ -1302,7 +1616,7 @@ describe("IssueChatThread", () => {
       );
     });
 
-    expect(container.textContent).toContain("Work on this issue is blocked by the linked issue");
+    expect(container.textContent).toContain("Work on this task is blocked by the linked task");
     expect(container.textContent).toContain("Comments still wake the assignee for questions or triage");
     expect(container.textContent).toContain("PAP-1723");
     expect(container.textContent).toContain("QA the install flow");
@@ -1587,6 +1901,70 @@ describe("IssueChatThread", () => {
         kind: "ask_user_questions",
       }),
       [{ questionId: "scope", optionIds: ["phase-1"] }],
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("submits Other text for pending question interactions", async () => {
+    const root = createRoot(container);
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[createQuestionInteraction()]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const otherButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Other"),
+    );
+    expect(otherButton).toBeTruthy();
+
+    await act(async () => {
+      otherButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "Phase 1 plus docs");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Submit answers"),
+    );
+
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "interaction-question-1",
+        kind: "ask_user_questions",
+      }),
+      [{ questionId: "scope", optionIds: [], otherText: "Phase 1 plus docs" }],
     );
 
     act(() => {
@@ -1936,7 +2314,7 @@ describe("IssueChatThread", () => {
     expect(container.querySelector('[data-testid="issue-chat-composer-drop-overlay"]')).not.toBeNull();
     expect(container.textContent).toContain("Drop to upload");
     expect(container.textContent).toContain("Images insert into the reply");
-    expect(container.textContent).toContain("Other files are added to this issue");
+    expect(container.textContent).toContain("Other files are added to this task");
     expect(composer?.className).toContain("border-primary/45");
 
     act(() => {
@@ -1992,7 +2370,7 @@ describe("IssueChatThread", () => {
     const attachmentList = container.querySelector('[data-testid="issue-chat-composer-attachments"]');
     expect(attachmentList).not.toBeNull();
     expect(container.textContent).toContain("report.pdf");
-    expect(container.textContent).toContain("Attached to issue");
+    expect(container.textContent).toContain("Attached to task");
 
     await act(async () => {
       root.unmount();
@@ -2092,7 +2470,7 @@ describe("IssueChatThread", () => {
     expect(attachmentList).not.toBeNull();
     expect(attachmentList?.className).toContain("mb-3");
     expect(container.textContent).toContain("report.pdf");
-    expect(container.textContent).toContain("Attached to issue");
+    expect(container.textContent).toContain("Attached to task");
 
     await act(async () => {
       root.unmount();
@@ -2223,31 +2601,28 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("warns once before sending a reply with no assignee selected", async () => {
+  it("opens a warning dialog before sending a reply with no assignee selected and posts on Send anyway", async () => {
     const root = createRoot(container);
 
     act(() => {
       root.render(
-        <ToastProvider>
-          <ToastViewport />
-          <MemoryRouter>
-            <IssueChatThread
-              comments={[]}
-              linkedRuns={[]}
-              timelineEvents={[]}
-              liveRuns={[]}
-              onAdd={async () => {}}
-              enableReassign
-              reassignOptions={[
-                { id: "", label: "No assignee" },
-                { id: "agent:agent-1", label: "Agent 1" },
-              ]}
-              currentAssigneeValue=""
-              suggestedAssigneeValue=""
-              enableLiveTranscriptPolling={false}
-            />
-          </MemoryRouter>
-        </ToastProvider>,
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            enableReassign
+            reassignOptions={[
+              { id: "", label: "No assignee" },
+              { id: "agent:agent-1", label: "Agent 1" },
+            ]}
+            currentAssigneeValue=""
+            suggestedAssigneeValue=""
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
       );
     });
 
@@ -2272,10 +2647,18 @@ describe("IssueChatThread", () => {
     });
 
     expect(appendMock).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain("No assignee selected");
+    const dialog = document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain("No assignee selected");
+    expect(dialog?.textContent).toContain("no agent will be woken");
+
+    const sendAnyway = document.querySelector(
+      '[data-testid="issue-chat-no-assignee-send-anyway"]',
+    ) as HTMLButtonElement | null;
+    expect(sendAnyway).not.toBeNull();
 
     await act(async () => {
-      submitButton?.click();
+      sendAnyway?.click();
     });
 
     expect(appendMock).toHaveBeenCalledTimes(1);
@@ -2284,6 +2667,72 @@ describe("IssueChatThread", () => {
         content: [{ type: "text", text: "Reply without assignee" }],
       }),
     );
+    expect(document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]')).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not post when choosing Go back in the no-assignee warning dialog", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            enableReassign
+            reassignOptions={[
+              { id: "", label: "No assignee" },
+              { id: "agent:agent-1", label: "Agent 1" },
+            ]}
+            currentAssigneeValue=""
+            suggestedAssigneeValue=""
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Send",
+    ) as HTMLButtonElement | undefined;
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Reply without assignee");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]')).not.toBeNull();
+
+    const goBack = document.querySelector(
+      '[data-testid="issue-chat-no-assignee-go-back"]',
+    ) as HTMLButtonElement | null;
+    expect(goBack).not.toBeNull();
+
+    await act(async () => {
+      goBack?.click();
+    });
+
+    expect(appendMock).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]')).toBeNull();
+    // The composer keeps the draft so the user can pick an assignee and resend.
+    const editorAfter = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    expect(editorAfter?.value).toBe("Reply without assignee");
 
     act(() => {
       root.unmount();
@@ -2295,26 +2744,23 @@ describe("IssueChatThread", () => {
 
     act(() => {
       root.render(
-        <ToastProvider>
-          <ToastViewport />
-          <MemoryRouter>
-            <IssueChatThread
-              comments={[]}
-              linkedRuns={[]}
-              timelineEvents={[]}
-              liveRuns={[]}
-              onAdd={async () => {}}
-              enableReassign
-              reassignOptions={[
-                { id: "", label: "No assignee" },
-                { id: "agent:agent-1", label: "Agent 1" },
-              ]}
-              currentAssigneeValue="agent:agent-1"
-              suggestedAssigneeValue="agent:agent-1"
-              enableLiveTranscriptPolling={false}
-            />
-          </MemoryRouter>
-        </ToastProvider>,
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            enableReassign
+            reassignOptions={[
+              { id: "", label: "No assignee" },
+              { id: "agent:agent-1", label: "Agent 1" },
+            ]}
+            currentAssigneeValue="agent:agent-1"
+            suggestedAssigneeValue="agent:agent-1"
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
       );
     });
 

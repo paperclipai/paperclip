@@ -27,6 +27,7 @@ import type {
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
+  RequestCheckboxConfirmationInteraction,
   CreateIssueThreadInteraction,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
@@ -39,7 +40,14 @@ import type {
   RoutineRun,
   Agent,
   Goal,
+  HumanCompanyMembershipRole,
+  InviteJoinType,
+  MembershipStatus,
+  PermissionKey,
+  PrincipalPermissionGrant,
+  PrincipalType,
 } from "@paperclipai/shared";
+import type { PluginPerformActionContext } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports from @paperclipai/shared (plugin authors import from one place)
@@ -115,11 +123,18 @@ export type {
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
+  RequestCheckboxConfirmationInteraction,
   CreateIssueThreadInteraction,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
   Agent,
   Goal,
+  HumanCompanyMembershipRole,
+  InviteJoinType,
+  MembershipStatus,
+  PermissionKey,
+  PrincipalPermissionGrant,
+  PrincipalType,
 } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
@@ -344,12 +359,52 @@ export interface PluginWorkspace {
   name: string;
   /** Absolute filesystem path to the workspace directory. */
   path: string;
+  /** Repository URL, when known. */
+  repoUrl: string | null;
+  /** Checkout/ref requested for the workspace, when known. */
+  repoRef: string | null;
+  /** Default comparison ref for workspace tooling, when known. */
+  defaultRef: string | null;
   /** Whether this is the project's primary workspace. */
   isPrimary: boolean;
   /** ISO 8601 creation timestamp. */
   createdAt: string;
   /** ISO 8601 last-updated timestamp. */
   updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Execution workspace metadata (read-only via ctx.executionWorkspaces)
+// ---------------------------------------------------------------------------
+
+/**
+ * Plugin-safe execution workspace metadata provided by the host. This exposes
+ * the local/repository coordinates plugins need for workspace tooling without
+ * giving the SDK a host-owned diff engine.
+ */
+export interface PluginExecutionWorkspaceMetadata {
+  /** UUID primary key. */
+  id: string;
+  /** UUID of the owning company. */
+  companyId: string;
+  /** UUID of the parent project. */
+  projectId: string;
+  /** UUID of the backing project workspace, when present. */
+  projectWorkspaceId: string | null;
+  /** Absolute filesystem path to the workspace when locally realized. */
+  path: string | null;
+  /** Current working directory for local workspace tooling. */
+  cwd: string | null;
+  /** Repository URL, when known. */
+  repoUrl: string | null;
+  /** Base ref configured for the workspace, when known. */
+  baseRef: string | null;
+  /** Branch name configured for the workspace, when known. */
+  branchName: string | null;
+  /** Host provider type for the realized workspace. */
+  providerType: string | null;
+  /** Provider metadata already safe for plugin consumption. */
+  providerMetadata: Record<string, unknown> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +874,19 @@ export interface PluginProjectsClient {
 }
 
 /**
+ * `ctx.executionWorkspaces` — read execution workspace metadata.
+ *
+ * Requires `execution.workspaces.read`.
+ */
+export interface PluginExecutionWorkspacesClient {
+  /**
+   * Return plugin-safe metadata for an execution workspace. The host enforces
+   * company access before returning any workspace coordinates.
+   */
+  get(workspaceId: string, companyId: string): Promise<PluginExecutionWorkspaceMetadata | null>;
+}
+
+/**
  * `ctx.routines` — resolve and reconcile plugin-managed Paperclip routines.
  *
  * Requires `routines.managed` capability.
@@ -892,9 +960,12 @@ export interface PluginActionsClient {
    * Register a handler for a plugin-defined action key.
    *
    * @param key - Stable string identifier for this action (e.g. `"resync"`)
-   * @param handler - Async function that receives action params and returns a result
+   * @param handler - Async function that receives action params plus immutable host actor context and returns a result
    */
-  register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
+  register(
+    key: string,
+    handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
+  ): void;
 }
 
 /**
@@ -1252,7 +1323,7 @@ export interface PluginIssueSummariesClient {
  * - `issues.orchestration.read` for orchestration summaries
  * - `issue.comments.read` for `listComments`
  * - `issue.comments.create` for `createComment`
- * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, and `requestConfirmation`
+ * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, `requestConfirmation`, and `requestCheckboxConfirmation`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -1385,6 +1456,12 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<RequestConfirmationInteraction>;
+  requestCheckboxConfirmation(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "request_checkbox_confirmation" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<RequestCheckboxConfirmationInteraction>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */
@@ -1524,6 +1601,169 @@ export interface PluginGoalsClient {
 }
 
 // ---------------------------------------------------------------------------
+// Access and Authorization
+// ---------------------------------------------------------------------------
+
+export interface PluginAccessMember {
+  id: string;
+  companyId: string;
+  principalType: PrincipalType;
+  principalId: string;
+  status: MembershipStatus;
+  membershipRole: string | null;
+  grants: PrincipalPermissionGrant[];
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface PluginAccessInvite {
+  id: string;
+  companyId: string | null;
+  inviteType: string;
+  allowedJoinTypes: InviteJoinType;
+  defaultsPayload: Record<string, unknown> | null;
+  expiresAt: Date | string;
+  invitedByUserId: string | null;
+  revokedAt: Date | string | null;
+  acceptedAt: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  state: "active" | "revoked" | "accepted" | "expired";
+}
+
+export interface PluginAccessMembersClient {
+  list(input: { companyId: string; includeArchived?: boolean }): Promise<PluginAccessMember[]>;
+  get(memberId: string, companyId: string): Promise<PluginAccessMember | null>;
+  update(
+    memberId: string,
+    patch: {
+      membershipRole?: HumanCompanyMembershipRole | null;
+      status?: Extract<MembershipStatus, "pending" | "active" | "suspended">;
+    },
+    companyId: string,
+  ): Promise<PluginAccessMember>;
+}
+
+export interface PluginAccessInvitesClient {
+  list(input: {
+    companyId: string;
+    state?: PluginAccessInvite["state"];
+    limit?: number;
+    offset?: number;
+  }): Promise<{ invites: PluginAccessInvite[]; nextOffset: number | null }>;
+  create(input: {
+    companyId: string;
+    allowedJoinTypes?: InviteJoinType;
+    humanRole?: HumanCompanyMembershipRole | null;
+    defaultsPayload?: Record<string, unknown> | null;
+    agentMessage?: string | null;
+  }): Promise<PluginAccessInvite & { token: string }>;
+  revoke(inviteId: string, companyId: string): Promise<PluginAccessInvite>;
+}
+
+export interface PluginAccessClient {
+  /** Read and update company memberships. Requires `access.members.*`. */
+  members: PluginAccessMembersClient;
+  /** Read, create, and revoke company invites. Requires `access.invites.*`. */
+  invites: PluginAccessInvitesClient;
+}
+
+export interface PluginAuthorizationPolicySummary {
+  companyId: string;
+  permissionsMode: "simple";
+  memberCount: number;
+  activeMemberCount: number;
+  grantCount: number;
+  advancedPolicyAvailable: false;
+}
+
+export interface PluginAuthorizationPolicyRecord {
+  resourceType: "company" | "agent" | "project" | "issue";
+  resourceId: string;
+  companyId: string;
+  policy: Record<string, unknown> | null;
+  updatedAt: Date | string | null;
+}
+
+export interface PluginAssignmentPreviewInput {
+  companyId: string;
+  actor:
+    | { type: "board"; userId?: string | null; companyIds?: string[]; isInstanceAdmin?: boolean }
+    | { type: "agent"; agentId: string; companyId: string };
+  target: {
+    issueId?: string | null;
+    projectId?: string | null;
+    parentIssueId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    status?: string | null;
+  };
+}
+
+export interface PluginAuthorizationDecisionResult {
+  allowed: boolean;
+  action: string;
+  explanation: string;
+  reason: string;
+  grant?: {
+    principalType: PrincipalType;
+    principalId: string;
+    permissionKey: PermissionKey;
+    scope: Record<string, unknown> | null;
+  };
+}
+
+export interface PluginAuthorizationAuditEntry {
+  id: string;
+  companyId: string;
+  actorType: string;
+  actorId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  details: Record<string, unknown> | null;
+  createdAt: Date | string;
+}
+
+export interface PluginAuthorizationClient {
+  grants: {
+    list(input: { companyId: string; principalType?: PrincipalType; principalId?: string }): Promise<PrincipalPermissionGrant[]>;
+    set(input: {
+      companyId: string;
+      principalType: PrincipalType;
+      principalId: string;
+      grants: Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>;
+      grantedByUserId?: string | null;
+    }): Promise<PrincipalPermissionGrant[]>;
+  };
+  policies: {
+    summary(companyId: string): Promise<PluginAuthorizationPolicySummary>;
+    get(input: { companyId: string; resourceType: PluginAuthorizationPolicyRecord["resourceType"]; resourceId: string }): Promise<PluginAuthorizationPolicyRecord | null>;
+    update(input: {
+      companyId: string;
+      resourceType: PluginAuthorizationPolicyRecord["resourceType"];
+      resourceId: string;
+      policy: Record<string, unknown> | null;
+    }): Promise<PluginAuthorizationPolicyRecord>;
+    previewAssignment(input: PluginAssignmentPreviewInput): Promise<PluginAuthorizationDecisionResult>;
+    explainAssignment(input: PluginAssignmentPreviewInput): Promise<PluginAuthorizationDecisionResult>;
+  };
+  audit: {
+    search(input: {
+      companyId: string;
+      action?: string;
+      actorType?: string;
+      actorId?: string;
+      entityType?: string;
+      entityId?: string;
+      decision?: string;
+      limit?: number;
+      offset?: number;
+    }): Promise<PluginAuthorizationAuditEntry[]>;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Streaming (worker → UI push channel)
 // ---------------------------------------------------------------------------
 
@@ -1642,6 +1882,9 @@ export interface PluginContext {
   /** Read project and workspace metadata. Requires `projects.read` / `project.workspaces.read`. */
   projects: PluginProjectsClient;
 
+  /** Read execution workspace metadata. Requires `execution.workspaces.read`. */
+  executionWorkspaces: PluginExecutionWorkspacesClient;
+
   /** Resolve and reconcile plugin-managed routines. Requires `routines.managed`. */
   routines: PluginRoutinesClient;
 
@@ -1659,6 +1902,12 @@ export interface PluginContext {
 
   /** Read and mutate goals. Requires `goals.read` for reads; `goals.create` / `goals.update` for write ops. */
   goals: PluginGoalsClient;
+
+  /** Read and manage access memberships and invites. Requires `access.*` capabilities. */
+  access: PluginAccessClient;
+
+  /** Read and manage authorization grants, policy summaries, previews, and audit entries. Requires `authorization.*` capabilities. */
+  authorization: PluginAuthorizationClient;
 
   /** Register getData handlers for the plugin's UI components. */
   data: PluginDataClient;

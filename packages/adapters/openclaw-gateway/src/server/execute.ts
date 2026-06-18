@@ -243,7 +243,11 @@ function resolveAuthToken(config: Record<string, unknown>, headers: Record<strin
   const authHeader =
     headerMapGetIgnoreCase(headers, "x-openclaw-auth") ??
     headerMapGetIgnoreCase(headers, "authorization");
-  return tokenFromAuthHeader(authHeader);
+  const fromHeader = tokenFromAuthHeader(authHeader);
+  if (fromHeader) return fromHeader;
+
+  // Fallback to environment variable
+  return nonEmpty(process.env.OPENCLAW_TOKEN);
 }
 
 function isSensitiveLogKey(key: string): boolean {
@@ -1125,10 +1129,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
+  const configuredAgentId = nonEmpty(ctx.config.agentId);
   const sessionKey = resolveSessionKey({
     strategy: sessionKeyStrategy,
     configuredSessionKey,
-    agentId: nonEmpty(ctx.config.agentId),
+    agentId: configuredAgentId,
     runId: ctx.runId,
     issueId: wakePayload.issueId,
   });
@@ -1157,7 +1162,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   delete agentParams.text;
   delete agentParams.paperclip;
 
-  const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
   }
@@ -1201,6 +1205,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const autoPairOnFirstConnect = parseBoolean(ctx.config.autoPairOnFirstConnect, true);
   let autoPairAttempted = false;
   let latestResultPayload: unknown = null;
+  let retryCount = 0;
+  const MAX_RETRIES = 2;
 
   while (true) {
     const trackedRunIds = new Set<string>([ctx.runId]);
@@ -1488,6 +1494,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           "stderr",
           `[openclaw-gateway] auto-pairing failed: ${pairResult.reason}\n`,
         );
+      }
+
+      // Retry transient errors (connection refused, reset, socket hang up)
+      const isTransient =
+        !pairingRequired &&
+        (lower.includes("econnrefused") ||
+          lower.includes("econnreset") ||
+          lower.includes("socket hang up") ||
+          (timedOut && !lower.includes("agent.wait")));
+
+      if (isTransient && retryCount < MAX_RETRIES) {
+        retryCount++;
+        const backoffMs = retryCount * 2000;
+        await ctx.onLog(
+          "stdout",
+          `[openclaw-gateway] transient error, retry ${retryCount}/${MAX_RETRIES} after ${backoffMs}ms: ${message}\n`,
+        );
+        await new Promise((r) => setTimeout(r, backoffMs));
+        continue;
       }
 
       const detailedMessage = pairingRequired

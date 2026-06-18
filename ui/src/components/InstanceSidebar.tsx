@@ -1,16 +1,32 @@
 import { useQuery } from "@tanstack/react-query";
 import { Clock3, Cpu, FlaskConical, Puzzle, Settings, Shield, SlidersHorizontal, UserRoundPen } from "lucide-react";
+import type { PluginRecord } from "@paperclipai/shared";
 import { NavLink } from "@/lib/router";
 import { pluginsApi } from "@/api/plugins";
+import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { queryKeys } from "@/lib/queryKeys";
 import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { SidebarNavItem } from "./SidebarNavItem";
+
+/**
+ * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
+ * settings page — `PluginSettings` redirects them to the Environments page —
+ * so a sidebar entry would lead nowhere useful. Filter them out here. Plugins
+ * that mix a sandbox provider with other contributions still appear.
+ */
+function isSandboxProviderOnly(plugin: PluginRecord): boolean {
+  const drivers = plugin.manifestJson.environmentDrivers ?? [];
+  if (drivers.length === 0) return false;
+  return drivers.every((d) => d.kind === "sandbox_provider");
+}
 
 export function InstanceSidebar() {
   const { data: plugins } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
+
+  const sidebarPlugins = (plugins ?? []).filter((p) => !isSandboxProviderOnly(p));
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
@@ -23,19 +39,18 @@ export function InstanceSidebar() {
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/instance/settings/profile" label="Profile" icon={UserRoundPen} end />
-          <SidebarNavItem to="/instance/settings/general" label="General" icon={SlidersHorizontal} end />
-          <SidebarNavItem to="/instance/settings/access" label="Access" icon={Shield} end />
-          <SidebarNavItem to="/instance/settings/heartbeats" label="Heartbeats" icon={Clock3} end />
-          <SidebarNavItem to="/instance/settings/experimental" label="Experimental" icon={FlaskConical} />
-          <SidebarNavItem to="/instance/settings/plugins" label="Plugins" icon={Puzzle} />
-          <SidebarNavItem to="/instance/settings/adapters" label="Adapters" icon={Cpu} />
-          {(plugins ?? []).length > 0 ? (
+          <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`} label="Profile" icon={UserRoundPen} end />
+          <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/general`} label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`} label="Access" icon={Shield} end />
+          <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`} label="Heartbeats" icon={Clock3} end />
+          <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`} label="Experimental" icon={FlaskConical} />
+          <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`} label="Plugins" icon={Puzzle} />
+          {sidebarPlugins.length > 0 ? (
             <div className="ml-4 mt-1 flex flex-col gap-0.5 border-l border-border/70 pl-3">
-              {(plugins ?? []).map((plugin) => (
+              {sidebarPlugins.map((plugin) => (
                 <NavLink
                   key={plugin.id}
-                  to={`/instance/settings/plugins/${plugin.id}`}
+                  to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins/${plugin.id}`}
                   state={SIDEBAR_SCROLL_RESET_STATE}
                   className={({ isActive }) =>
                     [
@@ -51,6 +66,7 @@ export function InstanceSidebar() {
               ))}
             </div>
           ) : null}
+          <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`} label="Adapters" icon={Cpu} />
         </div>
       </nav>
     </aside>

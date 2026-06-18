@@ -9,6 +9,7 @@ import type {
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import {
   asBoolean,
+  asNumber,
   asString,
   asStringArray,
   parseObject,
@@ -72,6 +73,7 @@ export async function testEnvironment(
   const command = asString(config.command, "opencode");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
@@ -334,6 +336,14 @@ export async function testEnvironment(
       if (variant) args.push("--variant", variant);
       if (extraArgs.length > 0) args.push(...extraArgs);
 
+      // Sandbox bridges still add cold-start and transport overhead, but the
+      // standard-2 Cloudflare tier now probes quickly enough that 90s keeps
+      // useful headroom without letting slow hangs linger.
+      const helloProbeTimeoutSec = Math.max(
+        1,
+        asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 60),
+      );
+
       try {
         const probe = await runAdapterExecutionTargetProcess(
           runId,
@@ -343,7 +353,7 @@ export async function testEnvironment(
           {
             cwd: runtimeCwd,
             env: runtimeEnv,
-            timeoutSec: 60,
+            timeoutSec: helloProbeTimeoutSec,
             graceSec: 5,
             stdin: "Respond with hello.",
             onLog: async () => {},

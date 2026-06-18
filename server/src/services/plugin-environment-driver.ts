@@ -182,7 +182,7 @@ export async function probePluginEnvironmentDriver(input: {
     companyId: input.companyId,
     environmentId: input.environmentId,
     config: input.config.driverConfig,
-  });
+  }, 120_000);
 
   return {
     ok: result.ok,
@@ -227,7 +227,7 @@ export async function probePluginSandboxProviderDriver(input: {
     companyId: input.companyId,
     environmentId: input.environmentId,
     config: driverConfig,
-  });
+  }, 120_000);
 
   return {
     ok: result.ok,

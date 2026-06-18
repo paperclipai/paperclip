@@ -422,7 +422,7 @@ export function CompanyEnvironments() {
           <h1 className="text-lg font-semibold">Company Environments</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Define reusable execution targets for projects, issue workspaces, and remote-capable adapters.
+          Define reusable execution targets for projects, task workspaces, and remote-capable adapters.
         </p>
       </div>
 
@@ -709,7 +709,7 @@ export function CompanyEnvironments() {
             ) : null}
 
             {environmentForm.driver === "sandbox" ? (
-              <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-3">
                 <Field label="Provider" hint="Installed run-capable sandbox provider plugins appear here.">
                   <select
                     className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
@@ -736,26 +736,24 @@ export function CompanyEnvironments() {
                     ))}
                   </select>
                 </Field>
-                <div className="md:col-span-2 space-y-3">
-                  {selectedSandboxProvider?.description ? (
-                    <div className="text-xs text-muted-foreground">
-                      {selectedSandboxProvider.description}
-                    </div>
-                  ) : null}
-                  {selectedSandboxSchema ? (
-                    <JsonSchemaForm
-                      schema={selectedSandboxSchema as any}
-                      values={environmentForm.sandboxConfig}
-                      onChange={(values) =>
-                        setEnvironmentForm((current) => ({ ...current, sandboxConfig: values }))}
-                      errors={sandboxConfigErrors}
-                    />
-                  ) : (
-                    <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                      This provider does not declare additional configuration fields.
-                    </div>
-                  )}
-                </div>
+                {selectedSandboxProvider?.description ? (
+                  <div className="text-xs text-muted-foreground">
+                    {selectedSandboxProvider.description}
+                  </div>
+                ) : null}
+                {selectedSandboxSchema ? (
+                  <JsonSchemaForm
+                    schema={selectedSandboxSchema as any}
+                    values={environmentForm.sandboxConfig}
+                    onChange={(values) =>
+                      setEnvironmentForm((current) => ({ ...current, sandboxConfig: values }))}
+                    errors={sandboxConfigErrors}
+                  />
+                ) : (
+                  <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                    This provider does not declare additional configuration fields.
+                  </div>
+                )}
               </div>
             ) : null}
 

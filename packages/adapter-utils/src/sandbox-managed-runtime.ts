@@ -136,15 +136,39 @@ async function createTarballFromDirectory(input: {
   followSymlinks?: boolean;
 }): Promise<void> {
   const excludeArgs = ["._*", ...(input.exclude ?? [])].flatMap((entry) => ["--exclude", entry]);
+  // Archive the directory's top-level entries BY NAME rather than ".". Archiving
+  // "." embeds a "./" self-entry whose mode/mtime tar then tries to restore onto
+  // the extraction target directory; that chmod/utime fails with "Operation not
+  // permitted" when the target is a directory the extracting (non-root) user does
+  // not own, e.g. an emptyDir mount in a hardened/gVisor sandbox pod. Enumerating
+  // entries avoids the self-entry entirely and is portable across GNU/BSD/busybox
+  // tar (no GNU-only --no-overwrite-dir needed). --exclude still filters nested
+  // matches and any named entry it matches.
+  const entries = (await fs.readdir(input.localDir)).sort((left, right) => left.localeCompare(right));
+  if (entries.length === 0) {
+    // A workspace can legitimately be empty (blank-workspace agent runs). Write a
+    // valid empty tar archive (1024-byte all-zero EOF marker) so extraction is a
+    // clean no-op rather than tar refusing to create an empty archive.
+    await fs.writeFile(input.archivePath, Buffer.alloc(1024));
+    return;
+  }
   await execTar([
     "-c",
+    // Prevent macOS bsdtar from embedding LIBARCHIVE.xattr.* PAX extended
+    // headers for extended attributes (e.g. com.apple.provenance). GNU tar on
+    // Linux does not recognise these proprietary headers and fails extraction
+    // with "This does not look like a tar archive". COPYFILE_DISABLE=1 (set in
+    // execTar) already suppresses AppleDouble ._* sidecar files; --no-xattrs
+    // additionally suppresses the inline PAX xattr entries.
+    "--no-xattrs",
     ...(input.followSymlinks ? ["-h"] : []),
     "-f",
     input.archivePath,
     "-C",
     input.localDir,
     ...excludeArgs,
-    ".",
+    "--",
+    ...entries,
   ]);
 }
 

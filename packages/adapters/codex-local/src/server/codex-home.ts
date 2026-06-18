@@ -45,26 +45,55 @@ async function ensureParentDir(target: string): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true });
 }
 
-async function ensureSymlink(target: string, source: string): Promise<void> {
+async function isExpectedSymlink(target: string, source: string): Promise<boolean> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing?.isSymbolicLink()) return false;
+
+  const linkedPath = await fs.readlink(target).catch(() => null);
+  if (!linkedPath) return false;
+
+  return path.resolve(path.dirname(target), linkedPath) === path.resolve(source);
+}
+
+async function createExpectedSymlink(target: string, source: string): Promise<void> {
+  try {
+    await fs.symlink(source, target);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST" && await isExpectedSymlink(target, source)) return;
+    throw error;
+  }
+}
+
+export async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(source, target);
+    await createExpectedSymlink(target, source);
     return;
   }
 
   if (!existing.isSymbolicLink()) {
+    // A previous Paperclip version copied this file into the managed home
+    // instead of symlinking it. Codex refresh tokens rotate and are
+    // single-use, so a stale copy fails with refresh_token_reused on the next
+    // run (#5028). Replace the regular file with a symlink so the CLI follows
+    // the live source. Safe to delete: target is always under the
+    // Paperclip-managed company home, never the user's real ~/.codex.
+    // Directories are left alone — `fs.unlink` would throw EISDIR on Unix
+    // (and behave inconsistently on Windows). A directory at this path is not
+    // a Paperclip-written stale copy and warrants operator inspection rather
+    // than silent removal.
+    if (existing.isDirectory()) return;
+    await fs.unlink(target);
+    await createExpectedSymlink(target, source);
     return;
   }
 
-  const linkedPath = await fs.readlink(target).catch(() => null);
-  if (!linkedPath) return;
-
-  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) return;
+  if (await isExpectedSymlink(target, source)) return;
 
   await fs.unlink(target);
-  await fs.symlink(source, target);
+  await createExpectedSymlink(target, source);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
