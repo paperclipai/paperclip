@@ -1,0 +1,29 @@
+{
+  "name": "dotfun-claude-skills",
+  "description": "Internal DotFun Claude Code plugin marketplace for Paperclip skills.",
+  "version": "1.0.0",
+  "owner": {
+    "name": "DotFun"
+  },
+  "plugins": [
+    {
+      "name": "dotfun-claude-skills",
+      "displayName": "DotFun Claude Skills",
+      "source": "./plugins/dotfun-claude-skills",
+      "description": "DotFun and Paperclip Claude Code skills for Paperclip operations, company creation, and UI design work.",
+      "version": "1.0.0",
+      "author": {
+        "name": "DotFun"
+      },
+      "repository": "https://github.com/paperclipai/paperclip",
+      "license": "MIT",
+      "category": "productivity",
+      "tags": [
+        "dotfun",
+        "paperclip",
+        "skills",
+        "claude-code"
+      ]
+    }
+  ]
+}

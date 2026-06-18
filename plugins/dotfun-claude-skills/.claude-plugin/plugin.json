@@ -1,0 +1,17 @@
+{
+  "name": "dotfun-claude-skills",
+  "displayName": "DotFun Claude Skills",
+  "description": "DotFun and Paperclip Claude Code skills for Paperclip operations, company creation, and UI design work.",
+  "version": "1.0.0",
+  "author": {
+    "name": "DotFun"
+  },
+  "repository": "https://github.com/paperclipai/paperclip",
+  "license": "MIT",
+  "keywords": [
+    "dotfun",
+    "paperclip",
+    "skills",
+    "claude-code"
+  ]
+}
