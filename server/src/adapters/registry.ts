@@ -458,7 +458,8 @@ const hermesLocalAdapter: ServerAdapterModule = {
     const authGuardPrompt = [
       "Paperclip API safety rule:",
       "Use Authorization: Bearer $PAPERCLIP_API_KEY on every Paperclip API request.",
-      "Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every Paperclip API request that writes or mutates data, including comments and issue updates.",
+      "Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every agent-authenticated Paperclip API request that writes or mutates data, including comments and issue updates.",
+      "Never invent or reuse a run id; the header must match the current heartbeat run.",
       "Never use a board, browser, or local-board session for Paperclip API writes.",
     ].join("\n");
 

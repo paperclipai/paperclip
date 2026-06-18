@@ -76,7 +76,8 @@ function renderApiAccessNote(env: Record<string, string>): string {
   return [
     "Paperclip API access note:",
     "Use shell commands with curl to make Paperclip API requests when needed.",
-    "Include X-Paperclip-Run-Id on mutating requests.",
+    "Include X-Paperclip-Run-Id on mutating requests made with this agent credential.",
+    "Never invent or reuse a run id; the header must match the current heartbeat run.",
     "",
     "",
   ].join("\n");

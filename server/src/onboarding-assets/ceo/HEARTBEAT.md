@@ -80,6 +80,7 @@ Status quick guide:
 ## Rules
 
 - Always use the Paperclip skill for coordination.
-- Always include `X-Paperclip-Run-Id` header on mutating API calls.
+- For agent-authenticated mutating API calls, include `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID`.
+- Never invent or reuse a run id. Board/local-supervisor calls should omit `X-Paperclip-Run-Id`.
 - Comment in concise markdown: status line + bullets + links.
 - Self-assign via checkout only when explicitly @-mentioned.
