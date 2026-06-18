@@ -5,11 +5,14 @@ type SkillSummaryInput = {
   name?: string | null;
 };
 
+function isStaleYamlBlockScalarIndicator(raw: string) {
+  return /^[>|][+-]?$/.test(raw.trim());
+}
+
 export function sanitizeSkillSummaryText(raw: string | null | undefined): string | null {
-  const cleaned = (raw ?? "")
-    .replace(/^[\s>#*_\-`|]+/, "")
-    .trim();
-  return cleaned.length >= 3 ? cleaned : null;
+  const cleaned = (raw ?? "").trim();
+  if (isStaleYamlBlockScalarIndicator(cleaned)) return null;
+  return cleaned.length > 0 ? cleaned : null;
 }
 
 export function resolveSkillSummaryText(
@@ -21,8 +24,7 @@ export function resolveSkillSummaryText(
 
   if (options.fallbackKey) {
     const fallbackKey = skill.key?.trim();
-    const name = skill.name?.trim();
-    if (fallbackKey && fallbackKey !== name) return fallbackKey;
+    if (fallbackKey) return fallbackKey;
   }
 
   return null;

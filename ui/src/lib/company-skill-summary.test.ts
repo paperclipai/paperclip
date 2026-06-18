@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { resolveSkillSummaryText, sanitizeSkillSummaryText } from "./company-skill-summary";
 
 describe("company skill summary text", () => {
-  it("drops stray YAML block scalar markers", () => {
+  it("drops stray YAML block scalar markers without rewriting other markdown", () => {
     expect(sanitizeSkillSummaryText(">")).toBeNull();
     expect(sanitizeSkillSummaryText("|")).toBeNull();
-    expect(sanitizeSkillSummaryText("> Helpful summary")).toBe("Helpful summary");
+    expect(sanitizeSkillSummaryText("- Helpful summary")).toBe("- Helpful summary");
+    expect(sanitizeSkillSummaryText("# Helpful summary")).toBe("# Helpful summary");
   });
 
   it("falls back to the skill key when requested and the summary is empty", () => {
@@ -19,6 +20,6 @@ describe("company skill summary text", () => {
       name: "humanizer",
       key: "humanizer",
       description: "|",
-    }, { fallbackKey: true })).toBeNull();
+    }, { fallbackKey: true })).toBe("humanizer");
   });
 });
