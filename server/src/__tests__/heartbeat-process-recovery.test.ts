@@ -3543,4 +3543,76 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("clears agent error status to idle when subprocess exits 0 even if run was pre-terminated as failed by recovery", async () => {
+    // Scenario: process-loss recovery marks a run "failed" before the subprocess
+    // exits. The subprocess then exits cleanly (exit code 0). Without the fix,
+    // the latestRun.status === "failed" check causes outcome="failed" and the
+    // agent stays stuck in "error". With the fix, subprocessExitCode=0 overrides
+    // the transition to "idle".
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+
+    // Put the agent into "error" to simulate a previous failure.
+    await db
+      .update(agents)
+      .set({ status: "error", updatedAt: new Date() })
+      .where(eq(agents.id, agentId));
+
+    // Set the issue to "in_review" so that releaseIssueExecutionAndPromote does not
+    // enqueue a recovery run when the simulated run is marked failed. If the issue
+    // stays "in_progress", the recovery loop starts a new run immediately, putting
+    // the agent into "running" before finalizeAgentStatus fires — which prevents the
+    // exit-code-0 override from being reached.
+    await db
+      .update(issues)
+      .set({ status: "in_review", updatedAt: new Date() })
+      .where(eq(issues.id, issueId));
+
+    // Mock: simulate process-loss recovery pre-terminating the run as "failed"
+    // while the subprocess is still executing, then returning exit code 0.
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "failed",
+          error: "process_lost: pid not alive (simulated recovery)",
+          errorCode: "process_lost",
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, ctx.runId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Subprocess exited cleanly despite run pre-termination.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    // Wait for finalizeAgentStatus to fire after the run settles. executeRun sets
+    // agent.status = "running" before calling the adapter; finalizeAgentStatus
+    // resets it afterward. waitForHeartbeatIdle returns as soon as all runs are
+    // terminal, which can race with finalizeAgentStatus on the agent row.
+    const agent = await waitForValue(
+      () =>
+        db
+          .select({ status: agents.status })
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => {
+            const row = rows[0];
+            return row && row.status === "idle" ? row : null;
+          }),
+      5_000,
+    );
+    expect(agent?.status).toBe("idle");
+  });
 });

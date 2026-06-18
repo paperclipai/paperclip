@@ -82,6 +82,7 @@ import {
 } from "./heartbeat-run-summary.js";
 import {
   buildHeartbeatRunStopMetadata,
+  isAutocompactThrashError,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
@@ -612,7 +613,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
     issue.title,
     issue.description ?? "",
     ...comments.map((comment) => comment.body),
-  ]);
+  ]).filter((id) => isUuidLike(id));
   if (mentionedSkillIds.length === 0) return [];
 
   const skillRows = await input.db
@@ -4118,22 +4119,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const policy = parseSessionCompactionPolicy(agent);
-    if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
-      return {
-        rotate: false,
-        reason: null,
-        handoffMarkdown: null,
-        previousRunId: null,
-      };
-    }
+    const policyEnabled = policy.enabled && hasSessionCompactionThresholds(policy);
 
-    const fetchLimit = Math.max(policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0, 4);
+    // Always fetch at least 1 run: needed for the autocompact-thrash guard even when
+    // session compaction policy is disabled.
+    const fetchLimit = policyEnabled ? Math.max(policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0, 4) : 1;
     const runs = await db
       .select({
         id: heartbeatRuns.id,
         createdAt: heartbeatRuns.createdAt,
         usageJson: heartbeatRuns.usageJson,
         error: heartbeatRuns.error,
+        resultStopReason: sql<string | null>`${heartbeatRuns.resultJson} ->> 'stopReason'`.as("resultStopReason"),
         ...heartbeatRunListResultColumns,
       })
       .from(heartbeatRuns)
@@ -4151,6 +4148,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const latestRun = runs[0] ?? null;
+
+    // Autocompact-thrash guard: force session rotation regardless of compaction policy.
+    // Detects both the typed stopReason (runs after this fix) and legacy error strings
+    // (runs before this fix that were stored as adapter_failed).
+    if (
+      latestRun &&
+      (latestRun.resultStopReason === "autocompact_thrash" || isAutocompactThrashError(latestRun.error))
+    ) {
+      const thrashReason = "prior run hit autocompact context thrash; resuming would deterministically fail again";
+      const latestSummaryForThrash = summarizeHeartbeatRunListResultJson({
+        summary: latestRun.resultSummary,
+        result: latestRun.resultResult,
+        message: latestRun.resultMessage,
+        error: latestRun.resultError,
+        totalCostUsd: latestRun.resultTotalCostUsd,
+        costUsd: latestRun.resultCostUsd,
+        costUsdCamel: latestRun.resultCostUsdCamel,
+      });
+      const latestTextSummaryForThrash =
+        readNonEmptyString(latestSummaryForThrash?.summary) ??
+        readNonEmptyString(latestSummaryForThrash?.result) ??
+        readNonEmptyString(latestSummaryForThrash?.message) ??
+        readNonEmptyString(latestRun.error);
+      const thrashHandoffMarkdown = [
+        "Paperclip session handoff:",
+        `- Previous session: ${sessionId}`,
+        issueId ? `- Issue: ${issueId}` : "",
+        `- Rotation reason: ${thrashReason}`,
+        latestTextSummaryForThrash ? `- Last run summary: ${latestTextSummaryForThrash}` : "",
+        input.continuationSummaryBody
+          ? `- Issue continuation summary: ${input.continuationSummaryBody.slice(0, 1_500)}`
+          : "",
+        "Continue from the current task state. Rebuild only the minimum context you need.",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      return {
+        rotate: true,
+        reason: thrashReason,
+        handoffMarkdown: thrashHandoffMarkdown,
+        previousRunId: latestRun.id,
+      };
+    }
+
+    if (!policyEnabled) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: latestRun?.id ?? null,
+      };
+    }
+
     const oldestRun =
       policy.maxSessionAgeHours > 0
         ? await getOldestRunForSession(agent.id, sessionId)
@@ -7186,6 +7236,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    opts?: { subprocessExitCode?: number | null },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -7197,12 +7248,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
+    let nextStatus: "running" | "idle" | "error" =
       runningCount > 0
         ? "running"
         : outcome === "succeeded" || outcome === "cancelled"
           ? "idle"
           : "error";
+
+    // If the subprocess exited cleanly (exit code 0) but the run was pre-terminated
+    // as "failed" by process-loss recovery before the subprocess finished, still
+    // transition the agent from "error" to "idle" so the successful work is recognised.
+    // The gate on existing.status === "error" prevents this from masking a first-run
+    // failure where the agent was "running" when finalizeAgentStatus was called.
+    if (nextStatus === "error" && opts?.subprocessExitCode === 0 && existing.status === "error") {
+      nextStatus = "idle";
+    }
 
     const updated = await db
       .update(agents)
@@ -9423,7 +9483,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, { subprocessExitCode: adapterResult.exitCode ?? null });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",

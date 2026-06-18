@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildSkillMentionHref } from "@paperclipai/shared";
+import { buildSkillMentionHref, isUuidLike } from "@paperclipai/shared";
 import {
   LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
@@ -299,6 +299,15 @@ describe("extractMentionedSkillIdsFromSources", () => {
         `Use [/greploop](${legacyHref}) and [/prcheckloop](${validHref})`,
       ]),
     ).toEqual([validSkillId]);
+  });
+
+  it("lets non-UUID skill mention ids be filtered before the UUID query", () => {
+    const slugMentionIds = extractMentionedSkillIdsFromSources([
+      "Please use [plane-pc](skill://plane-pc) for task tracking.",
+    ]);
+
+    expect(slugMentionIds).toEqual(["plane-pc"]);
+    expect(slugMentionIds.filter((id) => isUuidLike(id))).toEqual([]);
   });
 });
 
