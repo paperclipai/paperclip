@@ -101,7 +101,7 @@ describe("resolvePaperclipDesiredSkillNames — role-scoped filtering", () => {
     }
   });
 
-  it("managerOnly matched via runtimeName fallback: pruned for IC", () => {
+  it("explicit managerOnly=false overrides runtimeName fallback for IC", () => {
     const entriesWithFallback = [
       ...entries.filter((e) => !e.managerOnly),
       {
@@ -109,6 +109,19 @@ describe("resolvePaperclipDesiredSkillNames — role-scoped filtering", () => {
         runtimeName: "office-hours",
         required: true,
         managerOnly: false,
+      },
+    ];
+    const result = resolvePaperclipDesiredSkillNames(config, entriesWithFallback, "engineer");
+    expect(result).toContain("custom-company/custom-ns/office-hours");
+  });
+
+  it("managerOnly matched via runtimeName fallback is pruned when flag is unset", () => {
+    const entriesWithFallback = [
+      ...entries.filter((e) => !e.managerOnly),
+      {
+        key: "custom-company/custom-ns/office-hours",
+        runtimeName: "office-hours",
+        required: true,
       },
     ];
     const result = resolvePaperclipDesiredSkillNames(config, entriesWithFallback, "engineer");
