@@ -149,16 +149,19 @@ type WorkflowGraph = {
 };
 
 const GRAPH_NODE_WIDTH = 260;
+const GRAPH_TOOL_WIDTH = 220;
 const GRAPH_HUMAN_WIDTH = 320;
 const GRAPH_DELIVERABLE_WIDTH = 220;
 const GRAPH_COLUMN_GAP = 120;
-const GRAPH_ROW_GAP = 28;
+const GRAPH_BRANCH_GAP = 44;
+const GRAPH_CHAIN_GAP = 18;
 const GRAPH_PADDING_X = 28;
 const GRAPH_PADDING_Y = 24;
 
 function estimateGraphNodeHeight(
   kind: GraphNodeKind,
   handoff?: WorkflowHandoff | undefined,
+  phaseKind?: WorkflowPhase["kind"],
 ) {
   if (kind === "start") return 76;
   if (kind === "terminal") return 92;
@@ -173,15 +176,38 @@ function estimateGraphNodeHeight(
         Math.ceil(settledLength / 120) * 14,
     );
   }
+  if (phaseKind === "tool") return 116;
+  if (phaseKind === "validator") return 128;
+  if (phaseKind === "loop") return 136;
   const descriptionLength = handoff ? 0 : 0;
   return 132 + descriptionLength;
 }
 
-function buildWorkflowGraph(
+function getGraphNodeWidth(
+  kind: GraphNodeKind,
+  phaseKind?: WorkflowPhase["kind"],
+) {
+  if (kind === "start") return 160;
+  if (kind === "terminal") return 180;
+  if (kind === "deliverable") return GRAPH_DELIVERABLE_WIDTH;
+  if (kind === "human") return GRAPH_HUMAN_WIDTH;
+  if (phaseKind === "tool") return GRAPH_TOOL_WIDTH;
+  return GRAPH_NODE_WIDTH;
+}
+
+type PhaseLayout = {
+  handoffs: WorkflowHandoff[];
+  children: WorkflowPhase[];
+  chainHeight: number;
+  subtreeHeight: number;
+};
+
+export function buildWorkflowGraph(
   phases: WorkflowPhase[],
   handoffsByPhase: Map<string, WorkflowHandoff[]>,
   runDetail: WorkflowRunDetail | null,
 ): WorkflowGraph {
+  const phaseKeys = new Set(phases.map((phase) => phase.phaseKey));
   const childrenByParent = new Map<string | null, WorkflowPhase[]>();
   for (const phase of phases) {
     const parentKey = readPhaseMetaString(phase, "parentKey");
@@ -190,7 +216,11 @@ function buildWorkflowGraph(
     childrenByParent.set(parentKey, list);
   }
   for (const list of childrenByParent.values()) {
-    list.sort((a, b) => a.ordinal - b.ordinal);
+    list.sort((a, b) => {
+      const depthA = readPhaseMetaNumber(a, "depth") ?? a.ordinal;
+      const depthB = readPhaseMetaNumber(b, "depth") ?? b.ordinal;
+      return depthA - depthB || a.ordinal - b.ordinal || a.id.localeCompare(b.id);
+    });
   }
 
   const roots = childrenByParent.get(null) ?? [];
@@ -209,7 +239,7 @@ function buildWorkflowGraph(
     kind: "start",
     label: "Start",
     level: 0,
-    width: 160,
+    width: getGraphNodeWidth("start"),
     height: estimateGraphNodeHeight("start"),
     status: runDetail?.status === "running" ? "running" : "idle",
   });
@@ -225,8 +255,8 @@ function buildWorkflowGraph(
       label: phase.label,
       level: 1,
       phase,
-      width: GRAPH_NODE_WIDTH,
-      height: estimateGraphNodeHeight("phase"),
+      width: getGraphNodeWidth("phase", phase.kind),
+      height: estimateGraphNodeHeight("phase", undefined, phase.kind),
       status: phase.status,
     });
     for (const incomingId of incomingIds) addEdge(incomingId, phaseId);
@@ -247,7 +277,7 @@ function buildWorkflowGraph(
             handoff.kind === "approval" ? "Human approval" : "Human response",
           level: 1,
           handoff,
-          width: GRAPH_HUMAN_WIDTH,
+          width: getGraphNodeWidth("human"),
           height: estimateGraphNodeHeight("human", handoff),
           status: handoff.status,
         });
@@ -267,112 +297,281 @@ function buildWorkflowGraph(
     return childOutputs;
   };
 
-  const leafIds =
-    roots.length > 0
-      ? roots.flatMap((phase) => appendPhase(phase, ["graph:start"]))
-      : ["graph:start"];
+  if (roots.length > 0) {
+    for (const phase of roots) {
+      appendPhase(phase, ["graph:start"]);
+    }
+  }
 
+  const phaseLayoutCache = new Map<string, PhaseLayout>();
+  const measurePhase = (phase: WorkflowPhase): PhaseLayout => {
+    const cached = phaseLayoutCache.get(phase.phaseKey);
+    if (cached) return cached;
+
+    const handoffs = [...(handoffsByPhase.get(phase.phaseKey) ?? [])].sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+    const children = childrenByParent.get(phase.phaseKey) ?? [];
+    const phaseHeight = estimateGraphNodeHeight("phase", undefined, phase.kind);
+    const handoffHeights = handoffs.map((handoff) =>
+      estimateGraphNodeHeight("human", handoff),
+    );
+    const chainHeight =
+      phaseHeight +
+      handoffHeights.reduce((sum, height) => sum + height, 0) +
+      handoffs.length * GRAPH_CHAIN_GAP;
+
+    const childLayouts = children.map((child) => measurePhase(child));
+    const childrenHeight =
+      childLayouts.length > 0
+        ? childLayouts.reduce((sum, child) => sum + child.subtreeHeight, 0) +
+          Math.max(0, childLayouts.length - 1) * GRAPH_BRANCH_GAP
+        : 0;
+    const subtreeHeight = Math.max(chainHeight, childrenHeight);
+
+    const layout = {
+      handoffs,
+      children,
+      chainHeight,
+      subtreeHeight,
+    };
+    phaseLayoutCache.set(phase.phaseKey, layout);
+    return layout;
+  };
+
+  const positionPhase = (
+    phase: WorkflowPhase,
+    level: number,
+    startY: number,
+  ): { leafIds: string[]; maxLevel: number } => {
+    const layout = measurePhase(phase);
+    const phaseId = `phase:${phase.phaseKey}`;
+    const phaseNode = nodes.get(phaseId);
+    if (!phaseNode) {
+      throw new Error(`Missing graph node for phase ${phase.phaseKey}`);
+    }
+
+    const phaseHeight = phaseNode.height;
+    const chainTop = startY + Math.max(0, (layout.subtreeHeight - layout.chainHeight) / 2);
+    let cursorY = chainTop;
+    phaseNode.level = level;
+    phaseNode.x = GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
+    if (phase.kind === "tool") {
+      phaseNode.x -= 20;
+    }
+    phaseNode.y = cursorY;
+    cursorY += phaseHeight + GRAPH_CHAIN_GAP;
+
+    let currentLevel = level;
+    let lastId = phaseId;
+    for (const handoff of layout.handoffs) {
+      const handoffId = `handoff:${handoff.id}`;
+      const handoffNode = nodes.get(handoffId);
+      if (!handoffNode) {
+        throw new Error(`Missing graph node for handoff ${handoff.id}`);
+      }
+      currentLevel += 1;
+      handoffNode.level = currentLevel;
+      handoffNode.x =
+        GRAPH_PADDING_X + currentLevel * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) - 16;
+      handoffNode.y = cursorY;
+      cursorY += handoffNode.height + GRAPH_CHAIN_GAP;
+      lastId = handoffId;
+    }
+
+    const childLayoutHeight = layout.children.reduce(
+      (sum, child) => sum + measurePhase(child).subtreeHeight,
+      0,
+    );
+    const childGapHeight =
+      Math.max(0, layout.children.length - 1) * GRAPH_BRANCH_GAP;
+    const childBlockHeight = childLayoutHeight + childGapHeight;
+    let childCursorY =
+      startY + Math.max(0, (layout.subtreeHeight - childBlockHeight) / 2);
+    const childLevel = level + layout.handoffs.length + 1;
+    const leafIdsFromChildren: string[] = [];
+    let maxLevel = currentLevel;
+
+    for (const child of layout.children) {
+      const childResult = positionPhase(child, childLevel, childCursorY);
+      leafIdsFromChildren.push(...childResult.leafIds);
+      maxLevel = Math.max(maxLevel, childResult.maxLevel);
+      childCursorY += measurePhase(child).subtreeHeight + GRAPH_BRANCH_GAP;
+    }
+
+    if (layout.children.length === 0) {
+      return { leafIds: [lastId], maxLevel: currentLevel };
+    }
+
+    return { leafIds: leafIdsFromChildren, maxLevel };
+  };
+
+  const rootLayouts = roots.map((phase) => measurePhase(phase));
+  const rootBlockHeight =
+    rootLayouts.reduce((sum, layout) => sum + layout.subtreeHeight, 0) +
+    Math.max(0, rootLayouts.length - 1) * GRAPH_BRANCH_GAP;
+  const startHeight = nodes.get("graph:start")?.height ?? 0;
+  const graphBlockHeight = Math.max(startHeight, rootBlockHeight);
+  const startNode = nodes.get("graph:start");
+  if (!startNode) {
+    throw new Error("Missing start graph node");
+  }
+  startNode.x = GRAPH_PADDING_X;
+  startNode.y =
+    GRAPH_PADDING_Y + Math.max(0, (graphBlockHeight - startHeight) / 2);
+
+  let rootCursorY =
+    GRAPH_PADDING_Y + Math.max(0, (graphBlockHeight - rootBlockHeight) / 2);
+  let maxLevel = 0;
+  const allLeafIds: string[] = roots.length > 0 ? [] : ["graph:start"];
+  for (const root of roots) {
+    const result = positionPhase(root, 1, rootCursorY);
+    allLeafIds.push(...result.leafIds);
+    maxLevel = Math.max(maxLevel, result.maxLevel);
+    rootCursorY += measurePhase(root).subtreeHeight + GRAPH_BRANCH_GAP;
+  }
+
+  const terminalLevel = maxLevel + 1;
   addNode({
     id: "graph:terminal",
     kind: "terminal",
     label: runDetail ? "Terminal" : "Awaiting run",
-    level: 1,
-    width: 180,
+    level: terminalLevel,
+    width: getGraphNodeWidth("terminal"),
     height: estimateGraphNodeHeight("terminal"),
     status: runDetail?.status ?? "idle",
   });
-  for (const leafId of leafIds) addEdge(leafId, "graph:terminal");
+  const terminalNode = nodes.get("graph:terminal");
+  if (!terminalNode) {
+    throw new Error("Missing terminal graph node");
+  }
+  terminalNode.x =
+    GRAPH_PADDING_X + terminalLevel * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
+  const leafCenters = allLeafIds
+    .map((nodeId) => nodes.get(nodeId))
+    .filter((node): node is GraphNode => Boolean(node))
+    .map((node) => node.y + node.height / 2);
+  const terminalCenterY =
+    leafCenters.length > 0
+      ? leafCenters.reduce((sum, value) => sum + value, 0) / leafCenters.length
+      : GRAPH_PADDING_Y + graphBlockHeight / 2;
+  terminalNode.y = Math.max(
+    GRAPH_PADDING_Y,
+    terminalCenterY - terminalNode.height / 2,
+  );
+  for (const leafId of allLeafIds) addEdge(leafId, "graph:terminal");
 
-  for (const deliverable of runDetail?.deliverables ?? []) {
+  const orphanHandoffs = [...handoffsByPhase.entries()]
+    .filter(([phaseKey]) => !phaseKeys.has(phaseKey))
+    .flatMap(([, handoffs]) =>
+      [...handoffs].sort(
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      ),
+    );
+  let handoffTailLevel = terminalLevel;
+  let handoffTailY = terminalNode.y + terminalNode.height / 2;
+  if (orphanHandoffs.length > 0) {
+    const orphanGroupHeight =
+      orphanHandoffs.reduce(
+        (sum, handoff) =>
+          sum + estimateGraphNodeHeight("human", handoff),
+        0,
+      ) +
+      Math.max(0, orphanHandoffs.length - 1) * GRAPH_CHAIN_GAP;
+    handoffTailY = Math.max(
+      GRAPH_PADDING_Y,
+      terminalNode.y + terminalNode.height / 2 - orphanGroupHeight / 2,
+    );
+    let previousId = "graph:terminal";
+    for (const handoff of orphanHandoffs) {
+      const handoffId = `handoff:${handoff.id}`;
+      addNode({
+        id: handoffId,
+        kind: "human",
+        label:
+          handoff.kind === "approval" ? "Human approval" : "Human response",
+        level: ++handoffTailLevel,
+        handoff,
+        width: getGraphNodeWidth("human"),
+        height: estimateGraphNodeHeight("human", handoff),
+        status: handoff.status,
+      });
+      addEdge(previousId, handoffId);
+      const handoffNode = nodes.get(handoffId);
+      if (!handoffNode) {
+        throw new Error(`Missing graph node for orphan handoff ${handoff.id}`);
+      }
+      handoffNode.x =
+        GRAPH_PADDING_X +
+        handoffTailLevel * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) -
+        16;
+      handoffNode.y = handoffTailY;
+      handoffTailY += handoffNode.height + GRAPH_CHAIN_GAP;
+      previousId = handoffId;
+    }
+  }
+
+  const deliverables = runDetail?.deliverables ?? [];
+  const deliverableLevel = handoffTailLevel + 1;
+  const deliverableGroupHeight =
+    deliverables.length > 0
+      ? deliverables.length * estimateGraphNodeHeight("deliverable") +
+        Math.max(0, deliverables.length - 1) * GRAPH_BRANCH_GAP
+      : 0;
+  let deliverableCursorY =
+    Math.max(
+      GRAPH_PADDING_Y,
+      terminalNode.y + terminalNode.height / 2 - deliverableGroupHeight / 2,
+    );
+  const deliverableGap = GRAPH_BRANCH_GAP;
+  for (const deliverable of deliverables) {
     const deliverableId = `deliverable:${deliverable.id}`;
     addNode({
       id: deliverableId,
       kind: "deliverable",
       label: deliverable.title,
-      level: 1,
+      level: deliverableLevel,
       deliverable,
-      width: GRAPH_DELIVERABLE_WIDTH,
+      width: getGraphNodeWidth("deliverable"),
       height: estimateGraphNodeHeight("deliverable"),
       status: "ready",
     });
     addEdge("graph:terminal", deliverableId);
-  }
-
-  const outgoing = new Map<string, string[]>();
-  for (const edge of edges) {
-    const list = outgoing.get(edge.from) ?? [];
-    list.push(edge.to);
-    outgoing.set(edge.from, list);
-  }
-
-  const levelMemo = new Map<string, number>();
-  const resolveLevel = (nodeId: string): number => {
-    const memo = levelMemo.get(nodeId);
-    if (memo != null) return memo;
-    if (nodeId === "graph:start") {
-      levelMemo.set(nodeId, 0);
-      return 0;
+    const deliverableNode = nodes.get(deliverableId);
+    if (!deliverableNode) {
+      throw new Error(`Missing deliverable graph node for ${deliverable.id}`);
     }
-    let maxParentLevel = 0;
-    for (const edge of edges) {
-      if (edge.to !== nodeId) continue;
-      maxParentLevel = Math.max(maxParentLevel, resolveLevel(edge.from) + 1);
-    }
-    levelMemo.set(nodeId, maxParentLevel);
-    return maxParentLevel;
-  };
-
+    deliverableNode.x =
+      GRAPH_PADDING_X + deliverableLevel * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
+    deliverableNode.y = deliverableCursorY;
+    deliverableCursorY += deliverableNode.height + deliverableGap;
+  }
   const orderedNodes = [...nodes.values()].sort((a, b) => {
     if (a.kind === "start") return -1;
     if (b.kind === "start") return 1;
-    const phaseA = a.phase?.ordinal ?? Number.MAX_SAFE_INTEGER;
-    const phaseB = b.phase?.ordinal ?? Number.MAX_SAFE_INTEGER;
-    return phaseA - phaseB || a.id.localeCompare(b.id);
+    if (a.kind === "terminal") return 1;
+    if (b.kind === "terminal") return -1;
+    if (a.x !== b.x) return a.x - b.x;
+    if (a.y !== b.y) return a.y - b.y;
+    return a.id.localeCompare(b.id);
   });
-
-  for (const node of orderedNodes) {
-    node.level = resolveLevel(node.id);
-  }
-
-  const nodesByLevel = new Map<number, GraphNode[]>();
-  for (const node of orderedNodes) {
-    const list = nodesByLevel.get(node.level) ?? [];
-    list.push(node);
-    nodesByLevel.set(node.level, list);
-  }
-
-  let graphHeight = 0;
-  const sortedLevels = [...nodesByLevel.keys()].sort((a, b) => a - b);
-  for (const level of sortedLevels) {
-    const levelNodes = nodesByLevel.get(level) ?? [];
-    let cursorY = GRAPH_PADDING_Y;
-    for (const node of levelNodes) {
-      node.x = GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
-      if (node.kind === "human") {
-        node.x =
-          GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) - 16;
-      } else if (node.kind === "start" || node.kind === "terminal") {
-        node.x =
-          GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) + 32;
-      } else if (node.kind === "deliverable") {
-        node.x =
-          GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) + 12;
-      }
-      node.y = cursorY;
-      cursorY += node.height + GRAPH_ROW_GAP;
-    }
-    graphHeight = Math.max(graphHeight, cursorY);
-  }
 
   const graphWidth =
     GRAPH_PADDING_X * 2 +
-    (Math.max(...sortedLevels, 0) + 1) * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
+    (Math.max(terminalLevel, handoffTailLevel, deliverableLevel) + 1) *
+      (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
+  const graphHeight = Math.max(
+    420,
+    ...orderedNodes.map((node) => node.y + node.height + GRAPH_PADDING_Y),
+  );
 
   return {
     nodes: orderedNodes,
     edges,
     width: graphWidth,
-    height: Math.max(420, graphHeight),
+    height: graphHeight,
   };
 }
 
@@ -639,21 +838,35 @@ function GraphPhaseNode({ node }: { node: GraphNode }) {
         : phase.kind === "validator"
           ? ShieldCheck
           : Bot;
+  const compact = phase.kind === "tool";
 
   return (
-    <div className={cn("rounded-3xl border p-4 shadow-sm", tone)}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <div className="rounded-2xl border border-border/70 bg-background/80 p-2 text-muted-foreground">
-            <Icon className="h-4 w-4" />
+    <div
+      className={cn(
+        "rounded-3xl border shadow-sm",
+        compact ? "p-3 opacity-90" : "p-4",
+        tone,
+      )}
+    >
+      <div className={cn("flex items-start justify-between gap-3", compact && "gap-2")}>
+        <div className={cn("flex items-start gap-3", compact && "gap-2")}>
+          <div
+            className={cn(
+              "rounded-2xl border border-border/70 bg-background/80 text-muted-foreground",
+              compact ? "p-1.5" : "p-2",
+            )}
+          >
+            <Icon className={cn(compact ? "h-3.5 w-3.5" : "h-4 w-4")} />
           </div>
-          <div className="space-y-1">
-            <div className="text-sm font-semibold">{phase.label}</div>
-            <div className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground inline-flex">
+          <div className={cn("space-y-1", compact && "space-y-0.5")}>
+            <div className={cn("font-semibold", compact ? "text-xs" : "text-sm")}>
+              {phase.label}
+            </div>
+            <div className="inline-flex rounded-full border border-border/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
               {kindLabel}
             </div>
             {description ? (
-              <p className="pt-1 text-xs text-muted-foreground">
+              <p className={cn("pt-1 text-xs text-muted-foreground", compact && "max-w-[170px]")}>
                 {description}
               </p>
             ) : null}
@@ -663,7 +876,7 @@ function GraphPhaseNode({ node }: { node: GraphNode }) {
           {phase.status.replaceAll("_", " ")}
         </span>
       </div>
-      <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+      <div className={cn("mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground", compact && "mt-2")}>
         <span>Step {phase.ordinal + 1}</span>
         {filePath ? <span>{filePath}</span> : null}
         {functionName ? <span>{functionName}</span> : null}
