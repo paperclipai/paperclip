@@ -180,6 +180,12 @@ const GOOGLE_SHEETS_WRITE_VALUES_SCHEMA = {
   required: ["spreadsheetId", "range", "values"],
 };
 
+function schemaHasInputProperties(schema: unknown): boolean {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return false;
+  const properties = (schema as Record<string, unknown>).properties;
+  return Boolean(properties && typeof properties === "object" && !Array.isArray(properties) && Object.keys(properties).length > 0);
+}
+
 const APPROVED_STDIO_TEMPLATES: Record<string, {
   name: string;
   command?: string | null;
@@ -590,6 +596,24 @@ function toCatalogEntry(row: typeof toolCatalogEntries.$inferSelect): ToolCatalo
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+function toCatalogEntryForConnection(
+  row: typeof toolCatalogEntries.$inferSelect,
+  connection: typeof toolConnections.$inferSelect,
+): ToolCatalogEntry {
+  const catalogEntry = toCatalogEntry(row);
+  if (
+    connection.transport === "local_stdio"
+    && asRecord(connection.config).templateId === GOOGLE_SHEETS_TEMPLATE_ID
+    && !schemaHasInputProperties(catalogEntry.inputSchema)
+  ) {
+    const templateTool = APPROVED_STDIO_TEMPLATES[GOOGLE_SHEETS_TEMPLATE_ID].tools.find((tool) => tool.name === row.toolName);
+    if (schemaHasInputProperties(templateTool?.inputSchema)) {
+      return { ...catalogEntry, inputSchema: templateTool!.inputSchema! };
+    }
+  }
+  return catalogEntry;
 }
 
 function toRuntimeSlot(row: typeof toolRuntimeSlots.$inferSelect): ToolRuntimeSlot {
@@ -4695,7 +4719,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .from(toolCatalogEntries)
         .where(eq(toolCatalogEntries.connectionId, connection.id))
         .orderBy(desc(toolCatalogEntries.updatedAt));
-      return rows.map(toCatalogEntry);
+      return rows.map((row) => toCatalogEntryForConnection(row, connection));
     },
 
     /** Recent tool-call events for one connection — drives App detail · Recent activity. */

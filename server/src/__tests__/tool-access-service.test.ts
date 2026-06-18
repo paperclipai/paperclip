@@ -1933,6 +1933,19 @@ describeEmbeddedPostgres("tool access service", () => {
       },
       required: ["spreadsheetId", "sheetId", "startIndex", "endIndex"],
     });
+
+    await db
+      .update(toolCatalogEntries)
+      .set({ inputSchema: { type: "object", properties: {} } })
+      .where(eq(toolCatalogEntries.id, connect.catalog.find((entry) => entry.toolName === "read_values")!.id));
+
+    expect((await service.listCatalog(connect.connectionId)).find((entry) => entry.toolName === "read_values")?.inputSchema).toMatchObject({
+      properties: {
+        spreadsheetId: expect.objectContaining({ type: "string" }),
+        range: expect.objectContaining({ type: "string" }),
+      },
+      required: ["spreadsheetId", "range"],
+    });
   });
 
   it("rejects raw Google Sheets connection patches that claim another company's spreadsheet", async () => {
