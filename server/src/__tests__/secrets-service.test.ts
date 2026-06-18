@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import {
   agents,
   companies,
+  companyMemberships,
   companySecretBindings,
   companySecretProviderConfigs,
   companySecretVersions,
@@ -50,6 +51,7 @@ describeEmbeddedPostgres("secretService", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(companySecretProviderConfigs);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -75,6 +77,22 @@ describeEmbeddedPostgres("secretService", () => {
       updatedAt: new Date(),
     });
     return companyId;
+  }
+
+  async function seedCompanyMember(
+    companyId: string,
+    userId: string,
+    membershipRole: "owner" | "member" | "viewer" = "member",
+  ) {
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
   }
 
   it("rejects cross-company secret references during env normalization", async () => {
@@ -1962,6 +1980,7 @@ describeEmbeddedPostgres("secretService", () => {
       provider: "local_encrypted",
       value: "runtime-secret",
     });
+    await seedCompanyMember(companyId, "user-1");
 
     const resolved = await svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
       consumerType: "system",
@@ -1985,5 +2004,25 @@ describeEmbeddedPostgres("secretService", () => {
       outcome: "success",
     });
     expect(JSON.stringify(events)).not.toContain("runtime-secret");
+  });
+
+  it("rejects ephemeral secret access for actors without secret-read authorization", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-denied-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    await expect(
+      svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+        consumerType: "system",
+        consumerId: "environment-probe-config",
+        configPath: "apiKey",
+        actorType: "user",
+        actorId: "user-without-membership",
+      }),
+    ).rejects.toThrow(/active member|secrets:read|forbidden/i);
   });
 });

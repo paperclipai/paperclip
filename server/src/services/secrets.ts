@@ -38,7 +38,7 @@ import {
   secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
 } from "@paperclipai/shared";
-import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
   checkSecretProviders,
@@ -54,6 +54,7 @@ import type {
   SecretProviderWriteContext,
 } from "../secrets/types.js";
 import { isSecretProviderClientError } from "../secrets/types.js";
+import { authorizationService } from "./authorization.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
@@ -300,6 +301,8 @@ function assertSelectableProviderConfig(config: {
 }
 
 export function secretService(db: Db) {
+  const authorization = authorizationService(db);
+
   type NormalizeEnvOptions = {
     strictMode?: boolean;
     fieldPath?: string;
@@ -669,6 +672,36 @@ export function secretService(db: Db) {
     version: number | "latest",
     context: SecretConsumerContext,
   ): Promise<string> {
+    if (context.consumerType !== "system" || context.consumerId !== "environment-probe-config") {
+      throw forbidden("Ephemeral secret resolution is limited to draft environment probes");
+    }
+    if (
+      (context.actorType !== "agent" && context.actorType !== "user") ||
+      !context.actorId?.trim()
+    ) {
+      throw forbidden("Ephemeral secret resolution requires an authenticated actor");
+    }
+    const actor =
+      context.actorType === "agent"
+        ? {
+            type: "agent" as const,
+            agentId: context.actorId,
+            companyId,
+            source: "agent_key" as const,
+          }
+        : {
+            type: "board" as const,
+            userId: context.actorId,
+            source: context.actorId === "board" ? "local_implicit" as const : "session" as const,
+          };
+    const decision = await authorization.decide({
+      actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation);
+    }
     return (await resolveSecretValueInternal(companyId, secretId, version, {
       accessContext: context,
     })).value;
