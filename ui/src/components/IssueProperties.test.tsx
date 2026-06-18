@@ -1059,9 +1059,16 @@ describe("IssueProperties", () => {
     expect(container.textContent).toContain("Custom · gpt-5.4 · high");
     expect(container.textContent).toContain("Model lane");
 
-    const modelButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("GPT-5.5"));
-    expect(modelButton).not.toBeUndefined();
+    // The adapter model options load asynchronously (mockAgentsApi.adapterModels),
+    // so two fixed flushes can race under CI load and leave the button unrendered.
+    // Poll until it appears instead of asserting on a fixed tick (matches the
+    // waitForAssertion pattern used elsewhere in this file).
+    let modelButton: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      modelButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("GPT-5.5"));
+      expect(modelButton).not.toBeUndefined();
+    });
 
     await act(async () => {
       modelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
