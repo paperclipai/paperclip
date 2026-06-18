@@ -525,6 +525,7 @@ export type DiscoveryCard = {
   slug: string;
   author: string;
   version: string | null;
+  tagline: string | null;
   description: string | null;
   categories: string[];
   iconUrl: string | null;
@@ -668,7 +669,8 @@ function buildDiscoveryCards(
       slug: skill.slug,
       author: skill.authorName ?? skill.sourceLabel ?? "you",
       version: discoveryVersionLabel(skill, required),
-      description: skill.tagline ?? skill.description,
+      tagline: skill.tagline ?? null,
+      description: skill.description ?? null,
       categories: uniqueCategories([...(skill.categories ?? []), catalogMatch?.category]),
       iconUrl: skill.iconUrl,
       color: skill.color,
@@ -695,6 +697,7 @@ function buildDiscoveryCards(
       slug: entry.slug,
       author: entry.packageName ?? "Paperclip",
       version: discoveryVersionLabel({ packageVersion: entry.packageVersion ?? null, sourceRef: null }, required),
+      tagline: null,
       description: entry.description,
       categories: uniqueCategories([entry.category, ...(entry.tags ?? [])]),
       iconUrl: null,
@@ -757,6 +760,7 @@ function discoveryMatchesSearch(card: DiscoveryCard, query: string): boolean {
     card.name,
     card.slug,
     card.author,
+    card.tagline ?? "",
     card.description ?? "",
     card.categories.join(" "),
   ].join(" ").toLowerCase();
@@ -819,7 +823,12 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
 
       {/* Always reserve two lines so cards line up even without a description. */}
       <p className="mt-2 line-clamp-2 min-h-8 text-xs text-muted-foreground">
-        {resolveSkillSummaryText(card) ?? ""}
+        {resolveSkillSummaryText({
+          tagline: card.tagline,
+          description: card.description,
+          key: card.key,
+          name: card.name,
+        }) ?? ""}
       </p>
 
       <div className="mt-auto pt-3">

@@ -22,4 +22,13 @@ describe("company skill summary text", () => {
       description: "|",
     }, { fallbackKey: true })).toBe("humanizer");
   });
+
+  it("falls back from a stale tagline to a real description", () => {
+    expect(resolveSkillSummaryText({
+      tagline: ">",
+      description: "Cleans up rough AI prose.",
+      key: "content/humanizer",
+      name: "Humanizer",
+    })).toBe("Cleans up rough AI prose.");
+  });
 });
