@@ -271,6 +271,34 @@ describe("TestPanel", () => {
     expect(container.textContent).toContain("Preview");
   });
 
+  it("renders a failure card (not 'Worked') when an allowed call returns isError:true", async () => {
+    // The gateway let the call through (decision:"allowed") but the upstream MCP
+    // tool failed at the tool layer — the envelope carries isError + an error.
+    runTestCallMock.mockResolvedValue({
+      decision: "allowed",
+      invocationId: "inv-err",
+      result: {
+        content: "Invalid arguments: range is required",
+        data: { content: [{ type: "text", text: "Invalid arguments: range is required" }], isError: true },
+        error: "MCP tool returned an error result",
+      },
+    });
+    await act(async () => renderPanel());
+    await flushReact();
+
+    const trigger = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Read a sheet"));
+    await act(async () => trigger!.click());
+    await flushReact();
+    await fillFormField("sheet-123");
+    await clickByText("Run");
+    await settle();
+
+    expect(container.textContent).toContain("It didn't work.");
+    expect(container.textContent).not.toContain("Worked.");
+    // The actual MCP message wins over the generic gateway wrapper string.
+    expect(container.textContent).toContain("Invalid arguments: range is required");
+  });
+
   it("renders the ask-first card linking to Review", async () => {
     runTestCallMock.mockResolvedValue({ decision: "ask_first", invocationId: "inv-2", actionRequestId: "req-1" });
     await act(async () => renderPanel());

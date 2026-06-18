@@ -852,10 +852,35 @@ function ResultPanel({
       </div>
     );
   }
-  if (result.error) {
-    return <ErrorResult outcome={outcome} appName={appName} connectionId={connectionId} />;
+  // The gateway can return `decision:"allowed"` (policy let the call through) yet
+  // the upstream MCP tool still fails at the tool layer (`isError:true` in the
+  // result envelope). Surface that as a failure card, not the green "Worked" one.
+  const toolError = result.error ?? mcpToolError(result.result);
+  if (toolError) {
+    return <ErrorResult outcome={outcome} appName={appName} connectionId={connectionId} error={toolError} />;
   }
   return <AllowedResult outcome={outcome} entry={entry} appName={appName} connectionId={connectionId} />;
+}
+
+/**
+ * A tool can return `decision:"allowed"` and still fail at the MCP layer — the
+ * gateway normalizes that into `{ data: { isError: true }, error: "…" }` inside
+ * the result envelope. Pull a renderable error out of that shape, or null when
+ * the result is a clean success.
+ */
+function mcpToolError(value: unknown): { message: string; reasonCode: string | null } | null {
+  if (!value || typeof value !== "object") return null;
+  const envelope = value as Record<string, unknown>;
+  const data = envelope.data && typeof envelope.data === "object" ? (envelope.data as Record<string, unknown>) : null;
+  const isError = data?.isError === true || envelope.isError === true;
+  if (!isError) return null;
+  // Prefer what the app actually said (normalized content text) over the generic
+  // gateway wrapper string, falling back to a friendly default.
+  const message =
+    (typeof envelope.content === "string" && envelope.content.trim() !== "" && envelope.content)
+    || (typeof envelope.error === "string" && envelope.error.trim() !== "" && envelope.error)
+    || "The app returned an error result.";
+  return { message, reasonCode: "tool_error" };
 }
 
 // --- Allowed (T7) ---------------------------------------------------------
@@ -1032,12 +1057,13 @@ function ErrorResult({
   outcome,
   appName,
   connectionId,
+  error,
 }: {
   outcome: RunOutcome;
   appName: string;
   connectionId: string;
+  error: { message: string; reasonCode: string | null };
 }) {
-  const error = outcome.result.error!;
   const hints = errorHints(error.message, error.reasonCode);
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
@@ -1139,14 +1165,17 @@ function AskFirstResult({
   // Once the call has been approved and run, mutate into the real result shape
   // so the tester sees the response (or failure) without re-running.
   if (phase === "done" && status) {
-    if (status.error) {
+    // Same as the allowed path: an approved call can still fail at the MCP tool
+    // layer (isError:true in the envelope) without a top-level error.
+    const toolError = status.error ?? mcpToolError(status.result);
+    if (toolError) {
       const errorOutcome: RunOutcome = {
-        result: { decision: "allowed", invocationId: status.invocationId, error: status.error },
+        result: { decision: "allowed", invocationId: status.invocationId, error: toolError },
         agentName: outcome.agentName,
         durationMs: status.durationMs ?? outcome.durationMs,
         ranAt: status.resolvedAt ? new Date(status.resolvedAt) : outcome.ranAt,
       };
-      return <ErrorResult outcome={errorOutcome} appName={appName} connectionId={connectionId} />;
+      return <ErrorResult outcome={errorOutcome} appName={appName} connectionId={connectionId} error={toolError} />;
     }
     const allowedOutcome: RunOutcome = {
       result: { decision: "allowed", invocationId: status.invocationId, result: status.result },
