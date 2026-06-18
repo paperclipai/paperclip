@@ -217,6 +217,7 @@ export function environmentService(db: Db) {
           .select()
           .from(environments)
           .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+          .orderBy(asc(environments.createdAt), asc(environments.id))
           .then((rows) =>
             rows.find(
               (row) =>
