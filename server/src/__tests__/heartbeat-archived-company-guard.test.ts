@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  agentRuntimeState,
   agentWakeupRequests,
   companies,
   createDb,
@@ -38,6 +39,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -133,6 +135,45 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
     return { companyId, managerId, childId };
   }
 
+  async function insertActiveTimerAgent(input: {
+    createdAt: Date;
+    lastHeartbeatAt: Date | null;
+    intervalSec: number;
+  }) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Timer Co",
+      status: "active",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: input.intervalSec,
+          wakeOnDemand: true,
+        },
+      },
+      lastHeartbeatAt: input.lastHeartbeatAt,
+      createdAt: input.createdAt,
+      permissions: {},
+    });
+
+    return { companyId, agentId };
+  }
+
   it("does not iterate archived-company agents in tickTimers", async () => {
     const { agentId } = await insertArchivedAgent();
 
@@ -150,6 +191,82 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
       .from(heartbeatRuns)
       .then((rows) => rows.filter((row) => row.agentId === agentId).length);
     expect(runCount).toBe(0);
+  });
+
+  it("respects heartbeat interval before enqueuing scheduler timer wakeups", async () => {
+    const now = new Date("2026-06-04T00:10:00Z");
+    const { agentId } = await insertActiveTimerAgent({
+      createdAt: new Date("2026-06-04T00:00:00Z"),
+      lastHeartbeatAt: new Date("2026-06-04T00:09:30Z"),
+      intervalSec: 60,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.tickTimers(now);
+
+    expect(result).toMatchObject({
+      checked: 1,
+      enqueued: 0,
+      skipped: 0,
+    });
+
+    const runCount = await db
+      .select()
+      .from(heartbeatRuns)
+      .then((rows) => rows.filter((row) => row.agentId === agentId).length);
+    const wakeupCount = await db
+      .select()
+      .from(agentWakeupRequests)
+      .then((rows) => rows.filter((row) => row.agentId === agentId).length);
+    expect(runCount).toBe(0);
+    expect(wakeupCount).toBe(0);
+  });
+
+  it("uses the scheduler as the trusted timer wakeup source after the interval elapses", async () => {
+    const now = new Date("2026-06-04T00:10:00Z");
+    const { agentId } = await insertActiveTimerAgent({
+      createdAt: new Date("2026-06-04T00:00:00Z"),
+      lastHeartbeatAt: new Date("2026-06-04T00:08:59Z"),
+      intervalSec: 60,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.tickTimers(now);
+
+    expect(result).toMatchObject({
+      checked: 1,
+      enqueued: 1,
+      skipped: 0,
+    });
+
+    const wakeup = await db
+      .select({
+        source: agentWakeupRequests.source,
+        triggerDetail: agentWakeupRequests.triggerDetail,
+        reason: agentWakeupRequests.reason,
+        requestedByActorType: agentWakeupRequests.requestedByActorType,
+        requestedByActorId: agentWakeupRequests.requestedByActorId,
+        status: agentWakeupRequests.status,
+      })
+      .from(agentWakeupRequests)
+      .then((rows) => rows.find((row) => row.source === "timer") ?? null);
+    expect(wakeup).toMatchObject({
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat_scheduler",
+      status: "claimed",
+    });
+
+    const run = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        invocationSource: heartbeatRuns.invocationSource,
+      })
+      .from(heartbeatRuns)
+      .then((rows) => rows.find((row) => row.agentId === agentId) ?? null);
+    expect(run).toMatchObject({ invocationSource: "timer" });
   });
 
   it("skips background wakeups for non-active companies with a company.inactive reason", async () => {
