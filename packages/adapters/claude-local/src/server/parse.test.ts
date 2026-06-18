@@ -1,11 +1,77 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
 } from "./parse.js";
+
+describe("detectClaudeLoginRequired", () => {
+  const base = { parsed: null, stdout: "", stderr: "" };
+
+  it("detects subscription login prompts in stderr", () => {
+    expect(
+      detectClaudeLoginRequired({ ...base, stderr: "Please log in. Run `claude login` first." }).requiresLogin,
+    ).toBe(true);
+    expect(
+      detectClaudeLoginRequired({ ...base, stderr: "Not logged in. Please log in." }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("detects Anthropic API 401 'Failed to authenticate' in result field", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: {
+          is_error: true,
+          result:
+            'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"},"request_id":"req_011abc"}',
+        },
+        stdout: "",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("detects Anthropic API 401 'authentication_error' type in result field", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: { is_error: true, result: 'API Error: 401 {"error":{"type":"authentication_error"}}' },
+        stdout: "",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("detects 'Invalid authentication credentials' in stderr", () => {
+    expect(
+      detectClaudeLoginRequired({
+        ...base,
+        stderr: "Invalid authentication credentials",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("does not flag transient rate-limit errors as login-required", () => {
+    expect(
+      detectClaudeLoginRequired({
+        ...base,
+        stderr: "API Error: 429 rate_limit_error",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("does not flag unrelated errors as login-required", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: { is_error: true, result: "Maximum turns reached." },
+        stdout: "",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+});
 
 describe("isClaudeTransientUpstreamError", () => {
   it("classifies the 'out of extra usage' subscription window failure as transient", () => {
