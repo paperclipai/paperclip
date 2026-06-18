@@ -259,6 +259,11 @@ function isExhaustedSuccessfulRunHandoff(latestRun: LatestIssueRun) {
   return { ...evidence, exhausted: true };
 }
 
+function isPermanentWatcherExecutionPolicy(executionPolicy: unknown) {
+  const policy = parseObject(executionPolicy);
+  return policy.permanentWatcher === true;
+}
+
 function issueIdFromRunContext(contextSnapshot: unknown) {
   const context = parseObject(contextSnapshot);
   return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -2975,6 +2980,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       }
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
+        if (isPermanentWatcherExecutionPolicy(issue.executionPolicy)) {
+          result.skipped += 1;
+          continue;
+        }
         if (!handoffEvidence.exhausted) {
           result.skipped += 1;
           continue;

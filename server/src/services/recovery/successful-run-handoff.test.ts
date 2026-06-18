@@ -29,6 +29,7 @@ const issue = {
   status: "in_progress",
   assigneeAgentId: "agent-1",
   assigneeUserId: null,
+  executionPolicy: null,
   executionState: null,
 } as any;
 
@@ -116,6 +117,18 @@ describe("successful run handoff decision", () => {
     expect(decide({ hasActiveExecutionPath: true })).toEqual({
       kind: "skip",
       reason: "issue already has an active execution path",
+    });
+  });
+
+  it("does not queue for permanent watcher issues", () => {
+    expect(decide({
+      issue: {
+        ...issue,
+        executionPolicy: { permanentWatcher: true },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "permanent watcher owns its own lifecycle",
     });
   });
 
