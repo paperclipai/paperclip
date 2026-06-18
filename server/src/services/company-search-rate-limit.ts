@@ -15,9 +15,19 @@ export type CompanySearchRateLimitResult = {
 };
 
 export type CompanySearchRateLimiter = {
-  consume(actor: CompanySearchRateLimitActor): CompanySearchRateLimitResult;
+  consume(actor: CompanySearchRateLimitActor): Promise<CompanySearchRateLimitResult>;
 };
 
+export function companySearchRateLimitKey(actor: CompanySearchRateLimitActor): string {
+  return `${actor.companyId}:${actor.actorType}:${actor.actorId}`;
+}
+
+/**
+ * In-memory sliding-window limiter. Suitable for local development and single-process
+ * deployments only — each process keeps its own counters, so it does NOT enforce a
+ * global limit across multiple serverless instances. Use the Upstash backend in
+ * production (see {@link ./company-search-rate-limit-upstash.ts}).
+ */
 export function createCompanySearchRateLimiter(options: {
   windowMs?: number;
   maxRequests?: number;
@@ -28,15 +38,11 @@ export function createCompanySearchRateLimiter(options: {
   const now = options.now ?? Date.now;
   const hitsByKey = new Map<string, number[]>();
 
-  function key(actor: CompanySearchRateLimitActor) {
-    return `${actor.companyId}:${actor.actorType}:${actor.actorId}`;
-  }
-
   return {
-    consume(actor) {
+    async consume(actor) {
       const currentTime = now();
       const cutoff = currentTime - windowMs;
-      const actorKey = key(actor);
+      const actorKey = companySearchRateLimitKey(actor);
       const recentHits = (hitsByKey.get(actorKey) ?? []).filter((hit) => hit > cutoff);
 
       if (recentHits.length >= maxRequests) {

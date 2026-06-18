@@ -113,9 +113,9 @@ import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
-  createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
 } from "../services/company-search-rate-limit.js";
+import { resolveCompanySearchRateLimiter } from "../services/company-search-rate-limit-factory.js";
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -626,7 +626,7 @@ function summarizeIssueRelationForActivity(relation: {
   };
 }
 
-const defaultCompanySearchRateLimiter = createCompanySearchRateLimiter();
+const defaultCompanySearchRateLimiter = resolveCompanySearchRateLimiter();
 
 function companySearchRateLimitActor(req: Request, companyId: string) {
   if (req.actor.type === "agent") {
@@ -2397,7 +2397,7 @@ export function issueRoutes(
       return;
     }
     const query = companySearchQuerySchema.parse(req.query);
-    const rateLimit = searchRateLimiter.consume(companySearchRateLimitActor(req, companyId));
+    const rateLimit = await searchRateLimiter.consume(companySearchRateLimitActor(req, companyId));
     res.setHeader("X-RateLimit-Limit", String(rateLimit.limit));
     res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));
     if (!rateLimit.allowed) {
