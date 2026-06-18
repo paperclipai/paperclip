@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { promises as fsPromises } from "node:fs";
-import { resolve, dirname, isAbsolute } from "node:path";
+import { resolve, dirname, isAbsolute, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -1771,7 +1771,7 @@ export function issueRoutes(
 
     const hasManagerDispositionComment = comments.some((c: any) =>
       c.authorType === "user" &&
-      /\b(disposition|dispositioned|approved|false positive|resolved|done|closed|dismissed|reassigned|no action|reviewed|verdict)\b/i.test(c.body || "")
+      /\b(disposition|dispositioned|approved|false positive|resolved|closed|dismissed|reassigned|no action|reviewed|verdict)\b/i.test(c.body || "")
     );
 
     const reviewOrRecoveryOriginKinds = new Set([
@@ -1824,7 +1824,8 @@ export function issueRoutes(
     let lastError: HttpError | null = null;
     let passed = false;
 
-    for (const prUrl of prCandidates) {
+    const candidatesArray = Array.from(prCandidates).slice(0, 5);
+    for (const prUrl of candidatesArray) {
       let headSha: string | null = null;
       let prMerged = false;
       try {
@@ -1854,18 +1855,23 @@ export function issueRoutes(
       let hasNoMistakesPass = false;
       if (headSha && latestRunManifest) {
         const gatePath = latestRunManifest.gates?.no_mistakes?.path;
-        if (gatePath) {
-          const resolvedGatePath = latestRunDir && !isAbsolute(gatePath) ? resolve(latestRunDir, gatePath) : resolve(gatePath);
-          const gatePathExists = await fsPromises.access(resolvedGatePath).then(() => true).catch(() => false);
-          if (gatePathExists) {
-            try {
-              const gateContent = await fsPromises.readFile(resolvedGatePath, "utf8");
-              const gate = JSON.parse(gateContent);
-              const gateHead = gate.details?.headAfter || gate.details?.head || null;
-              if (gate.verdict === "PASS" && gateHead === headSha) {
-                hasNoMistakesPass = true;
-              }
-            } catch {}
+        if (gatePath && latestRunDir) {
+          const resolvedGatePath = resolve(latestRunDir, gatePath);
+          const normalizedRunDir = resolve(latestRunDir);
+          const rel = relative(normalizedRunDir, resolvedGatePath);
+          const isInside = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+          if (isInside) {
+            const gatePathExists = await fsPromises.access(resolvedGatePath).then(() => true).catch(() => false);
+            if (gatePathExists) {
+              try {
+                const gateContent = await fsPromises.readFile(resolvedGatePath, "utf8");
+                const gate = JSON.parse(gateContent);
+                const gateHead = gate.details?.headAfter || gate.details?.head || null;
+                if (gate.verdict === "PASS" && gateHead === headSha) {
+                  hasNoMistakesPass = true;
+                }
+              } catch {}
+            }
           }
         }
       }

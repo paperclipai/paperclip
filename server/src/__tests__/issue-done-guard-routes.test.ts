@@ -878,4 +878,86 @@ describe("Done transition guard", () => {
     expect(res.status).toBe(422);
     expect(res.body.error).toContain("Linked implementation PR/work product is required");
   });
+
+  it("blocks transition to done for productivity review tasks when manager comment only says done", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      title: "Review productivity for OPE-573",
+      originKind: "issue_productivity_review",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "this is done", authorType: "user" }
+    ]);
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Linked implementation PR/work product is required");
+  });
+
+  it("blocks transition to done when gatePath attempts path traversal", async () => {
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "https://github.com/org/repo/pull/123" }
+    ]);
+
+    mockReadFileSync.mockImplementation((path: string) => {
+      if (path.includes("run-manifest.json")) {
+        return JSON.stringify({
+          taskRoute: { prBacked: true },
+          gates: { no_mistakes: { verdict: "PASS", path: "../../../outside/no_mistakes.json" } }
+        });
+      }
+      return "{}";
+    });
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("No Mistakes gate proof is missing or does not match");
+  });
+
+  it("limits PR candidates view calls to 5 to prevent timeouts", async () => {
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "https://github.com/org/repo/pull/1" },
+      { body: "https://github.com/org/repo/pull/2" },
+      { body: "https://github.com/org/repo/pull/3" },
+      { body: "https://github.com/org/repo/pull/4" },
+      { body: "https://github.com/org/repo/pull/5" },
+      { body: "https://github.com/org/repo/pull/6" }
+    ]);
+
+    mockExecFilePromise.mockClear();
+    mockExecFilePromise.mockResolvedValue({
+      stdout: JSON.stringify({
+        state: "OPEN",
+        mergedAt: null,
+        headRefOid: "somehead",
+      }),
+    });
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(mockExecFilePromise).toHaveBeenCalledTimes(5);
+  });
 });
