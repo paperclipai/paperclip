@@ -447,17 +447,43 @@ export function environmentRunOrchestrator(
       }
     }
 
-    // Step 3: Persist realization metadata on lease and execution workspace
-    if (Object.keys(workspaceRealization).length > 0) {
+    // Step 3: Persist realization metadata on lease and execution workspace.
+    //
+    // Thread the realized working directory through as `remoteCwd` on the lease
+    // metadata. The runtime driver (and, for plugin-backed providers, the plugin
+    // itself, e.g. the kubernetes provider) reports the authoritative in-environment
+    // cwd from realizeWorkspace (e.g. "/workspace"), but acquireLease does NOT
+    // record it on the lease. Without persisting it here,
+    // resolveEnvironmentExecutionTarget (Step 4) finds no `remoteCwd` in the lease
+    // metadata and falls back to DEFAULT_SANDBOX_REMOTE_CWD ("/tmp"), so the
+    // adapter syncs/execs the workspace under /tmp instead of the realized
+    // workspace dir. Persisting it keeps the lease the single source of truth and
+    // makes the executionTarget honor the provider's realized cwd. Generic across
+    // all remote drivers; only writes when the driver reported a non-empty cwd and
+    // the lease does not already carry the same value.
+    const realizedRemoteCwd =
+      environment.driver !== "local" &&
+      typeof realizedWorkspaceCwd === "string" &&
+      realizedWorkspaceCwd.trim().length > 0
+        ? realizedWorkspaceCwd.trim()
+        : null;
+    const shouldPersistRemoteCwd =
+      realizedRemoteCwd !== null && lease.metadata?.remoteCwd !== realizedRemoteCwd;
+    if (Object.keys(workspaceRealization).length > 0 || shouldPersistRemoteCwd) {
       const nextLeaseMetadata = {
         ...(lease.metadata ?? {}),
-        workspaceRealization,
+        ...(Object.keys(workspaceRealization).length > 0 ? { workspaceRealization } : {}),
+        ...(realizedRemoteCwd !== null ? { remoteCwd: realizedRemoteCwd } : {}),
       };
       const updatedLease = await environmentsSvc.updateLeaseMetadata(lease.id, nextLeaseMetadata);
       if (updatedLease) {
         lease = updatedLease;
+      } else {
+        // Keep the in-memory lease consistent even if the persistence layer
+        // returns no row, so Step 4 reads the realized remoteCwd.
+        lease = { ...lease, metadata: nextLeaseMetadata } as typeof lease;
       }
-      if (persistedExecutionWorkspace) {
+      if (persistedExecutionWorkspace && Object.keys(workspaceRealization).length > 0) {
         const updatedEw = await executionWorkspacesSvc.update(persistedExecutionWorkspace.id, {
           metadata: {
             ...(persistedExecutionWorkspace.metadata ?? {}),
