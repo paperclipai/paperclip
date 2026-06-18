@@ -18,7 +18,6 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["automation", "ui"],
   capabilities: [
     "events.subscribe",
-    "costs.read",
     "issue.comments.create",
     "plugin.state.read",
     "plugin.state.write",

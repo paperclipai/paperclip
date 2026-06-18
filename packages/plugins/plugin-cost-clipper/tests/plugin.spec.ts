@@ -68,7 +68,6 @@ async function emitCost(harness: ReturnType<typeof createTestHarness>, payload: 
 describe("cost clipper plugin", () => {
   it("declares the capabilities and dashboard widget it relies on", () => {
     expect(manifest.capabilities).toContain("events.subscribe");
-    expect(manifest.capabilities).toContain("costs.read");
     expect(manifest.capabilities).toContain("issue.comments.create");
     expect(manifest.capabilities).toContain("metrics.write");
     expect(manifest.ui?.slots).toContainEqual(
@@ -80,6 +79,9 @@ describe("cost clipper plugin", () => {
     // The worker only posts comments (issue.comments.create); it never reads
     // issues, so issues.read must not be in the manifest.
     expect(manifest.capabilities).not.toContain("issues.read");
+    // Cost data arrives via cost_event.created over events.subscribe; the
+    // worker never calls a costs read API, so costs.read must not be declared.
+    expect(manifest.capabilities).not.toContain("costs.read");
   });
 
   it("validates instance config against the manifest schema", async () => {
