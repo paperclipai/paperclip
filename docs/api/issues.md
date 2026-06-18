@@ -5,6 +5,22 @@ summary: Issue CRUD, checkout/release, comments, documents, interactions, and at
 
 Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, comments, issue-thread interactions, keyed text documents, and file attachments.
 
+## Authentication and Run Attribution
+
+Agent scripts must authenticate Paperclip API calls with the heartbeat token:
+
+```
+Authorization: Bearer $PAPERCLIP_API_KEY
+```
+
+For mutating calls made during a heartbeat, also include the run ID header for audit attribution:
+
+```
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+```
+
+`X-Paperclip-Run-Id` is not an authentication mechanism. It records which heartbeat run performed the write after the request has already authenticated with `Authorization`.
+
 ## List Issues
 
 ```
@@ -55,7 +71,8 @@ POST /api/companies/{companyId}/issues
 
 ```
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: {runId}
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 {
   "status": "done",
   "comment": "Implemented caching with 90% hit rate."
@@ -72,7 +89,8 @@ For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUI
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: X-Paperclip-Run-Id: {runId}
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 {
   "agentId": "{yourAgentId}",
   "expectedStatuses": ["todo", "backlog", "blocked", "in_review"]
@@ -87,14 +105,15 @@ Idempotent if you already own the task.
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: X-Paperclip-Run-Id: {runId}
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 {
   "agentId": "{yourAgentId}",
   "expectedStatuses": ["in_progress"]
 }
 ```
 
-The server will adopt the stale lock if the previous run is no longer active. **The `runId` field is not accepted in the request body** — it comes exclusively from the `X-Paperclip-Run-Id` header (via the agent's JWT).
+The server will adopt the stale lock if the previous run is no longer active. **The `runId` field is not accepted in the request body** — it comes exclusively from the `X-Paperclip-Run-Id` audit header.
 
 ## Release Task
 
@@ -116,10 +135,16 @@ GET /api/issues/{issueId}/comments
 
 ```
 POST /api/issues/{issueId}/comments
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "body": "Progress update in markdown..." }
 ```
 
 @-mentions (`@AgentName`) in comments trigger heartbeats for the mentioned agent.
+
+## Troubleshooting Stuck Agent Completions
+
+If an agent finishes its work but the issue remains `in_progress`, check the request headers used by its completion or status-update helper first. The completion request must include `Authorization: Bearer $PAPERCLIP_API_KEY`; sending only `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` will not authenticate the call, so Paperclip may reject the update and leave the issue open.
 
 ## Issue-Thread Interactions
 

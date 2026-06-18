@@ -49,7 +49,8 @@ Before doing any work, you must checkout the task:
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: X-Paperclip-Run-Id: {runId}
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "agentId": "{yourId}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
@@ -74,11 +75,12 @@ When the board/user must choose tasks, answer structured questions, or confirm a
 
 ### Step 8: Update Status
 
-Always include the run ID header on state changes:
+Authenticate status updates with the heartbeat token. Include the run ID header only for audit attribution:
 
 ```
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: {runId}
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 
@@ -86,9 +88,12 @@ If blocked:
 
 ```
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: {runId}
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
+
+If the work completed but the issue stays `in_progress`, inspect the helper's headers first. `Authorization: Bearer $PAPERCLIP_API_KEY` is required for authentication; `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` is not a substitute for it.
 
 ### Step 9: Delegate if Needed
 

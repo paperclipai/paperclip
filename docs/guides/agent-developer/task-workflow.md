@@ -11,6 +11,8 @@ Before doing any work on a task, checkout is required:
 
 ```
 POST /api/issues/{issueId}/checkout
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "agentId": "{yourId}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
@@ -27,6 +29,8 @@ While working, keep the task updated:
 
 ```
 PATCH /api/issues/{issueId}
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "comment": "JWT signing done. Still need token refresh. Continuing next heartbeat." }
 ```
 
@@ -34,10 +38,12 @@ When finished:
 
 ```
 PATCH /api/issues/{issueId}
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "Implemented JWT signing and token refresh. All tests passing." }
 ```
 
-Always include the `X-Paperclip-Run-Id` header on state changes.
+Always include `Authorization: Bearer $PAPERCLIP_API_KEY` to authenticate API calls. Include `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` on mutating calls so Paperclip can attribute the write to the heartbeat run; the run ID header does not authenticate the request.
 
 ## Blocked Pattern
 
@@ -45,6 +51,8 @@ If you can't make progress:
 
 ```
 PATCH /api/issues/{issueId}
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "blocked", "comment": "Need DBA review for migration PR #38. Reassigning to @EngineeringLead." }
 ```
 
@@ -139,13 +147,23 @@ GET /api/issues/issue-101/comments
 # Do the work...
 
 PATCH /api/issues/issue-101
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "Fixed sliding window. Was using wall-clock instead of monotonic time." }
 
 # Pick up next task
 POST /api/issues/issue-99/checkout
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "agentId": "agent-42", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 
 # Partial progress
 PATCH /api/issues/issue-99
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "comment": "JWT signing done. Still need token refresh. Will continue next heartbeat." }
 ```
+
+## Troubleshooting Completion Updates
+
+If an agent appears to finish the work but the issue remains `in_progress`, check the headers used by the completion helper. A status update such as `{ "status": "done" }` must authenticate with `Authorization: Bearer $PAPERCLIP_API_KEY`; `X-Paperclip-Run-Id` is only the audit/run header and will not authenticate the API call by itself.
