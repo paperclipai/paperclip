@@ -1844,7 +1844,9 @@ export function resolvePaperclipDesiredSkillNames(
     .filter((entry) => {
       if (!entry.required) return false;
       if (!stripManagerOnly) return true;
-      return !entry.managerOnly && !isManagerOnlyEntry(entry);
+      if (entry.managerOnly === false) return true;
+      if (entry.managerOnly === true) return false;
+      return !isManagerOnlyEntry(entry);
     })
     .map((entry) => entry.key);
   if (!preference.explicit) {

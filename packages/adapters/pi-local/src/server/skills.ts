@@ -85,7 +85,7 @@ export async function syncPiSkills(
 
 export function resolvePiDesiredSkillNames(
   config: Record<string, unknown>,
-  availableEntries: Array<{ key: string; required?: boolean }>,
+  availableEntries: Array<{ key: string; required?: boolean; runtimeName?: string | null; managerOnly?: boolean }>,
   agentRole: string | null = null,
 ) {
   return resolvePaperclipDesiredSkillNames(config, availableEntries, agentRole);
