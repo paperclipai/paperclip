@@ -27,6 +27,7 @@ import { AppLogo } from "./AppLogo";
 import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
 import { SetupPanel } from "./app-detail/SetupPanel";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
+import { TestPanel } from "./app-detail/TestPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import { ActivityPanel } from "./app-detail/ActivityPanel";
 import {
@@ -357,6 +358,9 @@ export function AppDetail() {
           onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
           onTurnOnQuarantined={(ids) => apply({ enabled: addAll(new Set(enabledIds), ids) })}
         />
+      )}
+      {activeTab === "test" && (
+        <TestPanel connectionId={connectionId} appName={appName} active={active} />
       )}
       {activeTab === "activity" && (
         <ActivityPanel

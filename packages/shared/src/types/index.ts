@@ -339,6 +339,12 @@ export type {
   McpJsonImportPreview,
   CreateToolTrustRuleFromActionRequest,
   RevokeToolTrustRule,
+  ToolConnectionTestDecision,
+  ToolConnectionTestToolAccess,
+  ToolConnectionAccessSummary,
+  ToolConnectionTestAgent,
+  ToolConnectionTestAgentsResponse,
+  ToolConnectionTestCallResult,
 } from "./tool-access.js";
 export type {
   IssueWorkProduct,

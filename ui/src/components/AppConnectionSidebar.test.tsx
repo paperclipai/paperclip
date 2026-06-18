@@ -164,15 +164,16 @@ describe("AppConnectionSidebar", () => {
     await flushReact();
   }
 
-  it("renders a back link and five app tabs", async () => {
+  it("renders a back link and the connected app tabs (including Test)", async () => {
     await renderSidebar();
 
     expect(container.querySelector('a[href="/apps"]')?.textContent).toContain("All apps");
     expect(container.textContent).toContain("GitHub");
-    expect(container.querySelectorAll("[data-to]").length).toBe(5);
+    expect(container.querySelectorAll("[data-to]").length).toBe(6);
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/setup", label: "Setup", end: true }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/review", label: "Review", badge: 5, badgeTone: "danger" }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/permissions", label: "Permissions", end: true }));
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/test", label: "Test", end: true }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/activity", label: "Activity", end: true }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/advanced", label: "Advanced", end: true }));
   });
@@ -198,5 +199,8 @@ describe("AppConnectionSidebar", () => {
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/app/app-1/activity", label: "Activity", end: true }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/app/app-1/advanced", label: "Advanced", end: true }));
     expect(container.querySelector('[data-to="/apps/app/app-1/review"]')?.getAttribute("data-active")).toBe("true");
+    // The Test tab needs a live connection, so it is hidden in application mode.
+    expect(container.querySelector('[data-to="/apps/app/app-1/test"]')).toBeNull();
+    expect(container.querySelectorAll("[data-to]").length).toBe(5);
   });
 });

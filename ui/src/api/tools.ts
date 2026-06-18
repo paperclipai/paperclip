@@ -35,6 +35,8 @@ import type {
   AppGalleryEntry,
   ToolAppsAttentionResponse,
   ToolConnectionActivityResponse,
+  ToolConnectionTestAgentsResponse,
+  ToolConnectionTestCallResult,
   ToolActionRequest,
   ToolActionRequestStatus,
   ToolActionRequestsResponse,
@@ -281,6 +283,18 @@ export const toolsApi = {
   listConnectionActivity: (connectionId: string, limit = 20) =>
     api.get<ToolConnectionActivityResponse>(
       `/tool-connections/${connectionId}/activity?limit=${limit}`,
+    ),
+  listTestAgents: (connectionId: string) =>
+    api.get<ToolConnectionTestAgentsResponse>(
+      `/tool-connections/${connectionId}/test-agents`,
+    ),
+  runTestCall: (
+    connectionId: string,
+    input: { agentId: string; toolName: string; parameters?: Record<string, unknown> },
+  ) =>
+    api.post<ToolConnectionTestCallResult>(
+      `/tool-connections/${connectionId}/test-calls`,
+      input,
     ),
   importMcpJson: (companyId: string, body: { mcpJson: unknown }) =>
     api.post<McpJsonImportPreview>(`/companies/${companyId}/tools/mcp/import-json`, body),

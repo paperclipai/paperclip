@@ -1125,3 +1125,58 @@ export interface ToolAccessDecision {
   invocationId?: string | null;
   actionRequestId?: string | null;
 }
+
+/**
+ * How an action would behave for a given agent if they ran it right now —
+ * the same three-way outcome the Test tab and Permissions surface.
+ */
+export type ToolConnectionTestDecision = "allowed" | "ask_first" | "off";
+
+/** Per-action access summary for one agent on one connection. */
+export interface ToolConnectionTestToolAccess {
+  /** Upstream tool name; what `test-calls` expects as `toolName`. */
+  toolName: string;
+  /** Gateway-namespaced tool name (matches the catalog gateway entry). */
+  gatewayToolName: string;
+  displayName: string | null;
+  risk: "read" | "write" | "destructive";
+  decision: ToolConnectionTestDecision;
+  reasonCode: ToolAccessReasonCode | string | null;
+  matchedPolicyIds: string[];
+}
+
+/** Roll-up of how every action on a connection behaves for one agent. */
+export interface ToolConnectionAccessSummary {
+  connectionId: string;
+  toolCount: number;
+  allowedCount: number;
+  askFirstCount: number;
+  offCount: number;
+  tools: ToolConnectionTestToolAccess[];
+}
+
+/** An agent the board member may impersonate in the Test tab. */
+export interface ToolConnectionTestAgent {
+  id: string;
+  name: string;
+  role: string;
+  title: string | null;
+  status: string;
+  effectiveAccess: ToolConnectionAccessSummary;
+}
+
+export interface ToolConnectionTestAgentsResponse {
+  agents: ToolConnectionTestAgent[];
+}
+
+/** Result of `POST /tool-connections/:id/test-calls`. */
+export interface ToolConnectionTestCallResult {
+  decision: ToolConnectionTestDecision;
+  invocationId: string;
+  /** Present (with `decision: "allowed"`) when the call ran to completion. */
+  result?: unknown;
+  /** Present on a failed allowed run, or as the explanation for an off action. */
+  error?: { message: string; reasonCode: ToolAccessReasonCode | string | null };
+  /** Present (with `decision: "ask_first"`) — the parked approval request. */
+  actionRequestId?: string;
+}
