@@ -112,6 +112,26 @@ describe("normalizeIssueExecutionPolicy", () => {
   it("throws for invalid input", () => {
     expect(() => normalizeIssueExecutionPolicy({ stages: [{ type: "invalid_type" }] })).toThrow();
   });
+
+  it("keeps monitor-only policies", () => {
+    const result = normalizeIssueExecutionPolicy({
+      monitor: {
+        nextCheckAt: "2026-04-11T12:30:00.000Z",
+        notes: "Check deployment",
+        externalRef: "https://example.test/deploy?token=secret",
+      },
+      stages: [],
+    });
+    expect(result).toMatchObject({
+      stages: [],
+      monitor: {
+        nextCheckAt: "2026-04-11T12:30:00.000Z",
+        notes: "Check deployment",
+        scheduledBy: "assignee",
+        externalRef: "[redacted]",
+      },
+    });
+  });
 });
 
 describe("parseIssueExecutionState", () => {
@@ -1259,6 +1279,171 @@ describe("issue execution policy transitions", () => {
           returnAssignee: { type: "agent", agentId: coderAgentId },
         },
       });
+    });
+  });
+
+  describe("monitor policy", () => {
+    it("schedules a one-shot monitor on an active agent-owned issue", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: {
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          notes: "Check deployment",
+          scheduledBy: "board",
+        },
+      })!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: null,
+          monitorAttemptCount: 0,
+          monitorNextCheckAt: null,
+          monitorLastTriggeredAt: null,
+          monitorNotes: null,
+          monitorScheduledBy: null,
+        },
+        policy,
+        previousPolicy: null,
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+        monitorExplicitlyUpdated: true,
+      });
+
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date("2026-04-11T12:30:00.000Z"));
+      expect(result.patch.monitorScheduledBy).toBe("board");
+      expect(result.patch.executionState).toMatchObject({
+        status: "idle",
+        monitor: {
+          status: "scheduled",
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          notes: "Check deployment",
+          scheduledBy: "board",
+        },
+      });
+    });
+
+    it("auto-clears a scheduled monitor when the issue moves to done", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: {
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          notes: "Check deployment",
+          scheduledBy: "assignee",
+        },
+      })!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "idle",
+            currentStageId: null,
+            currentStageIndex: null,
+            currentStageType: null,
+            currentParticipant: null,
+            returnAssignee: null,
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+            monitor: {
+              status: "scheduled",
+              nextCheckAt: "2026-04-11T12:30:00.000Z",
+              lastTriggeredAt: null,
+              attemptCount: 0,
+              notes: "Check deployment",
+              scheduledBy: "assignee",
+              clearedAt: null,
+              clearReason: null,
+            },
+          },
+          monitorAttemptCount: 0,
+          monitorNextCheckAt: new Date("2026-04-11T12:30:00.000Z"),
+          monitorLastTriggeredAt: null,
+          monitorNotes: "Check deployment",
+          monitorScheduledBy: "assignee",
+        },
+        policy,
+        previousPolicy: policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch.executionPolicy).toBeNull();
+      expect(result.patch.monitorNextCheckAt).toBeNull();
+      expect(result.patch.executionState).toMatchObject({
+        monitor: {
+          status: "cleared",
+          clearReason: "done",
+        },
+      });
+    });
+
+    it("rejects explicitly scheduling a monitor on an invalid issue state", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: {
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          notes: "Check deployment",
+        },
+      })!;
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "blocked",
+            assigneeAgentId: coderAgentId,
+            assigneeUserId: null,
+            executionPolicy: null,
+            executionState: null,
+          },
+          policy,
+          previousPolicy: null,
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+          monitorExplicitlyUpdated: true,
+        }),
+      ).toThrow("Monitor can only be scheduled");
+    });
+
+    it("rejects explicitly re-arming a monitor after max attempts are exhausted", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: {
+          nextCheckAt: "2099-04-11T12:30:00.000Z",
+          maxAttempts: 1,
+          scheduledBy: "assignee",
+        },
+      })!;
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: coderAgentId,
+            assigneeUserId: null,
+            executionPolicy: null,
+            executionState: null,
+            monitorAttemptCount: 1,
+            monitorNextCheckAt: null,
+            monitorLastTriggeredAt: null,
+            monitorNotes: null,
+            monitorScheduledBy: "assignee",
+          },
+          policy,
+          previousPolicy: null,
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+          monitorExplicitlyUpdated: true,
+        }),
+      ).toThrow("Monitor bounds are already exhausted");
     });
   });
 });

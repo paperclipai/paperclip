@@ -6,6 +6,7 @@ export type HeartbeatRunStopReason =
   | "cancelled"
   | "budget_paused"
   | "paused"
+  | "max_turns_exhausted"
   | "process_lost"
   | "adapter_failed";
 
@@ -38,6 +39,12 @@ function hasOwn(record: Record<string, unknown>, key: string) {
 
 function defaultTimeoutSecForAdapter(adapterType: string) {
   return adapterType === "openclaw_gateway" ? 120 : 0;
+}
+
+export function normalizeMaxTurnStopReason(value: unknown): Extract<HeartbeatRunStopReason, "max_turns_exhausted"> | null {
+  return value === "max_turns_exhausted" || value === "turn_limit_exhausted"
+    ? "max_turns_exhausted"
+    : null;
 }
 
 export function resolveHeartbeatRunTimeoutPolicy(
@@ -76,6 +83,8 @@ export function inferHeartbeatRunStopReason(input: {
   errorMessage?: string | null;
 }): HeartbeatRunStopReason {
   if (input.outcome === "succeeded") return "completed";
+  const maxTurnStopReason = normalizeMaxTurnStopReason(input.errorCode);
+  if (maxTurnStopReason) return maxTurnStopReason;
   if (input.outcome === "timed_out") return "timeout";
   if (input.outcome === "failed" && input.errorCode === "process_lost") return "process_lost";
   if (input.outcome === "cancelled") {
@@ -107,9 +116,10 @@ export function mergeHeartbeatRunStopMetadata(
   resultJson: Record<string, unknown> | null | undefined,
   metadata: HeartbeatRunStopMetadata,
 ): Record<string, unknown> {
+  const existingMaxTurnStopReason = normalizeMaxTurnStopReason(resultJson?.stopReason);
   return {
     ...(resultJson ?? {}),
-    stopReason: metadata.stopReason,
+    stopReason: existingMaxTurnStopReason ?? metadata.stopReason,
     effectiveTimeoutSec: metadata.effectiveTimeoutSec,
     timeoutConfigured: metadata.timeoutConfigured,
     timeoutSource: metadata.timeoutSource,

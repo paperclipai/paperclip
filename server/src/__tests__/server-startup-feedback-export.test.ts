@@ -138,7 +138,12 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  backfillPrincipalAccessCompatibility: vi.fn(async () => ({
+    agentMembershipsInserted: 0,
+    humanGrantsInserted: 0,
+  })),
   feedbackService: feedbackServiceFactoryMock,
+  bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
@@ -146,6 +151,7 @@ vi.mock("../services/index.js", () => ({
     reconcileStrandedAssignedIssues: vi.fn(async () => ({
       dispatchRequeued: 0,
       continuationRequeued: 0,
+      successfulRunHandoffEscalated: 0,
       escalated: 0,
       skipped: 0,
       issueIds: [],
@@ -161,6 +167,7 @@ vi.mock("../services/index.js", () => ({
       },
     })),
   })),
+  reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
@@ -214,6 +221,35 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("refuses authenticated public startup without an external database URL", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      deploymentExposure: "public",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://tenant.example.com",
+      databaseMode: "embedded-postgres",
+      databaseUrl: undefined,
+    }));
+
+    await expect(startServer()).rejects.toThrow(
+      "authenticated public deployments require DATABASE_URL or config.database.connectionString",
+    );
+    expect(createDbMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses authenticated public startup when DATABASE_URL is not a postgres URL", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      deploymentExposure: "public",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://tenant.example.com",
+      databaseUrl: "secret://paperclip-cloud/stacks/alpha/database/runtime-url",
+    }));
+
+    await expect(startServer()).rejects.toThrow(
+      "authenticated public deployments require DATABASE_URL to be a postgres/postgresql connection string",
+    );
+    expect(createDbMock).not.toHaveBeenCalled();
   });
 });
 

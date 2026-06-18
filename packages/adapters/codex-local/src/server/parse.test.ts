@@ -80,6 +80,7 @@ describe("isCodexUnknownSessionError", () => {
   it("still detects existing stale-session wordings", () => {
     expect(isCodexUnknownSessionError("unknown thread id", "")).toBe(true);
     expect(isCodexUnknownSessionError("", "state db missing rollout path for thread abc")).toBe(true);
+    expect(isCodexUnknownSessionError("", "state db returned stale rollout path for thread abc")).toBe(true);
   });
 
   it("does not classify unrelated Codex failures as stale sessions", () => {

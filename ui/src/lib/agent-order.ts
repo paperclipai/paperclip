@@ -1,17 +1,30 @@
 import type { Agent } from "@paperclipai/shared";
 
 export const AGENT_ORDER_UPDATED_EVENT = "paperclip:agent-order-updated";
+export const AGENT_SORT_MODE_UPDATED_EVENT = "paperclip:agent-sort-mode-updated";
 const AGENT_ORDER_STORAGE_PREFIX = "paperclip.agentOrder";
+const AGENT_SORT_MODE_STORAGE_PREFIX = "paperclip.agentSortMode";
 const ANONYMOUS_USER_ID = "anonymous";
+
+export type AgentSidebarSortMode = "top" | "alphabetical" | "recent";
 
 type AgentOrderUpdatedDetail = {
   storageKey: string;
   orderedIds: string[];
 };
 
+export type AgentSortModeUpdatedDetail = {
+  storageKey: string;
+  sortMode: AgentSidebarSortMode;
+};
+
 function normalizeIdList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
+function normalizeSortMode(value: unknown): AgentSidebarSortMode {
+  return value === "alphabetical" || value === "recent" || value === "top" ? value : "top";
 }
 
 function resolveUserId(userId: string | null | undefined): string {
@@ -24,6 +37,10 @@ export function getAgentOrderStorageKey(companyId: string, userId: string | null
   return `${AGENT_ORDER_STORAGE_PREFIX}:${companyId}:${resolveUserId(userId)}`;
 }
 
+export function getAgentSortModeStorageKey(companyId: string, userId: string | null | undefined): string {
+  return `${AGENT_SORT_MODE_STORAGE_PREFIX}:${companyId}:${resolveUserId(userId)}`;
+}
+
 export function readAgentOrder(storageKey: string): string[] {
   try {
     const raw = localStorage.getItem(storageKey);
@@ -31,6 +48,14 @@ export function readAgentOrder(storageKey: string): string[] {
     return normalizeIdList(JSON.parse(raw));
   } catch {
     return [];
+  }
+}
+
+export function readAgentSortMode(storageKey: string): AgentSidebarSortMode {
+  try {
+    return normalizeSortMode(localStorage.getItem(storageKey));
+  } catch {
+    return "top";
   }
 }
 
@@ -50,7 +75,48 @@ export function writeAgentOrder(storageKey: string, orderedIds: string[]) {
   }
 }
 
-export function sortAgentsByDefaultSidebarOrder(agents: Agent[]): Agent[] {
+export function writeAgentSortMode(storageKey: string, sortMode: AgentSidebarSortMode) {
+  const normalized = normalizeSortMode(sortMode);
+  try {
+    localStorage.setItem(storageKey, normalized);
+  } catch {
+    // Ignore storage write failures in restricted browser contexts.
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent<AgentSortModeUpdatedDetail>(AGENT_SORT_MODE_UPDATED_EVENT, {
+        detail: { storageKey, sortMode: normalized },
+      }),
+    );
+  }
+}
+
+// Leadership roles surface at the top of each sibling group so the company's
+// lead (typically the freshly-hired CEO) is visible without scrolling the
+// sidebar (PAP-52). Anything outside this list falls back to alphabetical.
+// Opt-in via `leadershipFirst` — gated on the Conference Room Chat experimental
+// flag (PAP-139); the default keeps master's plain alphabetical sibling order.
+const ROLE_SORT_PRIORITY: Record<string, number> = {
+  ceo: 0,
+  cto: 1,
+  cfo: 2,
+  cmo: 3,
+};
+
+function rolePriority(agent: Agent): number {
+  const role = typeof agent.role === "string" ? agent.role.toLowerCase() : "";
+  return ROLE_SORT_PRIORITY[role] ?? Number.MAX_SAFE_INTEGER;
+}
+
+export interface AgentSidebarOrderOptions {
+  /** Surface leadership roles (CEO/CTO/...) first within each sibling group. */
+  leadershipFirst?: boolean;
+}
+
+export function sortAgentsByDefaultSidebarOrder(
+  agents: Agent[],
+  options?: AgentSidebarOrderOptions,
+): Agent[] {
   if (agents.length === 0) return [];
 
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
@@ -62,8 +128,15 @@ export function sortAgentsByDefaultSidebarOrder(agents: Agent[]): Agent[] {
     childrenOf.set(parentId, siblings);
   }
 
+  const leadershipFirst = options?.leadershipFirst === true;
   for (const siblings of childrenOf.values()) {
-    siblings.sort((left, right) => left.name.localeCompare(right.name));
+    siblings.sort((left, right) => {
+      if (leadershipFirst) {
+        const priorityDiff = rolePriority(left) - rolePriority(right);
+        if (priorityDiff !== 0) return priorityDiff;
+      }
+      return left.name.localeCompare(right.name);
+    });
   }
 
   const sorted: Agent[] = [];
@@ -79,10 +152,14 @@ export function sortAgentsByDefaultSidebarOrder(agents: Agent[]): Agent[] {
   return sorted;
 }
 
-export function sortAgentsByStoredOrder(agents: Agent[], orderedIds: string[]): Agent[] {
+export function sortAgentsByStoredOrder(
+  agents: Agent[],
+  orderedIds: string[],
+  options?: AgentSidebarOrderOptions,
+): Agent[] {
   if (agents.length === 0) return [];
 
-  const defaultSorted = sortAgentsByDefaultSidebarOrder(agents);
+  const defaultSorted = sortAgentsByDefaultSidebarOrder(agents, options);
   if (orderedIds.length === 0) return defaultSorted;
 
   const byId = new Map(defaultSorted.map((agent) => [agent.id, agent]));

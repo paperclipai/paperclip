@@ -44,27 +44,6 @@ const acpxLocalConfigSchema: AdapterConfigSchema = {
       hint: "Required for custom agents; optional override for built-in Claude or Codex ACP commands.",
     },
     {
-      key: "mode",
-      label: "Session mode",
-      type: "select",
-      default: "persistent",
-      options: [
-        { value: "persistent", label: "Persistent" },
-        { value: "oneshot", label: "One shot" },
-      ],
-    },
-    {
-      key: "permissionMode",
-      label: "Permission mode",
-      type: "select",
-      default: "approve-all",
-      options: [
-        { value: "approve-all", label: "Approve all" },
-        { value: "default", label: "ACP default" },
-      ],
-      hint: "Defaults to maximum permissions: ACPX permission requests are auto-approved.",
-    },
-    {
       key: "nonInteractivePermissions",
       label: "Non-interactive permissions",
       type: "select",
@@ -73,6 +52,7 @@ const acpxLocalConfigSchema: AdapterConfigSchema = {
         { value: "deny", label: "Deny" },
         { value: "fail", label: "Fail" },
       ],
+      hint: "Fallback if the ACP agent asks for input outside an interactive session. Paperclip still auto-approves permissions by default.",
     },
     {
       key: "cwd",
@@ -87,14 +67,21 @@ const acpxLocalConfigSchema: AdapterConfigSchema = {
       hint: "Optional ACPX session state directory. Defaults to Paperclip-managed company/agent scoped storage.",
     },
     {
-      key: "instructionsFilePath",
-      label: "Instructions file",
-      type: "text",
-      hint: "Optional absolute path to markdown instructions injected into the run prompt.",
+      key: "fastMode",
+      label: "Codex fast mode",
+      type: "toggle",
+      default: false,
+      hint: "Only applies when ACP agent is Codex. Requests Codex Fast mode through ACP session config.",
+      meta: { visibleWhen: { key: "agent", values: ["codex"] } },
     },
-    { key: "promptTemplate", label: "Prompt template", type: "textarea" },
-    { key: "bootstrapPromptTemplate", label: "Bootstrap prompt template", type: "textarea" },
     { key: "timeoutSec", label: "Timeout seconds", type: "number", default: 0 },
+    {
+      key: "warmHandleIdleMs",
+      label: "Warm process idle ms",
+      type: "number",
+      default: 0,
+      hint: "Defaults to 0, which closes the ACPX process after each run while retaining persistent session state.",
+    },
     {
       key: "env",
       label: "Environment JSON",
@@ -437,6 +424,23 @@ function AcpxLocalTranscriptStory() {
 
 const SKILLS_COMPANY_ID = "company-storybook";
 
+const defaultStoreSkillFields = {
+  iconUrl: null,
+  color: null,
+  tagline: null,
+  authorName: null,
+  homepageUrl: null,
+  categories: [],
+  sharingScope: "company" as const,
+  publicShareToken: null,
+  forkedFromSkillId: null,
+  forkedFromCompanyId: null,
+  starCount: 0,
+  installCount: 1,
+  forkCount: 0,
+  currentVersionId: null,
+};
+
 const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
   {
     id: "skill-paperclip",
@@ -452,6 +456,7 @@ const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
     trustLevel: "scripts_executables",
     compatibility: "compatible",
     fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+    ...defaultStoreSkillFields,
     createdAt: new Date("2026-04-12T09:00:00.000Z"),
     updatedAt: new Date("2026-04-22T15:30:00.000Z"),
     attachedAgentCount: 4,
@@ -460,6 +465,10 @@ const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
     sourceLabel: "Paperclip",
     sourceBadge: "paperclip",
     sourcePath: "skills/paperclip",
+    catalogKind: null,
+    originHash: null,
+    packageName: null,
+    packageVersion: null,
   },
   {
     id: "skill-design-guide",
@@ -475,6 +484,7 @@ const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
     trustLevel: "markdown_only",
     compatibility: "compatible",
     fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+    ...defaultStoreSkillFields,
     createdAt: new Date("2026-04-15T10:00:00.000Z"),
     updatedAt: new Date("2026-04-25T12:00:00.000Z"),
     attachedAgentCount: 2,
@@ -483,6 +493,10 @@ const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
     sourceLabel: "Local",
     sourceBadge: "local",
     sourcePath: "skills/design-guide",
+    catalogKind: null,
+    originHash: null,
+    packageName: null,
+    packageVersion: null,
   },
   {
     id: "skill-mobile-qa",
@@ -498,6 +512,7 @@ const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
     trustLevel: "assets",
     compatibility: "compatible",
     fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+    ...defaultStoreSkillFields,
     createdAt: new Date("2026-04-18T11:00:00.000Z"),
     updatedAt: new Date("2026-04-26T09:30:00.000Z"),
     attachedAgentCount: 1,
@@ -506,6 +521,10 @@ const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
     sourceLabel: "Local",
     sourceBadge: "local",
     sourcePath: "skills/mobile-app-qa",
+    catalogKind: null,
+    originHash: null,
+    packageName: null,
+    packageVersion: null,
   },
 ];
 

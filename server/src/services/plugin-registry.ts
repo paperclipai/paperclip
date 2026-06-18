@@ -1,8 +1,9 @@
-import { asc, eq, ne, sql, and } from "drizzle-orm";
+import { asc, eq, isNull, ne, sql, and } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   plugins,
   pluginConfig,
+  pluginCompanySettings,
   pluginEntities,
   pluginJobs,
   pluginJobRuns,
@@ -15,6 +16,7 @@ import type {
   UpdatePluginStatus,
   UpsertPluginConfig,
   PatchPluginConfig,
+  PluginCompanySettings,
   PluginEntityRecord,
   PluginEntityQuery,
   PluginJobRecord,
@@ -387,6 +389,64 @@ export function pluginRegistryService(db: Db) {
       return rows[0] ?? null;
     },
 
+    // ----- Company settings ----------------------------------------------
+
+    /** Retrieve company-scoped plugin settings. */
+    getCompanySettings: (pluginId: string, companyId: string): Promise<PluginCompanySettings | null> =>
+      db
+        .select()
+        .from(pluginCompanySettings)
+        .where(and(
+          eq(pluginCompanySettings.pluginId, pluginId),
+          eq(pluginCompanySettings.companyId, companyId),
+        ))
+        .then((rows) => rows[0] ?? null) as Promise<PluginCompanySettings | null>,
+
+    /** Create or replace company-scoped plugin settings. */
+    upsertCompanySettings: async (
+      pluginId: string,
+      companyId: string,
+      input: { enabled?: boolean; settingsJson: Record<string, unknown>; lastError?: string | null },
+    ): Promise<PluginCompanySettings> => {
+      const plugin = await getById(pluginId);
+      if (!plugin) throw notFound("Plugin not found");
+
+      const existing = await db
+        .select()
+        .from(pluginCompanySettings)
+        .where(and(
+          eq(pluginCompanySettings.pluginId, pluginId),
+          eq(pluginCompanySettings.companyId, companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+
+      if (existing) {
+        return db
+          .update(pluginCompanySettings)
+          .set({
+            enabled: input.enabled ?? existing.enabled,
+            settingsJson: input.settingsJson,
+            lastError: input.lastError ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(pluginCompanySettings.id, existing.id))
+          .returning()
+          .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
+      }
+
+      return db
+        .insert(pluginCompanySettings)
+        .values({
+          pluginId,
+          companyId,
+          enabled: input.enabled ?? true,
+          settingsJson: input.settingsJson,
+          lastError: input.lastError ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
+    },
+
     // ----- Entities -------------------------------------------------------
 
     /**
@@ -413,27 +473,41 @@ export function pluginRegistryService(db: Db) {
     /**
      * Look up a plugin-owned entity mapping by its external identifier.
      *
+     * Scope matches `plugin_entities_external_idx` (NULLS NOT DISTINCT):
+     * pass the owning `companyId` (or `null` for instance-scope) to retrieve
+     * the row that belongs to that tenant. Two companies can share the same
+     * `(pluginId, entityType, externalId)` tuple — omitting `companyId` would
+     * return the first matched row regardless of tenant, which is unsafe.
+     *
      * @param pluginId - The UUID of the plugin.
      * @param entityType - The type of entity (e.g., 'project', 'issue').
      * @param externalId - The identifier in the external system.
+     * @param companyId - Tenant scope; `null` for instance-scope entities.
      * @returns The matching `PluginEntityRecord` or null.
      */
     getEntityByExternalId: (
       pluginId: string,
       entityType: string,
       externalId: string,
-    ) =>
-      db
+      companyId: string | null,
+    ) => {
+      const companyIdPredicate =
+        companyId == null
+          ? isNull(pluginEntities.companyId)
+          : eq(pluginEntities.companyId, companyId);
+      return db
         .select()
         .from(pluginEntities)
         .where(
           and(
+            companyIdPredicate,
             eq(pluginEntities.pluginId, pluginId),
             eq(pluginEntities.entityType, entityType),
             eq(pluginEntities.externalId, externalId),
           ),
         )
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+    },
 
     /**
      * Create or update a persistent mapping between a Paperclip object and an
@@ -449,11 +523,22 @@ export function pluginRegistryService(db: Db) {
     ) => {
       // Drizzle doesn't support pg-specific onConflictDoUpdate easily in the insert() call
       // with complex where clauses, so we do it manually.
+      // Match the per-tenant uniqueness of `plugin_entities_external_idx`
+      // (companyId, pluginId, entityType, externalId) with NULLS NOT DISTINCT
+      // semantics: two companies (and instance-scope NULLs across each other)
+      // may share the same (pluginId, entityType, externalId) tuple, so the
+      // lookup MUST scope by companyId — `isNull` for instance-scope, `eq`
+      // otherwise — to avoid returning and overwriting another tenant's row.
+      const companyIdPredicate =
+        input.companyId == null
+          ? isNull(pluginEntities.companyId)
+          : eq(pluginEntities.companyId, input.companyId);
       const existing = await db
         .select()
         .from(pluginEntities)
         .where(
           and(
+            companyIdPredicate,
             eq(pluginEntities.pluginId, pluginId),
             eq(pluginEntities.entityType, input.entityType),
             eq(pluginEntities.externalId, input.externalId ?? ""),
@@ -573,21 +658,29 @@ export function pluginRegistryService(db: Db) {
     /**
      * Record the start of a specific job execution.
      *
+     * Pass the owning `companyId` so `plugin_job_runs.company_id` is populated
+     * and the row participates in the `ON DELETE CASCADE` from `companies`.
+     * `null` is the explicit instance-scope marker (cron jobs without a tenant);
+     * those rows survive company deletes but are still attributable.
+     *
      * @param pluginId - The UUID of the plugin.
      * @param jobId - The UUID of the parent job record.
      * @param trigger - What triggered this run (e.g., 'schedule', 'manual').
+     * @param companyId - Tenant scope; `null` for instance-scope runs.
      * @returns The newly created `PluginJobRunRecord` in 'pending' status.
      */
     createJobRun: async (
       pluginId: string,
       jobId: string,
       trigger: PluginJobRunTrigger,
+      companyId: string | null,
     ) => {
       return db
         .insert(pluginJobRuns)
         .values({
           pluginId,
           jobId,
+          companyId,
           trigger,
           status: "pending",
         })
@@ -626,14 +719,22 @@ export function pluginRegistryService(db: Db) {
     /**
      * Create a record for an incoming webhook delivery.
      *
+     * Pass the owning `companyId` so `plugin_webhook_deliveries.company_id` is
+     * populated and the row participates in the `ON DELETE CASCADE` from
+     * `companies`. `null` is the explicit instance-scope marker (public
+     * webhooks without a tenant); those rows survive company deletes but are
+     * still attributable.
+     *
      * @param pluginId - The UUID of the receiving plugin.
      * @param webhookKey - The endpoint key defined in the manifest.
+     * @param companyId - Tenant scope; `null` for instance-scope deliveries.
      * @param input - The payload, headers, and optional external ID.
      * @returns The newly created `PluginWebhookDeliveryRecord` in 'pending' status.
      */
     createWebhookDelivery: async (
       pluginId: string,
       webhookKey: string,
+      companyId: string | null,
       input: {
         externalId?: string;
         payload: Record<string, unknown>;
@@ -645,6 +746,7 @@ export function pluginRegistryService(db: Db) {
         .values({
           pluginId,
           webhookKey,
+          companyId,
           externalId: input.externalId,
           payload: input.payload,
           headers: input.headers ?? {},

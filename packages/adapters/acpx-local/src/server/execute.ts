@@ -18,9 +18,13 @@ import {
   materializePaperclipSkillCopy,
   parseObject,
   readPaperclipRuntimeSkillEntries,
+  readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
   renderTemplate,
+  resolvePaperclipInstanceRootForAdapter,
   resolvePaperclipDesiredSkillNames,
+  rewriteWorkspaceCwdEnvVarsForExecution,
+  shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -44,10 +48,10 @@ import {
   DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
   DEFAULT_ACPX_LOCAL_TIMEOUT_SEC,
+  DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS,
 } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_WARM_HANDLE_IDLE_MS = 15 * 60 * 1000;
 const WRAPPER_CLEANUP_RETENTION_MS = 15 * 60 * 1000;
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 
@@ -58,6 +62,7 @@ interface RuntimeCacheEntry {
   handle: AcpRuntimeHandle;
   fingerprint: string;
   lastUsedAt: number;
+  cleanupTimer?: NodeJS.Timeout;
 }
 
 interface ExecuteDeps {
@@ -78,6 +83,9 @@ interface AcpxPreparedRuntime {
   stateDir: string;
   permissionMode: "approve-all" | "approve-reads" | "deny-all";
   nonInteractivePermissions: "deny" | "fail";
+  requestedModel: string;
+  requestedThinkingEffort: string;
+  fastMode: boolean;
   timeoutSec: number;
   sessionKey: string;
   fingerprint: string;
@@ -86,6 +94,8 @@ interface AcpxPreparedRuntime {
   remoteExecutionIdentity: Record<string, unknown> | null;
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
+  childStderrLogPath: string | null;
+  paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -108,7 +118,10 @@ function shortHash(value: unknown): string {
 function defaultPaperclipInstanceDir(): string {
   const home = process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip");
   const instanceId = process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
-  return path.join(home, "instances", instanceId);
+  return resolvePaperclipInstanceRootForAdapter({
+    homeDir: home,
+    instanceId,
+  });
 }
 
 function defaultStateDir(companyId: string, agentId: string): string {
@@ -503,6 +516,15 @@ function normalizeNonInteractivePermissions(config: Record<string, unknown>): "d
     : "deny";
 }
 
+function normalizeRequestedThinkingEffort(config: Record<string, unknown>): string {
+  return (
+    asString(config.modelReasoningEffort, "") ||
+    asString(config.reasoningEffort, "") ||
+    asString(config.thinkingEffort, "") ||
+    asString(config.effort, "")
+  ).trim();
+}
+
 function isCompatibleSession(
   params: Record<string, unknown>,
   runtime: Pick<AcpxPreparedRuntime, "fingerprint" | "sessionKey" | "cwd" | "mode" | "acpxAgent" | "remoteExecutionIdentity">,
@@ -533,6 +555,9 @@ function buildSessionParams(input: {
     mode: prepared.mode,
     stateDir: prepared.stateDir,
     configFingerprint: prepared.fingerprint,
+    ...(prepared.requestedModel ? { model: prepared.requestedModel } : {}),
+    ...(prepared.requestedThinkingEffort ? { thinkingEffort: prepared.requestedThinkingEffort } : {}),
+    ...(prepared.fastMode ? { fastMode: true } : {}),
     skills: prepared.skillsIdentity,
     ...(prepared.workspaceId ? { workspaceId: prepared.workspaceId } : {}),
     ...(prepared.workspaceRepoUrl ? { repoUrl: prepared.workspaceRepoUrl } : {}),
@@ -541,11 +566,105 @@ function buildSessionParams(input: {
   };
 }
 
+interface PaperclipClaudeSettingsResult {
+  filePath: string;
+  allow: string[];
+  additionalDirectories: string[];
+  defaultMode: string;
+  overrodeDontAsk: boolean;
+}
+
+function uniqueSorted(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))].sort();
+}
+
+// Phase 4.1 (PAPA-388): the Claude Code SDK that `claude-agent-acp` runs uses
+// `settingSources: ["user", "project", "local"]`. By writing a per-worktree
+// `.claude/settings.local.json` we override the user's potentially-restrictive
+// `~/.claude/settings.json` (e.g. `defaultMode: "dontAsk"`, which silently
+// denies every non-allowlisted tool and never reaches `canUseTool`), and we
+// widen the SDK's Read sandbox to include the Paperclip state dirs the agent
+// needs to talk to its own control plane.
+async function writePaperclipClaudeSettings(input: {
+  cwd: string;
+  stateDir: string;
+  agentHome: string;
+  companyId: string;
+}): Promise<PaperclipClaudeSettingsResult> {
+  const filePath = path.join(input.cwd, ".claude", "settings.local.json");
+  const instanceRoot = defaultPaperclipInstanceDir();
+  const companyRoot = path.join(instanceRoot, "companies", input.companyId);
+  const paperclipAdditionalDirectories = uniqueSorted([
+    input.stateDir,
+    input.agentHome,
+    companyRoot,
+  ]);
+  const paperclipAllow = uniqueSorted([
+    "Bash(curl:*)",
+    "Bash(env:*)",
+    "Bash(env)",
+    `Bash(${input.cwd}/scripts/paperclip-issue-update.sh:*)`,
+    `Bash(${input.cwd}/scripts/paperclip:*)`,
+  ]);
+
+  let existing: Record<string, unknown> = {};
+  const existingRaw = await fs.readFile(filePath, "utf8").catch(() => null);
+  if (existingRaw) {
+    try {
+      const parsed = JSON.parse(existingRaw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) existing = parsed as Record<string, unknown>;
+    } catch {
+      // Malformed settings file — leave it alone in `existing` and our merge will replace it with a valid one.
+    }
+  }
+  const existingPerms =
+    existing.permissions && typeof existing.permissions === "object" && !Array.isArray(existing.permissions)
+      ? (existing.permissions as Record<string, unknown>)
+      : {};
+  const existingAllow = Array.isArray(existingPerms.allow)
+    ? (existingPerms.allow as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
+  const existingAdditionalDirectories = Array.isArray(existingPerms.additionalDirectories)
+    ? (existingPerms.additionalDirectories as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
+  const mergedAllow = uniqueSorted([...existingAllow, ...paperclipAllow]);
+  const mergedAdditionalDirectories = uniqueSorted([
+    ...existingAdditionalDirectories,
+    ...paperclipAdditionalDirectories,
+  ]);
+  const existingDefaultMode =
+    typeof existingPerms.defaultMode === "string" ? (existingPerms.defaultMode as string) : "";
+  const defaultMode =
+    existingDefaultMode && existingDefaultMode !== "dontAsk" ? existingDefaultMode : "default";
+  const overrodeDontAsk = existingDefaultMode === "dontAsk";
+
+  const nextPermissions: Record<string, unknown> = {
+    ...existingPerms,
+    allow: mergedAllow,
+    additionalDirectories: mergedAdditionalDirectories,
+    defaultMode,
+  };
+  const next: Record<string, unknown> = { ...existing, permissions: nextPermissions };
+  await writeFileAtomically({
+    target: filePath,
+    contents: `${JSON.stringify(next, null, 2)}\n`,
+    mode: 0o600,
+  });
+  return {
+    filePath,
+    allow: mergedAllow,
+    additionalDirectories: mergedAdditionalDirectories,
+    defaultMode,
+    overrodeDontAsk,
+  };
+}
+
 async function writeAgentWrapper(input: {
   stateDir: string;
   acpxAgent: string;
   agentCommandShell: string;
   env: Record<string, string>;
+  childStderrDir: string;
 }): Promise<{ wrapperPath: string; envFilePath: string }> {
   const wrappersDir = path.join(input.stateDir, "wrappers");
   await fs.mkdir(wrappersDir, { recursive: true });
@@ -557,6 +676,7 @@ async function writeAgentWrapper(input: {
     agent: input.acpxAgent,
     command: input.agentCommandShell,
     env: envLines,
+    childStderrDir: input.childStderrDir,
   });
   const wrapperPath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.sh`);
   const envFilePath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.env`);
@@ -568,6 +688,11 @@ async function writeAgentWrapper(input: {
     "  set -a",
     "  source \"$env_file\"",
     "  set +a",
+    "fi",
+    `stderr_dir=${shellQuote(input.childStderrDir)}`,
+    "if [[ -n \"${PAPERCLIP_RUN_ID:-}\" ]]; then",
+    "  mkdir -p \"$stderr_dir\"",
+    "  exec 2> >(tee -a \"$stderr_dir/$PAPERCLIP_RUN_ID.log\" >&2)",
     "fi",
     `exec ${input.agentCommandShell} "$@"`,
     "",
@@ -622,12 +747,31 @@ async function buildRuntime(input: {
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: input.ctx.executionTarget,
+    legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
+  });
+  const remoteExecutionIdentity = adapterExecutionTargetSessionIdentity(executionTarget);
+  const effectiveExecutionCwd =
+    remoteExecutionIdentity && typeof remoteExecutionIdentity.remoteCwd === "string"
+      ? remoteExecutionIdentity.remoteCwd
+      : cwd;
+  const executionTargetIsRemote = remoteExecutionIdentity !== null;
+  const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceWorktreePath,
+    executionTargetIsRemote,
+    executionCwd: effectiveExecutionCwd,
+  });
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const acpxAgent = normalizeAgent(config);
   const mode = normalizeMode(config);
   const permissionMode = normalizePermissionMode(config);
   const nonInteractivePermissions = normalizeNonInteractivePermissions(config);
+  const requestedModel = asString(config.model, "").trim();
+  const requestedThinkingEffort = normalizeRequestedThinkingEffort(config);
+  const fastMode = acpxAgent === "codex" && config.fastMode === true;
   const timeoutSec = asNumber(config.timeoutSec, DEFAULT_ACPX_LOCAL_TIMEOUT_SEC);
   const stateDir = path.resolve(asString(config.stateDir, "") || defaultStateDir(agent.companyId, agent.id));
   await fs.mkdir(stateDir, { recursive: true });
@@ -651,7 +795,9 @@ async function buildRuntime(input: {
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
+  const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
   if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
+  if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
   if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
   if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
   if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
@@ -659,24 +805,40 @@ async function buildRuntime(input: {
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   applyPaperclipWorkspaceEnv(env, {
-    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource,
     workspaceStrategy,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
     workspaceBranch,
-    workspaceWorktreePath,
+    workspaceWorktreePath: shapedWorkspaceEnv.workspaceWorktreePath,
     agentHome,
   });
-  for (const [key, value] of Object.entries(envConfig)) {
+  const shapedEnvConfig = rewriteWorkspaceCwdEnvVarsForExecution({
+    env: envConfig,
+    workspaceCwd: effectiveWorkspaceCwd,
+    executionCwd: shapedWorkspaceEnv.workspaceCwd,
+    executionTargetIsRemote,
+  });
+  for (const [key, value] of Object.entries(shapedEnvConfig)) {
     if (typeof value === "string") env[key] = value;
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
+  // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
+  // via session/set_config_option — the ACP server's set_config_option handler
+  // validates the value against its internal available-models list and rejects
+  // bare model IDs (e.g. "claude-opus-4-7") that don't exactly match a model
+  // entry in some versions. ANTHROPIC_MODEL is read during initialization, so
+  // it reliably sets the model before any turns are run.
+  if (requestedModel && acpxAgent === "claude" && !env.ANTHROPIC_MODEL) {
+    env.ANTHROPIC_MODEL = requestedModel;
+  }
 
   let skillPromptInstructions = "";
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
   const skillCommandNotes: string[] = [];
+  let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
   if (acpxAgent === "claude") {
     const preparedSkills = await prepareClaudeSkillRuntime({
       stateDir,
@@ -686,6 +848,17 @@ async function buildRuntime(input: {
     skillPromptInstructions = preparedSkills.promptInstructions;
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
+    paperclipClaudeSettings = await writePaperclipClaudeSettings({
+      cwd,
+      stateDir,
+      agentHome,
+      companyId: agent.companyId,
+    });
+    skillCommandNotes.push(
+      `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
+        paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
+      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
+    );
   } else if (acpxAgent === "codex") {
     const preparedSkills = await prepareCodexSkillRuntime({
       companyId: agent.companyId,
@@ -707,22 +880,20 @@ async function buildRuntime(input: {
   const builtInCommand = resolveBuiltInAgentCommand(acpxAgent);
   const agentCommand = configuredCommand || builtInCommand || null;
   const agentCommandShell = configuredCommand || (builtInCommand ? shellQuote(builtInCommand) : "");
+  const childStderrDir = path.join(stateDir, "run-stderr");
+  const childStderrLogPath = agentCommand ? path.join(childStderrDir, `${runId}.log`) : null;
   const wrapper = agentCommand
     ? await writeAgentWrapper({
         stateDir,
         acpxAgent,
         agentCommandShell,
         env,
+        childStderrDir,
       })
     : null;
   const wrapperPath = wrapper?.wrapperPath ?? null;
   const overrides = wrapperPath ? { [acpxAgent]: wrapperPath } : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
-  const executionTarget = readAdapterExecutionTarget({
-    executionTarget: input.ctx.executionTarget,
-    legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
-  });
-  const remoteExecutionIdentity = adapterExecutionTargetSessionIdentity(executionTarget);
   const fingerprint = shortHash({
     acpxAgent,
     agentCommand: agentCommand ?? acpxAgent,
@@ -730,9 +901,19 @@ async function buildRuntime(input: {
     mode,
     permissionMode,
     nonInteractivePermissions,
+    requestedModel,
+    requestedThinkingEffort,
+    fastMode,
     remoteExecutionIdentity,
     skillsIdentity,
     skillPromptInstructions,
+    paperclipClaudeSettings: paperclipClaudeSettings
+      ? {
+          allow: paperclipClaudeSettings.allow,
+          additionalDirectories: paperclipClaudeSettings.additionalDirectories,
+          defaultMode: paperclipClaudeSettings.defaultMode,
+        }
+      : null,
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
@@ -755,18 +936,73 @@ async function buildRuntime(input: {
     stateDir,
     permissionMode,
     nonInteractivePermissions,
+    requestedModel,
+    requestedThinkingEffort,
+    fastMode,
     timeoutSec,
     sessionKey,
     fingerprint,
     agentCommand,
     agentRegistry,
     remoteExecutionIdentity,
-      skillPromptInstructions,
+    skillPromptInstructions,
     skillsIdentity: {
       ...skillsIdentity,
       commandNotes: skillCommandNotes,
     },
+    childStderrLogPath,
+    paperclipClaudeSettings,
   };
+}
+
+function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: string; value: string }> {
+  const options: Array<{ key: string; value: string }> = [];
+  // Model for the claude agent is pre-set via ANTHROPIC_MODEL env var at
+  // startup; skip set_config_option to avoid ACP-server model-name validation
+  // that rejects bare IDs like "claude-opus-4-7" in some runtime versions.
+  if (prepared.requestedModel && prepared.acpxAgent !== "claude") {
+    options.push({ key: "model", value: prepared.requestedModel });
+  }
+  if (prepared.requestedThinkingEffort) {
+    options.push({
+      key: prepared.acpxAgent === "codex" ? "reasoning_effort" : "effort",
+      value: prepared.requestedThinkingEffort,
+    });
+  }
+  if (prepared.fastMode) {
+    options.push(
+      { key: "service_tier", value: "fast" },
+      { key: "features.fast_mode", value: "true" },
+    );
+  }
+  return options;
+}
+
+async function applySessionConfigOptions(input: {
+  runtime: AcpRuntime;
+  handle: AcpRuntimeHandle;
+  prepared: AcpxPreparedRuntime;
+  onLog: AdapterExecutionContext["onLog"];
+}) {
+  const options = sessionConfigOptions(input.prepared);
+  if (options.length === 0) return;
+  if (!input.runtime.setConfigOption) {
+    const message =
+      "ACPX runtime does not expose session config controls; upgrade ACPX or remove configured model, effort, and fast mode overrides.";
+    await input.onLog("stderr", `[paperclip] ${message}\n`);
+    throw new Error(message);
+  }
+  for (const option of options) {
+    await input.runtime.setConfigOption({
+      handle: input.handle,
+      key: option.key,
+      value: option.value,
+    });
+    await input.onLog(
+      "stdout",
+      `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
+    );
+  }
 }
 
 async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean): Promise<{
@@ -903,31 +1139,149 @@ function resultErrorMessage(result: AcpRuntimeTurnResult): string | null {
   return result.error.message;
 }
 
-function classifyError(err: unknown): Pick<AdapterExecutionResult, "errorCode" | "errorMeta"> {
-  const message = err instanceof Error ? err.message : String(err);
+type AcpxExecutionPhase = "ensure_session" | "configure_session" | "turn";
+
+function describeErrorDiagnostics(err: unknown): {
+  errorName: string;
+  acpCode: string | null;
+  causeMessage: string | null;
+  retryable: boolean | null;
+  stackPreview: string | null;
+} {
+  const errorName =
+    err instanceof Error ? err.name || err.constructor.name : typeof err;
   const maybeCode =
     err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
       ? (err as { code: string }).code
       : null;
-  const acpCode = isAcpRuntimeError(err) || (maybeCode?.startsWith("ACP_") ?? false) ? maybeCode : null;
+  const acpCode =
+    isAcpRuntimeError(err) || (maybeCode?.startsWith("ACP_") ?? false) ? maybeCode : null;
+  const cause =
+    err && typeof err === "object" && (err as { cause?: unknown }).cause !== undefined
+      ? (err as { cause?: unknown }).cause
+      : undefined;
+  const causeMessage =
+    cause instanceof Error
+      ? cause.message
+      : typeof cause === "string"
+        ? cause
+        : null;
+  const retryable =
+    err && typeof err === "object" && typeof (err as { retryable?: unknown }).retryable === "boolean"
+      ? (err as { retryable: boolean }).retryable
+      : null;
+  const stack = err instanceof Error && typeof err.stack === "string" ? err.stack : "";
+  const stackPreview = stack ? stack.split("\n").slice(0, 6).join("\n") : null;
+  return { errorName, acpCode, causeMessage, retryable, stackPreview };
+}
+
+function classifyError(
+  err: unknown,
+  phase?: AcpxExecutionPhase,
+): Pick<AdapterExecutionResult, "errorCode" | "errorMeta"> {
+  const message = err instanceof Error ? err.message : String(err);
+  const diagnostics = describeErrorDiagnostics(err);
+  const { acpCode, errorName, causeMessage, retryable, stackPreview } = diagnostics;
+  const baseMeta: Record<string, unknown> = {
+    errorName,
+    ...(acpCode ? { acpCode } : {}),
+    ...(causeMessage ? { causeMessage } : {}),
+    ...(retryable !== null ? { retryable } : {}),
+    ...(stackPreview ? { stackPreview } : {}),
+    ...(phase ? { phase } : {}),
+  };
   const lower = message.toLowerCase();
   const authLike = lower.includes("auth") || lower.includes("login") || lower.includes("credential");
   if (authLike) {
     return {
       errorCode: "acpx_auth_required",
-      errorMeta: { category: "auth", ...(acpCode ? { acpCode } : {}) },
+      errorMeta: { category: "auth", ...baseMeta },
+    };
+  }
+  const phaseCode = (() => {
+    if (acpCode === "ACP_SESSION_INIT_FAILED") return "acpx_session_init_failed";
+    if (acpCode === "ACP_TURN_FAILED") return "acpx_turn_failed";
+    if (acpCode === "ACP_BACKEND_MISSING") return "acpx_backend_missing";
+    if (acpCode === "ACP_BACKEND_UNAVAILABLE") return "acpx_backend_unavailable";
+    if (phase === "ensure_session") return "acpx_session_init_failed";
+    if (phase === "configure_session") return "acpx_session_config_failed";
+    if (phase === "turn") return "acpx_turn_failed";
+    return null;
+  })();
+  if (phaseCode) {
+    return {
+      errorCode: phaseCode,
+      errorMeta: { category: acpCode ? "protocol" : "runtime", ...baseMeta },
     };
   }
   if (acpCode) {
     return {
       errorCode: "acpx_protocol_error",
-      errorMeta: { category: "protocol", acpCode },
+      errorMeta: { category: "protocol", ...baseMeta },
     };
   }
   return {
     errorCode: "acpx_runtime_error",
-    errorMeta: { category: "runtime" },
+    errorMeta: { category: "runtime", ...baseMeta },
   };
+}
+
+async function readChildStderrTail(input: {
+  logPath: string | null;
+  maxBytes?: number;
+}): Promise<string | null> {
+  if (!input.logPath) return null;
+  const maxBytes = input.maxBytes ?? 4096;
+  let handle: fs.FileHandle | null = null;
+  try {
+    const stat = await fs.stat(input.logPath);
+    if (stat.size === 0) return null;
+    handle = await fs.open(input.logPath, "r");
+    const readBytes = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.alloc(readBytes);
+    await handle.read(buffer, 0, readBytes, Math.max(0, stat.size - readBytes));
+    const tail = buffer.toString("utf8").trim();
+    return tail.length > 0 ? tail : null;
+  } catch {
+    return null;
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
+async function emitAcpxFailure(input: {
+  ctx: AdapterExecutionContext;
+  prepared: AcpxPreparedRuntime;
+  err: unknown;
+  phase: AcpxExecutionPhase;
+  // Replace the err-derived message in both the stderr-tail log header and the
+  // acpx.error payload. Used by the turn path to surface "Timed out after Ns"
+  // instead of the raw underlying error message.
+  messageOverride?: string;
+}): Promise<{
+  classified: Pick<AdapterExecutionResult, "errorCode" | "errorMeta">;
+  message: string;
+  childStderrTail: string | null;
+}> {
+  const { ctx, prepared, err, phase, messageOverride } = input;
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  const message = messageOverride ?? rawMessage;
+  const classified = classifyError(err, phase);
+  const childStderrTail = await readChildStderrTail({ logPath: prepared.childStderrLogPath });
+  if (childStderrTail) {
+    await ctx.onLog(
+      "stderr",
+      `[paperclip] ACPX child stderr tail (${phase}):\n${childStderrTail}\n`,
+    );
+  }
+  await emitAcpxLog(ctx, {
+    type: "acpx.error",
+    message,
+    phase,
+    ...classified.errorMeta,
+    ...(childStderrTail ? { childStderrTail } : {}),
+  });
+  return { classified, message, childStderrTail };
 }
 
 function isResumeFailure(err: unknown): boolean {
@@ -940,18 +1294,75 @@ async function cleanupIdleHandles(input: {
   now: number;
   idleMs: number;
 }) {
+  if (input.idleMs <= 0) return;
+
   const stale: Array<[string, RuntimeCacheEntry]> = [];
   for (const entry of input.handles.entries()) {
     if (input.now - entry[1].lastUsedAt >= input.idleMs) stale.push(entry);
   }
   for (const [key, entry] of stale) {
-    input.handles.delete(key);
-    await entry.runtime.close({
-      handle: entry.handle,
+    await closeWarmHandle({
+      handles: input.handles,
+      key,
+      entry,
       reason: "paperclip idle cleanup",
-      discardPersistentState: false,
-    }).catch(() => {});
+    });
   }
+}
+
+function clearWarmHandleTimer(entry: RuntimeCacheEntry) {
+  if (!entry.cleanupTimer) return;
+  clearTimeout(entry.cleanupTimer);
+  entry.cleanupTimer = undefined;
+}
+
+async function closeWarmHandle(input: {
+  handles: Map<string, RuntimeCacheEntry>;
+  key: string;
+  entry: RuntimeCacheEntry;
+  reason: string;
+  discardPersistentState?: boolean;
+}) {
+  if (input.handles.get(input.key) === input.entry) {
+    input.handles.delete(input.key);
+  }
+  clearWarmHandleTimer(input.entry);
+  await input.entry.runtime.close({
+    handle: input.entry.handle,
+    reason: input.reason,
+    discardPersistentState: input.discardPersistentState ?? false,
+  }).catch(() => {});
+}
+
+function scheduleIdleHandleCleanup(input: {
+  handles: Map<string, RuntimeCacheEntry>;
+  key: string;
+  entry: RuntimeCacheEntry;
+  idleMs: number;
+  now: () => number;
+}) {
+  clearWarmHandleTimer(input.entry);
+  if (input.idleMs <= 0) return;
+
+  const delayMs = Math.max(1, input.entry.lastUsedAt + input.idleMs - input.now());
+  input.entry.cleanupTimer = setTimeout(() => {
+    void (async () => {
+      const current = input.handles.get(input.key);
+      if (current !== input.entry) return;
+      const idleForMs = input.now() - input.entry.lastUsedAt;
+      if (idleForMs < input.idleMs) {
+        scheduleIdleHandleCleanup(input);
+        return;
+      }
+      await closeWarmHandle({
+        handles: input.handles,
+        key: input.key,
+        entry: input.entry,
+        reason: "paperclip idle cleanup",
+      });
+    })();
+  }, delayMs);
+  input.entry.cleanupTimer.unref?.();
 }
 
 function warmHandleMatches(
@@ -969,7 +1380,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
 
   return async function executeAcpxLocal(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
     const prepared = await buildRuntime({ ctx });
-    const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_WARM_HANDLE_IDLE_MS);
+    const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS);
     await cleanupIdleHandles({ handles: warmHandles, now: now(), idleMs: warmIdleMs });
 
     const previousParams = parseObject(ctx.runtime.sessionParams);
@@ -983,8 +1394,14 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       permissionMode: prepared.permissionMode,
       nonInteractivePermissions: prepared.nonInteractivePermissions,
       timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
+      // Scope ACPX runtime verbose logs to the claude agent only — that's the
+      // surface we know needs the extra session-event detail (PAPA-388). codex
+      // and custom agents already emit their own per-tool output and don't
+      // benefit from doubling the log volume.
+      verbose: prepared.acpxAgent === "claude",
     };
     const runtime = cached?.runtime ?? createRuntime(runtimeOptions);
+    if (cached) clearWarmHandleTimer(cached);
     if (!canResume && asString(previousParams.runtimeSessionName, "")) {
       await ctx.onLog(
         "stdout",
@@ -1023,9 +1440,12 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         }
       }
     } catch (err) {
-      const classified = classifyError(err);
-      const message = err instanceof Error ? err.message : String(err);
-      await emitAcpxLog(ctx, { type: "acpx.error", message, ...classified.errorMeta });
+      const { classified, message } = await emitAcpxFailure({
+        ctx,
+        prepared,
+        err,
+        phase: "ensure_session",
+      });
       return {
         exitCode: 1,
         signal: null,
@@ -1033,7 +1453,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         errorMessage: message,
         ...classified,
         provider: "acpx",
-        model: null,
+        model: prepared.requestedModel || null,
         clearSession,
         resultJson: { phase: "ensure_session" },
         summary: message,
@@ -1048,12 +1468,55 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         errorMessage: "ACPX did not return a runtime session handle.",
         errorCode: "acpx_runtime_error",
         provider: "acpx",
-        model: null,
+        model: prepared.requestedModel || null,
         resultJson: { phase: "ensure_session" },
         summary: "ACPX did not return a runtime session handle.",
       };
     }
     const sessionHandle = handle;
+    try {
+      await applySessionConfigOptions({
+        runtime,
+        handle: sessionHandle,
+        prepared,
+        onLog: ctx.onLog,
+      });
+    } catch (err) {
+      const { classified, message } = await emitAcpxFailure({
+        ctx,
+        prepared,
+        err,
+        phase: "configure_session",
+      });
+      await runtime.close({
+        handle: sessionHandle,
+        reason: "paperclip config cleanup",
+        discardPersistentState: false,
+      }).catch(() => {});
+      const existing = warmHandles.get(prepared.sessionKey);
+      if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
+        clearWarmHandleTimer(existing);
+        warmHandles.delete(prepared.sessionKey);
+      }
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: message,
+        ...classified,
+        provider: "acpx",
+        model: prepared.requestedModel || null,
+        clearSession,
+        resultJson: {
+          phase: "configure_session",
+          agent: prepared.acpxAgent,
+          requestedModel: prepared.requestedModel || null,
+          requestedThinkingEffort: prepared.requestedThinkingEffort || null,
+          fastMode: prepared.fastMode,
+        },
+        summary: message,
+      };
+    }
     const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession);
     const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
     await emitAcpxLog(ctx, {
@@ -1065,6 +1528,9 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       runtimeSessionName: sessionHandle.runtimeSessionName,
       mode: prepared.mode,
       permissionMode: prepared.permissionMode,
+      model: prepared.requestedModel || null,
+      thinkingEffort: prepared.requestedThinkingEffort || null,
+      fastMode: prepared.fastMode,
     });
     if (ctx.onMeta) {
       await ctx.onMeta({
@@ -1074,6 +1540,15 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         commandNotes: [
           `ACPX runtime embedded in Paperclip with ${prepared.mode} session mode.`,
           `Effective ACPX permission mode: ${prepared.permissionMode}.`,
+          ...(prepared.requestedModel
+            ? [
+                prepared.acpxAgent === "claude"
+                  ? `Requested ACPX model: ${prepared.requestedModel} (set via ANTHROPIC_MODEL env at startup).`
+                  : `Requested ACPX model: ${prepared.requestedModel}.`,
+              ]
+            : []),
+          ...(prepared.requestedThinkingEffort ? [`Requested ACPX thinking effort: ${prepared.requestedThinkingEffort}.`] : []),
+          ...(prepared.fastMode ? ["Requested ACPX Codex fast mode."] : []),
           ...(Array.isArray(prepared.skillsIdentity.commandNotes)
             ? prepared.skillsIdentity.commandNotes.filter((note): note is string => typeof note === "string")
             : []),
@@ -1119,15 +1594,23 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       const terminal = await turn.result;
       if (timeout) clearTimeout(timeout);
       if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
-        if (warmHandleMatches(warmHandles.get(prepared.sessionKey), runtime, sessionHandle)) {
-          warmHandles.delete(prepared.sessionKey);
+        const existing = warmHandles.get(prepared.sessionKey);
+        if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
+          await closeWarmHandle({
+            handles: warmHandles,
+            key: prepared.sessionKey,
+            entry: existing,
+            reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
+            discardPersistentState: terminal.status === "cancelled" || timedOut,
+          });
+        } else {
+          await runtime.close({
+            handle: sessionHandle,
+            reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
+            discardPersistentState: terminal.status === "cancelled" || timedOut,
+          }).catch(() => {});
         }
-        await runtime.close({
-          handle: sessionHandle,
-          reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
-          discardPersistentState: terminal.status === "cancelled" || timedOut,
-        }).catch(() => {});
-      } else if (prepared.mode === "persistent") {
+      } else if (prepared.mode === "persistent" && warmIdleMs > 0) {
         const existing = warmHandles.get(prepared.sessionKey);
         if (existing && !warmHandleMatches(existing, runtime, sessionHandle)) {
           await runtime.close({
@@ -1136,12 +1619,36 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
             discardPersistentState: false,
           }).catch(() => {});
         } else {
-          warmHandles.set(prepared.sessionKey, {
+          const entry: RuntimeCacheEntry = {
             runtime,
             handle: sessionHandle,
             fingerprint: prepared.fingerprint,
             lastUsedAt: now(),
+          };
+          warmHandles.set(prepared.sessionKey, entry);
+          scheduleIdleHandleCleanup({
+            handles: warmHandles,
+            key: prepared.sessionKey,
+            entry,
+            idleMs: warmIdleMs,
+            now,
           });
+        }
+      } else {
+        const existing = warmHandles.get(prepared.sessionKey);
+        if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
+          await closeWarmHandle({
+            handles: warmHandles,
+            key: prepared.sessionKey,
+            entry: existing,
+            reason: "paperclip completed turn cleanup",
+          });
+        } else {
+          await runtime.close({
+            handle: sessionHandle,
+            reason: "paperclip completed turn cleanup",
+            discardPersistentState: false,
+          }).catch(() => {});
         }
       }
 
@@ -1165,7 +1672,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         provider: "acpx",
-        model: null,
+        model: prepared.requestedModel || null,
         billingType: "unknown",
         costUsd: null,
         resultJson: {
@@ -1173,25 +1680,37 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
           stopReason: terminalStopReason,
           permissionMode: prepared.permissionMode,
           mode: prepared.mode,
+          requestedModel: prepared.requestedModel || null,
+          requestedThinkingEffort: prepared.requestedThinkingEffort || null,
+          fastMode: prepared.fastMode,
         },
         summary: textParts.join("").trim() || terminalStopReason || terminal.status,
         clearSession,
       };
     } catch (err) {
       if (timeout) clearTimeout(timeout);
-      const classified = classifyError(err);
-      const message = timedOut ? `Timed out after ${prepared.timeoutSec}s` : err instanceof Error ? err.message : String(err);
+      const messageOverride = timedOut ? `Timed out after ${prepared.timeoutSec}s` : undefined;
       const cancel = cancelActiveTurn as ((reason: string) => Promise<void>) | null;
-      if (cancel) await cancel(message).catch(() => {});
+      const preEmitMessage =
+        messageOverride ?? (err instanceof Error ? err.message : String(err));
+      if (cancel) await cancel(preEmitMessage).catch(() => {});
       await runtime.close({
         handle: sessionHandle,
         reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
         discardPersistentState: timedOut,
       }).catch(() => {});
-      if (warmHandleMatches(warmHandles.get(prepared.sessionKey), runtime, sessionHandle)) {
+      const existing = warmHandles.get(prepared.sessionKey);
+      if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
+        clearWarmHandleTimer(existing);
         warmHandles.delete(prepared.sessionKey);
       }
-      await emitAcpxLog(ctx, { type: "acpx.error", message, ...classified.errorMeta });
+      const { classified, message } = await emitAcpxFailure({
+        ctx,
+        prepared,
+        err,
+        phase: "turn",
+        messageOverride,
+      });
       return {
         exitCode: 1,
         signal: timedOut ? "SIGTERM" : null,
@@ -1200,7 +1719,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
         errorMeta: classified.errorMeta,
         provider: "acpx",
-        model: null,
+        model: prepared.requestedModel || null,
         clearSession: clearSession || timedOut,
         resultJson: { phase: "turn" },
         summary: message,

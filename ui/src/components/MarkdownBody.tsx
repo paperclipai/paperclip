@@ -1,17 +1,20 @@
 import { isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink, Github } from "lucide-react";
+import { Check, Copy, ExternalLink, Github, WrapText } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
 import { Link } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
+import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
+import { parseWorkspaceFileHref, remarkWorkspaceFileRefs, WORKSPACE_FILE_HREF_PREFIX } from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
+import { WorkspaceFileLink } from "./WorkspaceFileLink";
 
 interface MarkdownBodyProps {
   children: string;
@@ -19,10 +22,18 @@ interface MarkdownBodyProps {
   style?: React.CSSProperties;
   softBreaks?: boolean;
   linkIssueReferences?: boolean;
+  /** Opt into Obsidian-style [[target]] / [[target|label]] wikilinks. */
+  enableWikiLinks?: boolean;
+  /** Base href used for wikilinks when no resolver is supplied. */
+  wikiLinkRoot?: string;
+  /** Optional href resolver for wikilinks. Return null to leave a token as plain text. */
+  resolveWikiLinkHref?: (target: string, label: string) => string | null | undefined;
   /** Optional resolver for relative image paths (e.g. within export packages) */
   resolveImageSrc?: (src: string) => string | null;
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string) => void;
+  /** Link inline-code workspace file paths to the issue file viewer. */
+  linkWorkspaceFileRefs?: boolean;
 }
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
@@ -78,9 +89,54 @@ const scrollableBlockStyle: React.CSSProperties = {
   overflowX: "auto",
 };
 
+const codeBlockActionsStyle: React.CSSProperties = {
+  position: "absolute",
+  top: "0.4rem",
+  right: "0.4rem",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "0.25rem",
+};
+
+const codeBlockActionStyle: React.CSSProperties = {
+  position: "static",
+  opacity: 1,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "0.25rem",
+  minHeight: "1.55rem",
+  padding: "0.2rem 0.4rem",
+  borderRadius: "calc(var(--radius) - 4px)",
+  border: "1px solid color-mix(in oklab, var(--foreground) 14%, transparent)",
+  backgroundColor: "color-mix(in oklab, var(--muted) 92%, var(--background) 8%)",
+  color: "var(--muted-foreground)",
+  fontSize: "0.7rem",
+  lineHeight: 1,
+  cursor: "pointer",
+};
+
+const codeBlockWrapActionStyle: React.CSSProperties = {
+  ...codeBlockActionStyle,
+  width: "1.55rem",
+  paddingInline: 0,
+};
+
+const tableCellWrapStyle: React.CSSProperties = {
+  overflowWrap: "anywhere",
+  wordBreak: "normal",
+};
+
 function mergeWrapStyle(style?: React.CSSProperties): React.CSSProperties {
   return {
     ...wrapAnywhereStyle,
+    ...style,
+  };
+}
+
+function mergeTableCellStyle(style?: React.CSSProperties): React.CSSProperties {
+  return {
+    ...tableCellWrapStyle,
     ...style,
   };
 }
@@ -108,7 +164,162 @@ function extractMermaidSource(children: ReactNode): string | null {
 }
 
 function safeMarkdownUrlTransform(url: string): string {
+  if (url.startsWith(WORKSPACE_FILE_HREF_PREFIX)) return url;
   return parseMentionChipHref(url) ? url : defaultUrlTransform(url);
+}
+
+type MarkdownAstNode = {
+  type?: string;
+  value?: string;
+  children?: MarkdownAstNode[];
+  url?: string;
+  title?: string | null;
+  data?: {
+    hProperties?: Record<string, string>;
+  };
+};
+
+type ParsedWikiLink = {
+  target: string;
+  label: string;
+};
+
+const WIKI_LINK_PATTERN = /\[\[([^\]\r\n]+)\]\]/g;
+const WIKI_LINK_SKIP_PARENT_TYPES = new Set([
+  "definition",
+  "image",
+  "imageReference",
+  "link",
+  "linkReference",
+]);
+
+function parseWikiLinkBody(body: string): ParsedWikiLink | null {
+  const [rawTarget, ...rawLabelParts] = body.split("|");
+  const target = rawTarget?.trim() ?? "";
+  const label = rawLabelParts.length > 0 ? rawLabelParts.join("|").trim() : target;
+  if (!target || target.includes("[") || target.includes("]")) return null;
+  return {
+    target,
+    label: label || target,
+  };
+}
+
+function encodeWikiLinkTarget(target: string): string | null {
+  const trimmed = target.trim();
+  if (!trimmed || /^[a-z][a-z\d+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return null;
+
+  const hashIndex = trimmed.indexOf("#");
+  const rawPath = (hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed)
+    .trim()
+    .replace(/^\/+/, "");
+  if (
+    !rawPath ||
+    rawPath.includes("\\") ||
+    rawPath.split("/").some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    return null;
+  }
+
+  const encodedPath = rawPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+  const rawHash = hashIndex >= 0 ? trimmed.slice(hashIndex + 1).trim() : "";
+  return rawHash ? `${encodedPath}#${encodeURIComponent(rawHash)}` : encodedPath;
+}
+
+function defaultWikiLinkHref(target: string, wikiLinkRoot?: string): string | null {
+  const encodedTarget = encodeWikiLinkTarget(target);
+  if (!encodedTarget) return null;
+  const root = wikiLinkRoot?.trim().replace(/\/+$/, "") ?? "";
+  return root ? `${root}/${encodedTarget}` : encodedTarget;
+}
+
+function createWikiLinkNode(href: string, wikiLink: ParsedWikiLink): MarkdownAstNode {
+  return {
+    type: "link",
+    url: href,
+    title: null,
+    data: {
+      hProperties: {
+        "data-paperclip-wiki-link": "true",
+        "data-paperclip-wiki-target": wikiLink.target,
+      },
+    },
+    children: [{ type: "text", value: wikiLink.label }],
+  };
+}
+
+function splitTextByWikiLinks(
+  value: string,
+  options: {
+    wikiLinkRoot?: string;
+    resolveWikiLinkHref?: (target: string, label: string) => string | null | undefined;
+  },
+): MarkdownAstNode[] {
+  const nodes: MarkdownAstNode[] = [];
+  let lastIndex = 0;
+
+  for (const match of value.matchAll(WIKI_LINK_PATTERN)) {
+    const raw = match[0] ?? "";
+    const body = match[1] ?? "";
+    const start = match.index ?? 0;
+    if (start > lastIndex) {
+      nodes.push({ type: "text", value: value.slice(lastIndex, start) });
+    }
+
+    const wikiLink = parseWikiLinkBody(body);
+    let resolvedHref: string | null = null;
+    if (wikiLink) {
+      if (options.resolveWikiLinkHref) {
+        const customHref = options.resolveWikiLinkHref(wikiLink.target, wikiLink.label);
+        resolvedHref = customHref === undefined
+          ? defaultWikiLinkHref(wikiLink.target, options.wikiLinkRoot)
+          : customHref;
+      } else {
+        resolvedHref = defaultWikiLinkHref(wikiLink.target, options.wikiLinkRoot);
+      }
+    }
+
+    if (wikiLink && resolvedHref) {
+      nodes.push(createWikiLinkNode(resolvedHref, wikiLink));
+    } else {
+      nodes.push({ type: "text", value: raw });
+    }
+    lastIndex = start + raw.length;
+  }
+
+  if (lastIndex < value.length) {
+    nodes.push({ type: "text", value: value.slice(lastIndex) });
+  }
+
+  return nodes;
+}
+
+function transformWikiLinkChildren(
+  node: MarkdownAstNode,
+  options: {
+    wikiLinkRoot?: string;
+    resolveWikiLinkHref?: (target: string, label: string) => string | null | undefined;
+  },
+) {
+  if (!node.children || WIKI_LINK_SKIP_PARENT_TYPES.has(node.type ?? "")) return;
+
+  node.children = node.children.flatMap((child) => {
+    if (child.type === "text" && typeof child.value === "string" && child.value.includes("[[")) {
+      return splitTextByWikiLinks(child.value, options);
+    }
+    transformWikiLinkChildren(child, options);
+    return child;
+  });
+}
+
+function createRemarkWikiLinks(options: {
+  wikiLinkRoot?: string;
+  resolveWikiLinkHref?: (target: string, label: string) => string | null | undefined;
+}) {
+  return function remarkWikiLinks() {
+    return (tree: MarkdownAstNode) => {
+      transformWikiLinkChildren(tree, options);
+    };
+  };
 }
 
 function isGitHubUrl(href: string | null | undefined): boolean {
@@ -192,6 +403,7 @@ function CodeBlock({
 }) {
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [wrapLines, setWrapLines] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -229,33 +441,69 @@ function CodeBlock({
     }, 1500);
   }, [children]);
 
-  const label = failed ? "Copy failed" : copied ? "Copied!" : "Copy";
+  const copyLabel = failed ? "Copy failed" : copied ? "Copied!" : "Copy";
+  const wrapLabel = wrapLines ? "Unwrap lines" : "Wrap lines";
 
   return (
-    <div className="paperclip-markdown-codeblock">
+    <div className="paperclip-markdown-codeblock" data-wrap-lines={wrapLines || undefined}>
       <pre
         {...preProps}
         ref={preRef}
-        style={mergeScrollableBlockStyle(preProps.style as React.CSSProperties | undefined)}
+        style={{
+          ...mergeScrollableBlockStyle(preProps.style as React.CSSProperties | undefined),
+          ...(wrapLines
+            ? {
+                overflowX: "hidden",
+                whiteSpace: "pre-wrap",
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+              }
+            : null),
+        }}
       >
         {children}
       </pre>
-      <button
-        type="button"
-        onClick={handleCopy}
-        aria-label="Copy code"
-        title={label}
-        className="paperclip-markdown-codeblock-copy"
-        data-copied={copied || undefined}
-        data-failed={failed || undefined}
+      <div
+        className="paperclip-markdown-codeblock-actions"
+        style={codeBlockActionsStyle}
+        data-active={copied || failed || wrapLines || undefined}
       >
-        {copied && !failed ? (
-          <Check aria-hidden="true" className="h-3.5 w-3.5" />
-        ) : (
-          <Copy aria-hidden="true" className="h-3.5 w-3.5" />
-        )}
-        <span className="paperclip-markdown-codeblock-copy-label">{label}</span>
-      </button>
+        <button
+          type="button"
+          onClick={() => setWrapLines((value) => !value)}
+          aria-label={wrapLabel}
+          title={wrapLabel}
+          className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-wrap"
+          style={wrapLines
+            ? {
+                ...codeBlockWrapActionStyle,
+                borderColor: "color-mix(in oklab, var(--primary) 38%, transparent)",
+                color: "var(--primary)",
+              }
+            : codeBlockWrapActionStyle}
+          aria-pressed={wrapLines}
+          data-active={wrapLines || undefined}
+        >
+          <WrapText aria-hidden="true" className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={handleCopy}
+          aria-label="Copy code"
+          title={copyLabel}
+          className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-copy"
+          style={codeBlockActionStyle}
+          data-copied={copied || undefined}
+          data-failed={failed || undefined}
+        >
+          {copied && !failed ? (
+            <Check aria-hidden="true" className="h-3.5 w-3.5" />
+          ) : (
+            <Copy aria-hidden="true" className="h-3.5 w-3.5" />
+          )}
+          <span className="paperclip-markdown-codeblock-action-label">{copyLabel}</span>
+        </button>
+      </div>
     </div>
   );
 }
@@ -321,13 +569,30 @@ export function MarkdownBody({
   style,
   softBreaks = true,
   linkIssueReferences = true,
+  enableWikiLinks = false,
+  wikiLinkRoot,
+  resolveWikiLinkHref,
   resolveImageSrc,
   onImageClick,
+  linkWorkspaceFileRefs = false,
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
+  // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
+  // may lack a CompanyProvider. A null context (or no companies yet) leaves
+  // knownPrefixes undefined, which keeps issue auto-linking permissive.
+  const company = useOptionalCompany();
+  const knownPrefixes = company?.companies.length
+    ? company.companies.map((c) => c.issuePrefix)
+    : undefined;
   const remarkPlugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
+  if (enableWikiLinks) {
+    remarkPlugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
+  }
+  if (linkWorkspaceFileRefs) {
+    remarkPlugins.push(remarkWorkspaceFileRefs);
+  }
   if (linkIssueReferences) {
-    remarkPlugins.push(remarkLinkIssueReferences);
+    remarkPlugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
   }
   if (softBreaks) {
     remarkPlugins.push(remarkSoftBreaks);
@@ -348,13 +613,20 @@ export function MarkdownBody({
         {blockquoteChildren}
       </blockquote>
     ),
+    table: ({ node: _node, style: tableStyle, children: tableChildren, ...tableProps }) => (
+      <div className="paperclip-markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
+        <table {...tableProps} style={tableStyle as React.CSSProperties | undefined}>
+          {tableChildren}
+        </table>
+      </div>
+    ),
     td: ({ node: _node, style: tableCellStyle, children: tableCellChildren, ...tableCellProps }) => (
-      <td {...tableCellProps} style={mergeWrapStyle(tableCellStyle as React.CSSProperties | undefined)}>
+      <td {...tableCellProps} style={mergeTableCellStyle(tableCellStyle as React.CSSProperties | undefined)}>
         {tableCellChildren}
       </td>
     ),
     th: ({ node: _node, style: tableHeaderStyle, children: tableHeaderChildren, ...tableHeaderProps }) => (
-      <th {...tableHeaderProps} style={mergeWrapStyle(tableHeaderStyle as React.CSSProperties | undefined)}>
+      <th {...tableHeaderProps} style={mergeTableCellStyle(tableHeaderStyle as React.CSSProperties | undefined)}>
         {tableHeaderChildren}
       </th>
     ),
@@ -370,7 +642,33 @@ export function MarkdownBody({
         {codeChildren}
       </code>
     ),
-    a: ({ href, style: linkStyle, children: linkChildren }) => {
+    a: ({ node: _node, href, style: linkStyle, children: linkChildren, ...anchorProps }) => {
+      const workspaceFileRef = parseWorkspaceFileHref(href);
+      if (workspaceFileRef) {
+        return (
+          <WorkspaceFileLink
+            workspaceFileRef={workspaceFileRef}
+            label={linkChildren}
+            className={typeof anchorProps.className === "string" ? anchorProps.className : undefined}
+          />
+        );
+      }
+
+      const dataProps = anchorProps as Record<string, unknown>;
+      const isWikiLink = dataProps["data-paperclip-wiki-link"] === "true";
+      if (isWikiLink && href && !/^[a-z][a-z\d+.-]*:/i.test(href) && !href.startsWith("//")) {
+        return (
+          <Link
+            to={href}
+            {...anchorProps}
+            rel="noreferrer"
+            style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
+          >
+            {linkChildren}
+          </Link>
+        );
+      }
+
       const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
       if (issueRef) {
         return (
@@ -386,11 +684,13 @@ export function MarkdownBody({
           ? `/projects/${parsed.projectId}`
           : parsed.kind === "issue"
             ? `/issues/${parsed.identifier}`
-          : parsed.kind === "skill"
-            ? `/skills/${parsed.skillId}`
-            : parsed.kind === "user"
-              ? "/company/settings/access"
-            : `/agents/${parsed.agentId}`;
+            : parsed.kind === "skill"
+              ? `/skills/${parsed.skillId}`
+              : parsed.kind === "routine"
+                ? `/routines/${parsed.routineId}`
+                : parsed.kind === "user"
+                  ? "/company/settings/access"
+                  : `/agents/${parsed.agentId}`;
         return (
           <a
             href={targetHref}

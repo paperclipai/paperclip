@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AcpRuntimeOptions } from "acpx/runtime";
 import { createAcpxLocalExecutor } from "./execute.js";
 
 const tempRoots: string[] = [];
@@ -56,7 +57,13 @@ function buildRuntime() {
   };
 }
 
-async function runExecutor(config: Record<string, unknown>) {
+async function runExecutor(
+  config: Record<string, unknown>,
+  options: {
+    context?: Record<string, unknown>;
+    executionTransport?: Record<string, unknown>;
+  } = {},
+) {
   const runtimeOptions: Record<string, unknown>[] = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
@@ -73,12 +80,13 @@ async function runExecutor(config: Record<string, unknown>) {
       id: "agent-1",
       companyId: "company-1",
     },
-    runtime: {},
-    config,
-    context: {},
-    onLog: async (stream: "stdout" | "stderr", text: string) => {
-      logs.push({ stream, text });
-    },
+      runtime: {},
+      config,
+      context: options.context ?? {},
+      executionTransport: options.executionTransport,
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
     onMeta: async (payload: unknown) => {
       meta.push(payload as Record<string, unknown>);
     },
@@ -257,6 +265,57 @@ describe("acpx_local runtime skill isolation", () => {
     expect(env).not.toContain("old-key");
   });
 
+  it("shapes ACPX wrapper workspace env for remote execution identities", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const workspaceDir = path.join(root, "workspace");
+    await fs.mkdir(workspaceDir, { recursive: true });
+
+    await runExecutor(
+      {
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+      },
+      {
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+            strategy: "git_worktree",
+            workspaceId: "workspace-1",
+            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoRef: "main",
+            branchName: "feature/remote-acpx",
+            worktreePath: workspaceDir,
+          },
+        },
+        executionTransport: {
+          remoteExecution: {
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteWorkspacePath: "/remote/workspace",
+            remoteCwd: "/remote/workspace",
+            privateKey: "PRIVATE KEY",
+            knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+            strictHostKeyChecking: true,
+          },
+        },
+      },
+    );
+
+    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+    const envPath = path.join(
+      stateDir,
+      "wrappers",
+      wrappers.find((name) => name.endsWith(".env"))!,
+    );
+    const env = await fs.readFile(envPath, "utf8");
+
+    expect(env).toContain("PAPERCLIP_WORKSPACE_CWD='/remote/workspace'");
+    expect(env).not.toContain("PAPERCLIP_WORKSPACE_WORKTREE_PATH=");
+  });
+
   it("cleans aged credential wrapper scripts across ACPX agent changes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -318,6 +377,126 @@ describe("acpx_local runtime skill isolation", () => {
     expect(envFiles.filter((contents) => contents.includes("PAPERCLIP_API_KEY='second-key'"))).toHaveLength(1);
   });
 
+  it("enriches acpx.error diagnostics and child stderr when ensureSession rejects", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const runStderrDir = path.join(stateDir, "run-stderr");
+    await fs.mkdir(runStderrDir, { recursive: true });
+    const stderrTail = "claude-agent-acp: SDK init failed (auth missing)";
+    await fs.writeFile(path.join(runStderrDir, "run-1.log"), `${stderrTail}\n`, "utf8");
+
+    class FakeAcpRuntimeError extends Error {
+      readonly code = "ACP_SESSION_INIT_FAILED";
+      readonly cause: Error;
+      readonly retryable = false;
+      constructor(message: string, cause: Error) {
+        super(message);
+        this.name = "AcpRuntimeError";
+        this.cause = cause;
+      }
+    }
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxLocalExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => {
+          throw new FakeAcpRuntimeError(
+            "session/new failed: backend rejected initialize",
+            new Error("upstream timeout"),
+          );
+        },
+        startTurn: () => ({
+          events: (async function* () {})(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_session_init_failed");
+    const meta = result.errorMeta ?? {};
+    expect(meta.errorName).toBe("AcpRuntimeError");
+    expect(meta.acpCode).toBe("ACP_SESSION_INIT_FAILED");
+    expect(meta.causeMessage).toBe("upstream timeout");
+    expect(meta.retryable).toBe(false);
+    expect(typeof meta.stackPreview).toBe("string");
+    expect(meta.phase).toBe("ensure_session");
+
+    const errorLogLine = logs.find((entry) => entry.stream === "stdout" && entry.text.includes("\"type\":\"acpx.error\""));
+    expect(errorLogLine).toBeTruthy();
+    const errorPayload = JSON.parse(errorLogLine!.text.trim());
+    expect(errorPayload.phase).toBe("ensure_session");
+    expect(errorPayload.errorName).toBe("AcpRuntimeError");
+    expect(errorPayload.acpCode).toBe("ACP_SESSION_INIT_FAILED");
+    expect(errorPayload.causeMessage).toBe("upstream timeout");
+    expect(errorPayload.childStderrTail).toContain("SDK init failed");
+
+    const stderrLog = logs.find((entry) => entry.stream === "stderr" && entry.text.includes("ACPX child stderr tail"));
+    expect(stderrLog).toBeTruthy();
+    expect(stderrLog!.text).toContain(stderrTail);
+  });
+
+  it("writes wrapper that redirects child stderr to a per-run log file", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+
+    const runtimeOptions: AcpRuntimeOptions[] = [];
+    const execute = createAcpxLocalExecutor({
+      createRuntime: (options) => {
+        runtimeOptions.push(options as unknown as AcpRuntimeOptions);
+        return buildRuntime() as never;
+      },
+    });
+
+    const result = await execute({
+      runId: "run-stderr-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    const verboseFlags = runtimeOptions.map((options) => (options as { verbose?: boolean }).verbose);
+    // verbose is scoped to the claude agent (PAPA-388); the custom agent here
+    // should not opt in to ACPX runtime verbose session-event logs.
+    expect(verboseFlags.every((flag) => flag === false)).toBe(true);
+
+    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+    const wrapperFile = wrappers.find((name) => name.endsWith(".sh"));
+    expect(wrapperFile).toBeTruthy();
+    const wrapper = await fs.readFile(path.join(stateDir, "wrappers", wrapperFile!), "utf8");
+    expect(wrapper).toContain("stderr_dir=");
+    expect(wrapper).toContain("run-stderr");
+    expect(wrapper).toContain("PAPERCLIP_RUN_ID");
+    expect(wrapper).toContain("tee -a");
+    expect(wrapper).toContain("exec node ./fake-acp.js");
+  });
+
   it("passes Paperclip env through the ACP agent wrapper instead of process.env", async () => {
     let observedApiKeyDuringStream: string | undefined;
     const execute = createAcpxLocalExecutor({
@@ -363,5 +542,161 @@ describe("acpx_local runtime skill isolation", () => {
       if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
       else process.env.PAPERCLIP_API_KEY = previousApiKey;
     }
+  });
+
+  it("writes a Paperclip-managed .claude/settings.local.json for the claude agent so it can reach the Paperclip API", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    const { meta } = await runExecutor(
+      { agent: "claude", stateDir, cwd },
+      { context: { paperclipWorkspace: { cwd, agentHome: path.join(root, "agent-home") } } },
+    );
+
+    const settingsPath = path.join(cwd, ".claude", "settings.local.json");
+    const written = JSON.parse(await fs.readFile(settingsPath, "utf8")) as {
+      permissions?: {
+        allow?: unknown;
+        additionalDirectories?: unknown;
+        defaultMode?: unknown;
+      };
+    };
+    expect(written.permissions?.defaultMode).toBe("default");
+    const allow = written.permissions?.allow;
+    expect(Array.isArray(allow)).toBe(true);
+    expect(allow).toContain("Bash(curl:*)");
+    expect(allow).toContain(`Bash(${cwd}/scripts/paperclip-issue-update.sh:*)`);
+    const additionalDirectories = written.permissions?.additionalDirectories as string[] | undefined;
+    expect(Array.isArray(additionalDirectories)).toBe(true);
+    expect(additionalDirectories).toContain(stateDir);
+    expect(additionalDirectories).toContain(path.join(root, "agent-home"));
+
+    const note = (meta[0]?.commandNotes as string[] | undefined)?.find((entry) =>
+      entry.includes("Paperclip-managed Claude settings"),
+    );
+    expect(note).toBeTruthy();
+  });
+
+  it("merges Paperclip allowlist into an existing .claude/settings.local.json without losing user entries", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(path.join(cwd, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(cwd, ".claude", "settings.local.json"),
+      JSON.stringify(
+        {
+          statusLine: { type: "command", command: "preserve-me" },
+          permissions: {
+            allow: ["Bash(npm test:*)"],
+            additionalDirectories: ["/Users/example/custom"],
+            defaultMode: "acceptEdits",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await runExecutor(
+      { agent: "claude", stateDir, cwd },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+
+    const written = JSON.parse(
+      await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8"),
+    ) as {
+      statusLine?: unknown;
+      permissions?: {
+        allow?: string[];
+        additionalDirectories?: string[];
+        defaultMode?: string;
+      };
+    };
+    expect(written.statusLine).toEqual({ type: "command", command: "preserve-me" });
+    expect(written.permissions?.defaultMode).toBe("acceptEdits");
+    expect(written.permissions?.allow).toContain("Bash(npm test:*)");
+    expect(written.permissions?.allow).toContain("Bash(curl:*)");
+    expect(written.permissions?.additionalDirectories).toContain("/Users/example/custom");
+    expect(written.permissions?.additionalDirectories).toContain(stateDir);
+  });
+
+  it("overrides a user-supplied dontAsk defaultMode so ACPX can route Bash through canUseTool", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(path.join(cwd, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(cwd, ".claude", "settings.local.json"),
+      JSON.stringify({ permissions: { defaultMode: "dontAsk" } }, null, 2),
+      "utf8",
+    );
+
+    const { meta } = await runExecutor(
+      { agent: "claude", stateDir, cwd },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+
+    const written = JSON.parse(
+      await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8"),
+    ) as { permissions?: { defaultMode?: string } };
+    expect(written.permissions?.defaultMode).toBe("default");
+
+    const overrideNote = (meta[0]?.commandNotes as string[] | undefined)?.find((entry) =>
+      entry.includes("overrode user dontAsk"),
+    );
+    expect(overrideNote).toBeTruthy();
+  });
+
+  it("opts the claude agent into ACPX runtime verbose logs but leaves codex/custom agents quiet", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    const verboseByAgent: Record<string, boolean | undefined> = {};
+    for (const agent of ["claude", "codex", "custom"] as const) {
+      const runtimeOptions: AcpRuntimeOptions[] = [];
+      const execute = createAcpxLocalExecutor({
+        createRuntime: (options) => {
+          runtimeOptions.push(options as AcpRuntimeOptions);
+          return buildRuntime() as never;
+        },
+      });
+      const result = await execute({
+        runId: `run-${agent}`,
+        agent: { id: `agent-${agent}`, companyId: "company-1" },
+        runtime: {},
+        config:
+          agent === "custom"
+            ? { agent, agentCommand: "node ./fake-acp.js", stateDir: path.join(root, `state-${agent}`), cwd }
+            : { agent, stateDir: path.join(root, `state-${agent}`), cwd },
+        context: { paperclipWorkspace: { cwd } },
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+      expect(result.exitCode).toBe(0);
+      verboseByAgent[agent] = (runtimeOptions[0] as { verbose?: boolean } | undefined)?.verbose;
+    }
+
+    expect(verboseByAgent.claude).toBe(true);
+    expect(verboseByAgent.codex).toBe(false);
+    expect(verboseByAgent.custom).toBe(false);
+  });
+
+  it("does not touch .claude/settings.local.json for the codex agent", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    await runExecutor(
+      { agent: "codex", stateDir, cwd },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+
+    expect(await pathExists(path.join(cwd, ".claude", "settings.local.json"))).toBe(false);
   });
 });

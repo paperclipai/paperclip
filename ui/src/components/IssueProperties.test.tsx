@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type {
   ExecutionWorkspace,
@@ -18,6 +18,8 @@ import { IssueProperties } from "./IssueProperties";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
+  adapterModels: vi.fn(),
+  adapterModelProfiles: vi.fn(),
 }));
 
 const mockProjectsApi = vi.hoisted(() => ({
@@ -32,10 +34,6 @@ const mockIssuesApi = vi.hoisted(() => ({
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
-}));
-
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -60,8 +58,8 @@ vi.mock("../api/auth", () => ({
   authApi: mockAuthApi,
 }));
 
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => ({ pushToast: vi.fn() }),
 }));
 
 vi.mock("../hooks/useProjectOrder", () => ({
@@ -117,10 +115,34 @@ vi.mock("@/components/ui/popover", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 async function flush() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
+}
+
+async function waitForAssertion(assertion: () => void, attempts = 20) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flush();
+    }
+  }
+
+  throw lastError;
 }
 
 function createIssue(overrides: Partial<Issue> = {}): Issue {
@@ -162,6 +184,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:05:00.000Z"),
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
@@ -279,6 +302,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     leadAgentId: null,
     targetDate: null,
     color: "#6366f1",
+    icon: null,
     env: null,
     pauseReason: null,
     pausedAt: null,
@@ -352,6 +376,8 @@ describe("IssueProperties", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
@@ -361,11 +387,124 @@ describe("IssueProperties", () => {
       color: "#6366f1",
     }));
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
   });
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("groups the assignee picker and gates a live-run reassign behind an interrupt confirm", async () => {
+    const minimalAgent = (id: string, name: string) =>
+      ({
+        id,
+        name,
+        role: "",
+        title: null,
+        icon: null,
+        status: "active",
+        orgChainHealth: { status: "ok" },
+      } as unknown as Parameters<typeof mockAgentsApi.list.mockResolvedValue>[0][number]);
+    mockAgentsApi.list.mockResolvedValue([minimalAgent("agent-1", "ClaudeCoder"), minimalAgent("agent-2", "QA")]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ assigneeAgentId: "agent-1" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+      hasActiveRun: true,
+    });
+    await flush();
+
+    // Wait for the agents query to resolve so the current assignee renders.
+    let trigger: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      trigger = Array.from(container.querySelectorAll("button")).find((b) =>
+        b.textContent?.includes("ClaudeCoder"),
+      );
+      expect(trigger).toBeTruthy();
+    });
+    await act(async () => {
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    // Live-run banner + grouped section headers are present.
+    expect(container.querySelector("[data-testid='assignee-running-banner']")?.textContent).toContain(
+      "ClaudeCoder is running",
+    );
+    expect(container.textContent).toContain("Agents");
+    expect(container.textContent).toContain("Board users");
+
+    // Picking a different agent mid-run stages a confirm rather than applying.
+    const qaOption = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "QA",
+    );
+    expect(qaOption).toBeTruthy();
+    await act(async () => {
+      qaOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector("[data-testid='interrupt-assign-confirm']")).not.toBeNull();
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    // Confirming applies the reassignment.
+    const confirmBtn = container.querySelector<HTMLButtonElement>(
+      "[data-testid='interrupt-assign-confirm-action']",
+    )!;
+    await act(async () => {
+      confirmBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(onUpdate).toHaveBeenCalledWith({ assigneeAgentId: "agent-2", assigneeUserId: null });
+
+    act(() => root.unmount());
+  });
+
+  it("filters the no-assignee option with assignee search", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "ClaudeCoder",
+        role: "",
+        title: null,
+        icon: null,
+        status: "active",
+        orgChainHealth: { status: "ok" },
+      } as unknown as Parameters<typeof mockAgentsApi.list.mockResolvedValue>[0][number],
+    ]);
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    const searchInput = container.querySelector(
+      'input[placeholder="Search assignees..."]',
+    ) as HTMLInputElement | null;
+    expect(searchInput).not.toBeNull();
+
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      nativeSetter?.call(searchInput, "no");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("No assignee");
+    expect(container.textContent).not.toContain("No matches.");
+
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      nativeSetter?.call(searchInput, "zzzz");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("No assignee");
+    expect(container.textContent).toContain("No matches.");
+
+    act(() => root.unmount());
   });
 
   it("always exposes the add sub-issue action", async () => {
@@ -378,11 +517,11 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("Sub-issues");
-    expect(container.textContent).toContain("Add sub-issue");
+    expect(container.textContent).toContain("Sub-tasks");
+    expect(container.textContent).toContain("Add sub-task");
 
     const addButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Add sub-issue"));
+      .find((button) => button.textContent?.includes("Add sub-task"));
     expect(addButton).not.toBeUndefined();
 
     await act(async () => {
@@ -450,7 +589,7 @@ describe("IssueProperties", () => {
     expect(blockerLink?.textContent).toContain("PAP-2");
     expect(blockerLink?.closest("button")).toBeNull();
     expect(container.textContent).toContain("Add blocker");
-    expect(container.querySelector('input[placeholder="Search issues..."]')).toBeNull();
+    expect(container.querySelector('input[placeholder="Search tasks..."]')).toBeNull();
 
     const addButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Add blocker"));
@@ -461,7 +600,7 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.querySelector('input[placeholder="Search issues..."]')).not.toBeNull();
+    expect(container.querySelector('input[placeholder="Search tasks..."]')).not.toBeNull();
 
     const candidateButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("PAP-3 New blocker"));
@@ -472,6 +611,113 @@ describe("IssueProperties", () => {
     });
 
     expect(onUpdate).toHaveBeenCalledWith({ blockedByIssueIds: ["issue-2", "issue-3"] });
+
+    act(() => root.unmount());
+  });
+
+  it("searches all company issues when adding a blocker", async () => {
+    const onUpdate = vi.fn();
+    const loadedIssue = createIssue({ id: "issue-3", identifier: "PAP-3", title: "Loaded issue", status: "todo" });
+    const remoteIssue = createIssue({ id: "issue-99", identifier: "PAP-99", title: "Remote blocker", status: "in_progress" });
+    mockIssuesApi.list.mockImplementation((_companyId: string, filters?: { q?: string; limit?: number }) => {
+      if (filters?.q === "remote") return Promise.resolve([remoteIssue]);
+      return Promise.resolve([loadedIssue]);
+    });
+
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const addButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Add blocker"));
+    expect(addButton).not.toBeUndefined();
+
+    await act(async () => {
+      addButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const searchInput = container.querySelector('input[aria-label="Search tasks to add as blockers"]') as HTMLInputElement | null;
+    expect(searchInput).not.toBeNull();
+
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      nativeSetter?.call(searchInput, "remote");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", { q: "remote", limit: 50 });
+      expect(container.textContent).toContain("PAP-99 Remote blocker");
+      expect(container.textContent).not.toContain("PAP-3 Loaded issue");
+    });
+
+    const candidateButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("PAP-99 Remote blocker"));
+    expect(candidateButton).not.toBeUndefined();
+
+    await act(async () => {
+      candidateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ blockedByIssueIds: ["issue-99"] });
+
+    act(() => root.unmount());
+  });
+
+  it("removes a blocked-by issue from the chip remove action after confirmation", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        blockedBy: [
+          {
+            id: "issue-2",
+            identifier: "PAP-2",
+            title: "Existing blocker",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+          {
+            id: "issue-4",
+            identifier: "PAP-4",
+            title: "Keep blocker",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ],
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const removeButton = container.querySelector('button[aria-label="Remove PAP-2 as blocker"]');
+    expect(removeButton).not.toBeNull();
+
+    await act(async () => {
+      removeButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(document.body.textContent).toContain("Remove PAP-2: Existing blocker as a blocker for this task.");
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Remove blocker"));
+    expect(confirmButton).not.toBeUndefined();
+
+    await act(async () => {
+      confirmButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ blockedByIssueIds: ["issue-4"] });
 
     act(() => root.unmount());
   });
@@ -505,9 +751,27 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("shows a workspace tasks link for non-default workspaces when isolated workspaces are enabled", async () => {
+  it("shows full date and time for issue metadata timestamps", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdAt: new Date(2026, 3, 6, 12, 34),
+        startedAt: new Date(2026, 3, 6, 12, 35),
+        completedAt: new Date(2026, 3, 6, 12, 36),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toMatch(/CreatedApr 6, 2026, \d{1,2}:34 (AM|PM)/);
+    expect(container.textContent).toMatch(/StartedApr 6, 2026, \d{1,2}:35 (AM|PM)/);
+    expect(container.textContent).toMatch(/CompletedApr 6, 2026, \d{1,2}:36 (AM|PM)/);
+
+    act(() => root.unmount());
+  });
+
+  it("shows only the workspace detail link for non-default workspaces", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = renderProperties(container, {
       issue: createIssue({
         projectId: "project-1",
@@ -523,14 +787,10 @@ describe("IssueProperties", () => {
     await flush();
     await flush();
 
-    const tasksLink = Array.from(container.querySelectorAll("a")).find(
-      (link) => link.textContent?.includes("View workspace tasks"),
-    );
     const workspaceLink = Array.from(container.querySelectorAll("a")).find(
       (link) => link.textContent?.trim() === "View workspace",
     );
-    expect(tasksLink).not.toBeUndefined();
-    expect(tasksLink?.getAttribute("href")).toBe("/issues?workspace=workspace-1");
+    expect(container.textContent).not.toContain("View workspace tasks");
     expect(workspaceLink).not.toBeUndefined();
     expect(workspaceLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1");
 
@@ -729,6 +989,132 @@ describe("IssueProperties", () => {
 
     expect(container.textContent).toContain("Bug");
     expect(container.textContent).not.toContain("No labels");
+
+    act(() => root.unmount());
+  });
+
+  it("hides model options when the issue uses the assignee default", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "Senior Product Engineer",
+        role: "engineer",
+        title: null,
+        status: "active",
+        adapterType: "codex_local",
+        icon: null,
+      },
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        assigneeAgentId: "agent-1",
+        assigneeAdapterOverrides: null,
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("Model lane");
+    expect(container.textContent).not.toContain("Codex options");
+
+    act(() => root.unmount());
+  });
+
+  it("edits existing custom assignee model options from the properties pane", async () => {
+    const onUpdate = vi.fn();
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "Senior Product Engineer",
+        role: "engineer",
+        title: null,
+        status: "active",
+        adapterType: "codex_local",
+        icon: null,
+      },
+    ]);
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.5", label: "GPT-5.5" },
+      { id: "gpt-5.4", label: "GPT-5.4" },
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        assigneeAgentId: "agent-1",
+        assigneeAdapterOverrides: {
+          adapterConfig: {
+            model: "gpt-5.4",
+            modelReasoningEffort: "high",
+          },
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+    });
+    await flush();
+    await flush();
+
+    expect(container.textContent).toContain("Custom · gpt-5.4 · high");
+    expect(container.textContent).toContain("Model lane");
+
+    const modelButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("GPT-5.5"));
+    expect(modelButton).not.toBeUndefined();
+
+    await act(async () => {
+      modelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      assigneeAdapterOverrides: {
+        adapterConfig: {
+          model: "gpt-5.5",
+          modelReasoningEffort: "high",
+        },
+      },
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("clears existing assignee adapter overrides from the properties pane", async () => {
+    const onUpdate = vi.fn();
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "Senior Product Engineer",
+        role: "engineer",
+        title: null,
+        status: "active",
+        adapterType: "codex_local",
+        icon: null,
+      },
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        assigneeAgentId: "agent-1",
+        assigneeAdapterOverrides: {
+          adapterConfig: {
+            model: "gpt-5.4",
+          },
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+    });
+    await flush();
+
+    const clearButton = container.querySelector('button[aria-label="Clear adapter options"]');
+    expect(clearButton).not.toBeNull();
+
+    await act(async () => {
+      clearButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ assigneeAdapterOverrides: null });
 
     act(() => root.unmount());
   });
@@ -966,6 +1352,86 @@ describe("IssueProperties", () => {
 
     expect(container.textContent).not.toContain("Run review now");
     expect(container.textContent).not.toContain("Run approval now");
+
+    act(() => root.unmount());
+  });
+
+  it("renders monitor controls and clears an existing monitor", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_progress",
+        assigneeAgentId: "agent-1",
+        executionPolicy: createExecutionPolicy({
+          monitor: {
+            nextCheckAt: "2026-04-11T12:30:00.000Z",
+            notes: "Check deployment",
+            scheduledBy: "board",
+          },
+        }),
+        executionState: createExecutionState({
+          status: "idle",
+          currentStageId: null,
+          currentStageIndex: null,
+          currentStageType: null,
+          currentParticipant: null,
+          returnAssignee: null,
+          lastDecisionOutcome: null,
+          monitor: {
+            status: "scheduled",
+            nextCheckAt: "2026-04-11T12:30:00.000Z",
+            lastTriggeredAt: null,
+            attemptCount: 0,
+            notes: "Check deployment",
+            scheduledBy: "board",
+            clearedAt: null,
+            clearReason: null,
+          },
+        }),
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Monitor");
+    expect(container.textContent).toContain("Next check");
+    expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
+    expect(container.querySelector('input[placeholder="What should the agent re-check?"]')).toBeNull();
+
+    const monitorTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Next check"));
+    expect(monitorTrigger).not.toBeUndefined();
+
+    await act(async () => {
+      monitorTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const inputs = Array.from(container.querySelectorAll("input"));
+    const datetimeInput = inputs.find((input) => input.getAttribute("type") === "datetime-local");
+    const textInput = inputs.find((input) => input.getAttribute("placeholder") === "What should the agent re-check?");
+    const clearButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Clear"));
+
+    expect(datetimeInput).toBeTruthy();
+    expect(textInput).toBeTruthy();
+    expect(clearButton).toBeTruthy();
+    expect(datetimeInput!.value).toBeTruthy();
+    expect(textInput!.value).toBe("Check deployment");
+
+    act(() => {
+      clearButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+      },
+    });
 
     act(() => root.unmount());
   });

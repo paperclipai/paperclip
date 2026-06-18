@@ -3,7 +3,55 @@ import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 export const type = "opencode_local";
 export const label = "OpenCode (local)";
 
+// Use OpenCode's official installer instead of `npm install -g opencode-ai`.
+// The npm package reifies four large Linux x64 prebuilt-binary subpackages
+// (linux-x64, linux-x64-musl, linux-x64-baseline, linux-x64-baseline-musl) in
+// parallel even though only one matches the sandbox; on bandwidth-constrained
+// sandboxes (e.g. Cloudflare) that exceeded the 240s install budget. The
+// official installer fetches a single arch-specific binary into
+// `$HOME/.opencode/bin` and tries to add it to PATH via `~/.bashrc`. That
+// rc-file path is only sourced by interactive/login shells, so non-login
+// `sh -c` probe invocations (used by the runtime PATH check) cannot find the
+// binary. We fix that by symlinking the installed binary into a directory on
+// the non-login `sh -c` PATH: prefer `/usr/local/bin` (universally on the
+// default PATH on Linux distros) when root or passwordless sudo is available,
+// otherwise fall back to `$HOME/.local/bin` (which is on the default PATH on
+// the exe.dev sandbox image and most modern home-managed Linux images).
+//
+// Security tradeoff: this is `curl | bash` without a SHA-256 verification of
+// the install script. We accept this because:
+//   1. The install runs inside an isolated, ephemeral sandbox — blast radius
+//      is bounded to that sandbox's secrets and disk.
+//   2. The prior `npm install -g opencode-ai` is also unverified code
+//      execution from a third-party registry; this is not strictly worse.
+//   3. OpenCode does not publish per-release SHA-256 checksums in a stable
+//      location, and pinning a version + hash here would require manual
+//      version bumps on every OpenCode release.
+// The `set -e` (implied by Bash's default with `-fsSL` upstream of a piped
+// shell) and `curl -fsSL` give us fail-fast behavior on HTTP errors. If
+// OpenCode starts publishing a stable checksum/signature, switch to fetching
+// a versioned tarball + verifying the digest before exec.
+export const SANDBOX_INSTALL_COMMAND =
+  'curl -fsSL https://opencode.ai/install | bash && ' +
+  'if [ -x "$HOME/.opencode/bin/opencode" ]; then ' +
+  'if [ "$(id -u)" -eq 0 ]; then ' +
+  'ln -sf "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode; ' +
+  'elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then ' +
+  'sudo ln -sf "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode; ' +
+  'else ' +
+  'mkdir -p "$HOME/.local/bin" && ' +
+  'ln -sf "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"; ' +
+  'fi; ' +
+  'fi';
+
 export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+
+export function isValidOpenCodeModelId(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  const slashIndex = trimmed.indexOf("/");
+  return Boolean(trimmed) && slashIndex > 0 && slashIndex !== trimmed.length - 1;
+}
 
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
@@ -13,18 +61,40 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
 ];
 
-export const modelProfiles: AdapterModelProfileDefinition[] = [
-  {
-    key: "cheap",
-    label: "Cheap",
-    description: "Use OpenCode's known Codex mini model as the budget lane.",
-    adapterConfig: {
-      model: "openai/gpt-5.1-codex-mini",
-      variant: "low",
+export const DEFAULT_OPENCODE_CHEAP_MODEL = "openai/gpt-5.1-codex-mini";
+
+// The "cheap" budget profile (used for recovery retries and other low-cost lanes).
+// Defaults to OpenCode's known Codex mini model, but is overridable so a deployment
+// routing through a gateway that does not serve that model (e.g. an EU LLM gateway)
+// can point the budget lane at a gateway-served model instead -- otherwise recovery
+// retries fail with "model not found". PAPERCLIP_OPENCODE_CHEAP_MODEL takes priority;
+// PAPERCLIP_OPENCODE_SMALL_MODEL (the auxiliary/title model) is reused as a sensible
+// fallback so a single setting covers both budget lanes. The default keeps the
+// upstream behaviour (with the Codex `variant: "low"`).
+//
+// This module is shared client/server code (the UI imports it for
+// DEFAULT_OPENCODE_LOCAL_MODEL etc.), so it must not touch the global `process`
+// unguarded: in the browser (Vite dev middleware serves it untransformed)
+// a bare `process.env` throws ReferenceError at module load and takes the whole
+// app down. Guard with `typeof process` and fall back to an empty env.
+export function buildOpenCodeModelProfiles(
+  env: NodeJS.ProcessEnv = typeof process === "undefined" ? {} : process.env,
+): AdapterModelProfileDefinition[] {
+  const override = (env.PAPERCLIP_OPENCODE_CHEAP_MODEL ?? env.PAPERCLIP_OPENCODE_SMALL_MODEL)?.trim();
+  return [
+    {
+      key: "cheap",
+      label: "Cheap",
+      description: "Budget lane model for recovery retries and other low-cost tasks.",
+      adapterConfig: override
+        ? { model: override }
+        : { model: DEFAULT_OPENCODE_CHEAP_MODEL, variant: "low" },
+      source: "adapter_default",
     },
-    source: "adapter_default",
-  },
-];
+  ];
+}
+
+export const modelProfiles: AdapterModelProfileDefinition[] = buildOpenCodeModelProfiles();
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
 

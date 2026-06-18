@@ -1,11 +1,19 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
+
+function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  return result;
+}
 
 const useQueryMock = vi.fn();
 
@@ -110,6 +118,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     labelIds: [],
     currentExecutionWorkspace: null,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 

@@ -19,9 +19,25 @@ const mockOpenOnboarding = vi.hoisted(() => vi.fn());
 const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 const mockLocation = vi.hoisted(() => ({ pathname: "/PAP/dashboard" }));
+const mockSidebarPreferencesApi = vi.hoisted(() => ({
+  getCompanyOrder: vi.fn(),
+  updateCompanyOrder: vi.fn(),
+}));
+
+// Team-centric copy ("Create new team...") ships behind the Conference Room
+// Chat experimental flag (PAP-139). This suite was written against the NUX
+// copy, so the flag is seeded ON; one test flips it OFF for master's copy.
+const conferenceRoomChatFlag = vi.hoisted(() => ({ enabled: true }));
+vi.mock("@/hooks/useConferenceRoomChatEnabled", () => ({
+  useConferenceRoomChatEnabled: () => ({ enabled: conferenceRoomChatFlag.enabled, loaded: true }),
+}));
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
+}));
+
+vi.mock("@/api/sidebarPreferences", () => ({
+  sidebarPreferencesApi: mockSidebarPreferencesApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -47,6 +63,13 @@ vi.mock("@/context/CompanyContext", () => ({
         issuePrefix: "STR",
         name: "Strata",
         brandColor: "#36a269",
+        status: "active",
+      },
+      {
+        id: "company-3",
+        issuePrefix: "ANA",
+        name: "Anachronist Wiki",
+        brandColor: "#a36a21",
         status: "active",
       },
     ],
@@ -105,6 +128,14 @@ describe("SidebarCompanyMenu", () => {
       },
     });
     mockAuthApi.signOut.mockResolvedValue(undefined);
+    mockSidebarPreferencesApi.getCompanyOrder.mockResolvedValue({
+      orderedIds: ["company-1", "company-2", "company-3"],
+      updatedAt: null,
+    });
+    mockSidebarPreferencesApi.updateCompanyOrder.mockResolvedValue({
+      orderedIds: ["company-1", "company-2", "company-3"],
+      updatedAt: null,
+    });
     mockLocation.pathname = "/PAP/dashboard";
   });
 
@@ -112,6 +143,40 @@ describe("SidebarCompanyMenu", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    conferenceRoomChatFlag.enabled = true;
+  });
+
+  it("keeps master's 'Add company...' copy when the Conference Room Chat flag is off (PAP-139)", async () => {
+    conferenceRoomChatFlag.enabled = false;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarCompanyMenu />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    expect(trigger).not.toBeNull();
+    await act(async () => {
+      trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Add company...");
+    expect(document.body.textContent).not.toContain("Create new team...");
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("shows the requested company actions and signs out through the dropdown", async () => {
@@ -142,8 +207,10 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
 
     expect(document.body.textContent).toContain("Switch workspace");
+    expect(document.body.textContent).toContain("Edit");
     expect(document.body.textContent).toContain("Strata");
-    expect(document.body.textContent).toContain("Add company...");
+    expect(document.body.textContent).toContain("ANA");
+    expect(document.body.textContent).toContain("Create new team...");
     expect(document.body.textContent).toContain("Invite people to Acme Labs");
     expect(document.body.textContent).toContain("Company settings");
     expect(document.body.textContent).toContain("Sign out");
@@ -158,6 +225,62 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("toggles company order editing without selecting a workspace", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarCompanyMenu />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    expect(trigger).not.toBeNull();
+
+    await act(async () => {
+      trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const editButton = Array.from(document.body.querySelectorAll("button"))
+      .find((element) => element.textContent === "Edit");
+    expect(editButton).toBeTruthy();
+
+    await act(async () => {
+      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Done");
+    expect(document.body.textContent).not.toContain("PAP");
+    expect(document.body.textContent).not.toContain("ANA");
+    expect(document.body.querySelector('button[aria-label="Reorder Strata"]')).toBeTruthy();
+
+    const strataItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find((element) => element.textContent?.includes("Strata"));
+    expect(strataItem).toBeTruthy();
+
+    await act(async () => {
+      strataItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockSetSelectedCompanyId).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();

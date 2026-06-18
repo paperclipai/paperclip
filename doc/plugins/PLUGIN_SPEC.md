@@ -27,7 +27,7 @@ Current limitations to keep in mind:
 - Published npm packages are the intended install artifact for deployed plugins.
 - The repo example plugins under `packages/plugins/examples/` are development conveniences. They work from a source checkout and should not be assumed to exist in a generic published build unless they are explicitly shipped with that build.
 - Dynamic plugin install is not yet cloud-ready for horizontally scaled or ephemeral deployments. There is no shared artifact store, install coordination, or cross-node distribution layer yet.
-- The current runtime does not yet ship a real host-provided plugin UI component kit, and it does not support plugin asset uploads/reads. Treat those as future-scope ideas in this spec, not current implementation promises.
+- The current runtime ships a small host-provided plugin UI component kit through `@paperclipai/plugin-sdk/ui`, but does not support plugin asset uploads/reads yet. Treat plugin asset APIs as future-scope ideas, not current implementation promises.
 - Scoped plugin API routes are JSON-only and must be declared in `apiRoutes`.
   They mount under `/api/plugins/:pluginId/api/*`; plugins cannot shadow core
   API routes.
@@ -319,7 +319,10 @@ export interface PaperclipPluginManifestV1 {
   version: string;
   displayName: string;
   description: string;
+  author: string;
   categories: Array<"connector" | "workspace" | "automation" | "ui">;
+  minimumHostVersion?: string;
+  /** @deprecated Use `minimumHostVersion` instead. Retained for backwards compatibility. */
   minimumPaperclipVersion?: string;
   capabilities: string[];
   entrypoints: {
@@ -335,15 +338,42 @@ export interface PaperclipPluginManifestV1 {
     description: string;
     parametersSchema: JsonSchema;
   }>;
+  database?: PluginDatabaseDeclaration;
+  apiRoutes?: PluginApiRouteDeclaration[];
+  environmentDrivers?: PluginEnvironmentDriverDeclaration[];
+  agents?: PluginManagedAgentDeclaration[];
+  projects?: PluginManagedProjectDeclaration[];
+  routines?: PluginManagedRoutineDeclaration[];
+  skills?: PluginManagedSkillDeclaration[];
+  localFolders?: PluginLocalFolderDeclaration[];
+  /** Legacy top-level launcher declarations. Prefer `ui.launchers` for new manifests. */
+  launchers?: PluginLauncherDeclaration[];
   ui?: {
+    launchers?: PluginLauncherDeclaration[];
     slots: Array<{
-      type: "page" | "detailTab" | "dashboardWidget" | "sidebar" | "settingsPage";
+      type: "page"
+        | "detailTab"
+        | "taskDetailView"
+        | "dashboardWidget"
+        | "sidebar"
+        | "routeSidebar"
+        | "sidebarPanel"
+        | "projectSidebarItem"
+        | "globalToolbarButton"
+        | "toolbarButton"
+        | "contextMenuItem"
+        | "commentAnnotation"
+        | "commentContextMenuItem"
+        | "settingsPage"
+        | "companySettingsPage";
       id: string;
       displayName: string;
       /** Which export name in the UI bundle provides this component */
       exportName: string;
       /** For detailTab: which entity types this tab appears on */
       entityTypes?: Array<"project" | "issue" | "agent" | "goal" | "run">;
+      /** For page and companySettingsPage: single route segment */
+      routePath?: string;
     }>;
   };
 }
@@ -354,10 +384,17 @@ Rules:
 - `id` must be globally unique
 - `id` should normally equal the npm package name
 - `apiVersion` must match the host-supported plugin API version
+- `minimumHostVersion` is preferred, with `minimumPaperclipVersion` retained for
+  backwards compatibility
 - `capabilities` must be static and install-time visible
 - config schema must be JSON Schema compatible
 - `entrypoints.ui` points to the directory containing the built UI bundle
 - `ui.slots` declares which extension slots the plugin fills, so the host knows what to mount without loading the bundle eagerly; each slot references an `exportName` from the UI bundle
+- declare managed declarations with the matching `*.managed` capability:
+  - `agents` → `agents.managed`
+  - `projects` → `projects.managed`
+  - `routines` → `routines.managed`
+  - `skills` → `skills.managed`
 
 ## 11. Agent Tools
 
@@ -631,6 +668,22 @@ Plugins that need filesystem, git, terminal, or process operations handle those 
 
 Trusted orchestration plugins can create and update Paperclip issues through `ctx.issues` instead of importing server internals. The public issue contract includes parent/project/goal links, board or agent assignees, blocker IDs, labels, billing code, request depth, execution workspace inheritance, and plugin origin metadata.
 
+Plugins that perform durable work should declare managed Paperclip resources rather than using private plugin state:
+
+- `agents` + `ctx.agents.managed.*` for named, invokable operators (`agents.managed` required)
+- `projects` + `ctx.projects.managed.*` for stable, scoped issue/workspace ownership (`projects.managed` required)
+- `routines` + `ctx.routines.managed.*` for schedule/webhook/manual execution with issue trails (`routines.managed` required)
+- `skills` + `ctx.skills.managed.*` for reusable agent capabilities (`skills.managed` required)
+
+The LLM Wiki plugin is the current reference for this pattern: it declares managed
+agents, projects, routines, and skills in manifest, reconciles them per company,
+and uses managed routines for periodic wiki maintenance and ingest operations.
+Content-oriented plugins should follow the same model instead of running
+unmanaged background loops: make the LLM-facing worker an operator-visible
+managed agent, attach reusable prompt/tool guidance as managed skills, keep
+operation issues in a managed project, and drive recurring work through managed
+routines.
+
 Origin rules:
 
 - Built-in core issues keep built-in origins such as `manual` and `routine_execution`.
@@ -746,20 +799,38 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `activity.read`
 - `costs.read`
 - `issues.orchestration.read`
+- `database.namespace.read`
 
 ### Data Write
 
 - `issues.create`
 - `issues.update`
 - `issue.comments.create`
+- `issue.interactions.create`
 - `issue.documents.write`
 - `issue.relations.write`
 - `issues.checkout`
 - `issues.wakeup`
-- `assets.write`
-- `assets.read`
 - `activity.log.write`
 - `metrics.write`
+- `telemetry.track`
+- `assets.read`
+- `assets.write`
+- `database.namespace.migrate`
+- `database.namespace.write`
+- `goals.create`
+- `goals.update`
+- `projects.managed`
+- `routines.managed`
+- `skills.managed`
+- `agents.managed`
+- `agents.pause`
+- `agents.resume`
+- `agents.invoke`
+- `agent.sessions.create`
+- `agent.sessions.list`
+- `agent.sessions.send`
+- `agent.sessions.close`
 
 ### Plugin State
 
@@ -772,8 +843,10 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `events.emit`
 - `jobs.schedule`
 - `webhooks.receive`
+- `local.folders`
 - `http.outbound`
 - `secrets.read-ref`
+- `environment.drivers.register`
 
 ### Agent Tools
 
@@ -786,6 +859,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `ui.page.register`
 - `ui.detailTab.register`
 - `ui.dashboardWidget.register`
+- `ui.commentAnnotation.register`
 - `ui.action.register`
 
 ## 15.2 Forbidden Capabilities
@@ -894,6 +968,7 @@ Job rules:
 3. The host prevents overlapping execution of the same plugin/job combination unless explicitly allowed later.
 4. Every job run is recorded in Postgres.
 5. Failed jobs are retryable.
+6. For recurring business workflows that should create visible Paperclip work, prefer managed routines and managed resources over jobs. Jobs remain useful for private plugin-runtime maintenance tasks.
 
 ## 18. Webhooks
 
@@ -976,12 +1051,22 @@ export function DashboardWidget({ context }: PluginWidgetProps) {
 
 The SDK includes a `ui` subpath export that plugin frontends import. This subpath provides:
 
-- **Bridge hooks**: `usePluginData(key, params)`, `usePluginAction(key)`, `useHostContext()`
+- **Bridge hooks**: `usePluginData(key, params)`, `usePluginAction(key)`, `useHostContext()`, `useHostNavigation()`
 - **Design tokens**: colors, spacing, typography, shadows matching the host theme
 - **Shared components**: `MetricCard`, `StatusBadge`, `DataTable`, `LogView`, `ActionBar`, `Spinner`, etc.
 - **Type definitions**: `PluginPageProps`, `PluginWidgetProps`, `PluginDetailTabProps`
 
 Plugins are encouraged but not required to use the shared components. A plugin may render entirely custom UI as long as it communicates through the bridge.
+
+`useHostNavigation()` is the supported way for plugin UI to navigate to
+Paperclip-internal pages. It exposes `resolveHref(to)`, `navigate(to,
+options?)`, and `linkProps(to, options?)`. Plugin links should prefer
+`linkProps()` so anchors keep real `href` values for copy-link, modifier-click,
+middle-click, and open-in-new-tab behavior while plain left-clicks route through
+the host SPA router. The host resolves company-scoped paths against the active
+company prefix without double-prefixing already-prefixed paths. Plugin UI should
+not use raw same-origin `href`s or `window.location.assign()` for internal
+Paperclip navigation because those can force a full document reload.
 
 ### 19.0.2 Bundle Isolation
 
@@ -1046,6 +1131,27 @@ Plugins may add sidebar links to:
 - global plugin settings
 - company-context plugin pages
 
+### 19.5.1 Route Sidebars (`routeSidebar`)
+
+A `routeSidebar` slot supplies a contextual sidebar for a plugin page route
+(matched by `routePath`). It **coexists** with the main app sidebar rather than
+replacing it: while the route is active the host collapses the app `<Sidebar/>`
+to its 64px icon rail (still hover/peek-able) and renders the plugin's
+`routeSidebar` in a secondary pane, producing the layout
+`[ app rail ][ route sidebar ][ content ]`. The same model applies to the
+host's own company-settings sidebar.
+
+The host owns the collapse. Plugins must not mount `RequestCollapsedSidebar` or
+otherwise attempt to collapse the app sidebar from a `routeSidebar` — the host
+applies the collapse while the route is mounted and restores the previous state
+on navigation away. The collapse is a **hard invariant**: while a secondary
+sidebar is shown the app rail is forced collapsed and its expand/toggle
+affordance is hidden, *overriding* any user pin. Crucially, this force is
+ephemeral — it never mutates the user's persisted expanded/collapsed preference,
+so navigating back to a normal route restores exactly what the user chose.
+Precedence is therefore: secondary-sidebar force > explicit user pin >
+route-requested collapse (`RequestCollapsedSidebar`) > default expanded.
+
 ## 19.6 Shared Components In `@paperclipai/plugin-sdk/ui`
 
 The host SDK ships shared components that plugins can import to quickly build UIs that match the host's look and feel. These are convenience building blocks, not a requirement.
@@ -1062,6 +1168,11 @@ The host SDK ships shared components that plugins can import to quickly build UI
 | `LogView` | Scrollable log output with timestamps | Webhook deliveries, job output, process logs |
 | `JsonTree` | Collapsible JSON tree for debugging | Raw API responses, plugin state inspection |
 | `Spinner` | Loading indicator | Data fetch states |
+| `FileTree` | Host-styled file/directory tree | Wiki pages, workspace files, import previews |
+| `IssuesList` | Host issue list | Plugin pages that need a native issue view |
+| `AssigneePicker` | Host assignee picker for agents and board users | Creating issues, assigning routines, filtering work |
+| `ProjectPicker` | Host project picker | Creating issues, scoping dashboards, filtering work |
+| `ManagedRoutinesList` | Host routine list | Plugin settings pages that manage routines |
 
 Plugins may also use entirely custom components. The shared components exist to reduce boilerplate and keep visual consistency, not to limit what plugins can render.
 
@@ -1118,6 +1229,8 @@ The auto-generated form supports:
 For plugins that need richer settings UX beyond what JSON Schema can express, the plugin may declare a `settingsPage` slot in `ui.slots`. When present, the host renders the plugin's own React component instead of the auto-generated form. The plugin component communicates with its worker through the standard bridge to read and write config.
 
 Both approaches coexist: a plugin can use the auto-generated form for simple config and add a custom settings page slot for advanced configuration or operational dashboards.
+
+For plugins that need a company-scoped settings surface, declare a `companySettingsPage` slot with a `routePath`. The host renders a sidebar item under Company Settings and mounts the component at `/:companyPrefix/company/settings/:routePath`. The page receives `companyId` and `companyPrefix` in its host context. Core settings routes such as `access`, `invites`, `environments`, and `secrets` are reserved and cannot be shadowed by plugin declarations.
 
 ## 20. Local Tooling
 
@@ -1367,6 +1480,14 @@ Each plugin may expose a company-context main page:
 - `/:companyPrefix/plugins/:pluginId`
 
 This page is where board users do most day-to-day work.
+
+## 24.4 Company Settings Plugin Page
+
+Each ready plugin may expose a company settings page:
+
+- `/:companyPrefix/company/settings/:routePath`
+
+The host adds a matching Company Settings sidebar item using the slot `displayName`. Plugin settings route segments are single-segment slugs and must not collide with core company settings pages.
 
 ## 25. Uninstall And Data Lifecycle
 

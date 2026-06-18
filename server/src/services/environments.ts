@@ -22,6 +22,43 @@ const DEFAULT_LOCAL_ENVIRONMENT_NAME = "Local";
 const DEFAULT_LOCAL_ENVIRONMENT_DESCRIPTION =
   "Default execution environment for Paperclip runs on this machine.";
 
+const DEFAULT_KUBERNETES_ENVIRONMENT_NAME = "Kubernetes Sandbox";
+const DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION =
+  "Managed Kubernetes sandbox environment for hosted tenant execution.";
+/** Provider key (== plugin driverKey) of the first-party Kubernetes sandbox provider. */
+const KUBERNETES_PROVIDER_KEY = "kubernetes";
+/** Metadata marker for the company's managed-by-config Kubernetes sandbox environment. */
+const KUBERNETES_MANAGED_MARKER = "managedKubernetesSandbox";
+
+/**
+ * Configuration accepted by `ensureKubernetesEnvironment`. Mirrors the keys of
+ * the kubernetes sandbox-provider `configSchema` that an operator typically
+ * pins for a hosted cloud instance. Stored verbatim in `environment.config`
+ * (the plugin validates/defaults it via `kubernetesProviderConfigSchema` at
+ * lease time); `provider` is always forced to "kubernetes".
+ */
+export interface KubernetesEnvironmentConfigInput {
+  backend?: "sandbox-cr" | "job";
+  inCluster?: boolean;
+  runtimeClassName?: string;
+  egressMode?: "cilium" | "standard";
+  egressAllowFqdns?: string[];
+  egressAllowCidrs?: string[];
+  namespacePrefix?: string;
+  imageRegistry?: string;
+  adapterType?: string;
+  /**
+   * Sandbox lease RPC timeout in milliseconds. Read at lease time by
+   * `resolvePluginSandboxRpcTimeoutMs` to extend the worker-manager call
+   * timeout when acquiring a lease may take minutes (e.g. a cold node
+   * scale-up on an autoscale-to-zero pool). Stored verbatim in the
+   * environment config and validated by the sandbox config schema.
+   */
+  timeoutMs?: number;
+  adapters?: import("@paperclipai/shared").AdapterRegistryEntry[];
+  [key: string]: unknown;
+}
+
 function cloneRecord(value: unknown, fallback: Record<string, unknown> | null = null): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
   return { ...(value as Record<string, unknown>) };
@@ -145,6 +182,126 @@ export function environmentService(db: Db) {
         throw new Error("Failed to ensure local environment");
       }
       return toEnvironment(existing);
+    },
+
+    /**
+     * Idempotently ensure a managed Kubernetes sandbox environment exists for a
+     * company, configured from instance/operator-supplied config. Mirrors
+     * `ensureLocalEnvironment`, but there is no DB unique index for sandbox
+     * drivers, so idempotency is by metadata marker + driver lookup.
+     *
+     * The environment is `driver: "sandbox"` with `config.provider:
+     * "kubernetes"` so it resolves to the first-party Kubernetes sandbox
+     * provider. On subsequent calls the config is refreshed (so operators can
+     * update egress/runtimeClass via gitops without recreating the row).
+     */
+    ensureKubernetesEnvironment: async (
+      companyId: string,
+      config: KubernetesEnvironmentConfigInput,
+    ): Promise<Environment> => {
+      const desiredConfig: Record<string, unknown> = {
+        ...config,
+        provider: KUBERNETES_PROVIDER_KEY,
+      };
+      const desiredMetadata: Record<string, unknown> = {
+        managedByPaperclip: true,
+        [KUBERNETES_MANAGED_MARKER]: true,
+      };
+
+      const existing = await db
+        .select()
+        .from(environments)
+        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+        .then((rows) =>
+          rows.find(
+            (row) =>
+              (row.metadata as Record<string, unknown> | null)?.[KUBERNETES_MANAGED_MARKER] === true,
+          ) ?? null,
+        );
+
+      const now = new Date();
+      if (existing) {
+        const updated = await db
+          .update(environments)
+          .set({
+            config: desiredConfig,
+            metadata: { ...(existing.metadata ?? {}), ...desiredMetadata },
+            status: "active",
+            updatedAt: now,
+          })
+          .where(eq(environments.id, existing.id))
+          .returning()
+          .then((rows) => rows[0] ?? existing);
+        return toEnvironment(updated);
+      }
+
+      // The partial unique index `environments_company_managed_sandbox_idx`
+      // (added in migration 0102) enforces "at most one Paperclip-managed
+      // sandbox row per company" at the DB level. Use ON CONFLICT DO NOTHING
+      // keyed on that index so concurrent callers can race the INSERT — only
+      // one succeeds; losers re-read the surviving row.
+      const inserted = await db
+        .insert(environments)
+        .values({
+          companyId,
+          name: DEFAULT_KUBERNETES_ENVIRONMENT_NAME,
+          description: DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION,
+          driver: "sandbox",
+          status: "active",
+          config: desiredConfig,
+          metadata: desiredMetadata,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing({
+          target: [environments.companyId],
+          where: sql`${environments.driver} = 'sandbox' AND (${environments.metadata} ->> 'managedByPaperclip')::boolean = true`,
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (inserted) return toEnvironment(inserted);
+
+      const winner = await db
+        .select()
+        .from(environments)
+        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+        .then(
+          (rows) =>
+            rows.find(
+              (candidate) =>
+                (candidate.metadata as Record<string, unknown> | null)?.[
+                  KUBERNETES_MANAGED_MARKER
+                ] === true,
+            ) ?? null,
+        );
+      if (!winner) {
+        throw new Error("Failed to ensure kubernetes environment");
+      }
+      return toEnvironment(winner);
+    },
+
+    /**
+     * Find an active Kubernetes sandbox environment for a company, if one
+     * exists. Read-only counterpart to `ensureKubernetesEnvironment` used by the
+     * per-run execution guard (which must not silently create config-less envs).
+     */
+    findKubernetesEnvironment: async (companyId: string): Promise<Environment | null> => {
+      const rows = await db
+        .select()
+        .from(environments)
+        .where(
+          and(
+            eq(environments.companyId, companyId),
+            eq(environments.driver, "sandbox"),
+            eq(environments.status, "active"),
+          ),
+        )
+        .orderBy(desc(environments.updatedAt));
+      const match = rows.find(
+        (row) =>
+          (row.metadata as Record<string, unknown> | null)?.[KUBERNETES_MANAGED_MARKER] === true,
+      );
+      return match ? toEnvironment(match) : null;
     },
 
     create: async (companyId: string, input: CreateEnvironment): Promise<Environment> => {
