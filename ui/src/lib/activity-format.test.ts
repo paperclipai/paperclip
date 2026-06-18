@@ -74,4 +74,28 @@ describe("activity formatting", () => {
       "Run finished without a next step - recovery escalated",
     );
   });
+
+  it("distinguishes event-driven hub idle from missing handoff activity", () => {
+    const details = { skipReason: "issue has event-driven hub idle path" };
+
+    expect(formatActivityVerb("issue.successful_run_handoff_resolved", details)).toBe(
+      "recorded event-driven hub idle on",
+    );
+    expect(formatIssueActivityAction("issue.successful_run_handoff_resolved", details)).toBe(
+      "Event-driven hub idle",
+    );
+  });
+
+  it("distinguishes recovery folds and exhausted escalations", () => {
+    expect(formatActivityVerb("issue.recovery_action_resolved", { outcome: "false_positive" })).toBe(
+      "folded false-positive recovery on",
+    );
+    expect(formatIssueActivityAction("issue.recovery_action_resolved", {
+      outcome: "false_positive",
+      resolutionNote: "Missing-disposition recovery folded because the source issue exposes an event-driven hub idle path.",
+    })).toBe("Folded recovery: event-driven hub idle");
+    expect(formatIssueActivityAction("issue.recovery_action_escalated", { outcome: "escalated" })).toBe(
+      "Recovery exhausted and escalated",
+    );
+  });
 });

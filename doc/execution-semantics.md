@@ -244,6 +244,7 @@ The valid action-path primitives are:
 - a typed execution-policy participant, such as `executionState.currentParticipant`
 - a pending issue-thread interaction or linked approval that is waiting for a specific responder
 - a one-shot issue monitor (`executionPolicy.monitor.nextCheckAt`) that will wake the assignee for a future check
+- an explicit event-driven hub idle marker for long-lived hub issues that park between external event wakes
 - a human owner via `assigneeUserId`
 - a first-class blocker chain whose unresolved leaf issues are themselves healthy
 - an open explicit recovery action that names the owner and action needed to restore liveness
@@ -314,6 +315,8 @@ A valid recovery action must name:
 - the wake, monitor, timeout, retry, or escalation policy that will move the action forward
 - the resolution outcome when closed, such as restored, delegated, false positive, blocked, escalated, or cancelled
 
+Source-scoped status-only recovery actions that can re-fire the same owner wake, such as `missing_disposition`, must be bounded. They must carry a finite `maxAttempts`, enforce a minimum interval between re-fires, and have one clear exhaustion path. When the finite bound is reached, Paperclip must surface or fold the action exactly once through the explicit recovery lifecycle; it must not keep issuing the same recovery wake indefinitely.
+
 A source-scoped recovery action is the default form. Use it when the next safe move is to repair the source issue's liveness directly: move the source issue back to `todo` so it can be retried, clarify disposition, re-establish a monitor, record a false positive, or delegate real follow-up work from the source issue.
 
 Use an issue-backed recovery action only when the recovery is genuinely independent work or when source-scoped handling would be unsafe or unclear. Examples include:
@@ -331,6 +334,8 @@ A comment or system notice can be evidence for a recovery action, but it is not 
 Source-scoped recovery actions are snapshots of the source issue's liveness state at the time the action was opened. They must be revalidated after newer durable source activity, including source issue status changes, assignee changes, blocker changes, execution policy or monitor changes, document or work-product updates that define a valid waiting path, and structured resume or disposition updates.
 
 When newer source activity restores a valid live or waiting path, the recovery action is stale and should be folded through the explicit recovery lifecycle instead of being hidden or deleted. Folding means resolving or cancelling the recovery action with a resolution outcome and note that preserve the audit trail.
+
+This revalidation must happen immediately before every recovery wake re-fire. If the source already has a valid live/waiting path, or if the requested disposition cannot be produced by the recovery wake itself, Paperclip should fold the action as stale or false-positive instead of re-firing it.
 
 Plain comments alone do not make a recovery action stale. A comment can provide evidence, but the recovery action should remain visible when the source issue is still stalled and the comment does not create a valid action-path primitive such as a wake, monitor, interaction, approval, blocker, human owner, execution participant, terminal disposition, or delegated follow-up.
 
@@ -365,6 +370,7 @@ A healthy active-work state means at least one of these is true:
 - there is an active run for the issue
 - there is already a queued continuation wake
 - there is an active one-shot monitor that will wake the assignee for a future check
+- there is an explicit event-driven hub idle marker that says the issue is intentionally parked until an external event wakes it
 - there is an open explicit recovery action for the lost execution path
 
 An agent-owned `in_progress` issue is stalled when it has no active run, no queued continuation, and no explicit recovery surface. A still-running but silent process is not automatically stalled; it is handled by the active-run watchdog contract.

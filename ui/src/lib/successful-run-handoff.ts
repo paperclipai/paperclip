@@ -1,4 +1,5 @@
 import type { ActivityEvent, Issue, SuccessfulRunHandoffState } from "@paperclipai/shared";
+import { hasEventDrivenHubIdleDetail } from "./event-driven-hub-idle";
 
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_ACTION = "issue.successful_run_handoff_required";
 export const SUCCESSFUL_RUN_HANDOFF_RESOLVED_ACTION = "issue.successful_run_handoff_resolved";
@@ -70,7 +71,13 @@ export function isSuccessfulRunHandoffEscalationComment(text: string) {
     || /^Paperclip exhausted the bounded successful-run handoff correction\b/i.test(trimmed);
 }
 
-export function successfulRunHandoffActivityTone(action: string) {
+export function successfulRunHandoffActivityTone(action: string, details?: Record<string, unknown> | null) {
+  if (action === SUCCESSFUL_RUN_HANDOFF_RESOLVED_ACTION && hasEventDrivenHubIdleDetail(details)) {
+    return {
+      className: "border-emerald-400/40 bg-emerald-500/10 text-emerald-950 dark:text-emerald-100",
+      iconClassName: "text-emerald-600 dark:text-emerald-300",
+    };
+  }
   if (action === SUCCESSFUL_RUN_HANDOFF_ESCALATED_ACTION) {
     return {
       className: "border-red-500/35 bg-red-500/10 text-red-950 dark:text-red-100",
