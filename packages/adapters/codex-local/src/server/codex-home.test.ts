@@ -4,6 +4,51 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ensureSymlink, prepareManagedCodexHome } from "./codex-home.js";
 
+type CodexHomePaths = {
+  root: string;
+  sharedCodexHome: string;
+  paperclipHome: string;
+  managedCodexHome: string;
+  sharedAuth: string;
+  managedAuth: string;
+};
+
+async function makeCodexHomePaths(companyId = "company-1"): Promise<CodexHomePaths> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-home-"));
+  const sharedCodexHome = path.join(root, "shared-codex-home");
+  const paperclipHome = path.join(root, "paperclip-home");
+  const managedCodexHome = path.join(
+    paperclipHome,
+    "instances",
+    "default",
+    "companies",
+    companyId,
+    "codex-home",
+  );
+  return {
+    root,
+    sharedCodexHome,
+    paperclipHome,
+    managedCodexHome,
+    sharedAuth: path.join(sharedCodexHome, "auth.json"),
+    managedAuth: path.join(managedCodexHome, "auth.json"),
+  };
+}
+
+function envFor(paths: CodexHomePaths): NodeJS.ProcessEnv {
+  return {
+    CODEX_HOME: paths.sharedCodexHome,
+    PAPERCLIP_HOME: paths.paperclipHome,
+    PAPERCLIP_INSTANCE_ID: "default",
+  };
+}
+
+async function makeAuthFile(filePath: string, contents: string, mtime: Date): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, contents, "utf8");
+  await fs.utimes(filePath, mtime, mtime);
+}
+
 describe("codex managed home", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -103,6 +148,109 @@ describe("codex managed home", () => {
     }
   });
 
+  it("prepareManagedCodexHome restores symlink and writes back a newer detached auth.json", async () => {
+    const paths = await makeCodexHomePaths();
+    const logs: Array<{ stream: "stdout" | "stderr"; message: string }> = [];
+
+    try {
+      await makeAuthFile(paths.sharedAuth, '{"token":"source"}\n', new Date("2026-01-01T00:00:00.000Z"));
+      await makeAuthFile(paths.managedAuth, '{"token":"rotated"}\n', new Date("2026-01-01T00:01:00.000Z"));
+
+      await expect(
+        prepareManagedCodexHome(
+          envFor(paths),
+          async (stream, message) => {
+            logs.push({ stream, message });
+          },
+          "company-1",
+        ),
+      ).resolves.toBe(paths.managedCodexHome);
+
+      expect((await fs.lstat(paths.managedAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(paths.managedAuth)).toBe(await fs.realpath(paths.sharedAuth));
+      expect(await fs.readFile(paths.sharedAuth, "utf8")).toBe('{"token":"rotated"}\n');
+      expect(logs.some(({ stream, message }) =>
+        stream === "stdout" &&
+        message.includes("Restored auth.json symlink (target was detached regular file; wrote rotated token back to source)")
+      )).toBe(true);
+    } finally {
+      await fs.rm(paths.root, { recursive: true, force: true });
+    }
+  });
+
+  it("prepareManagedCodexHome restores symlink without write-back when detached auth.json is older", async () => {
+    const paths = await makeCodexHomePaths();
+    const logs: Array<{ stream: "stdout" | "stderr"; message: string }> = [];
+
+    try {
+      await makeAuthFile(paths.sharedAuth, '{"token":"source-newer"}\n', new Date("2026-01-01T00:01:00.000Z"));
+      await makeAuthFile(paths.managedAuth, '{"token":"stale-target"}\n', new Date("2026-01-01T00:00:00.000Z"));
+
+      await prepareManagedCodexHome(
+        envFor(paths),
+        async (stream, message) => {
+          logs.push({ stream, message });
+        },
+        "company-1",
+      );
+
+      expect((await fs.lstat(paths.managedAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(paths.managedAuth)).toBe(await fs.realpath(paths.sharedAuth));
+      expect(await fs.readFile(paths.sharedAuth, "utf8")).toBe('{"token":"source-newer"}\n');
+      expect(logs.some(({ message }) => message.includes("wrote rotated token back to source"))).toBe(false);
+    } finally {
+      await fs.rm(paths.root, { recursive: true, force: true });
+    }
+  });
+
+  it("prepareManagedCodexHome leaves a correct auth.json symlink untouched", async () => {
+    const paths = await makeCodexHomePaths();
+    const logs: Array<{ stream: "stdout" | "stderr"; message: string }> = [];
+
+    try {
+      await fs.mkdir(paths.sharedCodexHome, { recursive: true });
+      await fs.mkdir(paths.managedCodexHome, { recursive: true });
+      await fs.writeFile(paths.sharedAuth, '{"token":"shared"}\n', "utf8");
+      await fs.symlink(paths.sharedAuth, paths.managedAuth);
+      const beforeLink = await fs.readlink(paths.managedAuth);
+
+      await prepareManagedCodexHome(
+        envFor(paths),
+        async (stream, message) => {
+          logs.push({ stream, message });
+        },
+        "company-1",
+      );
+
+      expect((await fs.lstat(paths.managedAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.readlink(paths.managedAuth)).toBe(beforeLink);
+      expect(await fs.readFile(paths.sharedAuth, "utf8")).toBe('{"token":"shared"}\n');
+      expect(logs.some(({ message }) => message.includes("wrote rotated token back to source"))).toBe(false);
+    } finally {
+      await fs.rm(paths.root, { recursive: true, force: true });
+    }
+  });
+
+  it("prepareManagedCodexHome concurrent invocations do not corrupt rotated auth.json write-back", async () => {
+    const paths = await makeCodexHomePaths();
+
+    try {
+      await makeAuthFile(paths.sharedAuth, '{"token":"source"}\n', new Date("2026-01-01T00:00:00.000Z"));
+      await makeAuthFile(paths.managedAuth, '{"token":"rotated"}\n', new Date("2026-01-01T00:01:00.000Z"));
+
+      await Promise.all([
+        prepareManagedCodexHome(envFor(paths), async () => {}, "company-1"),
+        prepareManagedCodexHome(envFor(paths), async () => {}, "company-1"),
+      ]);
+
+      expect((await fs.lstat(paths.managedAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(paths.managedAuth)).toBe(await fs.realpath(paths.sharedAuth));
+      expect(await fs.readFile(paths.sharedAuth, "utf8")).toBe('{"token":"rotated"}\n');
+    } finally {
+      await fs.rm(paths.root, { recursive: true, force: true });
+    }
+  });
+
   // Regression for #5028: older Paperclip versions copied auth.json into the
   // managed home instead of symlinking. After upgrading to the symlink-based
   // logic, the stale regular file at the target stayed in place and every
@@ -128,10 +276,20 @@ describe("codex managed home", () => {
       await fs.mkdir(sharedCodexHome, { recursive: true });
       // The live source has rotated since the stale copy was written.
       await fs.writeFile(sharedAuth, '{"token":"fresh"}', "utf8");
+      await fs.utimes(
+        sharedAuth,
+        new Date("2026-01-01T00:01:00.000Z"),
+        new Date("2026-01-01T00:01:00.000Z"),
+      );
 
       // Simulate a stale copy left by a previous Paperclip version.
       await fs.mkdir(managedCodexHome, { recursive: true });
       await fs.writeFile(managedAuth, '{"token":"stale-from-copy"}', "utf8");
+      await fs.utimes(
+        managedAuth,
+        new Date("2026-01-01T00:00:00.000Z"),
+        new Date("2026-01-01T00:00:00.000Z"),
+      );
 
       await prepareManagedCodexHome(
         {

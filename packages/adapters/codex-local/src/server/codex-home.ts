@@ -1,12 +1,17 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { FileHandle } from "node:fs/promises";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
+const AUTH_LOCK_TIMEOUT_MS = 5_000;
+const AUTH_LOCK_RETRY_MS = 50;
+const RESTORED_AUTH_SYMLINK_MESSAGE =
+  "[paperclip] Restored auth.json symlink (target was detached regular file; wrote rotated token back to source).";
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -43,6 +48,10 @@ export function resolveManagedCodexHomeDir(
 
 async function ensureParentDir(target: string): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function isExpectedSymlink(target: string, source: string): Promise<boolean> {
@@ -96,6 +105,102 @@ export async function ensureSymlink(target: string, source: string): Promise<voi
   await createExpectedSymlink(target, source);
 }
 
+async function acquireAuthLock(
+  lockPath: string,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<FileHandle | null> {
+  await ensureParentDir(lockPath);
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < AUTH_LOCK_TIMEOUT_MS) {
+    try {
+      return await fs.open(lockPath, "wx", 0o600);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") {
+        await onLog(
+          "stderr",
+          `[paperclip] Warning: Could not acquire auth.json lock at "${lockPath}"; proceeding without rotated-token write-back.\n`,
+        );
+        return null;
+      }
+      await delay(AUTH_LOCK_RETRY_MS);
+    }
+  }
+
+  await onLog(
+    "stderr",
+    `[paperclip] Warning: Timed out waiting for auth.json lock at "${lockPath}"; proceeding without rotated-token write-back.\n`,
+  );
+  return null;
+}
+
+async function releaseAuthLock(lockPath: string, handle: FileHandle): Promise<void> {
+  await handle.close().catch(() => {});
+  await fs.unlink(lockPath).catch(() => {});
+}
+
+async function copyFileAtomic(source: string, target: string): Promise<void> {
+  await ensureParentDir(target);
+  const tempPath = path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+
+  try {
+    await fs.copyFile(source, tempPath);
+    await fs.chmod(tempPath, 0o600).catch(() => {});
+    await fs.rename(tempPath, target);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function shouldWriteDetachedAuthBack(target: string, source: string): Promise<boolean> {
+  const targetStat = await fs.stat(target);
+  const sourceStat = await fs.stat(source).catch(() => null);
+  return !sourceStat || targetStat.mtimeMs > sourceStat.mtimeMs;
+}
+
+async function writeBackDetachedAuthIfNewer(target: string, source: string): Promise<boolean> {
+  if (!(await shouldWriteDetachedAuthBack(target, source))) return false;
+  await copyFileAtomic(target, source);
+  return true;
+}
+
+async function restoreSharedAuthJsonSymlink(
+  target: string,
+  source: string,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<void> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing || existing.isSymbolicLink() || existing.isDirectory()) {
+    await ensureSymlink(target, source);
+    return;
+  }
+
+  const lockPath = `${source}.lock`;
+  const lock = await acquireAuthLock(lockPath, onLog);
+  if (!lock) return;
+
+  try {
+    const current = await fs.lstat(target).catch(() => null);
+    if (!current || current.isSymbolicLink() || current.isDirectory()) {
+      await ensureSymlink(target, source);
+      return;
+    }
+
+    const wroteBack = await writeBackDetachedAuthIfNewer(target, source);
+    await ensureSymlink(target, source);
+    if (wroteBack) {
+      await onLog("stdout", `${RESTORED_AUTH_SYMLINK_MESSAGE}\n`);
+    }
+  } finally {
+    await releaseAuthLock(lockPath, lock);
+  }
+}
+
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (existing) return;
@@ -130,23 +235,17 @@ export async function prepareManagedCodexHome(
 
   await fs.mkdir(targetHome, { recursive: true });
 
-  // If a previous run wrote an apikey-mode auth.json (regular file) and this
-  // run has no apiKey, remove it so the chatgpt-mode symlink can be restored.
-  // Without this cleanup, ensureSymlink bails on a non-symlink and Codex keeps
-  // authenticating with the stale key after it is removed from configuration.
-  if (!apiKey && seedFromShared) {
-    const authPath = path.join(targetHome, "auth.json");
-    const existing = await fs.lstat(authPath).catch(() => null);
-    if (existing && !existing.isSymbolicLink()) {
-      await fs.rm(authPath, { force: true });
-    }
-  }
-
   if (seedFromShared) {
     for (const name of SYMLINKED_SHARED_FILES) {
       const source = path.join(sourceHome, name);
-      if (!(await pathExists(source))) continue;
-      await ensureSymlink(path.join(targetHome, name), source);
+      const target = path.join(targetHome, name);
+      const targetExists = await fs.lstat(target).then(() => true).catch(() => false);
+      if (!(await pathExists(source)) && !targetExists) continue;
+      if (name === "auth.json") {
+        await restoreSharedAuthJsonSymlink(target, source, onLog);
+      } else {
+        await ensureSymlink(target, source);
+      }
     }
 
     for (const name of COPIED_SHARED_FILES) {
