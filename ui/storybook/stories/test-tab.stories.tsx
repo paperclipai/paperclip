@@ -220,7 +220,15 @@ function seededClient(): QueryClient {
   return client;
 }
 
-function TestHost({ script, runResult }: { script?: Step[]; runResult?: ToolConnectionTestCallResult }) {
+function TestHost({
+  script,
+  runResult,
+  runDelayMs = 120,
+}: {
+  script?: Step[];
+  runResult?: ToolConnectionTestCallResult;
+  runDelayMs?: number;
+}) {
   const client = useMemo(() => seededClient(), []);
   const fetchPatched = useRef(false);
 
@@ -232,7 +240,7 @@ function TestHost({ script, runResult }: { script?: Step[]; runResult?: ToolConn
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/test-calls")) {
-        await new Promise((resolve) => window.setTimeout(resolve, 120));
+        await new Promise((resolve) => window.setTimeout(resolve, runDelayMs));
         return Response.json(runResult ?? { decision: "allowed", invocationId: "inv-storybook", result: {} });
       }
       return original(input, init);
@@ -240,7 +248,7 @@ function TestHost({ script, runResult }: { script?: Step[]; runResult?: ToolConn
     return () => {
       window.fetch = original;
     };
-  }, [runResult]);
+  }, [runResult, runDelayMs]);
 
   useEffect(() => {
     if (!script) return;
@@ -277,19 +285,17 @@ export const AllowedResult: Story = {
       runResult={{
         decision: "allowed",
         invocationId: "inv-allowed",
-        result: {
-          rows: [
-            ["Name", "Stage", "Owner"],
-            ["Acme Co.", "Demo", "Dotta"],
-            ["Globex", "Trial", "Dotta"],
-            ["Initech", "Closed", "CodexCoder"],
-          ],
-          rowCount: 28,
-        },
+        result: [
+          { Name: "Acme Co.", Stage: "Demo", Owner: "Dotta", Updated: "Tue" },
+          { Name: "Globex", Stage: "Trial", Owner: "Dotta", Updated: "Mon" },
+          { Name: "Initech", Stage: "Closed", Owner: "CodexCoder", Updated: "Sun" },
+          { Name: "Soylent", Stage: "Discovery", Owner: "QA", Updated: "Fri" },
+          { Name: "Umbrella", Stage: "Trial", Owner: "Dotta", Updated: "Thu" },
+        ],
       }}
       script={[
         { kind: "expand", title: "Read a sheet" },
-        { kind: "fill", values: ["Q3 Pipeline Tracker", "Leads", "A1:F50"] },
+        { kind: "fill", values: ["Q3 Pipeline Tracker", "Leads"] },
         { kind: "click", label: "Run" },
       ]}
     />
@@ -304,6 +310,38 @@ export const AskFirstResult: Story = {
       script={[
         { kind: "expand", title: "Append a row" },
         { kind: "fill", values: ["Q3 Pipeline Tracker", "Leads", "Wayne Industries, Demo, Dotta"] },
+        { kind: "click", label: "Run" },
+      ]}
+    />
+  ),
+};
+
+export const ErrorResult: Story = {
+  name: "Error — what the app said + what to try",
+  render: () => (
+    <TestHost
+      runResult={{
+        decision: "allowed",
+        invocationId: "inv-error",
+        error: { message: "Requested entity was not found.", reasonCode: "NOT_FOUND" },
+      }}
+      script={[
+        { kind: "expand", title: "Read a sheet" },
+        { kind: "fill", values: ["1AbCxyz…NotFound", "Leads"] },
+        { kind: "click", label: "Run" },
+      ]}
+    />
+  ),
+};
+
+export const RunningState: Story = {
+  name: "Running — in-flight card",
+  render: () => (
+    <TestHost
+      runDelayMs={20000}
+      script={[
+        { kind: "expand", title: "Read a sheet" },
+        { kind: "fill", values: ["Q3 Pipeline Tracker", "Leads"] },
         { kind: "click", label: "Run" },
       ]}
     />

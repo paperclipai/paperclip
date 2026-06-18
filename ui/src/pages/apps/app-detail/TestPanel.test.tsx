@@ -69,6 +69,14 @@ async function fillFormField(value: string) {
   await flushReact();
 }
 
+/** Wait past the 200ms minimum-spinner delay so the result panel renders. */
+async function settle() {
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 260));
+  });
+  await flushReact();
+}
+
 async function clickByText(text: string) {
   const btn = [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === text);
   expect(btn).toBeTruthy();
@@ -190,7 +198,7 @@ describe("TestPanel", () => {
 
     expect(container.textContent).toContain("Test as");
     expect(container.textContent).toContain("ClaudeCoder");
-    expect(container.textContent).toContain("Allowed for 1 · Ask first for 1 · Off for 1");
+    expect(container.textContent).toContain("Allowed for 1 action · Ask first for 1 action · Off for 1 action");
     expect(container.textContent).toContain("Read (1)");
     expect(container.textContent).toContain("Write (2)");
     // Each action shows its decision badge.
@@ -206,8 +214,15 @@ describe("TestPanel", () => {
     expect(container.textContent).toContain("Go to Setup");
   });
 
-  it("renders an allowed result panel after a successful run", async () => {
-    runTestCallMock.mockResolvedValue({ decision: "allowed", invocationId: "inv-1", result: { rows: 28 } });
+  it("renders an allowed result panel with a row-count headline after a successful run", async () => {
+    runTestCallMock.mockResolvedValue({
+      decision: "allowed",
+      invocationId: "inv-1",
+      result: [
+        { name: "Acme", stage: "Demo" },
+        { name: "Globex", stage: "Trial" },
+      ],
+    });
     await act(async () => renderPanel());
     await flushReact();
 
@@ -220,14 +235,16 @@ describe("TestPanel", () => {
     // Fill the required field then Run.
     await fillFormField("sheet-123");
     await clickByText("Run");
+    await settle();
 
     expect(runTestCallMock).toHaveBeenCalledWith("conn-1", {
       agentId: "agent-claude",
       toolName: "read_sheet",
       parameters: { spreadsheetId: "sheet-123" },
     });
-    expect(container.textContent).toContain("It worked.");
+    expect(container.textContent).toContain("Worked. 2 rows came back.");
     expect(container.textContent).toContain("Ran as ClaudeCoder");
+    expect(container.textContent).toContain("Preview");
   });
 
   it("renders the ask-first card linking to Review", async () => {
@@ -241,8 +258,10 @@ describe("TestPanel", () => {
 
     await fillFormField("sheet-123");
     await clickByText("Run");
+    await settle();
 
     expect(container.textContent).toContain("Sent for your OK.");
+    expect(container.textContent).toContain("Cancel this request");
     const reviewLink = [...container.querySelectorAll("a")].find((a) => a.textContent?.includes("Open Review tab"));
     expect(reviewLink?.getAttribute("href")).toBe("/apps/conn-1/review");
   });
@@ -272,7 +291,7 @@ describe("errorHints", () => {
     expect(errorHints("slow down", "RATE_LIMIT")[0]).toContain("rate-limit");
   });
 
-  it("returns no hints for an unknown error", () => {
-    expect(errorHints("boom", "tool_execution_failed")).toEqual([]);
+  it("returns the locked generic fallback for an unknown error", () => {
+    expect(errorHints("boom", "tool_execution_failed")).toEqual(["Check the inputs above and try again."]);
   });
 });

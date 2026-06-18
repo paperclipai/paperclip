@@ -106,6 +106,8 @@ export interface JsonSchemaFormProps {
   disabled?: boolean;
   /** Additional CSS class for the root container. */
   className?: string;
+  /** Label for the disclosure that hides advanced fields. Defaults to "Advanced options". */
+  advancedLabel?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,6 +1121,7 @@ export function JsonSchemaForm({
   errors = {},
   disabled,
   className,
+  advancedLabel = "Advanced options",
 }: JsonSchemaFormProps) {
   const type = resolveType(schema);
 
@@ -1264,7 +1267,7 @@ export function JsonSchemaForm({
             onClick={() => setIsAdvancedOpen((open) => !open)}
             aria-expanded={isAdvancedOpen}
           >
-            <span className="text-sm font-medium">Advanced options</span>
+            <span className="text-sm font-medium">{advancedLabel}</span>
             {isAdvancedOpen ? (
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
             ) : (

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import type { Agent, ToolCatalogEntry } from "@paperclipai/shared";
+import { useSearchParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { QuarantinePill } from "./SetupPanel";
@@ -32,6 +33,10 @@ export function PermissionsPanel({
   onRefreshActions: () => void;
   refreshPending: boolean;
 }) {
+  // Deep-link from the Test tab's "off" panel: ?focus={catalogEntryId} scrolls
+  // to and highlights that action row.
+  const [searchParams] = useSearchParams();
+  const focusId = searchParams.get("focus");
   return (
     <div className="space-y-6">
       <AccessSection access={access} agents={agents} disabled={pending} onSave={onSaveAccess} />
@@ -43,6 +48,7 @@ export function PermissionsPanel({
         askFirstIds={askFirstIds}
         disabled={pending}
         refreshPending={refreshPending}
+        focusId={focusId}
         onSetPermission={onSetActionPermission}
         onTurnOnQuarantined={onTurnOnQuarantined}
         onRefreshActions={onRefreshActions}
@@ -173,6 +179,7 @@ function ActionsSection({
   askFirstIds,
   disabled,
   refreshPending,
+  focusId,
   onSetPermission,
   onTurnOnQuarantined,
   onRefreshActions,
@@ -184,6 +191,7 @@ function ActionsSection({
   askFirstIds: Set<string>;
   disabled: boolean;
   refreshPending: boolean;
+  focusId?: string | null;
   onSetPermission: (id: string, next: ActionPermission) => void;
   onTurnOnQuarantined: (ids: string[]) => void;
   onRefreshActions: () => void;
@@ -231,6 +239,7 @@ function ActionsSection({
         enabledIds={enabledIds}
         askFirstIds={askFirstIds}
         disabled={disabled}
+        focusId={focusId}
         onSetPermission={onSetPermission}
       />
       <ActionGroup
@@ -240,6 +249,7 @@ function ActionsSection({
         enabledIds={enabledIds}
         askFirstIds={askFirstIds}
         disabled={disabled}
+        focusId={focusId}
         onSetPermission={onSetPermission}
       />
     </section>
@@ -253,6 +263,7 @@ function ActionGroup({
   enabledIds,
   askFirstIds,
   disabled,
+  focusId,
   onSetPermission,
 }: {
   title: string;
@@ -261,8 +272,15 @@ function ActionGroup({
   enabledIds: Set<string>;
   askFirstIds: Set<string>;
   disabled: boolean;
+  focusId?: string | null;
   onSetPermission: (id: string, next: ActionPermission) => void;
 }) {
+  const focusRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (focusId && focusRef.current) {
+      focusRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [focusId]);
   if (actions.length === 0) return null;
   return (
     <div className="rounded-xl border border-border bg-card">
@@ -273,8 +291,17 @@ function ActionGroup({
       <div className="divide-y divide-border">
         {actions.map((action) => {
           const value = actionPermission(action.id, enabledIds, askFirstIds);
+          const focused = focusId === action.id;
           return (
-            <div key={action.id} className="flex items-center gap-4 px-5 py-3">
+            <div
+              key={action.id}
+              ref={focused ? focusRef : undefined}
+              className={cn(
+                "flex items-center gap-4 px-5 py-3",
+                focused && "rounded-md bg-primary/5 ring-2 ring-primary/40",
+              )}
+              data-action-id={action.id}
+            >
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium text-foreground">{action.title ?? action.toolName}</div>
                 {action.description && (

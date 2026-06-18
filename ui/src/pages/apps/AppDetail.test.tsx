@@ -53,6 +53,7 @@ vi.mock("@/api/agents", () => ({
 vi.mock("@/lib/router", () => ({
   useParams: () => mockParams,
   useNavigate: () => mockNavigate,
+  useSearchParams: () => [new URLSearchParams(), vi.fn()],
   Navigate: ({ to, replace }: { to: string; replace?: boolean }) => {
     navigateComponentMock({ to, replace });
     return <div data-navigate-to={to} />;
