@@ -101,7 +101,28 @@ describe("approvalService resolution idempotency", () => {
     const result = await svc.approve("approval-1", "board", "ship it");
 
     expect(result.applied).toBe(true);
-    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1", expect.any(Object));
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies adapterConfig from approval payload to existing pending agent on approval", async () => {
+    const adapterConfig = { model: "claude-opus-4-7", instructionsFilePath: "AGENTS.md" };
+    const approvalWithConfig: ApprovalRecord = {
+      ...createApproval("approved"),
+      payload: { agentId: "agent-1", adapterConfig, role: "developer", title: "Dev Agent" },
+    };
+    const dbStub = createDbStub([[createApproval("pending")]], [approvalWithConfig]);
+    mockAgentService.activatePendingApproval.mockResolvedValue({
+      agent: { id: "agent-1" },
+      activated: true,
+    });
+
+    const svc = approvalService(dbStub.db as any);
+    await svc.approve("approval-1", "board", "ship it");
+
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ adapterConfig, role: "developer", title: "Dev Agent" }),
+    );
   });
 });
