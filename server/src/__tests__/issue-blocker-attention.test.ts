@@ -172,6 +172,32 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("shows the same non-done child blocker that drives attention in list rows", async () => {
+    const { companyId, agentId } = await createCompany("PBL");
+    const parentId = await insertIssue({ companyId, identifier: "PBL-1", title: "Parent", status: "blocked" });
+    const childId = await insertIssue({
+      companyId,
+      identifier: "PBL-2",
+      title: "Open child",
+      status: "todo",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+
+    const parent = (await svc.list(companyId, { status: "blocked", includeBlockedBy: true })).find(
+      (issue) => issue.id === parentId,
+    );
+
+    expect(parent?.blockedBy).toEqual([
+      expect.objectContaining({ id: childId, identifier: "PBL-2" }),
+    ]);
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      unresolvedBlockerCount: 1,
+      sampleBlockerIdentifier: "PBL-2",
+    });
+  });
+
   it("classifies an assigned backlog blocker leaf without a waiting path as attention-needed", async () => {
     const { companyId, agentId } = await createCompany("PBB");
     const parentId = await insertIssue({ companyId, identifier: "PBB-1", title: "Parent", status: "blocked" });

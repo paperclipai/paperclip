@@ -2115,7 +2115,7 @@ async function blockedByMapForIssues(
   }
 
   for (const issueIdChunk of chunkList(uniqueIssueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
-    const rows = await dbOrTx
+    const explicitRowsPromise = dbOrTx
       .select({
         currentIssueId: issueRelations.relatedIssueId,
         relatedId: issues.id,
@@ -2135,10 +2135,33 @@ async function blockedByMapForIssues(
           inArray(issueRelations.relatedIssueId, issueIdChunk),
         ),
       );
+    const childRowsPromise = dbOrTx
+      .select({
+        currentIssueId: issues.parentId,
+        relatedId: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.parentId, issueIdChunk),
+          ne(issues.status, "done"),
+        ),
+      );
+    const [explicitRows, childRows] = await Promise.all([explicitRowsPromise, childRowsPromise]);
+    const rows = [...explicitRows, ...childRows];
 
     for (const row of rows) {
+      if (!row.currentIssueId) continue;
       const blockedBy = map.get(row.currentIssueId);
       if (!blockedBy) continue;
+      if (blockedBy.some((existing) => existing.id === row.relatedId)) continue;
       blockedBy.push({
         id: row.relatedId,
         identifier: row.identifier,
@@ -3513,7 +3536,7 @@ export function issueService(db: Db) {
     }
     if (uniqueIssueIds.length === 0) return empty;
 
-    const [blockedByRows, blockingRows] = await Promise.all([
+    const [explicitBlockedByRows, childBlockedByRows, blockingRows] = await Promise.all([
       dbOrTx
         .select({
           currentIssueId: issueRelations.relatedIssueId,
@@ -3536,6 +3559,25 @@ export function issueService(db: Db) {
         ),
       dbOrTx
         .select({
+          currentIssueId: issues.parentId,
+          relatedId: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.parentId, uniqueIssueIds),
+            ne(issues.status, "done"),
+          ),
+        ),
+      dbOrTx
+        .select({
           currentIssueId: issueRelations.issueId,
           relatedId: issues.id,
           identifier: issues.identifier,
@@ -3553,11 +3595,15 @@ export function issueService(db: Db) {
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.issueId, uniqueIssueIds),
           ),
-        ),
+      ),
     ]);
 
+    const blockedByRows = [...explicitBlockedByRows, ...childBlockedByRows];
     for (const row of blockedByRows) {
-      empty.get(row.currentIssueId)?.blockedBy.push(summarizeIssueRelationRow(row));
+      if (!row.currentIssueId) continue;
+      const blockedBy = empty.get(row.currentIssueId)?.blockedBy;
+      if (!blockedBy || blockedBy.some((existing) => existing.id === row.relatedId)) continue;
+      blockedBy.push(summarizeIssueRelationRow(row));
     }
     for (const row of blockingRows) {
       empty.get(row.currentIssueId)?.blocks.push(summarizeIssueRelationRow(row));
