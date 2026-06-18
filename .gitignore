@@ -65,6 +65,15 @@ agents-list.json
 agent-routing-check.txt
 api-check.json
 
+# Runtime API response caches and DevOps backup directory
+.agents_list.json
+.dashboard.json
+.health_api.txt
+.health_check_out.txt
+.issues_blocked.json
+.issues_ip.json
+.runtime-backups/
+
 # Playwright
 tests/e2e/test-results/
 tests/e2e/playwright-report/
