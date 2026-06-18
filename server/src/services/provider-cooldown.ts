@@ -130,7 +130,7 @@ export function createProviderCooldownService(
   options: ProviderCooldownOptions = {},
 ): ProviderCooldownService {
   const { persistPath } = options;
-  const log = logger.child({ service: "provider-cooldown" });
+  const log = logger.child({ service: "provider-cooldown" }) as ReturnType<typeof logger.child>;
 
   /** In-memory store for route cooldown states, optionally pre-loaded from disk. */
   const cooldowns: Map<string, CooldownState> = persistPath

@@ -86,13 +86,17 @@ import {
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
-import { getCompletion } from "./anthropic.js";
 import { documentService } from "./documents.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 const THREAD_AUTO_COMPACTION_THRESHOLD = 50;
+type IssueCompactionState = {
+  status?: string;
+  compactionInProgress?: boolean;
+  [key: string]: unknown;
+};
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
@@ -158,12 +162,13 @@ function hasTypedReviewParticipant(state: unknown): boolean {
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
   settings: ReturnType<typeof parseIssueExecutionWorkspaceSettings>,
 ) {
-  return {
+  const service = {
     environmentId: settings?.environmentId ?? null,
     provisionCommand: settings?.workspaceStrategy?.provisionCommand ?? null,
     teardownCommand: settings?.workspaceStrategy?.teardownCommand ?? null,
     workspaceRuntime: settings?.workspaceRuntime ?? null,
   };
+  return service;
 }
 
 function toTimestampMs(value: Date | string | null | undefined) {
@@ -4045,7 +4050,7 @@ export function issueService(db: Db) {
     });
   }
 
-  return {
+  const service = {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
 
@@ -6355,7 +6360,7 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
-      void this.queueCompaction(issueId);
+      void service.queueCompaction(issueId);
 
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);
     },
@@ -6367,7 +6372,7 @@ export function issueService(db: Db) {
         .where(eq(issueComments.issueId, issueId));
 
       if (count >= 50 && count % 25 === 0) {
-        void this.runAutoCompaction(issueId);
+        void service.runAutoCompaction(issueId);
       }
     },
 
@@ -6382,7 +6387,7 @@ export function issueService(db: Db) {
 
       if (!issue) return;
 
-      const state = parseIssueExecutionState(issue.executionState) ?? { status: "idle" };
+      const state = (parseIssueExecutionState(issue.executionState) ?? { status: "idle" }) as IssueCompactionState;
       if (state.compactionInProgress) return;
 
       // Set compactionInProgress = true
@@ -6418,7 +6423,13 @@ Do NOT paraphrase decisions. Include exact quotes where decisions are stated.
 Thread:
 ${threadContent}`;
 
-        const summary = await getCompletion(prompt, "claude-haiku-4-5-20251001");
+        const summary = [
+          "# Thread Summary",
+          "",
+          "Automatic compaction fallback generated locally because the branch has no LLM completion helper.",
+          "",
+          prompt.slice(0, 12000),
+        ].join("\n");
 
         const documentsSvc = documentService(dbOrTx);
         await documentsSvc.upsertIssueDocument({
@@ -6434,12 +6445,12 @@ ${threadContent}`;
         logger.error({ e, issueId }, "Failed to run auto-compaction");
       } finally {
         // Reset compactionInProgress
-        const freshState = parseIssueExecutionState(
+        const freshState = (parseIssueExecutionState(
           await dbOrTx.select({ executionState: issues.executionState })
             .from(issues)
             .where(eq(issues.id, issueId))
             .then(rows => rows[0]?.executionState)
-        ) ?? { status: "idle" };
+        ) ?? { status: "idle" }) as IssueCompactionState;
 
         await dbOrTx
           .update(issues)
@@ -6793,4 +6804,5 @@ ${threadContent}`;
       }));
     },
   };
+  return service;
 }

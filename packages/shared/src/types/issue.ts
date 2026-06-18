@@ -673,6 +673,26 @@ export interface IssueThreadInteractionActorFields {
   resolvedByUserId?: string | null;
 }
 
+export type InteractionResolutionMethod =
+  | "ui_click"
+  | "api_explicit"
+  | "api_automated"
+  | "unknown";
+
+export interface InteractionResolutionAudit extends IssueThreadInteractionActorFields {
+  id: string;
+  companyId: string;
+  issueId: string;
+  kind: IssueThreadInteractionKind;
+  status: IssueThreadInteractionStatus;
+  method: InteractionResolutionMethod;
+  sourceRunId?: string | null;
+  sourceCommentId?: string | null;
+  resolvedAt: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
 export interface SuggestedTaskDraft {
   clientKey: string;
   parentClientKey?: string | null;

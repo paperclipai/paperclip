@@ -261,6 +261,6 @@ function resolveFamilyAndCompany(
   return null;
 }
 
-export const apiRouteTimeoutMiddleware = createApiRouteTimeoutMiddleware();
-export const pollingBackpressureMiddleware = createPollingBackpressureMiddleware();
-export const pollingRateLimitAndCoalescingMiddleware = createPollingRateLimitAndCoalescingMiddleware();
+export const apiRouteTimeoutMiddleware: RequestHandler = createApiRouteTimeoutMiddleware();
+export const pollingBackpressureMiddleware: RequestHandler = createPollingBackpressureMiddleware();
+export const pollingRateLimitAndCoalescingMiddleware: RequestHandler = createPollingRateLimitAndCoalescingMiddleware();

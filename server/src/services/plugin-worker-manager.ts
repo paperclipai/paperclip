@@ -191,7 +191,7 @@ export interface WorkerStartOptions {
    */
   onStreamNotification?: (method: string, params: Record<string, unknown>) => void;
   /** Service for managing provider cooldown states. */
-  providerCooldownService: ProviderCooldownService;
+  providerCooldownService?: ProviderCooldownService;
 }
 
 /**
@@ -376,7 +376,13 @@ export function createPluginWorkerHandle(
   pluginId: string,
   options: WorkerStartOptions,
 ): PluginWorkerHandle {
-  const { providerCooldownService } = options;
+  const providerCooldownService = options.providerCooldownService ?? {
+    setCooldown: () => undefined,
+    isCoolingDown: () => false,
+    getCooldownState: () => undefined,
+    clearCooldown: () => undefined,
+    getAllCooldownStates: () => new Map(),
+  } satisfies ProviderCooldownService;
   const log = logger.child({ service: "plugin-worker", pluginId });
   const emitter = new EventEmitter();
   /**

@@ -2046,7 +2046,10 @@ export function issueRoutes(
         return false;
       }
     }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    const boundaryDecision = await decideIssueAccess(req, {
+      ...issue,
+      assigneeUserId: issue.assigneeUserId ?? null,
+    }, "issue:mutate");
     if (!boundaryDecision.allowed) {
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;

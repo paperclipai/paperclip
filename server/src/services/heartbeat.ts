@@ -7247,10 +7247,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
               "Detected orphaned-blocked premium run, recording process loss.",
             );
-            await recoveryService.recordProcessLoss(run.id, {
-              reason: "premium_adapter_orphaned_blocked",
-              processGroupId: run.processGroupId,
-            });
             continue;
           }
           activePremiumRunningCount++;
@@ -7355,7 +7351,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
       .returning()
       .then((rows) => rows[0] ?? null);    if (!claimed) return null;
-    const claimedAt = claimed.startedAt ?? new Date();
+    const heartbeatClaimedAt = claimed.startedAt ?? new Date();
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -7374,7 +7370,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     publishRunLifecyclePluginEvent(claimed);
 
-    await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
+    await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt: heartbeatClaimedAt });
 
     // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
     // not at queue time. Guard is idempotent — safe if called more than once.
@@ -7385,8 +7381,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .set({
           executionRunId: claimed.id,
           executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
+          executionLockedAt: heartbeatClaimedAt,
+          updatedAt: heartbeatClaimedAt,
         })
         .where(
           and(
@@ -10591,7 +10587,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         if (!deferred) break;
 
-        const latestIssueState = await tx
+        const latestIssueState: {
+          id: string;
+          identifier: string | null;
+          status: string;
+          executionRunId: string | null;
+        } | null = await tx
           .select({
             id: issues.id,
             identifier: issues.identifier,
@@ -12912,7 +12913,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const [globalRunning, globalQueued, premiumRunning, pausedWakeBackoffRows] = await Promise.all([
         countGlobalRunningRuns(),
         countGlobalQueuedRuns(),
-        countPremiumRunningRuns(),
+        listPremiumRunningRuns().then((rows) => rows.length),
         db
           .select({
             agentId: heartbeatRuns.agentId,

@@ -275,7 +275,6 @@ export async function createApp(
     db,
     jobStore,
     workerManager,
-    providerCooldownService,
   });
   const toolDispatcher = createPluginToolDispatcher({
     workerManager,

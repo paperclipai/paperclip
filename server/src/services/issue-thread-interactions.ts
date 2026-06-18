@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documents,
@@ -16,6 +16,8 @@ import type {
   CancelIssueThreadInteraction,
   CreateIssueThreadInteraction,
   IssueThreadInteraction,
+  InteractionResolutionAudit,
+  InteractionResolutionMethod,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   RequestConfirmationTarget,
@@ -44,6 +46,8 @@ import { issueService, listUnfinalizedExecutionWorkspaceIds } from "./issues.js"
 type InteractionActor = {
   agentId?: string | null;
   userId?: string | null;
+  requestId?: string | null;
+  resolutionMethod?: InteractionResolutionMethod;
 };
 
 const ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT =
@@ -753,6 +757,52 @@ export function issueThreadInteractionService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       return row ? hydrateInteraction(row) : null;
+    },
+
+    listForCompany: async (args: {
+      companyId: string;
+      resolvedAfter?: Date | null;
+      resolvedBefore?: Date | null;
+      method?: InteractionResolutionMethod | null;
+    }): Promise<InteractionResolutionAudit[]> => {
+      if (args.method && args.method !== "unknown") {
+        return [];
+      }
+
+      const filters = [
+        eq(issueThreadInteractions.companyId, args.companyId),
+        isNotNull(issueThreadInteractions.resolvedAt),
+      ];
+      if (args.resolvedAfter) {
+        filters.push(gte(issueThreadInteractions.resolvedAt, args.resolvedAfter));
+      }
+      if (args.resolvedBefore) {
+        filters.push(lte(issueThreadInteractions.resolvedAt, args.resolvedBefore));
+      }
+
+      const rows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(...filters))
+        .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt));
+
+      return rows.map((row) => ({
+        id: row.id,
+        companyId: row.companyId,
+        issueId: row.issueId,
+        kind: row.kind as InteractionResolutionAudit["kind"],
+        status: row.status as InteractionResolutionAudit["status"],
+        method: "unknown",
+        sourceRunId: row.sourceRunId ?? null,
+        sourceCommentId: row.sourceCommentId ?? null,
+        createdByAgentId: row.createdByAgentId ?? null,
+        createdByUserId: row.createdByUserId ?? null,
+        resolvedByAgentId: row.resolvedByAgentId ?? null,
+        resolvedByUserId: row.resolvedByUserId ?? null,
+        resolvedAt: row.resolvedAt ?? null,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      }));
     },
 
     create: async (
