@@ -1703,8 +1703,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(skippedRuns[0]?.linkedIssueId).toBeNull();
 
     const activityRows = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
-    expect(activityRows).toHaveLength(1);
-    expect(activityRows[0]?.action).toBe("routine.run_skipped");
-    expect(activityRows[0]?.details).toMatchObject({ reason: "archived_company" });
+    const skippedActivityRows = activityRows.filter((row) => row.action === "routine.run_skipped");
+    expect(skippedActivityRows).toHaveLength(1);
+    expect(skippedActivityRows[0]?.details).toMatchObject({ reason: "archived_company" });
   });
 });

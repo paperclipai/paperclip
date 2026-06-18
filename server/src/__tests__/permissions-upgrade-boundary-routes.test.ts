@@ -315,13 +315,13 @@ describeEmbeddedPostgres("permissions upgrade visibility and route boundaries", 
         assigneeAgentId: openTargetAgent.id,
       });
     expect(openAssignment.status, JSON.stringify(openAssignment.body)).toBe(201);
-    expect(openAssignment.status).not.toBe(404);
 
     const createdActivity = await db
       .select()
       .from(activityLog)
       .where(eq(activityLog.entityId, openAssignment.body.id))
       .then((rows) => rows[0] ?? null);
+    expect(createdActivity).not.toBeNull();
     expect(JSON.stringify(createdActivity?.details ?? {})).not.toContain("sk-test-boundary-secret");
 
     const deniedPrivateAssignment = await request(app)

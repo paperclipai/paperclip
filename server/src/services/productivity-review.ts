@@ -19,6 +19,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import { readStandingIssueOverride } from "./standing-issue-policy.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
@@ -88,15 +89,6 @@ export type StandingIssueParkClassification =
   | "done_with_closure_override"
   | "cancelled";
 
-function readStandingOverride(policy: unknown, key: "allowExecution" | "allowTerminal") {
-  if (!policy || typeof policy !== "object" || Array.isArray(policy)) return false;
-  const standing = (policy as Record<string, unknown>).standing;
-  if (!standing || typeof standing !== "object" || Array.isArray(standing)) return false;
-  const record = standing as Record<string, unknown>;
-  const reason = typeof record.reason === "string" ? record.reason.trim() : "";
-  return record[key] === true && reason.length > 0;
-}
-
 export function classifyStandingIssueParkState(issue: {
   originKind: string | null;
   status: string;
@@ -106,12 +98,12 @@ export function classifyStandingIssueParkState(issue: {
   if (issue.status === "backlog" || issue.status === "todo") return "healthy_parked";
   if (issue.status === "cancelled") return "cancelled";
   if (issue.status === "done") {
-    return readStandingOverride(issue.executionPolicy, "allowTerminal")
+    return readStandingIssueOverride(issue.executionPolicy, "allowTerminal")
       ? "done_with_closure_override"
       : "done_without_closure_override";
   }
   if (issue.status === "in_progress" || issue.status === "in_review" || issue.status === "blocked") {
-    return readStandingOverride(issue.executionPolicy, "allowExecution")
+    return readStandingIssueOverride(issue.executionPolicy, "allowExecution")
       ? "active_with_override"
       : "active_without_override";
   }
@@ -836,6 +828,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const prefixCache = new Map<string, string>();
     for (const candidate of candidates) {
       const standingClassification = classifyStandingIssueParkState(candidate);
+      // Explicit operator overrides turn standing work into intentional activity;
+      // parked standing records should also stay out of stuck-work automation.
       if (standingClassification === "healthy_parked" || standingClassification === "active_with_override") {
         result.skipped += 1;
         continue;

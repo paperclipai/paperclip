@@ -3551,6 +3551,56 @@ describeEmbeddedPostgres("issueService dependency watcher cleanup", () => {
     expect(comments[0]?.body).toContain("all downstream issues are cancelled");
   });
 
+  it("cascades internal watcher cancellation to upstream watchers", async () => {
+    const companyId = await seedCompany();
+    const upstreamWatcher = await seedIssue(companyId, {
+      title: "Watch the watcher",
+      originKind: "dependency_watcher",
+    });
+    const childWatcher = await seedIssue(companyId, {
+      title: "Watch upstream dependency",
+      originKind: "dependency_watcher",
+    });
+    const downstream = await seedIssue(companyId, { title: "Downstream task" });
+    await block(companyId, upstreamWatcher.id, childWatcher.id);
+    await block(companyId, childWatcher.id, downstream.id);
+
+    await svc.update(downstream.id, { status: "cancelled" });
+
+    const updatedChild = await db.select().from(issues).where(eq(issues.id, childWatcher.id)).then((rows) => rows[0]);
+    const updatedUpstream = await db.select().from(issues).where(eq(issues.id, upstreamWatcher.id)).then((rows) => rows[0]);
+    expect(updatedChild?.status).toBe("cancelled");
+    expect(updatedUpstream?.status).toBe("cancelled");
+  });
+
+  it("ignores cross-company dependency relation rows during watcher cleanup", async () => {
+    const companyId = await seedCompany();
+    const otherCompanyId = await seedCompany();
+    const watcher = await seedIssue(companyId, {
+      title: "Watch tenant-local dependency",
+      originKind: "dependency_watcher",
+    });
+    const downstream = await seedIssue(companyId, { title: "Tenant-local downstream" });
+    const otherWatcher = await seedIssue(otherCompanyId, {
+      title: "Other tenant watcher",
+      originKind: "dependency_watcher",
+    });
+    const otherDownstream = await seedIssue(otherCompanyId, {
+      title: "Other tenant active downstream",
+      status: "todo",
+    });
+    await block(companyId, watcher.id, downstream.id);
+    await block(companyId, watcher.id, otherDownstream.id);
+    await block(otherCompanyId, otherWatcher.id, otherDownstream.id);
+
+    await svc.update(downstream.id, { status: "cancelled" });
+
+    const updatedWatcher = await db.select().from(issues).where(eq(issues.id, watcher.id)).then((rows) => rows[0]);
+    const updatedOtherWatcher = await db.select().from(issues).where(eq(issues.id, otherWatcher.id)).then((rows) => rows[0]);
+    expect(updatedWatcher?.status).toBe("cancelled");
+    expect(updatedOtherWatcher?.status).toBe("todo");
+  });
+
   it("leaves a watcher active when at least one downstream dependency is still active", async () => {
     const companyId = await seedCompany();
     const watcher = await seedIssue(companyId, {
@@ -3640,6 +3690,24 @@ describeEmbeddedPostgres("issueService dependency watcher cleanup", () => {
     await expect(svc.checkout(standing.id, agentId, ["todo"], runId)).resolves.toMatchObject({
       status: "in_progress",
     });
+  });
+
+  it("requires explicit standing execution override before moving standing issues in progress", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const standing = await seedIssue(companyId, {
+      title: "Standing maintenance task",
+      originKind: "standing_issue",
+    });
+    await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, standing.id));
+
+    await expect(svc.update(standing.id, { status: "in_progress" })).rejects.toMatchObject({
+      status: 422,
+    });
+    await expect(svc.update(standing.id, {
+      status: "in_progress",
+      executionPolicy: { standing: { allowExecution: true, reason: "Operator requested active maintenance" } },
+    })).resolves.toMatchObject({ status: "in_progress" });
   });
 });
 

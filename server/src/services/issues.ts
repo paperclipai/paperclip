@@ -78,6 +78,7 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { readStandingIssueOverride } from "./standing-issue-policy.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -91,21 +92,17 @@ import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recover
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
-function readStandingIssueOverride(policy: unknown, key: "allowTerminal" | "allowExecution") {
-  if (!policy || typeof policy !== "object" || Array.isArray(policy)) return false;
-  const standing = (policy as Record<string, unknown>).standing;
-  if (!standing || typeof standing !== "object" || Array.isArray(standing)) return false;
-  const record = standing as Record<string, unknown>;
-  const reason = typeof record.reason === "string" ? record.reason.trim() : "";
-  return record[key] === true && reason.length > 0;
-}
-
 function assertStandingIssueStatusAllowed(input: {
   originKind: string | null | undefined;
   status: string | null | undefined;
   executionPolicy: unknown;
 }) {
   if (!isStandingIssueOriginKind(input.originKind) || !input.status) return;
+  if (input.status === "in_progress" && !readStandingIssueOverride(input.executionPolicy, "allowExecution")) {
+    throw unprocessable(
+      "Standing issues require executionPolicy.standing.allowExecution with a reason before moving to in_progress",
+    );
+  }
   if (input.status === "done" && !readStandingIssueOverride(input.executionPolicy, "allowTerminal")) {
     throw unprocessable("Standing issues require executionPolicy.standing.allowTerminal with a reason before moving to done");
   }
@@ -3986,6 +3983,7 @@ export function issueService(db: Db) {
       .innerJoin(issues, eq(issueRelations.issueId, issues.id))
       .where(and(
         eq(issueRelations.companyId, input.companyId),
+        eq(issues.companyId, input.companyId),
         eq(issueRelations.type, "blocks"),
         eq(issueRelations.relatedIssueId, input.cancelledIssueId),
         notInArray(issues.status, ["done", "cancelled"]),
@@ -4003,6 +4001,7 @@ export function issueService(db: Db) {
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
         .where(and(
           eq(issueRelations.companyId, input.companyId),
+          eq(issues.companyId, input.companyId),
           eq(issueRelations.type, "blocks"),
           eq(issueRelations.issueId, watcher.watcherId),
         ));
@@ -4042,6 +4041,15 @@ export function issueService(db: Db) {
           : "Dependency watcher cancelled automatically because all downstream issues are cancelled.",
       });
       changed.push({ issueId: watcher.watcherId, action: external ? "parked" : "cancelled" });
+      if (!external) {
+        const cascaded = await cleanupDependencyWatchersForCancelledChains({
+          companyId: input.companyId,
+          cancelledIssueId: watcher.watcherId,
+          actorAgentId: input.actorAgentId,
+          actorUserId: input.actorUserId,
+        }, dbOrTx);
+        changed.push(...cascaded);
+      }
     }
     return changed;
   }
