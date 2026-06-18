@@ -64,6 +64,12 @@ jobs:
           PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
             node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
 
+      - name: Require changeset for release package changes
+        run: |
+          node ./scripts/check-changesets.mjs \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
+
       - name: Validate dependency resolution when manifests change
         id: regen_lockfile
         run: |
@@ -222,6 +228,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Validate skills-catalog manifest
+        run: pnpm --filter @paperclipai/skills-catalog run validate
 
   verify_serialized_server:
     name: Verify serialized server suites (${{ matrix.shard_label }})
