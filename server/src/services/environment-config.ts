@@ -272,6 +272,7 @@ async function resolveConfigSecretRefsForProbe(input: {
   accessContext?: {
     actorType: "agent" | "user";
     actorId: string;
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
     heartbeatRunId?: string | null;
   };
 }): Promise<Record<string, unknown>> {
@@ -294,6 +295,7 @@ async function resolveConfigSecretRefsForProbe(input: {
         configPath: path,
         actorType: input.accessContext?.actorType ?? "system",
         actorId: input.accessContext?.actorId ?? null,
+        actorSource: input.accessContext?.actorSource,
         heartbeatRunId: input.accessContext?.heartbeatRunId ?? null,
       }),
     );
@@ -381,6 +383,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
   accessContext?: {
     actorType: "agent" | "user";
     actorId: string;
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
     heartbeatRunId?: string | null;
   };
   pluginWorkerManager?: PluginWorkerManager;

@@ -1468,6 +1468,7 @@ describe("environment routes", () => {
         configPath: "apiKey",
         actorType: "user",
         actorId: "user-1",
+        actorSource: "local_implicit",
         heartbeatRunId: "run-1",
       },
     );

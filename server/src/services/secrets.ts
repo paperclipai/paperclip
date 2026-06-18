@@ -179,6 +179,7 @@ type SecretConsumerContext = {
   configPath?: string | null;
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
+  actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
   issueId?: string | null;
   heartbeatRunId?: string | null;
   pluginId?: string | null;
@@ -692,7 +693,13 @@ export function secretService(db: Db) {
         : {
             type: "board" as const,
             userId: context.actorId,
-            source: context.actorId === "board" ? "local_implicit" as const : "session" as const,
+            source: context.actorSource === "local_implicit"
+              ? "local_implicit" as const
+              : context.actorSource === "board_key"
+                ? "board_key" as const
+                : context.actorSource === "cloud_tenant"
+                  ? "cloud_tenant" as const
+                  : "session" as const,
           };
     const decision = await authorization.decide({
       actor,

@@ -456,6 +456,7 @@ export function environmentRoutes(
         accessContext: {
           actorType: actor.actorType,
           actorId: actor.actorId,
+          actorSource: actor.actorSource,
           heartbeatRunId: actor.runId,
         },
         pluginWorkerManager: options.pluginWorkerManager,

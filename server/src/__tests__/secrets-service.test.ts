@@ -2006,6 +2006,27 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(events)).not.toContain("runtime-secret");
   });
 
+  it("preserves local implicit board authorization for ephemeral secret access", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-local-board-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    const resolved = await svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "user",
+      actorId: "local-board",
+      actorSource: "local_implicit",
+    });
+
+    expect(resolved).toBe("runtime-secret");
+  });
+
   it("rejects ephemeral secret access for actors without secret-read authorization", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
