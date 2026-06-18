@@ -75,6 +75,21 @@ export interface AdapterExecutionResult {
   errorFamily?: AdapterExecutionErrorFamily | null;
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
+  /**
+   * True when the terminating run failed in a way Paperclip core should treat
+   * as a silent failure for monitor/retry purposes. Additive to `errorCode`:
+   * the code identifies what happened; `silentFailure` identifies whether the
+   * run is a candidate for the deferred retry ladder instead of the normal
+   * recovery-issue path. Always set by adapters on every terminating run
+   * (false on success / non-silent terminal states).
+   */
+  silentFailure?: boolean | null;
+  /**
+   * Reason the run was classified as a silent failure. MUST be set exactly
+   * when `silentFailure` is true and MUST be null when `silentFailure` is
+   * false. Paperclip core's monitor arming predicate branches on this value.
+   */
+  silentFailureReason?: "adapter_failed" | "output_silence" | "quota_rate_limit" | null;
   usage?: UsageSummary;
   /**
    * Legacy single session id output. Prefer `sessionParams` + `sessionDisplayId`.

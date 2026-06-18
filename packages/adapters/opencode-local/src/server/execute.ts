@@ -44,7 +44,11 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import {
+  classifyOpenCodeSilentFailure,
+  isOpenCodeUnknownSessionError,
+  parseOpenCodeJsonl,
+} from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -624,6 +628,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           signal: attempt.proc.signal,
           timedOut: true,
           errorMessage: `Timed out after ${timeoutSec}s`,
+          silentFailure: true,
+          silentFailureReason: "adapter_failed",
           clearSession: clearSessionOnMissingSession,
         };
       }
@@ -656,11 +662,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
       const modelId = model || null;
 
+      // Silent-failure classification (FUL-191). Drives whether Paperclip core's
+      // monitor arming predicate (FUL-182 plan rev 454592a5) treats this run as
+      // a candidate for the 1h/2h/3h/4h/5h retry ladder vs. the normal recovery
+      // issue path. See classifyOpenCodeSilentFailure() and the
+      // agentConfigurationDoc mapping table for the full decision matrix.
+      const { silentFailure, silentFailureReason } = classifyOpenCodeSilentFailure({
+        timedOut: false,
+        exitCode: synthesizedExitCode,
+        errorMessage: parsedError || null,
+        summary: attempt.parsed.summary,
+        toolCallCount: attempt.parsed.toolCallCount ?? 0,
+        stdout: attempt.proc.stdout,
+        stderr: attempt.proc.stderr,
+      });
+
       return {
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+        silentFailure,
+        silentFailureReason,
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
@@ -677,6 +700,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
+          ...(silentFailure ? { silentFailure: true } : {}),
+          ...(silentFailureReason ? { silentFailureReason } : {}),
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),

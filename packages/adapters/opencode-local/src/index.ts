@@ -137,4 +137,45 @@ Notes:
 - When \`dangerouslySkipPermissions\` is enabled, Paperclip injects a temporary \
   runtime config with \`permission.external_directory=allow\` so headless runs do \
   not stall on approval prompts.
+
+# Silent-failure envelope (FUL-191)
+
+Every terminating run returns the structured envelope fields \`silentFailure\`
+and \`silentFailureReason\` alongside the existing \`errorCode\` / \`errorMessage\`
+fields. Paperclip core uses these to decide whether to arm the silent-failure
+retry monitor (FUL-182 plan rev 454592a5, Path 2: 1 attempt/hour, max 5).
+
+The fields are additive: existing \`errorCode\` / \`errorMessage\` / \`errorMeta\`
+shape is unchanged. \`silentFailure\` is a boolean; \`silentFailureReason\` is a
+string from the table below or null.
+
+| Terminal state                                         | silentFailure | silentFailureReason |
+|--------------------------------------------------------|---------------|---------------------|
+| Run timed out (timeoutSec reached, SIGTERM grace hit)  | true          | adapter_failed      |
+| Non-zero exit code with fatal error envelope           | true          | adapter_failed      |
+| Provider returned quota / rate-limit error (e.g.       | true          | quota_rate_limit    |
+|   minimax 2056 "Token Plan usage limit reached",       |               |                     |
+|   Anthropic 429, OpenAI insufficient_quota, etc.)      |               |                     |
+| Exit 0, no errors, empty assistant text, no tool calls | true          | output_silence      |
+| Exit 0, normal assistant output                        | false         | null                |
+| Exit 0 with recovered tool errors only                 | false         | null                |
+| Real exception (uncaught throw)                        | false         | null                |
+
+Precedence when more than one row could match (top wins):
+quota_rate_limit > adapter_failed > output_silence.
+
+Quota detection sources (any one is sufficient):
+- A \`error\` JSONL event whose flattened message matches the regex in
+  \`parse.ts\` (covers "usage limit reached", "rate limit", "429",
+  "quota exceeded", "resource_exhausted", etc.).
+- A \`error.code\` / \`error.type\` / \`error.data.code\` value in the set
+  {rate_limit_exceeded, rate_limit_error, too_many_requests, quota_exceeded,
+  quota_exhausted, usage_limit_reached, insufficient_quota,
+  resource_exhausted}.
+
+\`output_silence\` fires when the run completed with exit code 0 and produced
+no observable output (no assistant text, no tool calls, no fatal errors). The
+\`stale_active_run_evaluation\` watchdog independently flags active runs that
+go silent mid-flight; this envelope classification surfaces the same signal at
+termination time so the monitor arming predicate has a uniform view.
 `;
