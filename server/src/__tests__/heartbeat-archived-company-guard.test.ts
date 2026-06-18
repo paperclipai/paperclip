@@ -1,13 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
-  agentRuntimeState,
   agentWakeupRequests,
   companies,
-  companySkills,
   createDb,
-  heartbeatRunEvents,
   heartbeatRuns,
   issues,
 } from "@paperclipai/db";
@@ -30,20 +28,39 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
+  async function waitForRunToFinish(
+    heartbeat: ReturnType<typeof heartbeatService>,
+    runId: string,
+    timeoutMs = 5_000,
+  ) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const run = await heartbeat.getRun(runId);
+      if (run && !["queued", "running"].includes(run.status)) return run;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return await heartbeat.getRun(runId);
+  }
+
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-archived-company-guard-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
   afterEach(async () => {
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(issues);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    await db.execute(sql.raw(`
+      TRUNCATE TABLE
+        "heartbeat_run_events",
+        "heartbeat_runs",
+        "agent_wakeup_requests",
+        "issues",
+        "agent_runtime_state",
+        "company_skill_versions",
+        "company_skills",
+        "agents",
+        "companies"
+      RESTART IDENTITY CASCADE
+    `));
   });
 
   afterAll(async () => {
@@ -263,12 +280,14 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
 
     const run = await db
       .select({
+        id: heartbeatRuns.id,
         agentId: heartbeatRuns.agentId,
         invocationSource: heartbeatRuns.invocationSource,
       })
       .from(heartbeatRuns)
       .then((rows) => rows.find((row) => row.agentId === agentId) ?? null);
     expect(run).toMatchObject({ invocationSource: "timer" });
+    await waitForRunToFinish(heartbeat, run!.id);
   });
 
   it("skips background wakeups for non-active companies with a company.inactive reason", async () => {
