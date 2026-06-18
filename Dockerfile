@@ -57,6 +57,9 @@ RUN node scripts/patch-sink-dink-media-output.mjs
 # Safe one-shot source patch: lowers ffmpeg render cost for Render/free-tier stability.
 # This script is idempotent and does not execute any external API call.
 RUN node scripts/patch-media-output-low-resource.mjs
+# Safe one-shot source patch: mounts the controlled SINK DINK agent workflow route.
+# This script is idempotent and does not execute any external API call.
+RUN node scripts/patch-sink-dink-agent-workflow.mjs
 # NOTE: Gemini direct API patch script is intentionally not executed here.
 # The previous build hook broke Docker deploy due nested generated template strings.
 # Keep the script in the repo for future repair, but do not run it during production build.
