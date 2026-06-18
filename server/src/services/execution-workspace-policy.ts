@@ -86,7 +86,12 @@ export function gateProjectExecutionWorkspacePolicy(
   projectPolicy: ProjectExecutionWorkspacePolicy | null,
   isolatedWorkspacesEnabled: boolean,
 ): ProjectExecutionWorkspacePolicy | null {
-  if (!isolatedWorkspacesEnabled) return null;
+  if (!projectPolicy) return null;
+  // Once a project has an explicit execution workspace policy, the runtime must
+  // honor it even if the legacy instance-wide UI flag is disabled. The flag is
+  // only a discovery/UI gate now; using it as a launch-time gate lets configured
+  // git_worktree projects silently fall back to the shared checkout.
+  if (!isolatedWorkspacesEnabled && !projectPolicy.enabled) return null;
   return projectPolicy;
 }
 
