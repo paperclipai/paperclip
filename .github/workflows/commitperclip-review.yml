@@ -21,7 +21,7 @@ jobs:
       - name: Checkout base branch (never PR code)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: master
+          ref: ${{ github.event.pull_request.base.ref }}
 
       - name: Dependency Review
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
