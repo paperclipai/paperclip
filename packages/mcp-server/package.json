@@ -37,7 +37,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsup",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
@@ -49,6 +49,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
+    "tsup": "^8.0.0",
     "typescript": "^5.7.3",
     "vitest": "^4.1.8"
   }
