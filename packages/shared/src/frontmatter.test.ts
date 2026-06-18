@@ -87,4 +87,15 @@ describe("parseFrontmatterMarkdown", () => {
       },
     });
   });
+
+  it("does not treat trailing-dot decimals as numbers", () => {
+    const parsed = parseFrontmatterMarkdown([
+      "---",
+      "version: 1.",
+      "---",
+      "",
+    ].join("\n"));
+
+    expect(parsed.frontmatter.version).toBe("1.");
+  });
 });

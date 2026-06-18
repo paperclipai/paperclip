@@ -263,7 +263,7 @@ function parseYamlScalar(rawValue: string): unknown {
   if (trimmed === "false") return false;
   if (trimmed === "[]") return [];
   if (trimmed === "{}") return {};
-  if (/^-?\d+(\.\d)?\d*$/.test(trimmed)) return Number(trimmed);
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
   if (
     trimmed.startsWith("\"") ||
     trimmed.startsWith("[") ||
