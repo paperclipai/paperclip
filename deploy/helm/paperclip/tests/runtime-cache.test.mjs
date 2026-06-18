@@ -158,8 +158,18 @@ test("Blockcast values inherit ccrotate-serve bearer for Anthropic agent traffic
   const renderedApiDeployment = renderApiDeployment();
 
   for (const rendered of [renderedStatefulSet, renderedApiDeployment]) {
+    assert.match(
+      rendered,
+      /- name: ANTHROPIC_BASE_URL\n\s+value: "?http:\/\/ccrotate-serve\.paperclip\.svc:4001"?/,
+      "agent Anthropic traffic must use the in-cluster ccrotate-serve endpoint",
+    );
     assertCcrotateServeSecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
     assertCcrotateServeSecretEnv(rendered, "ANTHROPIC_API_KEY");
+    assert.doesNotMatch(
+      rendered,
+      /https:\/\/paperclip\.blockcast\.net\/ccrotate/,
+      "agent Anthropic traffic must not use the public auth-proxy endpoint",
+    );
     assert.doesNotMatch(
       rendered,
       /paperclip-ccrotate-board-token/,
