@@ -67,13 +67,19 @@ describe("redaction", () => {
   it("redacts common secret shapes from unstructured text", () => {
     const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
     const githubToken = "ghp_1234567890abcdefghijklmnopqrstuvwxyz";
+    const slackToken = "xoxb-123456789012-ABCDEFGHIJKL";
+    const supabaseToken = `sbp_${"a".repeat(40)}`;
     const input = [
       "Authorization: Bearer live-bearer-token-value",
       `payload {"apiKey":"json-secret-value"}`,
+      `gateway {"gatewayToken":"gateway-token-value","gatewayPassword":"gateway-password-value"}`,
       `paperclip {"PAPERCLIP_API_KEY":"paperclip-json-secret"}`,
       `escaped {\\"apiKey\\":\\"escaped-json-secret\\"}`,
       `export PAPERCLIP_API_KEY='paperclip-shell-secret'`,
       `GITHUB_TOKEN=${githubToken}`,
+      `SLACK_BOT=${slackToken}`,
+      `SUPABASE_TOKEN=${supabaseToken}`,
+      `DATABASE_URL=postgres://paperclip:db-password@db.internal:5432/app`,
       `session=${jwt}`,
     ].join("\n");
 
@@ -82,11 +88,17 @@ describe("redaction", () => {
     expect(result).toContain(REDACTED_EVENT_VALUE);
     expect(result).not.toContain("live-bearer-token-value");
     expect(result).not.toContain("json-secret-value");
+    expect(result).not.toContain("gateway-token-value");
+    expect(result).not.toContain("gateway-password-value");
     expect(result).not.toContain("paperclip-json-secret");
     expect(result).not.toContain("escaped-json-secret");
     expect(result).not.toContain("paperclip-shell-secret");
     expect(result).not.toContain(githubToken);
+    expect(result).not.toContain(slackToken);
+    expect(result).not.toContain(supabaseToken);
+    expect(result).not.toContain("db-password");
     expect(result).not.toContain(jwt);
+    expect(result).toContain(`postgres://paperclip:${REDACTED_EVENT_VALUE}@db.internal`);
   });
 
   it("redacts inline secrets from command metadata without hiding safe command text", () => {
