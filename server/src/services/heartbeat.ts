@@ -4923,6 +4923,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
         projectId: issues.projectId,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -5082,6 +5083,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       taskKey,
       hasActiveExecutionPath: Boolean(activeExecutionPath),
       hasQueuedWake: Boolean(queuedWake),
+      hasScheduledMonitor: Boolean(issue?.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()),
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),

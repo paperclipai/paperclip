@@ -2687,6 +2687,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if (issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()) {
+        result.skipped += 1;
+        continue;
+      }
+
       if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;

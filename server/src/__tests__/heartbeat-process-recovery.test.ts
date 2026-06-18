@@ -3524,6 +3524,62 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.status).toBe("blocked");
   });
 
+  it("skips successful-run handoff when issue has a future monitorNextCheckAt", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const futureDate = new Date(Date.now() + 60 * 60 * 1000);
+    await db.update(issues).set({ monitorNextCheckAt: futureDate }).where(eq(issues.id, issueId));
+
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Parked post awaiting publish-runner routine.",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Parked post awaiting publish-runner routine.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const handoffWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows.filter((w) => w.reason === "finish_successful_run_handoff"));
+    expect(handoffWakeups).toHaveLength(0);
+  });
+
+  it("skips stranded sweep when issue has a future monitorNextCheckAt", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const futureDate = new Date(Date.now() + 60 * 60 * 1000);
+    await db.update(issues).set({ monitorNextCheckAt: futureDate }).where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.escalated).toBe(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {
     const { issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",
