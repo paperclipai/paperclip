@@ -138,6 +138,32 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
 
+function isCcrotateAnthropicBaseUrl(raw: string | undefined): boolean {
+  if (!raw?.trim()) return false;
+  try {
+    const url = new URL(raw);
+    return url.pathname.split("/").filter(Boolean).includes("ccrotate")
+      || url.hostname.includes("ccrotate");
+  } catch {
+    return raw.includes("ccrotate");
+  }
+}
+
+function applyCcrotateRunAuthEnv(input: {
+  env: Record<string, string>;
+  envConfig: Record<string, unknown>;
+}): void {
+  const paperclipApiKey = input.env.PAPERCLIP_API_KEY?.trim();
+  if (!paperclipApiKey || !isCcrotateAnthropicBaseUrl(input.env.ANTHROPIC_BASE_URL)) return;
+
+  if (!hasNonEmptyEnvValue(input.env, "ANTHROPIC_AUTH_TOKEN") || input.envConfig.ANTHROPIC_AUTH_TOKEN === undefined) {
+    input.env.ANTHROPIC_AUTH_TOKEN = paperclipApiKey;
+  }
+  if (!hasNonEmptyEnvValue(input.env, "ANTHROPIC_API_KEY") || input.envConfig.ANTHROPIC_API_KEY === undefined) {
+    input.env.ANTHROPIC_API_KEY = paperclipApiKey;
+  }
+}
+
 interface CcrotateAdvanceInput {
   runId: string;
   executionTarget: ReturnType<typeof readAdapterExecutionTarget>;
@@ -417,6 +443,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  applyCcrotateRunAuthEnv({ env, envConfig });
 
   const runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
