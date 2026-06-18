@@ -1170,6 +1170,23 @@ export function authorizationService(db: Db) {
           explanation: "Allowed because the issue has no agent assignee.",
         });
       }
+      // Manager-of-record inline review: an agent that manages the issue
+      // assignee in the reporting chain (per `reportsTo`/chainOfCommand) may
+      // mutate that report's issue so it can leave inline review notes
+      // (comments) and make the lightweight review edits a manager needs
+      // (status/assignee) without spawning a child issue per comment. This is
+      // strictly manager -> direct/indirect-report; peers, report -> manager,
+      // and unrelated cross-agent writes still fall through to the deny below.
+      if (
+        resource?.assigneeAgentId &&
+        (await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId))
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_manager_chain",
+          explanation: "Allowed because the actor manages the issue assignee in the reporting chain.",
+        });
+      }
     }
     if (
       input.action === "agent_config:update" &&

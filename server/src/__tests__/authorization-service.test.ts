@@ -912,4 +912,121 @@ describeEmbeddedPostgres("authorization service", () => {
       grant: { permissionKey: "tasks:assign" },
     });
   });
+
+  it("allows a manager-of-record to mutate a direct report's issue for inline review", async () => {
+    const company = await createCompany(db, "ManagerInlineReview");
+    const managerAgent = await createAgent(db, company.id, { role: "chief_researcher" });
+    const reportAgent = await createAgent(db, company.id, {
+      role: "competitive_researcher",
+      reportsTo: managerAgent.id,
+    });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: reportAgent.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: managerAgent.id, companyId: company.id },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: null,
+        parentIssueId: null,
+        assigneeAgentId: reportAgent.id,
+        assigneeUserId: null,
+        status: issue.status,
+      },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_manager_chain",
+    });
+  });
+
+  it("denies a peer agent mutating another agent's issue (boundary not over-widened)", async () => {
+    const company = await createCompany(db, "PeerMutationDenied");
+    const peerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const otherAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: otherAgent.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: peerAgent.id, companyId: company.id },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: null,
+        parentIssueId: null,
+        assigneeAgentId: otherAgent.id,
+        assigneeUserId: null,
+        status: issue.status,
+      },
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("deny_missing_grant");
+  });
+
+  it("denies a report mutating its manager's issue (manager->report only, not the reverse)", async () => {
+    const company = await createCompany(db, "ReverseMutationDenied");
+    const managerAgent = await createAgent(db, company.id, { role: "chief_researcher" });
+    const reportAgent = await createAgent(db, company.id, {
+      role: "competitive_researcher",
+      reportsTo: managerAgent.id,
+    });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: managerAgent.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: reportAgent.id, companyId: company.id },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: null,
+        parentIssueId: null,
+        assigneeAgentId: managerAgent.id,
+        assigneeUserId: null,
+        status: issue.status,
+      },
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("deny_missing_grant");
+  });
+
+  it("allows a top-of-chain manager (CEO) to mutate an indirect report's issue", async () => {
+    const company = await createCompany(db, "CeoIndirectReport");
+    const ceoAgent = await createAgent(db, company.id, { role: "ceo" });
+    const managerAgent = await createAgent(db, company.id, {
+      role: "chief_researcher",
+      reportsTo: ceoAgent.id,
+    });
+    const reportAgent = await createAgent(db, company.id, {
+      role: "competitive_researcher",
+      reportsTo: managerAgent.id,
+    });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: reportAgent.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: ceoAgent.id, companyId: company.id },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: null,
+        parentIssueId: null,
+        assigneeAgentId: reportAgent.id,
+        assigneeUserId: null,
+        status: issue.status,
+      },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_manager_chain",
+    });
+  });
 });
