@@ -82,7 +82,7 @@ jobs:
       # every job consumes the same hash without recomputing.
       - name: Upload regenerated lockfile for downstream jobs
         if: steps.regen_lockfile.outputs.regenerated == '1'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pr-lockfile
           path: pnpm-lock.yaml
