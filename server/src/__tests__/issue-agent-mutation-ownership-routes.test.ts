@@ -989,6 +989,42 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("keeps cross-issue grants endpoint-specific for peer agent mutations", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.hasPermission.mockImplementation(async (_companyId, _principalType, _principalId, permissionKey) =>
+      permissionKey === "issues:comment:all"
+    );
+
+    const app = await createApp(peerActor());
+    const patchRes = await request(app).patch(`/api/issues/${issueId}`).send({ title: "Wrong grant" });
+
+    expect(patchRes.status, JSON.stringify(patchRes.body)).toBe(403);
+    expect(patchRes.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+
+    const commentRes = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Allowed by grant" });
+
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Allowed by grant",
+      expect.objectContaining({ agentId: peerAgentId }),
+      expect.anything(),
+    );
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      peerAgentId,
+      "issues:patch:all",
+    );
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      peerAgentId,
+      "issues:comment:all",
+    );
+  });
+
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
