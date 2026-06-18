@@ -90,6 +90,7 @@ export async function syncOpenCodeSkills(
 export function resolveOpenCodeDesiredSkillNames(
   config: Record<string, unknown>,
   availableEntries: Array<{ key: string; required?: boolean }>,
+  agentRole: string | null = null,
 ) {
-  return resolvePaperclipDesiredSkillNames(config, availableEntries);
+  return resolvePaperclipDesiredSkillNames(config, availableEntries, agentRole);
 }

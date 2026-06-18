@@ -334,7 +334,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
+  const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries, agent.role ?? null);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const configuredOpenAiApiKey =
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0

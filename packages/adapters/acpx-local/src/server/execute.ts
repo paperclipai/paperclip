@@ -293,9 +293,10 @@ async function buildSkillSetKey(input: {
 
 async function resolveSelectedRuntimeSkills(
   config: Record<string, unknown>,
+  agentRole: string | null = null,
 ): Promise<{ allSkills: PaperclipSkillEntry[]; selectedSkills: PaperclipSkillEntry[]; desiredSkillNames: string[] }> {
   const allSkills = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredSkillNames = resolvePaperclipDesiredSkillNames(config, allSkills);
+  const desiredSkillNames = resolvePaperclipDesiredSkillNames(config, allSkills, agentRole);
   const desiredSet = new Set(desiredSkillNames);
   return {
     allSkills,
@@ -307,13 +308,14 @@ async function resolveSelectedRuntimeSkills(
 async function prepareClaudeSkillRuntime(input: {
   stateDir: string;
   config: Record<string, unknown>;
+  agentRole?: string | null;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<{
   identity: Record<string, unknown>;
   promptInstructions: string;
   commandNotes: string[];
 }> {
-  const { selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config);
+  const { selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.agentRole ?? null);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "claude" });
   const bundleRoot = path.join(input.stateDir, "runtime-skills", "claude", skillSetKey);
   const skillsHome = path.join(bundleRoot, ".claude", "skills");
@@ -435,6 +437,7 @@ async function prepareCodexSkillRuntime(input: {
   companyId: string;
   config: Record<string, unknown>;
   env: Record<string, string>;
+  agentRole?: string | null;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
   const envConfig = parseObject(input.config.env);
@@ -454,7 +457,7 @@ async function prepareCodexSkillRuntime(input: {
       targetHome: managedCodexHome,
       onLog: input.onLog,
     });
-  const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config);
+  const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.agentRole ?? null);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "codex" });
   const skillsHome = path.join(effectiveCodexHome, "skills");
   await fs.mkdir(skillsHome, { recursive: true });
@@ -843,6 +846,7 @@ async function buildRuntime(input: {
     const preparedSkills = await prepareClaudeSkillRuntime({
       stateDir,
       config,
+      agentRole: agent.role ?? null,
       onLog: input.ctx.onLog,
     });
     skillPromptInstructions = preparedSkills.promptInstructions;
@@ -864,12 +868,13 @@ async function buildRuntime(input: {
       companyId: agent.companyId,
       config,
       env,
+      agentRole: agent.role ?? null,
       onLog: input.ctx.onLog,
     });
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
   } else {
-    const desired = resolvePaperclipDesiredSkillNames(config, await readPaperclipRuntimeSkillEntries(config, __moduleDir));
+    const desired = resolvePaperclipDesiredSkillNames(config, await readPaperclipRuntimeSkillEntries(config, __moduleDir), agent.role ?? null);
     skillsIdentity = { mode: "custom_unsupported", desiredSkillNames: desired };
     if (desired.length > 0) {
       skillCommandNotes.push("Selected Paperclip skills are tracked only; ACPX custom commands do not expose a runtime skill contract yet.");
