@@ -42,7 +42,7 @@ export function parseFrontmatterMarkdown(raw: string): MarkdownDoc {
     return { frontmatter: {}, body: normalized.trim(), hasFrontmatter: false };
   }
 
-  const frontmatterRaw = normalized.slice(4, closing).trim();
+  const frontmatterRaw = normalized.slice(4, closing);
   const body = normalized.slice(closing + 5).trim();
   return {
     frontmatter: parseYamlFrontmatter(frontmatterRaw),
@@ -190,6 +190,13 @@ function parseYamlBlockScalar(
   parentIndent: number,
   indicator: string,
 ): { value: string; nextIndex: number } {
+  const trimmedIndicator = indicator.trim();
+  const style = trimmedIndicator[0];
+  const chomp = trimmedIndicator.endsWith("+")
+    ? "+"
+    : trimmedIndicator.endsWith("-")
+      ? "-"
+      : "";
   let index = startIndex;
   const collected: Array<{ indent: number; raw: string; isBlank: boolean }> = [];
   while (index < lines.length) {
@@ -199,28 +206,34 @@ function parseYamlBlockScalar(
     index += 1;
   }
 
-  while (collected[0]?.isBlank) collected.shift();
-  while (collected[collected.length - 1]?.isBlank) collected.pop();
-  if (collected.length === 0) return { value: "", nextIndex: index };
+  const contentLines = collected.filter((line) => !line.isBlank);
+  if (contentLines.length === 0) return { value: "", nextIndex: index };
 
-  const blockIndent = Math.min(...collected.filter((line) => !line.isBlank).map((line) => line.indent));
+  const blockIndent = Math.min(...contentLines.map((line) => line.indent));
   const normalizedLines = collected.map((line) => (
     line.isBlank ? "" : line.raw.slice(Math.min(blockIndent, line.raw.length))
   ));
 
-  if (indicator.trim().startsWith("|")) {
-    return { value: normalizedLines.join("\n"), nextIndex: index };
-  }
+  const baseValue = style === "|"
+    ? normalizedLines.join("\n")
+    : foldYamlBlockScalarLines(normalizedLines);
 
+  return {
+    value: applyYamlBlockChomp(baseValue, chomp),
+    nextIndex: index,
+  };
+}
+
+function foldYamlBlockScalarLines(lines: string[]) {
   let value = "";
   let pendingBlankLines = 0;
-  for (const line of normalizedLines) {
+  for (const line of lines) {
     if (line === "") {
       pendingBlankLines += 1;
       continue;
     }
     if (value.length === 0) {
-      value = line;
+      value = `${"\n".repeat(pendingBlankLines)}${line}`;
     } else if (pendingBlankLines > 0) {
       value += `${"\n".repeat(pendingBlankLines + 1)}${line}`;
     } else {
@@ -228,7 +241,18 @@ function parseYamlBlockScalar(
     }
     pendingBlankLines = 0;
   }
-  return { value, nextIndex: index };
+
+  if (pendingBlankLines > 0 && value.length > 0) {
+    value += "\n".repeat(pendingBlankLines);
+  }
+  return value;
+}
+
+function applyYamlBlockChomp(value: string, chomp: "" | "+" | "-") {
+  if (chomp === "+") return value;
+  if (chomp === "-") return value.replace(/\n+$/u, "");
+  if (value.length === 0) return value;
+  return value.replace(/\n+$/u, "") + "\n";
 }
 
 function parseYamlScalar(rawValue: string): unknown {

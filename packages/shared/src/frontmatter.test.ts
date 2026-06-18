@@ -16,7 +16,7 @@ describe("parseFrontmatterMarkdown", () => {
       "Body",
     ].join("\n"));
 
-    expect(folded.frontmatter.description).toBe("First line second line\n\nThird paragraph");
+    expect(folded.frontmatter.description).toBe("First line second line\n\nThird paragraph\n");
 
     const literal = parseFrontmatterMarkdown([
       "---",
@@ -29,7 +29,37 @@ describe("parseFrontmatterMarkdown", () => {
       "Body",
     ].join("\n"));
 
-    expect(literal.frontmatter.description).toBe("First line\nsecond line");
+    expect(literal.frontmatter.description).toBe("First line\nsecond line\n");
+  });
+
+  it("respects block-scalar chomping indicators", () => {
+    const foldedStrip = parseFrontmatterMarkdown([
+      "---",
+      "description: >-",
+      "  First line",
+      "  second line",
+      "",
+      "  Third paragraph",
+      "---",
+      "",
+      "Body",
+    ].join("\n"));
+
+    expect(foldedStrip.frontmatter.description).toBe("First line second line\n\nThird paragraph");
+
+    const literalKeep = parseFrontmatterMarkdown([
+      "---",
+      "description: |+",
+      "  First line",
+      "  second line",
+      "",
+      "",
+      "---",
+      "",
+      "Body",
+    ].join("\n"));
+
+    expect(literalKeep.frontmatter.description).toBe("First line\nsecond line\n\n");
   });
 
   it("parses inline object array items nested under frontmatter keys", () => {
