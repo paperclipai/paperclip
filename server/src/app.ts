@@ -174,6 +174,20 @@ export async function createApp(
     limit: DEFAULT_JSON_BODY_LIMIT,
     verify: captureRawBody,
   }));
+  // Capture rawBody for form-encoded requests (e.g. Slack slash commands and
+  // interactivity payloads). express.json() only runs for application/json, so
+  // without this middleware req.rawBody stays undefined for
+  // application/x-www-form-urlencoded bodies — and any HMAC signature check
+  // (Slack signs the raw form body) then verifies against an empty buffer and
+  // always fails. extended: false uses the built-in querystring parser, which
+  // is sufficient for the flat key/value bodies Slack sends. The two parsers
+  // are mutually exclusive by Content-Type, so reusing captureRawBody never
+  // double-captures. See mvanhorn/paperclip-plugin-slack#19.
+  app.use(express.urlencoded({
+    limit: DEFAULT_JSON_BODY_LIMIT,
+    extended: false,
+    verify: captureRawBody,
+  }));
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
