@@ -4776,9 +4776,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+      await autoCancelStaleRunEvaluationsOnTerminal(updated);
     }
 
     return updated;
+  }
+
+  // Auto-cancel-on-terminal-run:
+  // Once a heartbeat_run reaches a terminal status, any still-open
+  // `stale_active_run_evaluation` issue bound to that run is operating on a non-event.
+  // Auto-cancel them so the assignee is not woken by an alert about a run that no longer
+  // exists. Centralised here so all run-status transitions (finalization + cancellation)
+  // benefit uniformly.
+  async function autoCancelStaleRunEvaluationsOnTerminal(
+    updated: typeof heartbeatRuns.$inferSelect,
+  ) {
+    if (!(HEARTBEAT_RUN_TERMINAL_STATUSES as readonly string[]).includes(updated.status)) {
+      return;
+    }
+    try {
+      await recovery.closeOpenStaleEvaluationIssuesForRun({
+        companyId: updated.companyId,
+        runId: updated.id,
+        runStatus: updated.status,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, runId: updated.id, runStatus: updated.status },
+        "failed to auto-cancel stale-run evaluation issues on run terminal",
+      );
+    }
   }
 
   async function setRunStatusIfRunning(
@@ -4810,6 +4837,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+      await autoCancelStaleRunEvaluationsOnTerminal(updated);
       return { run: updated, updated: true as const };
     }
 
@@ -11339,6 +11367,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       !sameScopeQueuedRun &&
       shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId });
 
+    // Agent-level run-overlap guard (timer source):
+    // For timer-source wakes, skip entirely when the agent already has ANY active run
+    // — not just one in the same task scope. A `heartbeat_timer` wake fired while the
+    // agent has an `issue_assigned` run going has nothing new to do; queuing it up
+    // behind the active run creates a back-to-back overlap (the new run starts the
+    // moment the active one ends). We deliberately do NOT coalesce into the active
+    // run because the timer's context (`source: scheduler`, `reason: interval_elapsed`)
+    // would clobber the active run's issue context via mergeCoalescedContextSnapshot.
+    // Non-timer sources still fall through to the existing same-scope coalescing logic
+    // to preserve user/system wake semantics.
+    if (source === "timer" && activeRuns.length > 0) {
+      await writeSkippedRequest("agent.has_active_run");
+      return null;
+    }
+
     const rawCoalescedTarget =
       sameScopeQueuedRun ??
       sameScopeScheduledRetryRun ??
@@ -12054,6 +12097,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .innerJoin(companies, eq(companies.id, agents.companyId))
         .where(eq(companies.status, "active"));
       const agentsByCompany = groupAgentOrgRowsByCompany(allAgents.map(toAgentOrgRow));
+
+      // Agent-level run-overlap guard (scheduler side):
+      // Pre-fetch the set of agents that already have an active run
+      // (queued/running/scheduled_retry) so the scheduler skips them before issuing a
+      // new timer wake. Without this, a stuck issue_assigned run on agent X causes
+      // every tickTimers pass to enqueue another timer wake against X, which queues
+      // behind the active run and starts the moment it finishes — observable as a high
+      // count of back-to-back run-start pairs per agent in production telemetry.
+      const activeAgentRows = await db
+        .select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]));
+      const agentsWithActiveRun = new Set(activeAgentRows.map((row) => row.agentId));
+
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
@@ -12068,6 +12125,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        if (agentsWithActiveRun.has(agent.id)) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
