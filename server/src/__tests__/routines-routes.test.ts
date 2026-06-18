@@ -7,6 +7,7 @@ const agentId = "11111111-1111-4111-8111-111111111111";
 const routineId = "33333333-3333-4333-8333-333333333333";
 const projectId = "44444444-4444-4444-8444-444444444444";
 const otherAgentId = "55555555-5555-4555-8555-555555555555";
+const reportAgentId = "99999999-9999-4999-8999-999999999999";
 const revisionId = "77777777-7777-4777-8777-777777777777";
 
 const routine = {
@@ -117,6 +118,7 @@ const mockRoutineService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  isManagerOf: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -204,6 +206,7 @@ describe("routine routes", () => {
       status: "issue_created",
     });
     mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.isManagerOf.mockResolvedValue(false);
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -266,6 +269,21 @@ describe("routine routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockRoutineService.listRevisions).not.toHaveBeenCalled();
+  });
+
+  it("allows a manager to read routine revisions for a direct report", async () => {
+    mockAccessService.isManagerOf.mockResolvedValue(true);
+    const app = await createApp({
+      type: "agent",
+      agentId: otherAgentId,
+      companyId,
+    });
+
+    const res = await request(app).get(`/api/routines/${routineId}/revisions`);
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.isManagerOf).toHaveBeenCalledWith(companyId, otherAgentId, agentId);
+    expect(mockRoutineService.listRevisions).toHaveBeenCalledWith(routineId);
   });
 
   it("restores routine revisions with existing routine-management permissions", async () => {
@@ -331,6 +349,33 @@ describe("routine routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");
     expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a manager to reassign a routine between direct reports", async () => {
+    mockAccessService.isManagerOf.mockResolvedValue(true);
+    const app = await createApp({
+      type: "agent",
+      agentId: otherAgentId,
+      companyId,
+      runId: "88888888-8888-4888-8888-888888888888",
+    });
+
+    const res = await request(app)
+      .patch(`/api/routines/${routineId}`)
+      .send({
+        assigneeAgentId: reportAgentId,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.isManagerOf).toHaveBeenCalledWith(companyId, otherAgentId, agentId);
+    expect(mockAccessService.isManagerOf).toHaveBeenCalledWith(companyId, otherAgentId, reportAgentId);
+    expect(mockRoutineService.update).toHaveBeenCalledWith(routineId, {
+      assigneeAgentId: reportAgentId,
+    }, {
+      agentId: otherAgentId,
+      userId: null,
+      runId: "88888888-8888-4888-8888-888888888888",
+    });
   });
 
   it("requires tasks:assign permission to reactivate a routine", async () => {

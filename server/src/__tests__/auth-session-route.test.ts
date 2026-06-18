@@ -67,6 +67,62 @@ describe("actorMiddleware authenticated session profile", () => {
     });
   });
 
+  it("does not attach X-Paperclip-Run-Id to the local board actor", async () => {
+    const app = express();
+    app.use(
+      actorMiddleware(createDb(), {
+        deploymentMode: "local_trusted",
+      }),
+    );
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app)
+      .get("/actor")
+      .set("X-Paperclip-Run-Id", "not-a-real-heartbeat-run");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+    });
+    expect(res.body.runId).toBeUndefined();
+  });
+
+  it("does not attach X-Paperclip-Run-Id to session board actors", async () => {
+    const app = express();
+    app.use(
+      actorMiddleware(createDb(), {
+        deploymentMode: "authenticated",
+        resolveSession: async () => ({
+          session: { id: "session-1", userId: "user-1" },
+          user: {
+            id: "user-1",
+            name: "User One",
+            email: "user@example.com",
+          },
+        }),
+      }),
+    );
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app)
+      .get("/actor")
+      .set("X-Paperclip-Run-Id", "not-a-real-heartbeat-run");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+    });
+    expect(res.body.runId).toBeUndefined();
+  });
+
   it("trusts Cloud tenant identity headers and seeds board access", async () => {
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
     const inserts: Array<{ values: Record<string, unknown> }> = [];

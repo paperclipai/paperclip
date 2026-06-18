@@ -1170,6 +1170,13 @@ export function authorizationService(db: Db) {
           explanation: "Allowed because the issue has no agent assignee.",
         });
       }
+      if (canCreateAgentsLegacy(actorAgent)) {
+        return allow({
+          action: input.action,
+          reason: "allow_legacy_agent_creator",
+          explanation: "Allowed by legacy agent creator authority.",
+        });
+      }
     }
     if (
       input.action === "agent_config:update" &&
@@ -1234,5 +1241,6 @@ export function authorizationService(db: Db) {
   return {
     decide,
     decidePrincipalGrant,
+    isManagerOf,
   };
 }

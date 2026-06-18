@@ -1,6 +1,7 @@
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   companyMemberships,
   instanceUserRoles,
   issues,
@@ -54,6 +55,23 @@ export function accessService(db: Db) {
         ),
       )
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function isManagerOf(companyId: string, managerAgentId: string, targetAgentId: string): Promise<boolean> {
+    if (managerAgentId === targetAgentId) return true;
+    const rows = await db
+      .select({ id: agents.id, reportsTo: agents.reportsTo })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    const byId = new Map(rows.map((agent) => [agent.id, agent]));
+    const visited = new Set<string>();
+    let current = byId.get(targetAgentId) ?? null;
+    while (current?.reportsTo && !visited.has(current.reportsTo)) {
+      if (current.reportsTo === managerAgentId) return true;
+      visited.add(current.reportsTo);
+      current = byId.get(current.reportsTo) ?? null;
+    }
+    return false;
   }
 
   async function hasPermission(
@@ -782,6 +800,7 @@ export function accessService(db: Db) {
   return {
     isInstanceAdmin,
     decide,
+    isManagerOf,
     canUser,
     hasPermission,
     getMembership,
