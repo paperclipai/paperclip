@@ -132,6 +132,31 @@ export function issueApprovalService(db: Db) {
         .where(and(eq(issueApprovals.issueId, issueId), eq(issueApprovals.approvalId, approvalId)));
     },
 
+    assertIssuesExistForCompany: async (companyId: string, issueIds: string[]) => {
+      if (issueIds.length === 0) return;
+
+      const uniqueIssueIds = Array.from(new Set(issueIds));
+      const rows = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(inArray(issues.id, uniqueIssueIds));
+
+      if (rows.length !== uniqueIssueIds.length) {
+        const found = new Set(rows.map((row) => row.id));
+        const missing = uniqueIssueIds.filter((id) => !found.has(id));
+        throw notFound(`Source issue(s) not found: ${missing.join(", ")}`);
+      }
+
+      const crossCompany = rows.filter((row) => row.companyId !== companyId);
+      if (crossCompany.length > 0) {
+        throw unprocessable(
+          `Source issue(s) belong to a different company: ${crossCompany
+            .map((row) => row.id)
+            .join(", ")}`,
+        );
+      }
+    },
+
     linkManyForApproval: async (approvalId: string, issueIds: string[], actor?: LinkActor) => {
       if (issueIds.length === 0) return;
 

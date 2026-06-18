@@ -2004,22 +2004,7 @@ export function agentRoutes(
       return;
     }
 
-    if (sourceIssueIds.length > 0) {
-      const foundIssues = await db
-        .select({ id: issuesTable.id, companyId: issuesTable.companyId })
-        .from(issuesTable)
-        .where(inArray(issuesTable.id, sourceIssueIds));
-      if (foundIssues.length !== sourceIssueIds.length) {
-        res.status(404).json({ error: "One or more sourceIssueIds not found" });
-        return;
-      }
-      for (const issue of foundIssues) {
-        if (issue.companyId !== companyId) {
-          res.status(422).json({ error: "sourceIssueId must belong to the same company" });
-          return;
-        }
-      }
-    }
+    await issueApprovalsSvc.assertIssuesExistForCompany(companyId, sourceIssueIds);
 
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";

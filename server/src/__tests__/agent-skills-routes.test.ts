@@ -27,6 +27,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
 }));
 const mockHeartbeatService = vi.hoisted(() => ({}));
 const mockIssueApprovalService = vi.hoisted(() => ({
+  assertIssuesExistForCompany: vi.fn(),
   linkManyForApproval: vi.fn(),
 }));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
@@ -759,6 +760,36 @@ describe.sequential("agent skill routes", () => {
       [sourceIssueId],
       { agentId: null, userId: "local-board" },
     );
+  });
+
+  it("does not create an agent when a sourceIssueId does not exist (SPC-11888)", async () => {
+    const db = createDb(true);
+    const missingSourceIssueId = "33333333-3333-4333-8333-333333333333";
+    const { notFound } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    mockIssueApprovalService.assertIssuesExistForCompany.mockRejectedValueOnce(
+      notFound(`Source issue(s) not found: ${missingSourceIssueId}`),
+    );
+
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agent-hires")
+        .send({
+          name: "Orphan Probe",
+          role: "engineer",
+          adapterType: "claude_local",
+          adapterConfig: {},
+          sourceIssueId: missingSourceIssueId,
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(mockIssueApprovalService.assertIssuesExistForCompany).toHaveBeenCalledWith(
+      "company-1",
+      [missingSourceIssueId],
+    );
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
   });
 
   it("uses managed AGENTS config in hire approval payloads", async () => {

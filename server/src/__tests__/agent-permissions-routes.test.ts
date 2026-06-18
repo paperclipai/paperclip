@@ -75,6 +75,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
+  assertIssuesExistForCompany: vi.fn(),
   linkManyForApproval: vi.fn(),
 }));
 
