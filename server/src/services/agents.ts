@@ -496,6 +496,7 @@ export function agentService(db: Db) {
           status: "paused",
           pauseReason: reason,
           pausedAt: new Date(),
+          errorReason: null,
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
@@ -518,6 +519,7 @@ export function agentService(db: Db) {
           status: "idle",
           pauseReason: null,
           pausedAt: null,
+          errorReason: null,
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
@@ -543,6 +545,7 @@ export function agentService(db: Db) {
           status: "idle",
           pauseReason: null,
           pausedAt: null,
+          errorReason: null,
           updatedAt: new Date(),
         })
         .where(and(eq(agents.id, id), eq(agents.status, "error")))
@@ -565,6 +568,7 @@ export function agentService(db: Db) {
           status: "terminated",
           pauseReason: null,
           pausedAt: null,
+          errorReason: null,
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id));

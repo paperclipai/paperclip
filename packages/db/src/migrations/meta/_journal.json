@@ -722,6 +722,13 @@
       "when": 1781490100000,
       "tag": "0102_managed_sandbox_dedup_index",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1781490200000,
+      "tag": "0103_agent_error_reason",
+      "breakpoints": true
     }
   ]
 }

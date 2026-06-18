@@ -7183,9 +7183,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
+  function truncateAgentErrorReason(reason: string | null | undefined): string | null {
+    if (!reason) return null;
+    const trimmed = reason.trim();
+    if (!trimmed) return null;
+    return trimmed.length > 500 ? `${trimmed.slice(0, 499)}…` : trimmed;
+  }
+
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    failureReason?: string | null,
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -7208,6 +7216,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .update(agents)
       .set({
         status: nextStatus,
+        // Persist a human-readable reason on the agent record when it enters
+        // error so operators see it on the agent page without digging into run
+        // events; clear it whenever the agent leaves error.
+        errorReason: nextStatus === "error" ? truncateAgentErrorReason(failureReason) : null,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
       })
@@ -7570,7 +7582,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      await finalizeAgentStatus(run.agentId, "failed", baseMessage);
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -9423,7 +9435,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(
+        agent.id,
+        outcome,
+        outcome === "succeeded" ? null : (adapterResult.errorMessage ?? null),
+      );
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -9519,7 +9535,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", message);
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -9577,7 +9593,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // path owned the terminal transition. If another path already finalized
           // the run, keep that terminal outcome authoritative.
           if (setupFailureWrite.updated) {
-            await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+            await finalizeAgentStatus(run.agentId, "failed", message).catch(() => undefined);
           }
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
