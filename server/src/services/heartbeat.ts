@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  LIFETIME_SCOPED_TRACKING_LABEL,
   MODEL_PROFILE_KEYS,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
@@ -40,11 +41,13 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueComments,
+  issueLabels,
   issuePlanDecompositions,
   issueRelations,
   issueThreadInteractions,
   issues,
   issueWorkProducts,
+  labels,
   projects,
   projectWorkspaces,
   routineRevisions,
@@ -4987,6 +4990,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       existingWake,
       budgetBlock,
       pauseHold,
+      lifetimeScopedTrackingOptOut,
     ] = await Promise.all([
       issue
         ? db
@@ -5112,6 +5116,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue
         ? treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id)
         : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: issueLabels.issueId })
+          .from(issueLabels)
+          .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+          .where(
+            and(
+              eq(issueLabels.companyId, issue.companyId),
+              eq(issueLabels.issueId, issue.id),
+              sql`lower(trim(${labels.name})) = ${LIFETIME_SCOPED_TRACKING_LABEL}`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -5129,6 +5148,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasPauseHold: Boolean(pauseHold),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
+      hasLifetimeScopedTrackingOptOut: Boolean(lifetimeScopedTrackingOptOut),
     });
 
     if (decision.kind !== "enqueue" || !issue) return;

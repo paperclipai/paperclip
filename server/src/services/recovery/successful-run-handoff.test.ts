@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
+  SUCCESSFUL_RUN_HANDOFF_LIFETIME_SCOPED_SKIP_REASON,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildFinishSuccessfulRunHandoffIdempotencyKey,
@@ -128,6 +129,18 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "explicit blocker path owns the next action",
     });
+  });
+
+  it("does not queue when the issue carries the lifetime-scoped tracking opt-out", () => {
+    expect(decide({ hasLifetimeScopedTrackingOptOut: true })).toEqual({
+      kind: "skip",
+      reason: SUCCESSFUL_RUN_HANDOFF_LIFETIME_SCOPED_SKIP_REASON,
+    });
+  });
+
+  it("still queues for non-lifetime-scoped issues even when the opt-out flag is explicitly false", () => {
+    const decision = decide({ hasLifetimeScopedTrackingOptOut: false });
+    expect(decision.kind).toBe("enqueue");
   });
 
   it("does not queue when a successful run has no progress signal", () => {
