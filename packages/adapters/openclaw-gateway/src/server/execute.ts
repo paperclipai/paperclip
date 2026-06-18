@@ -420,8 +420,8 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
+  claimedApiKeyPath: string,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -473,6 +473,7 @@ function buildWakeText(
     "",
     "Workflow:",
     "1) GET /api/agents/me",
+    "   - If the response shows role=ceo or permissions.canCreateAgents=true, you may use the staffing endpoints listed below.",
     `2) Determine issueId: PAPERCLIP_TASK_ID if present, otherwise issue_id (${issueIdHint}).`,
     "3) If issueId exists:",
     "   - POST /api/issues/{issueId}/checkout with {\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"backlog\",\"blocked\",\"in_review\"]}",
@@ -493,6 +494,13 @@ function buildWakeText(
     "- POST /api/issues/{issueId}/comments",
     "- PATCH /api/issues/{issueId}",
     "- POST /api/companies/{companyId}/issues (when asked to create a new issue)",
+    "",
+    "Allowlisted staffing endpoints for CEO / agent-creator work:",
+    "- GET /api/companies/{companyId}/agents (list existing agents before hiring)",
+    "- POST /api/companies/{companyId}/agent-hires (create a governed hire request; use when board approval for new agents is enabled)",
+    "- POST /api/companies/{companyId}/agents (directly create an agent only when the API allows it; if this returns 409, use agent-hires)",
+    "- PATCH /api/issues/{issueId} (assign or update work after choosing the right agent)",
+    "Only use these staffing endpoints after confirming your own role/permissions via GET /api/agents/me, and link sourceIssueId/sourceIssueIds to the issue that requested the staffing work.",
     ...(structuredWakePrompt
       ? [
           "",
@@ -1196,6 +1204,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ctx.config.includePaperclipWorkflow ?? ctx.config.paperclipWorkflow,
     true,
   );
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath);
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const wakeText = includePaperclipWorkflow
     ? buildWakeText(
@@ -1204,6 +1213,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         structuredWakeJson
           ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
           : structuredWakePrompt,
+        claimedApiKeyPath,
       )
     : buildCompactWakeText(wakePayload, structuredWakePrompt, structuredWakeJson ?? "");
 
