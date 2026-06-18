@@ -62,11 +62,20 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         throw unprocessable("Agent does not belong to company");
       }
 
+      // Telemetry: derive the chair (subscription seat) identity from the agent's
+      // adapterConfig.env.CLAUDE_CONFIG_DIR. Stored env may be a plain string or {type,value}.
+      const chairEnv = (agent.adapterConfig as { env?: Record<string, unknown> } | null | undefined)?.env;
+      let chairRaw: unknown =
+        chairEnv && typeof chairEnv === "object" ? (chairEnv as Record<string, unknown>).CLAUDE_CONFIG_DIR : undefined;
+      if (chairRaw && typeof chairRaw === "object") chairRaw = (chairRaw as { value?: unknown }).value;
+      const chairId = typeof chairRaw === "string" && chairRaw.trim().length > 0 ? chairRaw.trim() : null;
+
       const event = await db
         .insert(costEvents)
         .values({
           ...data,
           companyId,
+          chairId,
           biller: data.biller ?? data.provider,
           billingType: data.billingType ?? "unknown",
           cachedInputTokens: data.cachedInputTokens ?? 0,

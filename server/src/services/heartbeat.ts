@@ -2620,6 +2620,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
+      preserveIdleRuns: asBoolean(heartbeat.preserveIdleRuns, false),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     };
   }
@@ -5457,6 +5458,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // RUN-RATE-CUT (D0 Lever B, 2026-06-10): skip a timer wake when the agent has no
+        // actionable assigned work. Work model is PUSH (assignment wakeups), so skipping an
+        // idle timer tick never starves agents of new work. CEO-class agents set
+        // runtimeConfig.heartbeat.preserveIdleRuns=true so their plan/memory routines still
+        // run every tick. Empirical cap-proof = query over cost_events.chair_id.
+        if (!policy.preserveIdleRuns) {
+          const [workRow] = await db
+            .select({ id: issues.id })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, agent.companyId),
+                eq(issues.assigneeAgentId, agent.id),
+                inArray(issues.status, ["todo", "in_progress"]),
+              ),
+            )
+            .limit(1);
+          if (!workRow) {
+            await db.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId: agent.id,
+              source: "timer",
+              triggerDetail: "system",
+              reason: "no_actionable_work",
+              payload: null,
+              status: "skipped",
+              requestedByActorType: "system",
+              requestedByActorId: "heartbeat_scheduler",
+              finishedAt: now,
+            });
+            skipped += 1;
+            continue;
+          }
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

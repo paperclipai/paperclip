@@ -762,8 +762,9 @@ export function agentRoutes(db: Db) {
     if (!agent) return null;
     return {
       ...agent,
-      adapterConfig: {},
-      runtimeConfig: {},
+      adapterConfig: null,
+      runtimeConfig: null,
+      configRedacted: true,
     };
   }
 
@@ -2485,6 +2486,11 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, run.companyId);
+
+    if (!run.logStore || !run.logRef) {
+      res.status(204).end();
+      return;
+    }
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = Number(req.query.limitBytes ?? 256000);

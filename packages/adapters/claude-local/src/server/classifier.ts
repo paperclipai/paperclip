@@ -149,7 +149,7 @@ export function isRecoverable(input: ClassifierInput): RecoverabilityVerdict {
 
   // 2. Login required — silently swapping to a different billing path would
   // hide a human-in-the-loop event. Surface, do not failover.
-  const loginMeta = detectClaudeLoginRequired({ parsed, stdout, stderr }); console.log("LOGIN META", loginMeta);
+  const loginMeta = detectClaudeLoginRequired({ parsed, stdout, stderr });
   if (loginMeta.requiresLogin) {
     return {
       recoverable: false,

@@ -92,3 +92,25 @@ export const issues = pgTable(
       ),
   }),
 );
+
+export const issueRoutingDecisions = pgTable(
+  "issue_routing_decisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    issueId: uuid("issue_id")
+      .notNull()
+      .references(() => issues.id, { onDelete: "cascade" }),
+    estCtx: integer("est_ctx").notNull(),
+    estDiff: integer("est_diff").notNull(),
+    chosenModel: text("chosen_model").notNull(),
+    ruleId: text("rule_id").notNull(),
+    fallbackReason: text("fallback_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    issueIdx: index("issue_routing_decisions_issue_idx").on(table.issueId),
+  }),
+);
+

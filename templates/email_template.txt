@@ -1,0 +1,1 @@
+Email Template: Subject: Following up on your inquiry\nHi {name},\n\nThank you for reaching out to us. I wanted to follow up and see if you still had questions regarding your loan application. I’m happy to help in any way I can.\n\nBest,\nThe ROC Team

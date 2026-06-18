@@ -35,6 +35,7 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { pickNextSeat, resetSeatRotation } from "./seat-rotation.js";
+import { runTier1 } from "./tier1.js";
 import { executeClaudeLocalWithFailover, type Tier0RawOutcome } from "./failover.js";
 import { isRecoverable } from "./classifier.js";
 import { buildTier1Gate, recordTier1Cost } from "./tier1-cost-cap.js";
@@ -807,7 +808,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return capturedLastRaw;
       },
     },
-    tier1: null,
+    tier1: {
+      runTier1,
+    },
     prompt,
     model,
     onLog,
@@ -817,6 +820,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // is byte-identical to before this wiring was added.
     buildTier0Result: () => capturedCandidate,
     issueId: (ctx.context.issueId ?? ctx.context.taskId ?? null) as string | null,
+    tier1Gate: buildTier1Gate(),
+    onTier1Cost: recordTier1Cost,
   });
 
   if (!failoverResult.errorCode) resetSeatRotation();

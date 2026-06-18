@@ -1071,7 +1071,7 @@ export async function runChildProcess(
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
-    onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+    onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string; spawnCommand?: string | null }) => Promise<void>;
     stdin?: string;
   },
 ): Promise<RunProcessResult> {
@@ -1108,9 +1108,10 @@ export async function runChildProcess(
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
 
+        const spawnCommand = [command, ...args].join(" ");
         const spawnPersistPromise =
           typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
-            ? opts.onSpawn({ pid: child.pid, processGroupId, startedAt }).catch((err) => {
+            ? opts.onSpawn({ pid: child.pid, processGroupId, startedAt, spawnCommand }).catch((err) => {
               onLogError(err, runId, "failed to record child process metadata");
             })
             : Promise.resolve();

@@ -262,7 +262,7 @@ describe("executeClaudeLocalWithFailover — acceptance", () => {
       const tier1 = makeStubTier1({ ok: true });
       const onLog = vi.fn(async (_stream: "stdout" | "stderr", _chunk: string) => {});
       const onMeta = vi.fn(async (_meta: AdapterInvocationMeta) => {});
-      const tier1Gate = vi.fn(async () => ({
+      const tier1Gate = vi.fn(async (_args: { issueId: string | null }) => ({
         allowed: false as const,
         reason: "daily_cap_tripped" as const,
         detail: "Tier 1 daily cap tripped at 2026-05-24T08:00:00Z: $52.31 today (cap $50.00). Resets at 2026-05-25T00:00:00Z.",

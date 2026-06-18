@@ -340,6 +340,8 @@ export const HEARTBEAT_RUN_STATUSES = [
   "failed",
   "cancelled",
   "timed_out",
+  "failed_retryable",
+  "failed_dead_letter",
 ] as const;
 export type HeartbeatRunStatus = (typeof HEARTBEAT_RUN_STATUSES)[number];
 

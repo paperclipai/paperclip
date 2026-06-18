@@ -369,6 +369,54 @@ export function issueRoutes(
     return (req.actor.companyIds ?? []).includes(companyId);
   }
 
+  // --- ROC-141 NPI read-gate (Fable + advisor 2026-06-10): an AGENT without NPI clearance cannot
+  // READ tickets labelled with the NPI label. Ships DARK: inert until a ticket carries the label.
+  // Board/user actors are exempt. DENY on detail (404 hides existence); FILTER on list.
+  const NPI_LABEL_NAME = (process.env.NPI_LABEL_NAME ?? "npi").trim().toLowerCase();
+  const NPI_CLEARED_DEFAULT = [
+    "CEO", "Trinity (Ivan EA)", "COO / Lead Operations", "INTAKE",
+    "Processor (pre-UW)", "Processor (post-UW)", "Cube SF Reconciler",
+    "Blend Watcher Daemon", "In-Review Triage Specialist", "COMMUNICATE", "Support Specialist",
+  ];
+  const _npiNorm = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const _npiClearedSet = (() => {
+    const rawEnv = (process.env.NPI_CLEARED_AGENTS ?? "").trim();
+    const source = rawEnv.length > 0 ? rawEnv.split(",") : NPI_CLEARED_DEFAULT;
+    const set = new Set(source.map((value) => _npiNorm(value)).filter(Boolean));
+    if (rawEnv.length > 0 && set.size === 0) {
+      logger.error(
+        `NPI_CLEARED_AGENTS was set but resolved to an empty clearance set after normalization (raw=${JSON.stringify(rawEnv)}); falling back to the default NPI clearance set`,
+      );
+      for (const value of NPI_CLEARED_DEFAULT) {
+        const normalized = _npiNorm(value);
+        if (normalized) set.add(normalized);
+      }
+    }
+    return set;
+  })();
+  function issueIsNpi(issue: { labels?: Array<{ name?: string | null }> | null } | null | undefined): boolean {
+    return Boolean(issue?.labels?.some((l) => (l?.name ?? "").trim().toLowerCase() === NPI_LABEL_NAME));
+  }
+  async function actorNpiCleared(req: Request): Promise<boolean> {
+    if (req.actor.type !== "agent") return true; // board/user/local_implicit exempt
+    if (!req.actor.agentId) return false; // fail-closed
+    const actorAgent = await agentsSvc.getById(req.actor.agentId);
+    if (!actorAgent) return false;
+    if (actorAgent.role === "ceo") return true;
+    return _npiClearedSet.has(_npiNorm(String((actorAgent as { name?: string }).name ?? "")));
+  }
+  async function denyIfNpiBlocked(
+    req: Request,
+    res: Response,
+    issue: { labels?: Array<{ name?: string | null }> | null } | null | undefined,
+  ): Promise<boolean> {
+    if (req.actor.type !== "agent") return false;
+    if (!issueIsNpi(issue)) return false;
+    if (await actorNpiCleared(req)) return false;
+    res.status(404).json({ error: "Issue not found" });
+    return true;
+  }
+
   function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
     if (agent.role === "ceo") return true;
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
@@ -661,7 +709,9 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
     });
-    res.json(result);
+    // ROC-141 NPI read-gate: uncleared agents do not see npi-labelled tickets in the list.
+    const _npiCleared = await actorNpiCleared(req);
+    res.json(Array.isArray(result) && !_npiCleared ? result.filter((issue) => !issueIsNpi(issue)) : result);
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -726,6 +776,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (await denyIfNpiBlocked(req, res, issue)) return; // ROC-141 NPI read-gate
     const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -763,6 +814,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (await denyIfNpiBlocked(req, res, issue)) return; // ROC-141 NPI read-gate
 
     const wakeCommentId =
       typeof req.query.wakeCommentId === "string" && req.query.wakeCommentId.trim().length > 0

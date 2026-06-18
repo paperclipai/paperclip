@@ -1,0 +1,1 @@
+SMS Template: Hi {name}! I’m following up on your recent message. I wanted to see if you have any questions about your loan process or if there is anything I can help you with today? - The ROC Team

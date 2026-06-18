@@ -407,6 +407,34 @@
       "when": 1776309613598,
       "tag": "0057_tidy_join_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1779983046999,
+      "tag": "0058_lying_shockwave",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1780053289630,
+      "tag": "0059_silent_goblin_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1780242206308,
+      "tag": "0060_illegal_the_santerians",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1780328606308,
+      "tag": "0061_cost_events_chair_id",
+      "breakpoints": true
     }
   ]
 }

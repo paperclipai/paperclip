@@ -1,0 +1,41 @@
+## ROC-2428 Progress Log
+# High Intent Leads to process (32):
+- Jefri Liriano
+- Susette Roman
+- Gina Maria
+- Trikkpapi (x2)
+- Scootie Haralou
+- Maria Silva
+- Lahsen Doghmi
+- Christi Saez
+- Helena Ellis
+- Nhazi Resende
+- John Kim
+- Colleen Omalley
+- Melissa Furman
+- Hennything Zapata
+- Christina M Salem
+- Maria Luiggi
+- Shannon Musgrave
+- Holly Vandegraft
+- Magaly Colon
+- Tiarra Edwards
+- Shelley Dawson
+- James Perry
+- Karen Waithe
+- Miguel Enriquez
+- Josue Marquez
+- Elisha Jacques
+- Maribel Roman
+- Damien Soulecai Fitzgerald
+- Rosalee Reyes-Chambers
+- Jacqueline Vazquez
+- Kelly
+
+# STOP (DND) Leads (6):
+- Kellie Thornton
+- Mario A Robles-Rosado
+- Kayleigh Bergeron
+- Rashid Thomas
+- Sonya Crapps
+- Lisa Sirabella

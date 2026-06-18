@@ -44,6 +44,10 @@ import {
   createTierDigestWebhookDispatcher,
   tierDigestDispatcherOptionsFromEnv,
 } from "./services/tier-digest-webhook.js";
+import {
+  createEconomicsDigestScheduler,
+  economicsDigestSchedulerConfigFromEnv,
+} from "./services/economics-digest-scheduler.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -679,6 +683,36 @@ export async function startServer(): Promise<StartedServer> {
       logger.error(
         { err: err instanceof Error ? err.message : String(err) },
         "tier-digest scheduler startup failed",
+      );
+    }
+
+    // ROC-570: Weekly economics digest -> OPS Slack webhook and Outlook draft.
+    try {
+      const econDigestSchedConfig = economicsDigestSchedulerConfigFromEnv();
+      if (econDigestSchedConfig.enabled) {
+        const companyRows = await db.select({ id: companies.id }).from(companies);
+        for (const company of companyRows) {
+          const scheduler = createEconomicsDigestScheduler({
+            db: db as any,
+            companyId: company.id,
+            dayOfWeek: econDigestSchedConfig.dayOfWeek,
+            hour: econDigestSchedConfig.hour,
+            minute: econDigestSchedConfig.minute,
+            timezone: econDigestSchedConfig.timezone,
+            slackWebhookUrl: process.env.PAPERCLIP_OPS_ECONOMICS_DIGEST_WEBHOOK_URL,
+          });
+          scheduler.start();
+        }
+      } else {
+        logger.info(
+          { enabled: false },
+          "economics-digest scheduler not started (disabled by config)",
+        );
+      }
+    } catch (err) {
+      logger.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "economics-digest scheduler startup failed",
       );
     }
   }
