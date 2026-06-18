@@ -1744,23 +1744,19 @@ export function issueRoutes(
     companyId: string,
     assignmentScope?: TaskAssignmentAuthorizationScope,
   ) {
-    const resource = {
-      type: "issue" as const,
-      companyId,
-      issueId: assignmentScope?.issueId ?? null,
-      projectId: assignmentScope?.projectId ?? null,
-      parentIssueId: assignmentScope?.parentIssueId ?? null,
-      assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
-      assigneeUserId: assignmentScope?.assigneeUserId ?? null,
-    };
-    await assertCompanyAccess(req, companyId, db, {
-      action: "tasks:assign",
-      resource,
-    });
+    await assertCompanyAccess(req, companyId, db);
     const decision = await access.decide({
       actor: req.actor,
       action: "tasks:assign",
-      resource,
+      resource: {
+        type: "issue",
+        companyId,
+        issueId: assignmentScope?.issueId ?? null,
+        projectId: assignmentScope?.projectId ?? null,
+        parentIssueId: assignmentScope?.parentIssueId ?? null,
+        assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
+        assigneeUserId: assignmentScope?.assigneeUserId ?? null,
+      },
       scope: assignmentScope ?? null,
     });
     if (decision.allowed) return;

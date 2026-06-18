@@ -1,13 +1,7 @@
 import type { Request } from "express";
 import type { Db } from "@paperclipai/db";
 import { forbidden, unauthorized } from "../errors.js";
-import { evaluateCrossCompanyGrant } from "../services/cross-company-grants.js";
-import type { AuthorizationAction, AuthorizationResource } from "../services/authorization.js";
-
-export type AssertCompanyAccessGrantContext = {
-  action: AuthorizationAction;
-  resource: AuthorizationResource;
-};
+import { crossCompanyGrantsEnabled } from "../services/cross-company-grants.js";
 
 export function assertAuthenticated(req: Request) {
   if (req.actor.type === "none") {
@@ -58,25 +52,19 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
-export async function assertCompanyAccess(
-  req: Request,
-  companyId: string,
-  db?: Db,
-  grantContext?: AssertCompanyAccessGrantContext,
-) {
+/** Cross-company agents must belong to the target company for routes without access.decide(). */
+export function assertSameCompanyAgent(req: Request, companyId: string) {
+  if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
+    throw forbidden("Agent key cannot access another company");
+  }
+}
+
+export async function assertCompanyAccess(req: Request, companyId: string, db?: Db) {
   assertAuthenticated(req);
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
-    if (db && req.actor.agentId && grantContext) {
-      const evaluation = await evaluateCrossCompanyGrant(db, {
-        granteeAgentId: req.actor.agentId,
-        targetCompanyId: companyId,
-        action: grantContext.action,
-        resource: grantContext.resource,
-      });
-      if (evaluation.allowed) {
-        return;
-      }
-      throw forbidden(evaluation.explanation);
+    if (crossCompanyGrantsEnabled() && db) {
+      // Tenant gate only — action/scope/budget enforcement lives in access.decide().
+      return;
     }
     throw forbidden("Agent key cannot access another company");
   }

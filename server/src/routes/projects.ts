@@ -15,7 +15,7 @@ import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
 import { conflict, forbidden } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, assertSameCompanyAgent, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -142,6 +142,7 @@ export function projectRoutes(db: Db) {
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyAccess(req, companyId, db);
+    assertSameCompanyAgent(req, companyId);
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
     };
@@ -215,6 +216,7 @@ export function projectRoutes(db: Db) {
       return;
     }
     await assertCompanyAccess(req, existing.companyId, db);
+    assertSameCompanyAgent(req, existing.companyId);
     const body = { ...req.body };
     assertNoAgentHostWorkspaceCommandMutation(
       req,
@@ -287,6 +289,7 @@ export function projectRoutes(db: Db) {
       return;
     }
     await assertCompanyAccess(req, existing.companyId, db);
+    assertSameCompanyAgent(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectWorkspaceCommandPaths(req.body),
@@ -329,6 +332,7 @@ export function projectRoutes(db: Db) {
         return;
       }
       await assertCompanyAccess(req, existing.companyId, db);
+      assertSameCompanyAgent(req, existing.companyId);
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectProjectWorkspaceCommandPaths(req.body),

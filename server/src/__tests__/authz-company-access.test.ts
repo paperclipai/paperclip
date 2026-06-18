@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess } from "../routes/authz.js";
+import { assertBoardOrgAccess, assertCompanyAccess, assertSameCompanyAgent, hasBoardOrgAccess } from "../routes/authz.js";
 
 function makeReq(input: {
   method?: string;
@@ -103,6 +103,75 @@ describe("assertCompanyAccess", () => {
     });
 
     await expect(assertCompanyAccess(req, "company-1")).resolves.toBeUndefined();
+  });
+
+  it("rejects cross-company agents when CCG is disabled", async () => {
+    const previousFlag = process.env.PAPERCLIP_CROSS_COMPANY_GRANTS;
+    delete process.env.PAPERCLIP_CROSS_COMPANY_GRANTS;
+
+    const req = makeReq({
+      actor: {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-home",
+      },
+    });
+
+    await expect(assertCompanyAccess(req, "company-target", {} as never)).rejects.toThrow(
+      "Agent key cannot access another company",
+    );
+
+    if (previousFlag === undefined) {
+      delete process.env.PAPERCLIP_CROSS_COMPANY_GRANTS;
+    } else {
+      process.env.PAPERCLIP_CROSS_COMPANY_GRANTS = previousFlag;
+    }
+  });
+
+  it("defers cross-company agents to access.decide when CCG is enabled", async () => {
+    const previousFlag = process.env.PAPERCLIP_CROSS_COMPANY_GRANTS;
+    process.env.PAPERCLIP_CROSS_COMPANY_GRANTS = "enabled";
+
+    const req = makeReq({
+      actor: {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-home",
+      },
+    });
+
+    await expect(assertCompanyAccess(req, "company-target", {} as never)).resolves.toBeUndefined();
+
+    if (previousFlag === undefined) {
+      delete process.env.PAPERCLIP_CROSS_COMPANY_GRANTS;
+    } else {
+      process.env.PAPERCLIP_CROSS_COMPANY_GRANTS = previousFlag;
+    }
+  });
+});
+
+describe("assertSameCompanyAgent", () => {
+  it("rejects cross-company agents even when CCG is enabled", () => {
+    const previousFlag = process.env.PAPERCLIP_CROSS_COMPANY_GRANTS;
+    process.env.PAPERCLIP_CROSS_COMPANY_GRANTS = "enabled";
+
+    const req = makeReq({
+      actor: {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-home",
+      },
+    });
+
+    expect(() => assertSameCompanyAgent(req, "company-target")).toThrow(
+      "Agent key cannot access another company",
+    );
+
+    if (previousFlag === undefined) {
+      delete process.env.PAPERCLIP_CROSS_COMPANY_GRANTS;
+    } else {
+      process.env.PAPERCLIP_CROSS_COMPANY_GRANTS = previousFlag;
+    }
   });
 });
 
