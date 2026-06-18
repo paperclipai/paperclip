@@ -51,7 +51,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "^0.31.4",
+    "@agentclientprotocol/claude-agent-acp": "^0.47.0",
     "@paperclipai/adapter-utils": "workspace:*",
     "@zed-industries/codex-acp": "^0.12.0",
     "acpx": "^0.6.1",
