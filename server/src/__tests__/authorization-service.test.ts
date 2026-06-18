@@ -935,7 +935,10 @@ describeEmbeddedPostgres("authorization service", () => {
       resource: { type: "issue", companyId: company.id, issueId: issue.id, assigneeAgentId: agentB.id },
     });
 
-    expect(decision).toMatchObject({ allowed: false });
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
   });
 
   it("allows self-mutation on own issue", async () => {

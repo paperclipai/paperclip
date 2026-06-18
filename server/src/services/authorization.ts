@@ -1170,7 +1170,7 @@ export function authorizationService(db: Db) {
           explanation: "Allowed because the issue has no agent assignee.",
         });
       }
-      if (resource?.assigneeAgentId && await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId)) {
+      if (await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId)) {
         return allow({
           action: input.action,
           reason: "allow_manager_chain",

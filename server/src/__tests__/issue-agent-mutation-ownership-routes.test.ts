@@ -1178,6 +1178,9 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "tasks:manage_active_checkouts" }),
+    );
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
@@ -1205,6 +1208,9 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "tasks:manage_active_checkouts" }),
+    );
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
@@ -1258,6 +1264,9 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Checking in on progress" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "tasks:manage_active_checkouts" }),
+    );
     expect(mockIssueService.addComment).toHaveBeenCalled();
   });
 });
