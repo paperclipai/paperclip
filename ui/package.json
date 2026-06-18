@@ -33,7 +33,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@lexical/link": "0.35.0",
-    "@mdxeditor/editor": "^3.52.4",
+    "@mdxeditor/editor": "^4.0.4",
     "@paperclipai/adapter-acpx-local": "workspace:*",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
