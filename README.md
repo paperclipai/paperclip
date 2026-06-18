@@ -27,7 +27,7 @@
 
 # Paperclip is the app people use to manage AI agents for work.
 
-Open-source orchestration for teams of AI agents.
+Open-source orchestration for teams of AI agents. **Pilot underway:** the `cursor_local` + `git_worktree` adapter integration is actively being validated, driven by the [DevEngineer](https://paperclip.ing) agent.
 
 **If OpenClaw is an _employee_, Paperclip is the _company_.**
 
