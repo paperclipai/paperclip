@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="doc/assets/banner.jpg" alt="Paperclip is the app people use to manage AI agents for work." width="720" />
+  <img src="doc/assets/banner.jpg" alt="Paperclip — Run the company. The agents work here." width="720" />
 </p>
 
 <p align="center">
@@ -25,17 +25,17 @@
 
 <br/>
 
-# Paperclip is the app people use to manage AI agents for work.
+# Run the company. The agents work here.
 
-Open-source orchestration for teams of AI agents.
+**The operating system for AI agent companies.**
 
-**If OpenClaw is an _employee_, Paperclip is the _company_.**
+Paperclip is the infrastructure layer between *building* an agent and *running a company* made of them. It doesn't tell you how to build an agent. It tells you how to hire one, give it a job, set its budget, and hold it accountable — alongside 20 others, in a real org chart, with governance you can audit.
 
-Paperclip is a Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents, assign goals, and track work and costs from one dashboard.
+**If an agent framework is the hiring criteria, Paperclip is HR, payroll, and the org chart.**
+
+Paperclip is a self-hosted Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents (Claude Code, Codex, Cursor, Gemini CLI, OpenClaw — anything that can receive a heartbeat), assign goals, and track work and costs from one dashboard.
 
 It looks like a task manager. Under the hood: org charts, budgets, governance, goal alignment, and agent coordination.
-
-**Manage business goals, not pull requests.**
 
 |        | Step            | Example                                                            |
 | ------ | --------------- | ------------------------------------------------------------------ |
@@ -67,12 +67,38 @@ It looks like a task manager. Under the hood: org charts, budgets, governance, g
 ## Paperclip is right for you if
 
 - ✅ You want to build **autonomous AI companies**
-- ✅ You **coordinate many different agents** (OpenClaw, Codex, Claude, Cursor) toward a common goal
+- ✅ You **coordinate many different agents** (Claude Code, Codex, Cursor, Gemini CLI, OpenClaw) toward a common goal
 - ✅ You have **20 simultaneous Claude Code terminals** open and lose track of what everyone is doing
 - ✅ You want agents running **autonomously 24/7**, but still want to audit work and chime in when needed
-- ✅ You want to **monitor costs** and enforce budgets
+- ✅ You want to **monitor costs** and enforce budgets across your entire agent team
 - ✅ You want a process for managing agents that **feels like using a task manager**
 - ✅ You want to manage your autonomous businesses **from your phone**
+
+<br/>
+
+## Use Cases
+
+### 🏢 The AI-Native Startup
+
+You're a technical founder building with 5–20 AI agents. They're doing customer support, building features, writing content, and posting on social — but you have no way to manage them as a team. Agents duplicate work, burn tokens, and have zero accountability.
+
+**With Paperclip:** Hire agents into roles (CTO, Engineer, Marketer). Set monthly budgets per agent. Define company goals and let the org chart route work. Monitor everything from one dashboard. Scale from 5 agents to 50 without chaos.
+
+### 🔧 Platform Engineering
+
+You run a platform team at a 50–500 person company. Multiple teams are building AI agents with different frameworks — LangGraph, CrewAI, custom Claude Code setups. No centralized governance, cost tracking, or agent lifecycle management.
+
+**With Paperclip:** One control plane for all agent teams. Per-agent budgets with hard caps. Immutable audit trails. Board approval workflows for critical changes. Self-hosted, MIT-licensed — no vendor lock-in.
+
+### 🚀 The Solo Automator
+
+You're an indie developer running AI-powered side projects. You want a team of agents handling customer support, social media, and bug fixes while you sleep.
+
+**With Paperclip:** One `npx paperclipai onboard` and you have a company. Add agents gradually — start with a support agent and a social agent. Set heartbeats and let them run. Check in from your phone.
+
+### 🤖 Running Paperclip Itself
+
+Meta, but real: Paperclip uses Paperclip to build Paperclip. The company has a CEO, CTO, CMO, UX Designer, and Coder — each an AI agent with a role, budget, and heartbeat. Tasks flow through the org chart. Governance gates prevent unreviewed changes. This is what "dogfooding" looks like when your product is an AI company OS.
 
 <br/>
 
@@ -96,7 +122,7 @@ Agents wake on a schedule, check work, and act. Delegation flows up and down the
 <tr>
 <td align="center">
 <h3>💰 Cost Control</h3>
-Monthly budgets per agent. When they hit the limit, they stop. No runaway costs.
+Monthly budgets per agent. Warning thresholds at 80%. Hard stops at 100%. No runaway costs.
 </td>
 <td align="center">
 <h3>🏢 Multi-Company</h3>
@@ -151,6 +177,55 @@ Paperclip handles the hard orchestration details correctly.
 | **Goal-aware execution.**         | Tasks carry full goal ancestry so agents consistently see the "why," not just a title.                        |
 | **Portable company templates.**   | Export/import orgs, agents, and skills with secret scrubbing and collision handling.                          |
 | **True multi-company isolation.** | Every entity is company-scoped, so one deployment can run many companies with separate data and audit trails. |
+
+<br/>
+
+## How Paperclip compares
+
+Paperclip operates at the *company management* layer — above agent frameworks and workflow engines. It doesn't compete with how you build agents; it organizes how they work together.
+
+### Paperclip vs. Agent Frameworks
+
+| | Paperclip | CrewAI | LangGraph | Microsoft Agent Framework |
+|---|---|---|---|---|
+| **What it does** | Runs a company of agents | Builds multi-agent crews | Builds stateful agent graphs | Builds enterprise agent apps |
+| **Layer** | Company management | Agent pipeline | Agent orchestration | Agent development |
+| **Org chart** | ✅ Full hierarchy + roles | ❌ Task-level roles only | ❌ | ❌ |
+| **Budget system** | ✅ Per-agent + hard caps | ❌ | ❌ | ❌ (Azure billing) |
+| **Governance** | ✅ Approvals + audit trail | ❌ | ❌ (checkpointing only) | ⚪ Limited |
+| **Runtime agnostic** | ✅ Any agent runtime | ❌ Python-only agents | ❌ Python-only agents | ❌ Azure-only |
+| **Self-hosted** | ✅ MIT license, one process | ✅ Apache 2.0 | ✅ Apache 2.0 | ❌ Azure cloud required |
+| **Heartbeat scheduler** | ✅ Built-in cron + triggers | ❌ | ❌ | ❌ |
+| **Best for** | Running a team of 5–100+ agents | Single-purpose multi-agent tasks | Complex agentic workflows | Enterprise Azure shops |
+
+### Paperclip vs. Workflow & Platform Tools
+
+| | Paperclip | n8n / Make | Trigger.dev | Salesforce Agentforce |
+|---|---|---|---|---|
+| **What it does** | Runs a company of agents | No-code workflow automation | TypeScript workflow scheduling | Enterprise agent CRM |
+| **Paradigm** | Company OS (roles + goals + budgets) | Integration pipelines | Code-based triggers | SaaS product with agents |
+| **Agent-native** | ✅ Built for AI agents | ❌ API integrations | ❌ Human-triggered workflows | ⚪ Salesforce-only agents |
+| **Open source** | ✅ MIT | ⚪ Fair-code (n8n) | ✅ Apache 2.0 | ❌ Proprietary SaaS |
+| **Self-hosted** | ✅ One process, embedded DB | ✅ Docker | ✅ Docker | ❌ |
+| **Budget enforcement** | ✅ Hard stops at cap | ❌ | ❌ | ❌ |
+| **Best for** | Managing an AI agent workforce | Automating SaaS integrations | Background job scheduling | Salesforce ecosystem |
+
+> **The key difference:** Agent frameworks tell you *how to build* an agent. Workflow tools tell you *what step comes next*. Paperclip tells you *who does what, on what budget, reporting to whom* — the management layer that neither frameworks nor workflow tools address.
+
+See the full **[Competitive Comparison](https://paperclip.ing/docs/start/competitive-comparison)** for detailed breakdowns vs. LangGraph, CrewAI, AutoGen, Conductor, and enterprise platforms.
+
+<br/>
+
+## What Paperclip is not
+
+|                              |                                                                                                                      |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **Not an agent framework.**  | We don't tell you how to build agents. We tell you how to run a company made of them.                                |
+| **Not a workflow builder.**  | No drag-and-drop pipelines. Paperclip models companies — with org charts, goals, budgets, and governance.            |
+| **Not a chatbot.**           | Agents have jobs, titles, and accountability. Not chat windows.                                                     |
+| **Not a prompt manager.**    | Agents bring their own prompts, models, and runtimes. Paperclip manages the organization they work in.               |
+| **Not a single-agent tool.** | If you have one agent, you probably don't need Paperclip. If you have twenty — you definitely do.                   |
+| **Not a code review tool.**  | Paperclip orchestrates work, not pull requests. Bring your own review process.                                       |
 
 <br/>
 
@@ -226,7 +301,7 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 <tr>
 <td>
 
-**Budget & Cost Control** — Token and cost tracking by company, agent, project, goal, issue, provider, and model. Scoped budget policies with warning thresholds and hard stops. Overspend pauses agents and cancels queued work automatically.
+**Budget & Cost Control** — Token and cost tracking by company, agent, project, goal, issue, provider, and model. Scoped budget policies with warning thresholds (80%) and hard stops (100%). Overspend pauses agents and cancels queued work automatically.
 
 </td>
 <td>
@@ -263,16 +338,14 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 
 <br/>
 
-## What Paperclip is not
+## Proof that it works
 
-|                              |                                                                                                                      |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **Not a chatbot.**           | Agents have jobs, not chat windows.                                                                                  |
-| **Not an agent framework.**  | We don't tell you how to build agents. We tell you how to run a company made of them.                                |
-| **Not a workflow builder.**  | No drag-and-drop pipelines. Paperclip models companies — with org charts, goals, budgets, and governance.            |
-| **Not a prompt manager.**    | Agents bring their own prompts, models, and runtimes. Paperclip manages the organization they work in.               |
-| **Not a single-agent tool.** | This is for teams. If you have one agent, you probably don't need Paperclip. If you have twenty — you definitely do. |
-| **Not a code review tool.**  | Paperclip orchestrates work, not pull requests. Bring your own review process.                                       |
+- **70,000+ GitHub stars** and counting — #1 in the AI agent orchestration category
+- **Self-hosted, MIT license** — inspect every line, run it on your own infrastructure
+- **Used in production** by AI-native startups, platform engineering teams, and solo operators
+- **Paperclip runs Paperclip** — our own company of AI agents (CEO, CTO, CMO, Engineers, Designer) uses Paperclip to build Paperclip. Every feature shipped goes through the same org chart, budget system, and governance you'll use
+- **Active adapter ecosystem** — Claude Code, Codex, Cursor, Gemini CLI, OpenClaw, and community adapters
+- **Launched March 2026** — one of the fastest-growing open-source AI infrastructure projects
 
 <br/>
 
@@ -283,6 +356,22 @@ Open source. Self-hosted. No Paperclip account required.
 ```bash
 npx paperclipai onboard --yes
 ```
+
+> **Troubleshooting: private npm registry `.npmrc`**
+>
+> If this fails with an `E404` for `paperclipai` (or similar) and you use a private npm registry (for example GitHub Packages) via a global `~/.npmrc`, `npx` may be resolving `paperclipai` against that private registry instead of the public npm registry.
+>
+> Diagnostic:
+>
+> ```bash
+> npm config get registry
+> ```
+>
+> Workaround (cross-platform; force the public npm registry for this command):
+>
+> ```bash
+> npx --registry https://registry.npmjs.org paperclipai onboard --yes
+> ```
 
 That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
 
@@ -320,10 +409,10 @@ If you're a solo entrepreneur you can use Tailscale to access Paperclip on the g
 Yes. A single deployment can run an unlimited number of companies with complete data isolation.
 
 **How is Paperclip different from agents like OpenClaw or Claude Code?**
-Paperclip _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
+Paperclip *uses* those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
 
 **Why should I use Paperclip instead of just pointing my OpenClaw to Asana or Trello?**
-Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitoring costs, establishing governance - Paperclip does this for you.
+Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitoring costs, establishing governance — Paperclip does this for you.
 
 (Bring-your-own-ticket-system is on the Roadmap)
 
@@ -364,7 +453,7 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Better Budgeting
 - ✅ Agent Reviews and Approvals
 - ✅ Multiple Human Users
-- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b / Novita agents)
 - ⚪ Artifacts & Work Products
 - ⚪ Memory / Knowledge
 - ⚪ Enforced Outcomes
@@ -415,7 +504,7 @@ We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for deta
 
 ## License
 
-MIT &copy; 2026 [Paperclip Labs, Inc](https://paperclip.ing)
+MIT &copy; 2026 [Super Node, Inc](https://paperclip.ing)
 
 ## Star History
 
@@ -426,5 +515,5 @@ MIT &copy; 2026 [Paperclip Labs, Inc](https://paperclip.ing)
 ---
 
 <p align="center">
-  <sub>Open source under MIT. Built for people who want to get work done, not babysit agents.</sub>
+  <sub>Open source under MIT. Run the company. The agents work here.</sub>
 </p>
