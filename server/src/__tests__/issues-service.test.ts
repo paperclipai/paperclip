@@ -2970,7 +2970,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(blockedRelations.blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
   });
 
-  it("exposes non-done child issues as blocked-by summaries for legacy blocked parents", async () => {
+  it("exposes active child issues as blocked-by summaries for legacy blocked parents", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -2982,6 +2982,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const parentId = randomUUID();
     const childId = randomUUID();
     const doneChildId = randomUUID();
+    const cancelledChildId = randomUUID();
     await db.insert(issues).values([
       {
         id: parentId,
@@ -3006,7 +3007,53 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         status: "done",
         priority: "low",
       },
+      {
+        id: cancelledChildId,
+        companyId,
+        parentId,
+        title: "Cancelled child",
+        status: "cancelled",
+        priority: "low",
+      },
     ]);
+
+    const parentRelations = await svc.getRelationSummaries(parentId);
+
+    expect(parentRelations.blockedBy.map((relation) => relation.id)).toEqual([childId]);
+  });
+
+  it("deduplicates child blockers that also have explicit blocked-by relations", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Legacy blocked parent",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: childId,
+        companyId,
+        parentId,
+        title: "Open child blocker",
+        status: "todo",
+        priority: "high",
+      },
+    ]);
+
+    await svc.update(parentId, {
+      blockedByIssueIds: [childId],
+    });
 
     const parentRelations = await svc.getRelationSummaries(parentId);
 

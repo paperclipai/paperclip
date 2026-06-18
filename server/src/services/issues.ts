@@ -1205,6 +1205,7 @@ function lowTrustBoundaryIssueCondition(
 }
 
 const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "cancelled"];
+const CHILD_DERIVED_BLOCKER_TERMINAL_STATUSES = ["done", "cancelled"];
 const BLOCKER_ATTENTION_MAX_DEPTH = 8;
 const BLOCKER_ATTENTION_MAX_NODES = 2000;
 const BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
@@ -1592,7 +1593,7 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
-            ne(issues.status, "done"),
+            notInArray(issues.status, CHILD_DERIVED_BLOCKER_TERMINAL_STATUSES),
           ),
         );
       const [explicitBlockerRows, childRows] = await Promise.all([
@@ -2133,6 +2134,7 @@ async function blockedByMapForIssues(
           eq(issueRelations.companyId, companyId),
           eq(issueRelations.type, "blocks"),
           inArray(issueRelations.relatedIssueId, issueIdChunk),
+          eq(issues.companyId, companyId),
         ),
       );
     const childRowsPromise = dbOrTx
@@ -2151,7 +2153,7 @@ async function blockedByMapForIssues(
         and(
           eq(issues.companyId, companyId),
           inArray(issues.parentId, issueIdChunk),
-          ne(issues.status, "done"),
+          notInArray(issues.status, CHILD_DERIVED_BLOCKER_TERMINAL_STATUSES),
         ),
       );
     const [explicitRows, childRows] = await Promise.all([explicitRowsPromise, childRowsPromise]);
@@ -3555,6 +3557,7 @@ export function issueService(db: Db) {
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+            eq(issues.companyId, companyId),
           ),
         ),
       dbOrTx
@@ -3573,7 +3576,7 @@ export function issueService(db: Db) {
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, uniqueIssueIds),
-            ne(issues.status, "done"),
+            notInArray(issues.status, CHILD_DERIVED_BLOCKER_TERMINAL_STATUSES),
           ),
         ),
       dbOrTx
@@ -3594,6 +3597,7 @@ export function issueService(db: Db) {
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.issueId, uniqueIssueIds),
+            eq(issues.companyId, companyId),
           ),
       ),
     ]);
