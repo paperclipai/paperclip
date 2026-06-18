@@ -357,8 +357,12 @@ function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<R
   };
 }
 
-function sanitizeSlugPart(value: string | null | undefined, fallback: string): string {
-  const raw = stripPaperclipIssueIdentifiers(value ?? "").trim().toLowerCase();
+function sanitizeSlugPart(
+  value: string | null | undefined,
+  fallback: string,
+  issueIdentifier?: string | null,
+): string {
+  const raw = stripPaperclipIssueIdentifiers(value ?? "", issueIdentifier).trim().toLowerCase();
   const normalized = raw
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/-+/g, "-")
@@ -366,15 +370,26 @@ function sanitizeSlugPart(value: string | null | undefined, fallback: string): s
   return normalized.length > 0 ? normalized : fallback;
 }
 
-function stripPaperclipIssueIdentifiers(value: string): string {
+function stripPaperclipIssueIdentifiers(value: string, issueIdentifier?: string | null): string {
+  const normalizedIdentifier = issueIdentifier?.trim().toUpperCase() ?? null;
   return value
     .split("/")
     .map((segment) => segment
-      .replace(/(^|[._-])[a-z][a-z0-9]{1,3}-\d+(?=$|[._-])/gi, "$1")
+      .replace(
+        normalizedIdentifier
+          ? new RegExp(`(^|[._-])${escapeRegExp(normalizedIdentifier)}(?=$|[._-])`, "gi")
+          : /$^/,
+        "$1",
+      )
+      .replace(/(^|[._-])[A-Z][A-Z0-9]{1,3}-\d+(?=$|[._-])/g, "$1")
       .replace(/[._-]{2,}/g, "-")
       .replace(/^[._-]+|[._-]+$/g, ""))
     .filter((segment) => segment.length > 0)
     .join("/");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function renderWorkspaceTemplate(template: string, input: {
@@ -384,7 +399,11 @@ function renderWorkspaceTemplate(template: string, input: {
   repoRef: string | null;
 }) {
   const issueIdentifier = input.issue?.identifier ?? input.issue?.id ?? "issue";
-  const slug = sanitizeSlugPart(input.issue?.title, sanitizeSlugPart(issueIdentifier, "issue"));
+  const slug = sanitizeSlugPart(
+    input.issue?.title,
+    sanitizeSlugPart(issueIdentifier, "issue", issueIdentifier),
+    issueIdentifier,
+  );
   return renderTemplate(template, {
     issue: {
       id: input.issue?.id ?? "",
@@ -405,8 +424,8 @@ function renderWorkspaceTemplate(template: string, input: {
   });
 }
 
-function sanitizeBranchName(value: string): string {
-  const sanitized = stripPaperclipIssueIdentifiers(value.trim())
+function sanitizeBranchName(value: string, issueIdentifier?: string | null): string {
+  const sanitized = stripPaperclipIssueIdentifiers(value.trim(), issueIdentifier)
     .split("/")
     .map((segment) => segment
       .replace(/[^A-Za-z0-9._-]+/g, "-")
@@ -1140,7 +1159,7 @@ export async function realizeExecutionWorkspace(input: {
     projectId: input.base.projectId,
     repoRef: input.base.repoRef,
   });
-  const branchName = sanitizeBranchName(renderedBranch);
+  const branchName = sanitizeBranchName(renderedBranch, input.issue?.identifier);
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)

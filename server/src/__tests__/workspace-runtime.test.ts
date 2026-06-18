@@ -804,6 +804,68 @@ describe("realizeExecutionWorkspace", () => {
     expect(path.basename(realized.cwd)).toBe("hotfix-rollout");
   });
 
+  it("preserves ordinary slug segments while stripping canonical issue identifiers", async () => {
+    const repoRoot = await createTempRepo();
+
+    const titledRealized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "feature/{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-template-preserve",
+        identifier: "PAP-994",
+        title: "Deploy hotfix may 2025 in 2024 for 1",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(titledRealized.branchName).toBe("feature/deploy-hotfix-may-2025-in-2024-for-1");
+
+    const canonicalRealized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "feature/{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-template-uppercase-strip",
+        identifier: "PAP-995",
+        title: "PAP-995 rollout apr 3 api 2",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(canonicalRealized.branchName).toBe("feature/rollout-apr-3-api-2");
+  });
+
   it("runs a configured provision command inside the derived worktree", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
