@@ -101,6 +101,8 @@ export async function buildCatalogManifest(
 ): Promise<BuildCatalogManifestResult> {
   const packageDir = path.resolve(options.packageDir);
   const packageJson = await readPackageJson(packageDir);
+  const existingManifest = await readExistingManifest(packageDir);
+  const existingSkillsById = new Map(existingManifest?.skills.map((skill) => [skill.id, skill]) ?? []);
   const errors: string[] = [];
   const candidates = await discoverSkillCandidates(packageDir, errors);
   const skills: CatalogSkill[] = [];
@@ -108,7 +110,12 @@ export async function buildCatalogManifest(
   collectCandidateUniquenessErrors(candidates, errors);
 
   for (const candidate of candidates) {
-    const skill = await buildCatalogSkill(packageDir, candidate, errors);
+    const skill = await buildCatalogSkill(
+      packageDir,
+      candidate,
+      errors,
+      existingSkillsById.get(skillIdForCandidate(candidate)) ?? null,
+    );
     if (skill) skills.push(skill);
   }
 
@@ -253,9 +260,10 @@ async function buildCatalogSkill(
   packageDir: string,
   candidate: SkillCandidate,
   errors: string[],
+  existingSkill: CatalogSkill | null,
 ): Promise<CatalogSkill | null> {
   if (candidate.source === "reference") {
-    return buildReferencedCatalogSkill(packageDir, candidate, errors);
+    return buildReferencedCatalogSkill(packageDir, candidate, errors, existingSkill);
   }
 
   const prefix = relativePackagePath(packageDir, candidate.absolutePath);
@@ -316,10 +324,15 @@ async function buildCatalogSkill(
   };
 }
 
+function skillIdForCandidate(candidate: BaseSkillCandidate) {
+  return `paperclipai:${candidate.kind}:${candidate.category}:${candidate.slug}`;
+}
+
 async function buildReferencedCatalogSkill(
   packageDir: string,
   candidate: Extract<SkillCandidate, { source: "reference" }>,
   errors: string[],
+  existingSkill: CatalogSkill | null,
 ): Promise<CatalogSkill | null> {
   const prefix = relativePackagePath(packageDir, candidate.absolutePath);
   validateSlug("category", candidate.category, prefix, errors);
@@ -332,10 +345,26 @@ async function buildReferencedCatalogSkill(
   const key = `paperclipai/${candidate.kind}/${candidate.category}/${candidate.slug}`;
   const source = buildCatalogSkillSource(descriptor.source, errors, `${prefix}/${CATALOG_REFERENCE_FILE}`);
   if (!source) return null;
+  const fallbackSkill = canReuseExistingReferencedSkill(
+    existingSkill,
+    candidate,
+    source,
+    toPosixPath(path.relative(packageDir, candidate.absolutePath)),
+  )
+    ? existingSkill
+    : null;
+  const errorStart = errors.length;
 
   const files = await collectReferencedSkillFiles(source, descriptor.files ?? [SKILL_ENTRYPOINT], prefix, errors);
   const skillMarkdown = await readReferencedFileText(source, SKILL_ENTRYPOINT, prefix, errors);
-  if (!skillMarkdown) return null;
+  if (!skillMarkdown) {
+    const nextErrors = errors.slice(errorStart);
+    if (fallbackSkill && canFallbackToExistingReferencedSkill(nextErrors)) {
+      errors.splice(errorStart, nextErrors.length);
+      return fallbackSkill;
+    }
+    return null;
+  }
 
   const parsed = parseFrontmatterMarkdown(skillMarkdown);
   if (!parsed.hasFrontmatter) {
@@ -366,7 +395,14 @@ async function buildReferencedCatalogSkill(
   if (!files.some((file) => file.path === SKILL_ENTRYPOINT && file.kind === "skill")) {
     errors.push(`${prefix} referenced inventory does not contain SKILL.md.`);
   }
-  if (!name || !description) return null;
+  if (!name || !description) {
+    const nextErrors = errors.slice(errorStart);
+    if (fallbackSkill && canFallbackToExistingReferencedSkill(nextErrors)) {
+      errors.splice(errorStart, nextErrors.length);
+      return fallbackSkill;
+    }
+    return null;
+  }
 
   return {
     id,
@@ -388,6 +424,50 @@ async function buildReferencedCatalogSkill(
     contentHash: buildContentHash(files),
     source,
   };
+}
+
+function canReuseExistingReferencedSkill(
+  existingSkill: CatalogSkill | null,
+  candidate: Extract<SkillCandidate, { source: "reference" }>,
+  source: CatalogSkillSource,
+  expectedPath: string,
+) {
+  if (!existingSkill || existingSkill.source?.type !== "github") return false;
+  const existingSource = existingSkill.source;
+  return (
+    existingSkill.id === skillIdForCandidate(candidate) &&
+    existingSkill.path === expectedPath &&
+    existingSource.hostname === source.hostname &&
+    existingSource.owner === source.owner &&
+    existingSource.repo === source.repo &&
+    existingSource.ref === source.ref &&
+    existingSource.commit === source.commit &&
+    existingSource.path === source.path
+  );
+}
+
+function canFallbackToExistingReferencedSkill(errors: string[]) {
+  if (errors.length === 0) return false;
+  const hasRecoverableFetchError = errors.some((error) => isRecoverableReferencedFetchError(error));
+  return (
+    hasRecoverableFetchError &&
+    errors.every((error) =>
+      isReferencedFetchError(error) ||
+      error.includes("referenced inventory does not contain SKILL.md."),
+    )
+  );
+}
+
+function isReferencedFetchError(error: string) {
+  return error.includes("failed to fetch GitHub tree:") || error.includes("failed to fetch pinned GitHub file:");
+}
+
+function isRecoverableReferencedFetchError(error: string) {
+  if (!isReferencedFetchError(error)) return false;
+  const statusMatch = /HTTP (\d+)/.exec(error);
+  if (!statusMatch) return true;
+  const status = Number(statusMatch[1]);
+  return status === 403 || status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 }
 
 async function readReferencedSkillDescriptor(
