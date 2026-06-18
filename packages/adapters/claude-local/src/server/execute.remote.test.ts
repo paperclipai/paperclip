@@ -88,8 +88,12 @@ describe("claude remote execution", () => {
     }
   });
 
-  it("uses the Paperclip run token for ccrotate Anthropic auth", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-ccrotate-auth-"));
+  it.each([
+    ["ccrotate path", "https://paperclip.blockcast.net/ccrotate"],
+    ["penstock path", "https://paperclip.blockcast.net/penstock"],
+    ["penstock host", "https://penstock.blockcast.net/v1"],
+  ])("uses the Paperclip run token for %s Anthropic auth", async (_label, anthropicBaseUrl) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-proxy-auth-"));
     cleanupDirs.push(rootDir);
     const previousAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
     const previousApiKey = process.env.ANTHROPIC_API_KEY;
@@ -115,7 +119,7 @@ describe("claude remote execution", () => {
         config: {
           command: "claude",
           env: {
-            ANTHROPIC_BASE_URL: "https://paperclip.blockcast.net/ccrotate",
+            ANTHROPIC_BASE_URL: anthropicBaseUrl,
           },
         },
         context: {
@@ -143,51 +147,56 @@ describe("claude remote execution", () => {
     expect(call?.[3].env.ANTHROPIC_API_KEY).toBe("paperclip-run-jwt");
   });
 
-  it("preserves explicit Anthropic auth when ccrotate auth is configured on the agent", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-explicit-auth-"));
-    cleanupDirs.push(rootDir);
+  it.each([
+    ["ccrotate", "https://paperclip.blockcast.net/ccrotate"],
+    ["penstock", "https://paperclip.blockcast.net/penstock"],
+  ])(
+    "preserves explicit Anthropic auth when %s auth is configured on the agent",
+    async (_label, anthropicBaseUrl) => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-explicit-auth-"));
+      cleanupDirs.push(rootDir);
 
-    await execute({
-      runId: "run-explicit-anthropic-auth",
-      agent: {
-        id: "agent-1",
-        companyId: "company-1",
-        name: "Claude Coder",
-        adapterType: "claude_local",
-        adapterConfig: {},
-      },
-      runtime: {
-        sessionId: null,
-        sessionParams: null,
-        sessionDisplayId: null,
-        taskKey: null,
-      },
-      config: {
-        command: "claude",
-        env: {
-          ANTHROPIC_BASE_URL: "https://paperclip.blockcast.net/ccrotate",
-          ANTHROPIC_AUTH_TOKEN: "explicit-auth-token",
-          ANTHROPIC_API_KEY: "explicit-api-key",
+      await execute({
+        runId: "run-explicit-anthropic-auth",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
         },
-      },
-      context: {
-        paperclipWorkspace: {
-          cwd: rootDir,
-          source: "project_primary",
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
         },
-      },
-      authToken: "paperclip-run-jwt",
-      onLog: async () => {},
+        config: {
+          command: "claude",
+          env: {
+            ANTHROPIC_BASE_URL: anthropicBaseUrl,
+            ANTHROPIC_AUTH_TOKEN: "explicit-auth-token",
+            ANTHROPIC_API_KEY: "explicit-api-key",
+          },
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: rootDir,
+            source: "project_primary",
+          },
+        },
+        authToken: "paperclip-run-jwt",
+        onLog: async () => {},
+      });
+
+      expect(runChildProcess).toHaveBeenCalledTimes(1);
+      const call = runChildProcess.mock.calls[0] as unknown as
+        | [string, string, string[], { env: Record<string, string> }]
+        | undefined;
+      expect(call?.[3].env.PAPERCLIP_API_KEY).toBe("paperclip-run-jwt");
+      expect(call?.[3].env.ANTHROPIC_AUTH_TOKEN).toBe("explicit-auth-token");
+      expect(call?.[3].env.ANTHROPIC_API_KEY).toBe("explicit-api-key");
     });
-
-    expect(runChildProcess).toHaveBeenCalledTimes(1);
-    const call = runChildProcess.mock.calls[0] as unknown as
-      | [string, string, string[], { env: Record<string, string> }]
-      | undefined;
-    expect(call?.[3].env.PAPERCLIP_API_KEY).toBe("paperclip-run-jwt");
-    expect(call?.[3].env.ANTHROPIC_AUTH_TOKEN).toBe("explicit-auth-token");
-    expect(call?.[3].env.ANTHROPIC_API_KEY).toBe("explicit-api-key");
-  });
 
   it("prepares the workspace, syncs Claude runtime assets, and restores workspace changes for remote SSH execution", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-"));
