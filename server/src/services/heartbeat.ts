@@ -4601,9 +4601,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     previousSessionParams: Record<string, unknown> | null,
     opts?: { useProjectWorkspace?: boolean | null },
   ): Promise<ResolvedWorkspaceForRun> {
-    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    let issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
+    // Fallback: wakes without explicit issue context (e.g. source=on_demand,
+    // timer) silently fall back to a per-agent non-git dir, which then
+    // breaks `realizeExecutionWorkspace` with `fatal: not a git repository`
+    // when workspaceStrategy is `git_worktree`. If the agent has open assigned
+    // work, bind to its most recently updated active assignment so the run
+    // resolves the project workspace and worktree correctly.
+    if (!issueId) {
+      const fallbackAssigned = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agent.id),
+          inArray(issues.status, ["in_progress", "in_review", "todo"]),
+        ))
+        .orderBy(desc(issues.updatedAt))
+        .limit(1);
+      if (fallbackAssigned.length > 0) {
+        issueId = fallbackAssigned[0].id;
+      }
+    }
     const issueProjectRef = issueId
       ? await db
           .select({
