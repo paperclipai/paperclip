@@ -169,25 +169,26 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function openUrl(url: string): boolean {
-  const platform = process.platform;
+function spawnDetached(command: string, args: string[]): boolean {
   try {
-    if (platform === "darwin") {
-      const child = spawn("open", [url], { detached: true, stdio: "ignore" });
-      child.unref();
-      return true;
-    }
-    if (platform === "win32") {
-      const child = spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" });
-      child.unref();
-      return true;
-    }
-    const child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    // A missing launcher (e.g. no xdg-open on a headless server) emits an
+    // asynchronous 'error' event rather than throwing. Without a handler that
+    // becomes an unhandled error and crashes the process before the auth poll
+    // loop runs, so swallow it — opening a browser is best-effort.
+    child.on("error", () => {});
     child.unref();
     return true;
   } catch {
     return false;
   }
+}
+
+export function openUrl(url: string): boolean {
+  const platform = process.platform;
+  if (platform === "darwin") return spawnDetached("open", [url]);
+  if (platform === "win32") return spawnDetached("cmd", ["/c", "start", "", url]);
+  return spawnDetached("xdg-open", [url]);
 }
 
 export async function loginBoardCli(params: {
