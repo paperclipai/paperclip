@@ -82,6 +82,14 @@ describe("Google Sheets MCP server protocol", () => {
     try {
       const list = await mcpClient.listTools();
       expect(list.tools.map((tool) => tool.name)).toEqual(expectedTools);
+      expect(list.tools.find((tool) => tool.name === "read_values")?.inputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          spreadsheetId: { type: "string" },
+          range: { type: "string" },
+        },
+        required: ["spreadsheetId", "range"],
+      });
       expect(list.tools.find((tool) => tool.name === "delete_rows")?.annotations).toMatchObject({
         readOnlyHint: false,
         destructiveHint: true,

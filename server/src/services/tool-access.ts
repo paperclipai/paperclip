@@ -136,6 +136,50 @@ export type McpToolDescriptor = {
   annotations?: Record<string, unknown>;
 };
 
+const GOOGLE_SHEETS_SPREADSHEET_SCHEMA = {
+  type: "object",
+  properties: {
+    spreadsheetId: { type: "string", minLength: 1 },
+  },
+  required: ["spreadsheetId"],
+};
+
+const GOOGLE_SHEETS_RANGE_SCHEMA = {
+  type: "object",
+  properties: {
+    spreadsheetId: { type: "string", minLength: 1 },
+    range: { type: "string", minLength: 1, maxLength: 500 },
+  },
+  required: ["spreadsheetId", "range"],
+};
+
+const GOOGLE_SHEETS_VALUE_ROWS_SCHEMA = {
+  type: "array",
+  minItems: 1,
+  items: {
+    type: "array",
+    items: {
+      anyOf: [
+        { type: "string" },
+        { type: "number" },
+        { type: "boolean" },
+        { type: "null" },
+      ],
+    },
+  },
+};
+
+const GOOGLE_SHEETS_WRITE_VALUES_SCHEMA = {
+  type: "object",
+  properties: {
+    spreadsheetId: { type: "string", minLength: 1 },
+    range: { type: "string", minLength: 1, maxLength: 500 },
+    values: GOOGLE_SHEETS_VALUE_ROWS_SCHEMA,
+    valueInputOption: { type: "string", enum: ["RAW", "USER_ENTERED"], default: "RAW" },
+  },
+  required: ["spreadsheetId", "range", "values"],
+};
+
 const APPROVED_STDIO_TEMPLATES: Record<string, {
   name: string;
   command?: string | null;
@@ -205,15 +249,88 @@ const APPROVED_STDIO_TEMPLATES: Record<string, {
       "GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS",
     ],
     tools: [
-      { name: "list_spreadsheets", description: "List connected spreadsheets.", annotations: { readOnlyHint: true } },
-      { name: "get_spreadsheet_info", description: "Get spreadsheet and tab details.", annotations: { readOnlyHint: true } },
-      { name: "read_values", description: "Read values from a sheet range.", annotations: { readOnlyHint: true } },
-      { name: "search_rows", description: "Search rows in a sheet range.", annotations: { readOnlyHint: true } },
-      { name: "append_rows", description: "Add rows to a sheet.", annotations: { readOnlyHint: false } },
-      { name: "update_values", description: "Update values in a sheet range.", annotations: { readOnlyHint: false } },
-      { name: "add_sheet_tab", description: "Add a tab to a spreadsheet.", annotations: { readOnlyHint: false } },
-      { name: "clear_values", description: "Clear values from a sheet range.", annotations: { destructiveHint: true } },
-      { name: "delete_rows", description: "Delete rows from a sheet.", annotations: { destructiveHint: true } },
+      {
+        name: "list_spreadsheets",
+        description: "List connected spreadsheets.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+      {
+        name: "get_spreadsheet_info",
+        description: "Get spreadsheet and tab details.",
+        inputSchema: GOOGLE_SHEETS_SPREADSHEET_SCHEMA,
+        annotations: { readOnlyHint: true },
+      },
+      {
+        name: "read_values",
+        description: "Read values from a sheet range.",
+        inputSchema: GOOGLE_SHEETS_RANGE_SCHEMA,
+        annotations: { readOnlyHint: true },
+      },
+      {
+        name: "search_rows",
+        description: "Search rows in a sheet range.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            spreadsheetId: { type: "string", minLength: 1 },
+            range: { type: "string", minLength: 1, maxLength: 500 },
+            query: { type: "string", minLength: 1 },
+            caseSensitive: { type: "boolean", default: false },
+            maxResults: { type: "integer", minimum: 1, maximum: 500, default: 50 },
+          },
+          required: ["spreadsheetId", "range", "query"],
+        },
+        annotations: { readOnlyHint: true },
+      },
+      {
+        name: "append_rows",
+        description: "Add rows to a sheet.",
+        inputSchema: GOOGLE_SHEETS_WRITE_VALUES_SCHEMA,
+        annotations: { readOnlyHint: false },
+      },
+      {
+        name: "update_values",
+        description: "Update values in a sheet range.",
+        inputSchema: GOOGLE_SHEETS_WRITE_VALUES_SCHEMA,
+        annotations: { readOnlyHint: false },
+      },
+      {
+        name: "add_sheet_tab",
+        description: "Add a tab to a spreadsheet.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            spreadsheetId: { type: "string", minLength: 1 },
+            title: { type: "string", minLength: 1, maxLength: 100 },
+            rowCount: { type: "integer", minimum: 1, maximum: 1000000 },
+            columnCount: { type: "integer", minimum: 1, maximum: 18278 },
+          },
+          required: ["spreadsheetId", "title"],
+        },
+        annotations: { readOnlyHint: false },
+      },
+      {
+        name: "clear_values",
+        description: "Clear values from a sheet range.",
+        inputSchema: GOOGLE_SHEETS_RANGE_SCHEMA,
+        annotations: { destructiveHint: true },
+      },
+      {
+        name: "delete_rows",
+        description: "Delete rows from a sheet.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            spreadsheetId: { type: "string", minLength: 1 },
+            sheetId: { type: "integer", minimum: 0 },
+            startIndex: { type: "integer", minimum: 0 },
+            endIndex: { type: "integer", minimum: 1 },
+          },
+          required: ["spreadsheetId", "sheetId", "startIndex", "endIndex"],
+        },
+        annotations: { destructiveHint: true },
+      },
     ],
   },
 };

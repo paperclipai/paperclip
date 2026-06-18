@@ -1894,6 +1894,47 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
   });
 
+  it("stores Google Sheets catalog input schemas from the approved stdio template", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    vi.stubEnv("GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON", JSON.stringify({
+      client_email: "robot@example.iam.gserviceaccount.com",
+    }));
+
+    const connect = await service.connectGalleryApp(company.id, {
+      galleryKey: "google-sheets",
+      name: "Company sheets",
+      configValues: { allowedSpreadsheetIds: ["sheet-with-inputs"] },
+    }, { actorType: "user", actorId: "board" });
+
+    expect(connect.catalog.find((entry) => entry.toolName === "read_values")?.inputSchema).toMatchObject({
+      type: "object",
+      properties: {
+        spreadsheetId: expect.objectContaining({ type: "string" }),
+        range: expect.objectContaining({ type: "string" }),
+      },
+      required: ["spreadsheetId", "range"],
+    });
+    expect(connect.catalog.find((entry) => entry.toolName === "append_rows")?.inputSchema).toMatchObject({
+      properties: {
+        spreadsheetId: expect.objectContaining({ type: "string" }),
+        range: expect.objectContaining({ type: "string" }),
+        values: expect.objectContaining({ type: "array" }),
+        valueInputOption: expect.objectContaining({ enum: ["RAW", "USER_ENTERED"] }),
+      },
+      required: ["spreadsheetId", "range", "values"],
+    });
+    expect(connect.catalog.find((entry) => entry.toolName === "delete_rows")?.inputSchema).toMatchObject({
+      properties: {
+        spreadsheetId: expect.objectContaining({ type: "string" }),
+        sheetId: expect.objectContaining({ type: "integer" }),
+        startIndex: expect.objectContaining({ type: "integer" }),
+        endIndex: expect.objectContaining({ type: "integer" }),
+      },
+      required: ["spreadsheetId", "sheetId", "startIndex", "endIndex"],
+    });
+  });
+
   it("rejects raw Google Sheets connection patches that claim another company's spreadsheet", async () => {
     const companyA = await createCompany(db);
     const companyB = await createCompany(db);
