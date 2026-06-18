@@ -2,6 +2,14 @@
 
 Use this reference when an issue has an isolated execution workspace and you need to inspect or run that workspace's services, especially for QA/browser verification.
 
+## Runtime Boundary
+
+Your shell commands run inside the agent adapter's current runtime environment. For local adapters, that may be the host. For managed, container, or sandbox adapters, it is the runtime container or remote sandbox attached to the execution workspace. Do not assume host-only binaries or sockets are present in that environment.
+
+Examples of tools that may exist on the Paperclip host but not inside an agent runtime include `docker`, `psql`, `redis-cli`, cloud provider CLIs, and local admin scripts. If a command fails with `[DATA UNAVAILABLE: command not found]`, treat it as a missing runtime dependency unless the adapter's environment test says otherwise.
+
+Prefer Paperclip APIs, runtime-service controls, exposed service URLs, MCP tools, or other network-native interfaces for external services. If a workflow truly needs a CLI, ask the operator to install it in the runtime image, mount it into the sandbox, or select an adapter runtime that already includes it.
+
 ## Discover the Workspace
 
 Start from the issue, not from memory:
