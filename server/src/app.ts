@@ -237,11 +237,6 @@ export async function createApp(
     process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
     ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
     ?? null;
-  api.use(toolAccessRoutes(db, {
-    deploymentMode: opts.deploymentMode,
-    deploymentExposure: opts.deploymentExposure,
-    trustedLocalStdioRuntimeHost,
-  }));
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
@@ -276,6 +271,12 @@ export async function createApp(
     trustedLocalStdioRuntimeHost,
   });
   app.use(mcpGatewayProtocolRoutes(toolGateway));
+  api.use(toolAccessRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+    toolGateway,
+  }));
   const jobCoordinator = createPluginJobCoordinator({
     db,
     lifecycle,

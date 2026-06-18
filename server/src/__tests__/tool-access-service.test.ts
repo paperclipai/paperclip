@@ -38,6 +38,7 @@ import {
 import { classifyRisk, toolAccessService } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";
+import { createToolGatewayService, type ToolGatewayService } from "../services/tool-gateway.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -90,7 +91,11 @@ function mockToolsList(tools: unknown[]) {
   );
 }
 
-function createRouteApp(db: ReturnType<typeof createDb>, actor?: Express.Request["actor"]) {
+function createRouteApp(
+  db: ReturnType<typeof createDb>,
+  actor?: Express.Request["actor"],
+  toolGateway?: ToolGatewayService,
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -104,7 +109,7 @@ function createRouteApp(db: ReturnType<typeof createDb>, actor?: Express.Request
     };
     next();
   });
-  app.use("/api", toolAccessRoutes(db));
+  app.use("/api", toolAccessRoutes(db, { toolGateway }));
   app.use(errorHandler);
   return app;
 }
@@ -126,6 +131,96 @@ function boardSessionActor(
     companyIds: [companyId],
     memberships: [{ companyId, membershipRole, status: "active" }],
   };
+}
+
+async function grantBoardUser(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  userId: string,
+  permissionKeys: string[],
+) {
+  await db.insert(companyMemberships).values({
+    companyId,
+    principalType: "user",
+    principalId: userId,
+    status: "active",
+    membershipRole: "operator",
+  });
+  if (permissionKeys.length > 0) {
+    await db.insert(principalPermissionGrants).values(permissionKeys.map((permissionKey) => ({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      permissionKey,
+      scope: null,
+      grantedByUserId: "owner",
+    })));
+  }
+}
+
+async function createAgent(db: ReturnType<typeof createDb>, companyId: string, status = "active") {
+  return db.insert(agents).values({
+    companyId,
+    name: `Test Agent ${randomUUID()}`,
+    role: "engineer",
+    status,
+    adapterType: "process",
+    adapterConfig: {},
+    runtimeConfig: {},
+  }).returning().then((rows) => rows[0]!);
+}
+
+async function createRemoteToolFixture(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  input: { riskLevel?: "read" | "write" | "destructive"; quarantined?: boolean } = {},
+) {
+  const [application] = await db.insert(toolApplications).values({
+    companyId,
+    applicationKey: `fixture-${randomUUID()}`,
+    name: `Fixture App ${randomUUID()}`,
+    type: "mcp_http",
+    status: "active",
+  }).returning();
+  const [connection] = await db.insert(toolConnections).values({
+    companyId,
+    applicationId: application!.id,
+    name: `Fixture Connection ${randomUUID()}`,
+    transport: "remote_http",
+    status: "active",
+    enabled: true,
+    config: { url: "https://fixture.example.test/mcp" },
+    transportConfig: { url: "https://fixture.example.test/mcp" },
+    healthStatus: "ok",
+  }).returning();
+  const riskLevel = input.riskLevel ?? "write";
+  const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+    companyId,
+    applicationId: application!.id,
+    connectionId: connection!.id,
+    entryKind: "tool",
+    name: `send_email-${randomUUID()}`,
+    toolName: "send_email",
+    title: "Send email",
+    description: "Send a fixture email.",
+    inputSchema: {
+      type: "object",
+      properties: { to: { type: "string" }, body: { type: "string" } },
+      required: ["to"],
+      additionalProperties: true,
+    },
+    annotations: { readOnlyHint: riskLevel === "read" },
+    riskLevel,
+    isReadOnly: riskLevel === "read",
+    isWrite: riskLevel === "write",
+    isDestructive: riskLevel === "destructive",
+    status: "active",
+    versionHash: randomUUID(),
+    schemaHash: randomUUID(),
+    quarantinedAt: input.quarantined ? new Date() : null,
+    quarantineReason: input.quarantined ? "pending_review" : null,
+  }).returning();
+  return { application: application!, connection: connection!, catalogEntry: catalogEntry! };
 }
 
 describeEmbeddedPostgres("tool access service", () => {
@@ -538,6 +633,241 @@ describeEmbeddedPostgres("tool access service", () => {
       profiles: [],
       allowedToolNames: [],
     });
+  });
+
+  it("lists testable agents with per-connection effective access summaries", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const actor = boardSessionActor(company.id, "operator", userId);
+    const agent = await createAgent(db, company.id);
+    await createAgent(db, company.id, "terminated");
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Allow test connection ${randomUUID()}`,
+      policyType: "allow",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+
+    const app = createRouteApp(db, actor, createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }));
+    const res = await request(app)
+      .get(`/api/tool-connections/${connection.id}/test-agents`)
+      .expect(200);
+
+    expect(res.body.agents).toHaveLength(1);
+    expect(res.body.agents[0]).toMatchObject({
+      id: agent.id,
+      effectiveAccess: {
+        connectionId: connection.id,
+        toolCount: 1,
+        allowedCount: 1,
+        askFirstCount: 0,
+        offCount: 0,
+      },
+    });
+  });
+
+  it("executes allowed test calls as a board user while attributing the selected agent", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Allow test call ${randomUUID()}`,
+      policyType: "allow",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mcpHttpResponse({
+      jsonrpc: "2.0",
+      id: "paperclip-tool-test",
+      result: { content: [{ type: "text", text: "sent" }] },
+    }));
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", userId),
+      createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }),
+    );
+
+    const res = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com", body: "hi" } })
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      decision: "allowed",
+      result: { data: expect.objectContaining({ isError: false, transport: "mcp_http" }) },
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
+    expect(invocation).toMatchObject({
+      actorType: "user",
+      actorId: userId,
+      agentId: agent.id,
+      runId: null,
+      status: "succeeded",
+    });
+    const audits = await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.companyId, company.id));
+    expect(audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actorType: "user",
+        actorId: userId,
+        action: "call_completed",
+        details: expect.objectContaining({ source: "test", agentId: agent.id, runId: null }),
+      }),
+    ]));
+  });
+
+  it("turns ask-first test calls into real pending action requests", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Ask first ${randomUUID()}`,
+      policyType: "require_approval",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", userId),
+      createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }),
+    );
+
+    const res = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com" } })
+      .expect(200);
+
+    expect(res.body).toMatchObject({ decision: "ask_first", actionRequestId: expect.any(String) });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [actionRequest] = await db
+      .select()
+      .from(toolActionRequests)
+      .where(eq(toolActionRequests.id, res.body.actionRequestId));
+    expect(actionRequest).toMatchObject({
+      companyId: company.id,
+      issueId: null,
+      status: "pending",
+      requestedByUserId: userId,
+      requestedByAgentId: null,
+    });
+    expect(actionRequest!.signedArguments).toBeTruthy();
+    const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.companyId, company.id));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        eventType: "approval_requested",
+        actionRequestId: actionRequest!.id,
+        metadata: expect.objectContaining({ source: "test" }),
+      }),
+    ]));
+  });
+
+  it("returns off for blocked test calls without executing the remote tool", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Block ${randomUUID()}`,
+      policyType: "block",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", userId),
+      createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }),
+    );
+
+    const res = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com" } })
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      decision: "off",
+      error: { reasonCode: "deny_policy_block" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
+    expect(invocation).toMatchObject({
+      status: "denied",
+      errorCode: "deny_policy_block",
+      actorType: "user",
+      actorId: userId,
+      agentId: agent.id,
+      runId: null,
+    });
+  });
+
+  it("denies test calls through agents the board user cannot task", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const unassignableAgent = await createAgent(db, company.id, "terminated");
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Allow denied impersonation fixture ${randomUUID()}`,
+      policyType: "allow",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", userId),
+      createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }),
+    );
+
+    await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: unassignableAgent.id, toolName: "send_email", parameters: { to: "a@example.com" } })
+      .expect(403);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id))).resolves.toHaveLength(0);
+  });
+
+  it("does not bypass quarantined catalog entries during test calls", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id, { quarantined: true });
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Allow quarantined fixture ${randomUUID()}`,
+      policyType: "allow",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", userId),
+      createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }),
+    );
+
+    const res = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com" } })
+      .expect(404);
+
+    expect(res.body).toMatchObject({ reasonCode: "tool_not_found" });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("summarizes profile index counts and restores archived profiles through update", async () => {

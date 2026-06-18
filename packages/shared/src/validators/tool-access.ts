@@ -590,6 +590,14 @@ export const createToolActionRequestSchema = z.object({
 
 export type CreateToolActionRequest = z.infer<typeof createToolActionRequestSchema>;
 
+export const toolConnectionTestCallSchema = z.object({
+  agentId: z.string().uuid(),
+  toolName: z.string().trim().min(1).max(240),
+  parameters: z.unknown().optional(),
+});
+
+export type ToolConnectionTestCallInput = z.infer<typeof toolConnectionTestCallSchema>;
+
 export const importMcpJsonSchema = z.object({
   mcpJson: z.union([z.string(), z.record(z.string(), z.unknown())]),
 });

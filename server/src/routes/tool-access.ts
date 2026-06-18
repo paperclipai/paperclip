@@ -1,10 +1,13 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
+import { agents } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   TOOL_APP_GALLERY,
   TOOL_ACTION_REQUEST_STATUSES,
   type DeploymentExposure,
   type DeploymentMode,
+  type PermissionKey,
   connectToolAppSchema,
   createToolStdioCommandTemplateSchema,
   createToolApplicationSchema,
@@ -25,6 +28,7 @@ import {
   revokeToolTrustRuleSchema,
   reorderToolPoliciesSchema,
   toolPolicyTestRequestSchema,
+  toolConnectionTestCallSchema,
   unbindToolProfileBindingSchema,
   updateToolApplicationSchema,
   updateToolConnectionSchema,
@@ -36,6 +40,7 @@ import { validate } from "../middleware/validate.js";
 import { getActorInfo, assertBoard, assertCompanyAccess } from "./authz.js";
 import { forbidden } from "../errors.js";
 import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
+import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 
 /** Allowlist (e.g. Google Sheets allowed spreadsheet ids) lives in connection config. */
 function allowlistIds(config: Record<string, unknown> | null | undefined): string[] {
@@ -75,6 +80,7 @@ export function toolAccessRoutes(
     deploymentMode?: DeploymentMode;
     deploymentExposure?: DeploymentExposure;
     trustedLocalStdioRuntimeHost?: string | null;
+    toolGateway?: ToolGatewayService;
   } = {},
 ) {
   const router = Router();
@@ -101,6 +107,49 @@ export function toolAccessRoutes(
     const userId = req.actor.userId;
     if (userId && await access.hasPermission(companyId, "user", userId, "tools:admin")) return;
     throw forbidden("Missing permission: tools:admin");
+  }
+
+  async function assertBoardAnyToolPermission(req: Request, companyId: string, permissionKeys: PermissionKey[]) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const userId = req.actor.userId;
+    if (userId) {
+      for (const permissionKey of permissionKeys) {
+        if (await access.hasPermission(companyId, "user", userId, permissionKey)) return;
+      }
+    }
+    throw forbidden(`Missing one of permissions: ${permissionKeys.join(", ")}`);
+  }
+
+  async function assertCanTestAsAgent(req: Request, companyId: string, agentId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId,
+        issueId: null,
+        projectId: null,
+        parentIssueId: null,
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+      },
+      scope: {
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+      },
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation);
+  }
+
+  function sendToolGatewayError(res: import("express").Response, error: unknown) {
+    if (error instanceof ToolGatewayHttpError) {
+      res.status(error.status).json({ error: error.message, reasonCode: error.reasonCode, ...error.details });
+      return true;
+    }
+    return false;
   }
 
   function assertToolAppMutationAccess(req: Request, companyId: string) {
@@ -418,6 +467,67 @@ export function toolAccessRoutes(
     const connection = await svc.getConnection(req.params.connectionId as string);
     assertCompanyAccess(req, connection.companyId);
     res.json(connection);
+  });
+
+  router.get("/tool-connections/:connectionId/test-agents", async (req, res) => {
+    assertBoard(req);
+    if (!options.toolGateway) {
+      res.status(501).json({ error: "Tool gateway service is not configured" });
+      return;
+    }
+    const connection = await svc.getConnection(req.params.connectionId as string);
+    await assertBoardAnyToolPermission(req, connection.companyId, ["tools:use", "tools:manage_connections"]);
+    const rows = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        role: agents.role,
+        title: agents.title,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, connection.companyId));
+    const candidates = [];
+    for (const agent of rows) {
+      try {
+        await assertCanTestAsAgent(req, connection.companyId, agent.id);
+      } catch {
+        continue;
+      }
+      candidates.push({
+        ...agent,
+        effectiveAccess: await options.toolGateway.summarizeConnectionAccessForAgent({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          agentId: agent.id,
+        }),
+      });
+    }
+    res.json({ agents: candidates });
+  });
+
+  router.post("/tool-connections/:connectionId/test-calls", validate(toolConnectionTestCallSchema), async (req, res) => {
+    assertBoard(req);
+    if (!options.toolGateway) {
+      res.status(501).json({ error: "Tool gateway service is not configured" });
+      return;
+    }
+    const connection = await svc.getConnection(req.params.connectionId as string);
+    await assertBoardAnyToolPermission(req, connection.companyId, ["tools:use", "tools:manage_connections"]);
+    await assertCanTestAsAgent(req, connection.companyId, req.body.agentId);
+    try {
+      const result = await options.toolGateway.executeTestCall({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        agentId: req.body.agentId,
+        userId: req.actor.userId ?? "board",
+        toolName: req.body.toolName,
+        parameters: req.body.parameters ?? {},
+      });
+      res.json(result);
+    } catch (error) {
+      if (!sendToolGatewayError(res, error)) throw error;
+    }
   });
 
   router.patch("/tool-connections/:connectionId", validate(updateToolConnectionSchema), async (req, res) => {

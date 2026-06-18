@@ -1333,6 +1333,7 @@ export {
   toolTrustRuleArgumentFiltersSchema,
   toolTrustRuleBatchApprovalSchema,
   toolTrustRuleScopeSchema,
+  toolConnectionTestCallSchema,
   toolPolicyTestRequestSchema,
   importMcpJsonSchema,
   createToolTrustRuleFromActionRequestSchema,

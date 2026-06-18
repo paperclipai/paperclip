@@ -594,6 +594,7 @@ export {
   toolTrustRuleArgumentFiltersSchema,
   toolTrustRuleBatchApprovalSchema,
   toolTrustRuleScopeSchema,
+  toolConnectionTestCallSchema,
   createToolTrustRuleFromActionRequestSchema,
   revokeToolTrustRuleSchema,
   toolPolicyTestRequestSchema,

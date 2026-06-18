@@ -177,6 +177,16 @@ interface ExecuteGatewayToolInput {
   callerHeaders?: Record<string, string | string[] | undefined>;
 }
 
+interface ExecuteTestCallInput {
+  companyId: string;
+  connectionId: string;
+  agentId: string;
+  userId: string;
+  toolName: string;
+  parameters?: unknown;
+  timeoutMs?: number;
+}
+
 interface ExecutePluginToolInput {
   actor: { type: "agent" | "board"; agentId?: string | null; companyId?: string | null; userId?: string | null; runId?: string | null };
   tool: string;
@@ -868,6 +878,11 @@ export function createToolGatewayService(
         providerMetadata,
       };
     });
+  }
+
+  async function connectedMcpToolsForConnection(companyId: string, connectionId: string): Promise<ToolGatewayDescriptor[]> {
+    return (await connectedMcpToolsForCompany(companyId))
+      .filter((tool) => tool.connectionId === connectionId);
   }
 
   async function assertAgentInCompany(companyId: string, agentId: string): Promise<void> {
@@ -3635,6 +3650,357 @@ export function createToolGatewayService(
           const { providerType: _providerType, risk: _risk, ...descriptor } = tool;
           return descriptor;
         });
+    },
+
+    async summarizeConnectionAccessForAgent(input: { companyId: string; connectionId: string; agentId: string }) {
+      await assertAgentInCompany(input.companyId, input.agentId);
+      const tools = await connectedMcpToolsForConnection(input.companyId, input.connectionId);
+      const decisions = await Promise.all(tools.map(async (tool) => {
+        const decision = await policyService.decide(policyInputForAgentTool({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          tool,
+        }));
+        const testDecision =
+          decision.decision === "require_approval"
+            ? "ask_first"
+            : decision.allowed
+              ? "allowed"
+              : "off";
+        return {
+          toolName: tool.upstreamToolName ?? tool.name,
+          gatewayToolName: tool.name,
+          displayName: tool.displayName,
+          risk: tool.risk,
+          decision: testDecision,
+          reasonCode: decision.reasonCode,
+          matchedPolicyIds: decision.matchedPolicyIds,
+        };
+      }));
+      return {
+        connectionId: input.connectionId,
+        toolCount: decisions.length,
+        allowedCount: decisions.filter((decision) => decision.decision === "allowed").length,
+        askFirstCount: decisions.filter((decision) => decision.decision === "ask_first").length,
+        offCount: decisions.filter((decision) => decision.decision === "off").length,
+        tools: decisions,
+      };
+    },
+
+    async executeTestCall(input: ExecuteTestCallInput) {
+      await assertAgentInCompany(input.companyId, input.agentId);
+      const session: ToolGatewaySession = {
+        id: "test-call",
+        token: "test-call",
+        companyId: input.companyId,
+        agentId: input.agentId,
+        runId: null,
+        issueId: null,
+        projectId: null,
+        actorType: "user",
+        actorId: input.userId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+      };
+      const tool = (await connectedMcpToolsForConnection(input.companyId, input.connectionId))
+        .find((candidate) =>
+          candidate.name === input.toolName
+          || candidate.upstreamToolName === input.toolName
+        );
+      if (!tool) {
+        throw new ToolGatewayHttpError(404, `Tool "${input.toolName}" not found`, "tool_not_found", {
+          connectionId: input.connectionId,
+          tool: input.toolName,
+        });
+      }
+
+      const requestedParameters = input.parameters ?? {};
+      const argumentValidation = validateToolContent({
+        value: requestedParameters,
+        direction: "arguments",
+        sensitiveMode: "redact",
+        promptInjectionMode: "ignore",
+      });
+      const decisionInput = policyInputForAgentTool({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        actorType: "user",
+        actorId: input.userId,
+        tool,
+        parameters: requestedParameters,
+        consumeRateLimit: true,
+      });
+      const accessDecision = await policyService.decide(decisionInput);
+      const recorded = await policyService.recordInvocation(decisionInput, accessDecision);
+      await policyService.writeAudit(decisionInput, accessDecision);
+      const invocationId = recorded.invocation.id;
+
+      if (accessDecision.decision === "require_approval") {
+        if (!recorded.actionRequest) {
+          throw new ToolGatewayHttpError(500, "Approval request was not created", "approval_request_missing", {
+            invocationId,
+            tool: tool.name,
+          });
+        }
+        const canonicalArguments = canonicalToolArguments(requestedParameters);
+        const canonicalArgumentsHash = argumentValidation.summary.sha256 ?? "";
+        const approvalSnapshot = await connectedRemoteApprovalSnapshot(session, tool, {
+          requireResolvedCredentials: true,
+        });
+        const signedArguments = signToolArguments({
+          invocationId,
+          toolName: tool.name,
+          canonicalArguments,
+          approvalSnapshot: approvalSnapshot ?? undefined,
+          signingSecret: options.toolActionSigningSecret,
+        });
+        const previewMarkdown = buildHumanizedActionPreview({ tool, argumentsSummary: argumentValidation.summary });
+        await db
+          .update(toolActionRequests)
+          .set({
+            canonicalArgumentsHash,
+            canonicalArgumentsSummary: argumentValidation.summary,
+            signedArguments,
+            previewMarkdown,
+            expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+            updatedAt: new Date(),
+          })
+          .where(eq(toolActionRequests.id, recorded.actionRequest.id));
+        await writeToolCallEvent({
+          invocationId,
+          actionRequestId: recorded.actionRequest.id,
+          session,
+          eventType: "approval_requested",
+          outcome: "pending",
+          toolName: tool.name,
+          policyDecision: "require_approval",
+          reasonCode: accessDecision.reasonCode,
+          argumentsSummary: argumentValidation.summary,
+          metadata: { source: "test", actionRequestId: recorded.actionRequest.id },
+          tool,
+        });
+        await writeAudit({
+          session,
+          companyId: input.companyId,
+          agentId: input.agentId,
+          runId: null,
+          issueId: null,
+          actorType: "user",
+          actorId: input.userId,
+          action: "tool_gateway.approval_requested",
+          details: {
+            source: "test",
+            invocationId,
+            actionRequestId: recorded.actionRequest.id,
+            decision: "require_approval",
+            reasonCode: accessDecision.reasonCode,
+            matchedPolicyIds: accessDecision.matchedPolicyIds,
+            tool: tool.name,
+            ...toolAuditMetadata(tool),
+            argumentsSummary: argumentValidation.summary,
+          },
+        });
+        return {
+          decision: "ask_first" as const,
+          invocationId,
+          actionRequestId: recorded.actionRequest.id,
+        };
+      }
+
+      if (!accessDecision.allowed) {
+        await writeAudit({
+          session,
+          companyId: input.companyId,
+          agentId: input.agentId,
+          runId: null,
+          issueId: null,
+          actorType: "user",
+          actorId: input.userId,
+          action: "tool_gateway.call_denied",
+          details: {
+            source: "test",
+            invocationId,
+            decision: accessDecision.decision,
+            reasonCode: accessDecision.reasonCode,
+            matchedPolicyIds: accessDecision.matchedPolicyIds,
+            tool: tool.name,
+            ...toolAuditMetadata(tool),
+            argumentsSummary: argumentValidation.summary,
+            rateLimitState: accessDecision.rateLimitState ?? null,
+          },
+        });
+        return {
+          decision: "off" as const,
+          invocationId,
+          error: {
+            message: accessDecision.explanation,
+            reasonCode: accessDecision.reasonCode,
+          },
+        };
+      }
+
+      await db
+        .update(toolInvocations)
+        .set({ status: "executing", startedAt: new Date(), updatedAt: new Date() })
+        .where(eq(toolInvocations.id, invocationId));
+      await writeAudit({
+        session,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        runId: null,
+        issueId: null,
+        actorType: "user",
+        actorId: input.userId,
+        action: "tool_gateway.call_allowed",
+        details: {
+          source: "test",
+          invocationId,
+          decision: "allow",
+          reasonCode: accessDecision.reasonCode,
+          matchedPolicyIds: accessDecision.matchedPolicyIds,
+          tool: tool.name,
+          ...toolAuditMetadata(tool),
+          argumentsSummary: argumentValidation.summary,
+        },
+      });
+
+      const startedAt = Date.now();
+      try {
+        const executionTimeoutMs = timeoutMs(input.timeoutMs);
+        const connectedMcpExecution =
+          tool.providerType === "mcp_remote_http"
+            ? await executeRemoteHttpTool(session, tool, requestedParameters, executionTimeoutMs, invocationId)
+            : tool.providerType === "mcp_local_stdio"
+              ? await executeLocalStdioTool(session, tool, requestedParameters, executionTimeoutMs)
+              : null;
+        if (!connectedMcpExecution) {
+          throw new ToolGatewayHttpError(404, `Tool "${input.toolName}" not found`, "tool_not_found", {
+            connectionId: input.connectionId,
+            tool: input.toolName,
+          });
+        }
+        const result = connectedMcpExecution.result;
+        const resultValidation = validateToolContent({
+          value: result,
+          direction: "result",
+          sensitiveMode: "redact",
+          promptInjectionMode: "block",
+        });
+        await db
+          .update(toolInvocations)
+          .set({
+            status: "succeeded",
+            resultHash: resultValidation.summary.sha256 ?? null,
+            resultSummary: resultValidation.summary,
+            resultSizeBytes: resultValidation.summary.sizeBytes ?? null,
+            completedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(toolInvocations.id, invocationId));
+        await writeToolCallEvent({
+          invocationId,
+          session,
+          eventType: "call_completed",
+          outcome: "success",
+          toolName: tool.name,
+          policyDecision: "allow",
+          reasonCode: "tool_completed",
+          argumentsSummary: argumentValidation.summary,
+          resultSummary: resultValidation.summary,
+          metadata: {
+            source: "test",
+            headerSummary: connectedMcpExecution.headerSummary ?? undefined,
+          },
+          tool,
+        });
+        await writeAudit({
+          session,
+          companyId: input.companyId,
+          agentId: input.agentId,
+          runId: null,
+          issueId: null,
+          actorType: "user",
+          actorId: input.userId,
+          action: "tool_gateway.call_completed",
+          details: {
+            source: "test",
+            invocationId,
+            decision: "allow",
+            reasonCode: "tool_completed",
+            tool: tool.name,
+            ...toolAuditMetadata(tool),
+            durationMs: Date.now() - startedAt,
+            result: summarizeResult(resultValidation.value),
+            resultSummary: resultValidation.summary,
+            headerSummary: connectedMcpExecution.headerSummary ?? undefined,
+          },
+        });
+        return {
+          decision: "allowed" as const,
+          invocationId,
+          result: resultValidation.value,
+        };
+      } catch (err) {
+        const status = err instanceof ToolGatewayHttpError ? err.status : 502;
+        const reasonCode =
+          err instanceof ToolContentValidationError
+            ? err.reasonCode
+            : err instanceof ToolGatewayHttpError
+              ? err.reasonCode
+              : "tool_execution_failed";
+        const message = err instanceof Error ? err.message : String(err);
+        await db
+          .update(toolInvocations)
+          .set({
+            status: status === 504 ? "timed_out" : status === 429 ? "rate_limited" : "failed",
+            errorCode: reasonCode,
+            errorMessage: message,
+            completedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(toolInvocations.id, invocationId));
+        await writeToolCallEvent({
+          invocationId,
+          session,
+          eventType: "call_failed",
+          outcome: status === 504 ? "timeout" : "failure",
+          toolName: tool.name,
+          policyDecision: status === 504 ? "defer_runtime" : "deny",
+          reasonCode,
+          argumentsSummary: argumentValidation.summary,
+          metadata: {
+            source: "test",
+            ...(err instanceof ToolContentValidationError ? { findings: err.findings } : {}),
+          },
+          tool,
+        });
+        await writeAudit({
+          session,
+          companyId: input.companyId,
+          agentId: input.agentId,
+          runId: null,
+          issueId: null,
+          actorType: "user",
+          actorId: input.userId,
+          action: status === 504 ? "tool_gateway.call_deferred" : "tool_gateway.call_failed",
+          details: {
+            source: "test",
+            invocationId,
+            decision: status === 504 ? "defer_runtime" : "deny",
+            reasonCode,
+            tool: tool.name,
+            ...toolAuditMetadata(tool),
+            argumentsSummary: argumentValidation.summary,
+            durationMs: Date.now() - startedAt,
+            error: message,
+          },
+        });
+        return {
+          decision: "allowed" as const,
+          invocationId,
+          error: { message, reasonCode },
+        };
+      }
     },
 
     async approveActionRequest(input: {
