@@ -7,6 +7,11 @@ import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
 export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
+// Minimum gap before the successful_run_missing_state detector may re-fire against
+// the same issue+cause when nothing new has happened on the source issue. Without
+// this, every fresh successful run mints a new source-run-scoped idempotency key and
+// trivially defeats deduplication, producing an indefinite recovery wake loop.
+export const DEFAULT_SUCCESSFUL_RUN_HANDOFF_COOLDOWN_MS = 30 * 60 * 1000;
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
@@ -45,7 +50,16 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
+  | "id"
+  | "companyId"
+  | "identifier"
+  | "title"
+  | "status"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "executionState"
+  | "monitorNextCheckAt"
+  | "monitorNotes"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -272,6 +286,37 @@ export async function findExistingFinishSuccessfulRunHandoffWake(
     .then((rows) => rows[0] ?? null);
 }
 
+// Matches a "wakeNotBefore: <ISO-8601 UTC>" annotation line in monitorNotes.
+const WAKE_NOT_BEFORE_PATTERN = /wakeNotBefore:\s*(\S+)/i;
+
+function readTimestampMs(value: Date | string | null | undefined): number | null {
+  if (value == null) return null;
+  const ms = value instanceof Date ? value.getTime() : Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+export function parseWakeNotBeforeMs(notes: string | null | undefined): number | null {
+  if (typeof notes !== "string") return null;
+  const match = notes.match(WAKE_NOT_BEFORE_PATTERN);
+  if (!match) return null;
+  return readTimestampMs(match[1]);
+}
+
+// The earliest time an issue has asked to be woken, derived from the first-class
+// monitorNextCheckAt column and/or a wakeNotBefore: annotation in monitorNotes.
+// Returns the latest of the two future signals, or null when neither is present.
+export function resolveScheduledWakeAtMs(input: {
+  monitorNextCheckAt: Date | string | null | undefined;
+  monitorNotes: string | null | undefined;
+}): number | null {
+  const candidates = [
+    readTimestampMs(input.monitorNextCheckAt),
+    parseWakeNotBeforeMs(input.monitorNotes),
+  ].filter((ms): ms is number => ms != null);
+  if (candidates.length === 0) return null;
+  return Math.max(...candidates);
+}
+
 function readRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -352,6 +397,14 @@ export function decideSuccessfulRunHandoff(input: {
   hasPauseHold: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
+  nowMs: number;
+  // createdAt (ms) of the most recent finish_successful_run_handoff wake already
+  // queued for this issue, across any source run; null when none exists.
+  recentHandoffWakeAtMs: number | null;
+  // True when the source issue gained a new human/board comment (or other fresh
+  // signal) after recentHandoffWakeAtMs, which should bypass the cooldown.
+  hasNewSignalSinceRecentHandoff: boolean;
+  handoffCooldownMs?: number;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
@@ -373,6 +426,13 @@ export function decideSuccessfulRunHandoff(input: {
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
+  const scheduledWakeAtMs = resolveScheduledWakeAtMs({
+    monitorNextCheckAt: issue.monitorNextCheckAt,
+    monitorNotes: issue.monitorNotes,
+  });
+  if (scheduledWakeAtMs != null && scheduledWakeAtMs > input.nowMs) {
+    return { kind: "skip", reason: "issue is sleeping until a scheduled wake time" };
+  }
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
   }
@@ -390,6 +450,14 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };
   if (input.idempotentWakeExists) {
     return { kind: "skip", reason: "corrective handoff wake already exists for this source run" };
+  }
+  const cooldownMs = input.handoffCooldownMs ?? DEFAULT_SUCCESSFUL_RUN_HANDOFF_COOLDOWN_MS;
+  if (
+    input.recentHandoffWakeAtMs != null &&
+    input.nowMs - input.recentHandoffWakeAtMs < cooldownMs &&
+    !input.hasNewSignalSinceRecentHandoff
+  ) {
+    return { kind: "skip", reason: "recent handoff wake within cooldown without new source signal" };
   }
 
   const instruction = buildSuccessfulRunHandoffInstruction({

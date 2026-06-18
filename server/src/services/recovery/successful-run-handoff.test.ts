@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_SUCCESSFUL_RUN_HANDOFF_COOLDOWN_MS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -11,7 +12,11 @@ import {
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
+  parseWakeNotBeforeMs,
+  resolveScheduledWakeAtMs,
 } from "./successful-run-handoff.js";
+
+const NOW_MS = Date.parse("2026-06-13T12:00:00.000Z");
 
 const run = {
   id: "run-1",
@@ -30,6 +35,8 @@ const issue = {
   assigneeAgentId: "agent-1",
   assigneeUserId: null,
   executionState: null,
+  monitorNextCheckAt: null,
+  monitorNotes: null,
 } as any;
 
 const agent = {
@@ -54,6 +61,9 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasPauseHold: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
+    nowMs: NOW_MS,
+    recentHandoffWakeAtMs: null,
+    hasNewSignalSinceRecentHandoff: false,
     ...overrides,
   });
 }
@@ -206,6 +216,75 @@ describe("successful run handoff decision", () => {
       issueId: "issue-1",
       sourceRunId: "run-1",
     })).toBe("finish_successful_run_handoff:issue-1:run-1:1");
+  });
+
+  it("does not wake an issue that is sleeping until a future monitorNextCheckAt", () => {
+    const future = new Date(NOW_MS + 6 * 60 * 60 * 1000).toISOString();
+    expect(decide({ issue: { ...issue, monitorNextCheckAt: future } as any })).toEqual({
+      kind: "skip",
+      reason: "issue is sleeping until a scheduled wake time",
+    });
+  });
+
+  it("does not wake an issue with a future wakeNotBefore annotation in monitorNotes", () => {
+    const future = new Date(NOW_MS + 30 * 60 * 1000).toISOString();
+    expect(decide({
+      issue: { ...issue, monitorNotes: `deferred check\nwakeNotBefore: ${future}\n` } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "issue is sleeping until a scheduled wake time",
+    });
+  });
+
+  it("still wakes once the scheduled wake time has passed", () => {
+    const past = new Date(NOW_MS - 60 * 1000).toISOString();
+    const decision = decide({
+      issue: { ...issue, monitorNextCheckAt: past, monitorNotes: `wakeNotBefore: ${past}` } as any,
+    });
+    expect(decision.kind).toBe("enqueue");
+  });
+
+  it("suppresses a re-fire within the cooldown when there is no new source signal", () => {
+    expect(decide({ recentHandoffWakeAtMs: NOW_MS - 5 * 60 * 1000 })).toEqual({
+      kind: "skip",
+      reason: "recent handoff wake within cooldown without new source signal",
+    });
+  });
+
+  it("re-fires within the cooldown when a new human/board signal arrived", () => {
+    const decision = decide({
+      recentHandoffWakeAtMs: NOW_MS - 5 * 60 * 1000,
+      hasNewSignalSinceRecentHandoff: true,
+    });
+    expect(decision.kind).toBe("enqueue");
+  });
+
+  it("re-fires once the cooldown window has elapsed", () => {
+    const decision = decide({
+      recentHandoffWakeAtMs: NOW_MS - (DEFAULT_SUCCESSFUL_RUN_HANDOFF_COOLDOWN_MS + 60 * 1000),
+    });
+    expect(decision.kind).toBe("enqueue");
+  });
+
+  it("parses wakeNotBefore annotations and ignores malformed ones", () => {
+    const iso = "2026-06-13T18:00:00.000Z";
+    expect(parseWakeNotBeforeMs(`wakeNotBefore: ${iso}`)).toBe(Date.parse(iso));
+    expect(parseWakeNotBeforeMs("WAKENOTBEFORE:   2026-06-13T18:00:00Z extra")).toBe(
+      Date.parse("2026-06-13T18:00:00Z"),
+    );
+    expect(parseWakeNotBeforeMs("wakeNotBefore: not-a-date")).toBeNull();
+    expect(parseWakeNotBeforeMs("no annotation here")).toBeNull();
+    expect(parseWakeNotBeforeMs(null)).toBeNull();
+  });
+
+  it("resolves the latest of monitorNextCheckAt and wakeNotBefore", () => {
+    const earlier = "2026-06-13T13:00:00.000Z";
+    const later = "2026-06-13T15:00:00.000Z";
+    expect(resolveScheduledWakeAtMs({
+      monitorNextCheckAt: new Date(earlier),
+      monitorNotes: `wakeNotBefore: ${later}`,
+    })).toBe(Date.parse(later));
+    expect(resolveScheduledWakeAtMs({ monitorNextCheckAt: null, monitorNotes: null })).toBeNull();
   });
 
   it("allows failed or cancelled corrective wakes to be retried", () => {

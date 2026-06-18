@@ -4963,6 +4963,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
+        monitorNotes: issues.monitorNotes,
         projectId: issues.projectId,
       })
       .from(issues)
@@ -4987,6 +4989,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       existingWake,
       budgetBlock,
       pauseHold,
+      recentHandoffWake,
+      latestUserComment,
     ] = await Promise.all([
       issue
         ? db
@@ -5112,7 +5116,57 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue
         ? treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id)
         : Promise.resolve(null),
+      // Most recent successful_run_missing_state handoff wake already queued for this
+      // issue across ANY source run — used to enforce the per-issue recovery cooldown.
+      issue
+        ? db
+          .select({ createdAt: agentWakeupRequests.createdAt })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.reason, FINISH_SUCCESSFUL_RUN_HANDOFF_REASON),
+              sql`(
+                ${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}
+                or ${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}
+                or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issue.id}
+                or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId' = ${issue.id}
+              )`,
+            ),
+          )
+          .orderBy(desc(agentWakeupRequests.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      // Most recent human/board (authorType = "user") comment on the issue — a fresh
+      // one after the last handoff wake bypasses the cooldown.
+      issue
+        ? db
+          .select({ createdAt: issueComments.createdAt })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, issue.companyId),
+              eq(issueComments.issueId, issue.id),
+              eq(issueComments.authorType, "user"),
+            ),
+          )
+          .orderBy(desc(issueComments.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
+
+    const recentHandoffWakeAtMs = recentHandoffWake?.createdAt
+      ? new Date(recentHandoffWake.createdAt).getTime()
+      : null;
+    const latestUserCommentAtMs = latestUserComment?.createdAt
+      ? new Date(latestUserComment.createdAt).getTime()
+      : null;
+    const hasNewSignalSinceRecentHandoff =
+      recentHandoffWakeAtMs != null &&
+      latestUserCommentAtMs != null &&
+      latestUserCommentAtMs > recentHandoffWakeAtMs;
 
     const decision = decideSuccessfulRunHandoff({
       run,
@@ -5129,6 +5183,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasPauseHold: Boolean(pauseHold),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
+      nowMs: Date.now(),
+      recentHandoffWakeAtMs,
+      hasNewSignalSinceRecentHandoff,
     });
 
     if (decision.kind !== "enqueue" || !issue) return;
