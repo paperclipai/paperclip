@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { environmentLeases, environments } from "@paperclipai/db";
 import {
@@ -235,7 +235,12 @@ export function environmentService(db: Db) {
         return toEnvironment(updated);
       }
 
-      const row = await db
+      // The partial unique index `environments_company_managed_sandbox_idx`
+      // (added in migration 0102) enforces "at most one Paperclip-managed
+      // sandbox row per company" at the DB level. Use ON CONFLICT DO NOTHING
+      // keyed on that index so concurrent callers can race the INSERT — only
+      // one succeeds; losers re-read the surviving row.
+      const inserted = await db
         .insert(environments)
         .values({
           companyId,
@@ -248,26 +253,18 @@ export function environmentService(db: Db) {
           createdAt: now,
           updatedAt: now,
         })
+        .onConflictDoNothing({
+          target: [environments.companyId],
+          where: sql`${environments.driver} = 'sandbox' AND (${environments.metadata} ->> 'managedByPaperclip')::boolean = true`,
+        })
         .returning()
         .then((rows) => rows[0] ?? null);
-      if (!row) {
-        throw new Error("Failed to ensure kubernetes environment");
-      }
+      if (inserted) return toEnvironment(inserted);
 
-      // Concurrency: the schema's (companyId, driver) unique index is partial
-      // on driver='local' only, so there is no DB constraint stopping two
-      // simultaneous callers (e.g. concurrent heartbeats lazily provisioning a
-      // new company) from both inserting a managed k8s row. Until a partial
-      // unique index on (companyId, driver) WHERE the managed marker exists is
-      // added via migration (the proper long-term fix), converge here: re-read,
-      // deterministically prefer the oldest managed row, and delete our own
-      // insert if it lost the race. Both racers compute the same winner, so
-      // duplicates self-heal instead of persisting.
       const winner = await db
         .select()
         .from(environments)
         .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
-        .orderBy(asc(environments.createdAt), asc(environments.id))
         .then(
           (rows) =>
             rows.find(
@@ -277,11 +274,10 @@ export function environmentService(db: Db) {
                 ] === true,
             ) ?? null,
         );
-      if (winner && winner.id !== row.id) {
-        await db.delete(environments).where(eq(environments.id, row.id));
-        return toEnvironment(winner);
+      if (!winner) {
+        throw new Error("Failed to ensure kubernetes environment");
       }
-      return toEnvironment(row);
+      return toEnvironment(winner);
     },
 
     /**

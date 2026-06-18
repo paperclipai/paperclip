@@ -719,15 +719,22 @@
     {
       "idx": 102,
       "version": "7",
-      "when": 1781490000001,
-      "tag": "0102_workspace_operations_issue_id",
+      "when": 1781490100000,
+      "tag": "0102_managed_sandbox_dedup_index",
       "breakpoints": true
     },
     {
       "idx": 103,
       "version": "7",
-      "when": 1781490000002,
-      "tag": "0103_routine_description_annotations",
+      "when": 1781490100001,
+      "tag": "0103_workspace_operations_issue_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1781490100002,
+      "tag": "0104_routine_description_annotations",
       "breakpoints": true
     }
   ]

@@ -454,6 +454,38 @@ describe("server adapter registry", () => {
     ]);
   });
 
+  it("does not duplicate spaced Hermes provider extraArgs", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          provider: "custom:paperclip-openai",
+          extraArgs: ["--provider", "custom:paperclip-openai"],
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.extraArgs).toEqual([
+      "--provider",
+      "custom:paperclip-openai",
+    ]);
+  });
+
   it("passes the original Hermes context through when authToken is absent", async () => {
     const adapter = requireServerAdapter("hermes_local");
     const ctx = {
