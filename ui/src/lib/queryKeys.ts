@@ -17,6 +17,8 @@ export const queryKeys = {
       ["tools", "connection", connectionId, "activity"] as const,
     testAgents: (connectionId: string) =>
       ["tools", "connection", connectionId, "test-agents"] as const,
+    testCallStatus: (connectionId: string, actionRequestId: string) =>
+      ["tools", "connection", connectionId, "test-calls", actionRequestId] as const,
     actionRequests: (companyId: string, status: string) =>
       ["tools", companyId, "action-requests", status] as const,
     profiles: (companyId: string) => ["tools", companyId, "profiles"] as const,

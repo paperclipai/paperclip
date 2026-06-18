@@ -825,6 +825,8 @@ export type {
   ToolConnectionTestAgent,
   ToolConnectionTestAgentsResponse,
   ToolConnectionTestCallResult,
+  ToolConnectionTestCallStatus,
+  ToolConnectionTestCallStatusPhase,
   ToolConnectionLifecycleEvent,
   ToolConnectionLifecycleEventType,
   ToolCredentialSecretRef,

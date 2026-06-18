@@ -345,6 +345,8 @@ export type {
   ToolConnectionTestAgent,
   ToolConnectionTestAgentsResponse,
   ToolConnectionTestCallResult,
+  ToolConnectionTestCallStatus,
+  ToolConnectionTestCallStatusPhase,
 } from "./tool-access.js";
 export type {
   IssueWorkProduct,

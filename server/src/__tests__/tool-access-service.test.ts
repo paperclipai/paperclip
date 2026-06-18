@@ -798,6 +798,168 @@ describeEmbeddedPostgres("tool access service", () => {
     ]));
   });
 
+  it("audits ask-first test calls with the real board actor and selected agent", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Ask first ${randomUUID()}`,
+      policyType: "require_approval",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", userId),
+      createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }),
+    );
+
+    const res = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com" } })
+      .expect(200);
+
+    const gatewayAudit = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, company.id), eq(activityLog.action, "tool_gateway.approval_requested")));
+    expect(gatewayAudit).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actorType: "user",
+        actorId: userId,
+        agentId: agent.id,
+        details: expect.objectContaining({
+          source: "test",
+          actionRequestId: res.body.actionRequestId,
+          invocationId: res.body.invocationId,
+        }),
+      }),
+    ]));
+
+    const dedicatedAudit = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.companyId, company.id));
+    expect(dedicatedAudit).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actorType: "user",
+        actorId: userId,
+        details: expect.objectContaining({
+          source: "test",
+          agentId: agent.id,
+          actionRequestId: res.body.actionRequestId,
+          runId: null,
+        }),
+      }),
+    ]));
+  });
+
+  it("drives an ask-first test call through its live lifecycle (waiting → approved/done with the real result)", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Ask first ${randomUUID()}`,
+      policyType: "require_approval",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const gateway = createToolGatewayService(db, { toolActionSigningSecret: "test-secret" });
+    const app = createRouteApp(db, boardSessionActor(company.id, "operator", userId), gateway);
+
+    // 1. Park the call as a pending action request.
+    const created = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com", body: "hi" } })
+      .expect(200);
+    const actionRequestId = created.body.actionRequestId as string;
+    expect(actionRequestId).toEqual(expect.any(String));
+
+    // 2. Status starts as "waiting" and surfaces the redacted "Where" snapshot.
+    const waiting = await request(app)
+      .get(`/api/tool-connections/${connection.id}/test-calls/${actionRequestId}`)
+      .expect(200);
+    expect(waiting.body).toMatchObject({ actionRequestId, phase: "waiting" });
+    expect(waiting.body.parameters).toHaveProperty("to");
+    expect(waiting.body.result).toBeUndefined();
+
+    // 3. Approving from the review queue is what runs the parked test call.
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mcpHttpResponse({
+      jsonrpc: "2.0",
+      id: "paperclip-tool-test",
+      result: { content: [{ type: "text", text: "sent" }] },
+    }));
+    await gateway.approveActionRequest({ companyId: company.id, actionRequestId, actor: { userId } });
+    expect(fetchMock).toHaveBeenCalled();
+
+    // 4. Status mutates into the completed result shape with the real response.
+    const done = await request(app)
+      .get(`/api/tool-connections/${connection.id}/test-calls/${actionRequestId}`)
+      .expect(200);
+    expect(done.body.phase).toBe("done");
+    expect(done.body.error).toBeUndefined();
+    expect(done.body.result).toBeDefined();
+    expect(typeof done.body.durationMs).toBe("number");
+
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
+    expect(invocation).toMatchObject({ status: "succeeded", approvalState: "approved" });
+  });
+
+  it("reports a denied ask-first test call as denied without running the tool", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Ask first ${randomUUID()}`,
+      policyType: "require_approval",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const gateway = createToolGatewayService(db, { toolActionSigningSecret: "test-secret" });
+    const app = createRouteApp(db, boardSessionActor(company.id, "operator", userId), gateway);
+
+    const created = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com" } })
+      .expect(200);
+    const actionRequestId = created.body.actionRequestId as string;
+
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    await gateway.declineActionRequest({ companyId: company.id, actionRequestId, actor: { userId } });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const denied = await request(app)
+      .get(`/api/tool-connections/${connection.id}/test-calls/${actionRequestId}`)
+      .expect(200);
+    expect(denied.body.phase).toBe("denied");
+    expect(denied.body.result).toBeUndefined();
+
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
+    expect(invocation).toMatchObject({ status: "awaiting_approval", approvalState: "rejected" });
+  });
+
+  it("404s a single-id test-call status fetch for a non-test-origin action request", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const gateway = createToolGatewayService(db, { toolActionSigningSecret: "test-secret" });
+    const app = createRouteApp(db, boardSessionActor(company.id, "operator", userId), gateway);
+
+    await request(app)
+      .get(`/api/tool-connections/${connection.id}/test-calls/${randomUUID()}`)
+      .expect(404);
+  });
+
   it("returns off for blocked test calls without executing the remote tool", async () => {
     const company = await createCompany(db);
     const userId = `tool-tester-${randomUUID()}`;
@@ -837,6 +999,66 @@ describeEmbeddedPostgres("tool access service", () => {
       agentId: agent.id,
       runId: null,
     });
+  });
+
+  it("audits blocked test calls with the real board actor and selected agent", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Block ${randomUUID()}`,
+      policyType: "block",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", userId),
+      createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }),
+    );
+
+    const res = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com" } })
+      .expect(200);
+
+    const gatewayAudit = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, company.id), eq(activityLog.action, "tool_gateway.call_denied")));
+    expect(gatewayAudit).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actorType: "user",
+        actorId: userId,
+        agentId: agent.id,
+        details: expect.objectContaining({
+          source: "test",
+          invocationId: res.body.invocationId,
+          reasonCode: "deny_policy_block",
+        }),
+      }),
+    ]));
+
+    const dedicatedAudit = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.companyId, company.id));
+    expect(dedicatedAudit).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actorType: "user",
+        actorId: userId,
+        action: "call_denied",
+        reasonCode: "deny_policy_block",
+        details: expect.objectContaining({
+          source: "test",
+          agentId: agent.id,
+          runId: null,
+        }),
+      }),
+    ]));
   });
 
   it("denies test calls through agents the board user cannot task", async () => {
@@ -1002,6 +1224,144 @@ describeEmbeddedPostgres("tool access service", () => {
       allowedToolNames: ["read_notes"],
     });
     expect(writeEntry).toBeDefined();
+  });
+
+  it("shows only the narrowest matching tier in effective agent previews", async () => {
+    const company = await createCompany(db);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: `Scoped Preview Agent ${randomUUID()}`,
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `preview-app-${randomUUID()}`,
+      name: "Preview app",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Preview connection",
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: { url: "https://fixture.example/mcp" },
+    }).returning();
+    await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      name: "send_email",
+      toolName: "send_email",
+      riskLevel: "write",
+      status: "active",
+      versionHash: randomUUID(),
+      schemaHash: randomUUID(),
+    });
+
+    const service = toolAccessService(db);
+    const [companyProfile, agentProfile] = await Promise.all([
+      service.createProfile(company.id, {
+        profileKey: `company-default-${randomUUID()}`,
+        name: "Company default",
+        defaultAction: "deny",
+        entries: [{ selectorType: "tool_name", effect: "include", toolName: "send_email" }],
+      }),
+      service.createProfile(company.id, {
+        profileKey: `agent-override-${randomUUID()}`,
+        name: "Agent override",
+        defaultAction: "deny",
+      }),
+    ]);
+    await service.bindProfile(companyProfile.id, { targetType: "company", targetId: company.id, priority: 100 }, { actorType: "user", actorId: "board" });
+    await service.bindProfile(agentProfile.id, { targetType: "agent", targetId: agent!.id, priority: 10 }, { actorType: "user", actorId: "board" });
+
+    const effective = await service.getEffectiveProfilesForAgent(company.id, agent!.id);
+
+    expect(effective.profiles.map((profile) => profile.id)).toEqual([agentProfile.id]);
+    expect(effective.bindings.map((binding) => `${binding.targetType}:${binding.targetId}`)).toEqual([`agent:${agent!.id}`]);
+    expect(effective.allowedTools).toEqual([]);
+    expect(effective.allowedToolNames).toEqual([]);
+  });
+
+  it("prefers agent-scoped allows over broader company defaults in previews", async () => {
+    const company = await createCompany(db);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: `Scoped Allow Agent ${randomUUID()}`,
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `allow-app-${randomUUID()}`,
+      name: "Allow app",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Allow connection",
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: { url: "https://fixture.example/mcp" },
+    }).returning();
+    await db.insert(toolCatalogEntries).values([
+      {
+        companyId: company.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        name: "read_notes",
+        toolName: "read_notes",
+        riskLevel: "read",
+        status: "active",
+        versionHash: randomUUID(),
+        schemaHash: randomUUID(),
+      },
+      {
+        companyId: company.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        name: "send_email",
+        toolName: "send_email",
+        riskLevel: "write",
+        status: "active",
+        versionHash: randomUUID(),
+        schemaHash: randomUUID(),
+      },
+    ]);
+
+    const service = toolAccessService(db);
+    const [companyProfile, agentProfile] = await Promise.all([
+      service.createProfile(company.id, {
+        profileKey: `company-read-${randomUUID()}`,
+        name: "Company read",
+        defaultAction: "deny",
+        entries: [{ selectorType: "tool_name", effect: "include", toolName: "read_notes" }],
+      }),
+      service.createProfile(company.id, {
+        profileKey: `agent-write-${randomUUID()}`,
+        name: "Agent write",
+        defaultAction: "deny",
+        entries: [{ selectorType: "tool_name", effect: "include", toolName: "send_email" }],
+      }),
+    ]);
+    await service.bindProfile(companyProfile.id, { targetType: "company", targetId: company.id, priority: 100 }, { actorType: "user", actorId: "board" });
+    await service.bindProfile(agentProfile.id, { targetType: "agent", targetId: agent!.id, priority: 10 }, { actorType: "user", actorId: "board" });
+
+    const effective = await service.getEffectiveProfilesForAgent(company.id, agent!.id);
+
+    expect(effective.profiles.map((profile) => profile.id)).toEqual([agentProfile.id]);
+    expect(effective.allowedToolNames).toEqual(["send_email"]);
   });
 
   it("duplicates profiles with entries and optional assignments", async () => {
@@ -3324,6 +3684,76 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("requires tools:manage_runtime for company-scoped runtime slot routes", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const userId = `runtime-operator-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    const actor = boardSessionActor(company.id, "operator", userId);
+    const app = createRouteApp(db, actor);
+    const connection = await service.createConnection(company.id, {
+      name: "Permissioned local fixture",
+      transport: "local_stdio",
+      config: { templateId: "paperclip.echo-calculator-time" },
+      enabled: true,
+      status: "active",
+    });
+    const health = await service.checkHealth(connection.id);
+    const slotId = health.runtimeSlot!.id;
+
+    await request(app).get(`/api/companies/${company.id}/tools/runtime-slots`).expect(403);
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/runtime-slots/${slotId}/restart`)
+      .send({})
+      .expect(403);
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/runtime-slots/${slotId}/stop`)
+      .send({})
+      .expect(403);
+
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      permissionKey: "tools:manage_runtime",
+      scope: null,
+      grantedByUserId: "owner",
+    });
+
+    const list = await request(app).get(`/api/companies/${company.id}/tools/runtime-slots`).expect(200);
+    expect(list.body.runtimeSlots).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: slotId, runtimeKind: "local_stdio" })]),
+    );
+
+    const restart = await request(app)
+      .post(`/api/companies/${company.id}/tools/runtime-slots/${slotId}/restart`)
+      .send({})
+      .expect(200);
+    expect(restart.body).toMatchObject({
+      id: slotId,
+      companyId: company.id,
+      runtimeKind: "local_stdio",
+      status: "running",
+    });
+
+    const stop = await request(app)
+      .post(`/api/companies/${company.id}/tools/runtime-slots/${slotId}/stop`)
+      .send({})
+      .expect(200);
+    expect(stop.body).toMatchObject({
+      id: slotId,
+      companyId: company.id,
+      runtimeKind: "local_stdio",
+      status: "stopped",
+    });
+  });
+
   it("updates tool applications through the board route and records activity", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -4185,6 +4615,58 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     expect(health.recommendations.find((alert) => alert.name === "mcp_runtime_audit_write_failures"))
       .toMatchObject({ status: "not_instrumented" });
+  });
+
+  it("does not degrade runtime health for draft or not-enabled setup connections", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db, { now: () => new Date("2026-06-06T00:00:00.000Z") });
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      name: "Setup apps",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    await db.insert(toolConnections).values([
+      {
+        companyId: company.id,
+        applicationId: application.id,
+        name: "Imported draft",
+        transport: "remote_http",
+        status: "draft",
+        enabled: false,
+        config: { url: "https://draft.example/mcp" },
+        transportConfig: { url: "https://draft.example/mcp" },
+        healthStatus: "missing_secret",
+        healthMessage: "Needs setup before first use.",
+      },
+      {
+        companyId: company.id,
+        applicationId: application.id,
+        name: "OAuth connected, not enabled",
+        transport: "remote_http",
+        status: "active",
+        enabled: false,
+        config: { url: "https://not-enabled.example/mcp" },
+        transportConfig: { url: "https://not-enabled.example/mcp" },
+        healthStatus: "missing_secret",
+        healthMessage: "Catalog access has not been enabled.",
+      },
+    ]);
+
+    const health = await service.getRuntimeHealth(company.id);
+
+    expect(health.status).toBe("ok");
+    expect(health.metrics).toMatchObject({
+      activeConnections: 0,
+      disabledConnections: 0,
+      degradedConnections: 0,
+    });
+    expect(health.alerts.map((alert) => alert.name)).not.toContain("mcp_runtime_connection_health_degraded");
+    expect(health.recommendations.find((alert) => alert.name === "mcp_runtime_connection_health_degraded"))
+      .toMatchObject({
+        status: "ok",
+        observed: "0 degraded connection(s), 0 disabled connection(s).",
+      });
   });
 
   it("rejects enabled local stdio connections in public hosted mode without a trusted runtime host", async () => {

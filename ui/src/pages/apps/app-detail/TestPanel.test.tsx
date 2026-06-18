@@ -10,11 +10,17 @@ import { TestPanel, errorHints } from "./TestPanel";
 
 const listTestAgentsMock = vi.hoisted(() => vi.fn());
 const runTestCallMock = vi.hoisted(() => vi.fn());
+const getTestCallStatusMock = vi.hoisted(() => vi.fn());
+const declineActionRequestMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listTestAgents: (connectionId: string) => listTestAgentsMock(connectionId),
     runTestCall: (connectionId: string, input: unknown) => runTestCallMock(connectionId, input),
+    getTestCallStatus: (connectionId: string, actionRequestId: string) =>
+      getTestCallStatusMock(connectionId, actionRequestId),
+    declineActionRequest: (companyId: string, actionRequestId: string) =>
+      declineActionRequestMock(companyId, actionRequestId),
   },
 }));
 
@@ -133,6 +139,9 @@ function agent(overrides: Record<string, unknown> = {}) {
       allowedCount: 1,
       askFirstCount: 1,
       offCount: 1,
+      lastChangedAt: null,
+      lastChangedByAgentId: null,
+      lastChangedByName: null,
       tools: [
         { toolName: "read_sheet", gatewayToolName: "gs__read_sheet", displayName: "Read a sheet", risk: "read", decision: "allowed", reasonCode: null, matchedPolicyIds: [] },
         { toolName: "append_row", gatewayToolName: "gs__append_row", displayName: "Append a row", risk: "write", decision: "ask_first", reasonCode: null, matchedPolicyIds: [] },
@@ -168,11 +177,14 @@ let container: HTMLDivElement;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let root: any;
 
-function renderPanel(active: ToolCatalogEntry[] = [readEntry, writeAskEntry, offEntry]) {
+function renderPanel(
+  active: ToolCatalogEntry[] = [readEntry, writeAskEntry, offEntry],
+  quarantined: ToolCatalogEntry[] = [],
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(
     <QueryClientProvider client={client}>
-      <TestPanel connectionId="conn-1" appName="Google Sheets" active={active} />
+      <TestPanel connectionId="conn-1" appName="Google Sheets" active={active} quarantined={quarantined} />
     </QueryClientProvider>,
   );
 }
@@ -183,7 +195,19 @@ beforeEach(() => {
   root = createRoot(container);
   listTestAgentsMock.mockReset();
   runTestCallMock.mockReset();
+  getTestCallStatusMock.mockReset();
+  declineActionRequestMock.mockReset();
   listTestAgentsMock.mockResolvedValue({ agents: [agent()] });
+  // Default ask-first polls report the request still waiting on approval.
+  getTestCallStatusMock.mockResolvedValue({
+    actionRequestId: "req-1",
+    invocationId: "inv-2",
+    phase: "waiting",
+    parameters: { spreadsheetId: "sheet-123" },
+    requestedAt: "2026-06-18T00:00:00.000Z",
+    resolvedAt: null,
+    durationMs: null,
+  });
 });
 
 afterEach(() => {
@@ -262,8 +286,90 @@ describe("TestPanel", () => {
 
     expect(container.textContent).toContain("Sent for your OK.");
     expect(container.textContent).toContain("Cancel this request");
+    // "Where" is populated from the polled action-request snapshot.
+    expect(container.textContent).toContain("spreadsheetId: sheet-123");
+    expect(container.textContent).toContain("Waiting ·");
     const reviewLink = [...container.querySelectorAll("a")].find((a) => a.textContent?.includes("Open Review tab"));
     expect(reviewLink?.getAttribute("href")).toBe("/apps/conn-1/review");
+  });
+
+  it("shows 'Approved · running' while an approved ask-first call is executing", async () => {
+    runTestCallMock.mockResolvedValue({ decision: "ask_first", invocationId: "inv-2", actionRequestId: "req-1" });
+    getTestCallStatusMock.mockResolvedValue({
+      actionRequestId: "req-1",
+      invocationId: "inv-2",
+      phase: "running",
+      parameters: { spreadsheetId: "sheet-123" },
+      requestedAt: "2026-06-18T00:00:00.000Z",
+      resolvedAt: "2026-06-18T00:00:05.000Z",
+      durationMs: null,
+    });
+    await act(async () => renderPanel());
+    await flushReact();
+
+    const trigger = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Append a row"));
+    await act(async () => trigger!.click());
+    await flushReact();
+    await fillFormField("sheet-123");
+    await clickByText("Run");
+    await settle();
+
+    expect(container.textContent).toContain("Approved · running");
+    // While running we don't offer cancel — the call is already on its way.
+    expect(container.textContent).not.toContain("Cancel this request");
+  });
+
+  it("mutates the ask-first card into the allowed result once approved and done", async () => {
+    runTestCallMock.mockResolvedValue({ decision: "ask_first", invocationId: "inv-2", actionRequestId: "req-1" });
+    getTestCallStatusMock.mockResolvedValue({
+      actionRequestId: "req-1",
+      invocationId: "inv-2",
+      phase: "done",
+      parameters: { spreadsheetId: "sheet-123" },
+      result: [{ name: "Acme", stage: "Demo" }],
+      requestedAt: "2026-06-18T00:00:00.000Z",
+      resolvedAt: "2026-06-18T00:00:05.000Z",
+      durationMs: 1200,
+    });
+    await act(async () => renderPanel());
+    await flushReact();
+
+    const trigger = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Append a row"));
+    await act(async () => trigger!.click());
+    await flushReact();
+    await fillFormField("sheet-123");
+    await clickByText("Run");
+    await settle();
+
+    // No longer the pending card — the real response is shown without re-running.
+    expect(container.textContent).not.toContain("Sent for your OK.");
+    expect(container.textContent).toContain("Worked.");
+    expect(container.textContent).toContain("1.2s");
+  });
+
+  it("shows the denied status when an ask-first call is declined in Review", async () => {
+    runTestCallMock.mockResolvedValue({ decision: "ask_first", invocationId: "inv-2", actionRequestId: "req-1" });
+    getTestCallStatusMock.mockResolvedValue({
+      actionRequestId: "req-1",
+      invocationId: "inv-2",
+      phase: "denied",
+      parameters: { spreadsheetId: "sheet-123" },
+      requestedAt: "2026-06-18T00:00:00.000Z",
+      resolvedAt: "2026-06-18T00:00:05.000Z",
+      durationMs: null,
+    });
+    await act(async () => renderPanel());
+    await flushReact();
+
+    const trigger = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Append a row"));
+    await act(async () => trigger!.click());
+    await flushReact();
+    await fillFormField("sheet-123");
+    await clickByText("Run");
+    await settle();
+
+    expect(container.textContent).toContain("Denied — see Review for why");
+    expect(container.textContent).not.toContain("Cancel this request");
   });
 
   it("explains an off action and links to Permissions without calling the API", async () => {
@@ -279,6 +385,54 @@ describe("TestPanel", () => {
     expect(permLink).toBeTruthy();
     // No Run button is offered for an off action.
     expect([...container.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Run")).toBe(false);
+    expect(runTestCallMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the 'Last changed by' audit hint when the access summary carries one", async () => {
+    listTestAgentsMock.mockResolvedValue({
+      agents: [
+        agent({
+          effectiveAccess: {
+            ...agent().effectiveAccess,
+            lastChangedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+            lastChangedByAgentId: "agent-admin",
+            lastChangedByName: "Dotta",
+          },
+        }),
+      ],
+    });
+    await act(async () => renderPanel());
+    await flushReact();
+
+    const trigger = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Delete a row"));
+    await act(async () => trigger!.click());
+    await flushReact();
+
+    expect(container.textContent).toContain("Last changed by Dotta");
+  });
+
+  it("surfaces quarantined actions in a 'New' group with the not-yet-on explanation", async () => {
+    const quarantinedEntry = catalogEntry({
+      id: "catalog-new",
+      toolName: "rename_sheet",
+      title: "Rename a sheet",
+      description: "Change a sheet's name.",
+      isReadOnly: false,
+      isWrite: true,
+      riskLevel: "write",
+      status: "quarantined",
+    });
+    await act(async () => renderPanel([readEntry, writeAskEntry, offEntry], [quarantinedEntry]));
+    await flushReact();
+
+    expect(container.textContent).toContain("New (1)");
+
+    const trigger = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Rename a sheet"));
+    expect(trigger).toBeTruthy();
+    await act(async () => trigger!.click());
+    await flushReact();
+
+    expect(container.textContent).toContain("This action is new and hasn't been turned on yet.");
     expect(runTestCallMock).not.toHaveBeenCalled();
   });
 });

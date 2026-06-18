@@ -17,6 +17,7 @@ import type {
   ToolConnectionAccessSummary,
   ToolConnectionTestAgent,
   ToolConnectionTestCallResult,
+  ToolConnectionTestCallStatus,
   ToolConnectionTestDecision,
 } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
@@ -842,7 +843,7 @@ function ResultPanel({
 }) {
   const { result } = outcome;
   if (result.decision === "ask_first") {
-    return <AskFirstResult outcome={outcome} entry={entry} connectionId={connectionId} />;
+    return <AskFirstResult outcome={outcome} entry={entry} appName={appName} connectionId={connectionId} />;
   }
   if (result.decision === "off") {
     return (
@@ -1073,21 +1074,55 @@ function ErrorResult({
   );
 }
 
-// --- Ask first (T9) — static shape; live transitions tracked in follow-up --
+// --- Ask first (T9) — live status polled from the action-request snapshot ---
+
+/** Phases that have settled — once reached, the panel stops polling. */
+const TERMINAL_PHASES: ReadonlySet<ToolConnectionTestCallStatus["phase"]> = new Set([
+  "done",
+  "denied",
+  "cancelled",
+  "expired",
+]);
+
+/** Compact "Where" line from the redacted parameter snapshot: `key: value` pairs. */
+function formatWhere(parameters: Record<string, unknown> | null | undefined): string | null {
+  if (!parameters) return null;
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(parameters)) {
+    if (value === null || value === undefined) continue;
+    if (typeof value === "object") continue;
+    parts.push(`${key}: ${String(value)}`);
+    if (parts.length >= 3) break;
+  }
+  return parts.length ? parts.join(" · ") : null;
+}
 
 function AskFirstResult({
   outcome,
   entry,
+  appName,
   connectionId,
 }: {
   outcome: RunOutcome;
   entry: ToolCatalogEntry;
+  appName: string;
   connectionId: string;
 }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const actionRequestId = outcome.result.actionRequestId;
   const [cancelled, setCancelled] = useState(false);
+
+  const statusQuery = useQuery({
+    queryKey: queryKeys.tools.testCallStatus(connectionId, actionRequestId ?? "__none__"),
+    queryFn: () => toolsApi.getTestCallStatus(connectionId, actionRequestId!),
+    enabled: !!actionRequestId && !cancelled,
+    // Poll until the request settles (approved+done, denied, cancelled, expired).
+    refetchInterval: (query) => {
+      const phase = query.state.data?.phase;
+      return phase && TERMINAL_PHASES.has(phase) ? false : 2000;
+    },
+  });
 
   const cancel = useMutation({
     mutationFn: () => toolsApi.declineActionRequest(selectedCompanyId!, actionRequestId!),
@@ -1098,10 +1133,43 @@ function AskFirstResult({
     },
   });
 
-  // "Where" isn't echoed back by the test-call response; the live follow-up
-  // panel will surface it from the action-request snapshot.
-  const where: string | null = null;
-  const statusLabel = cancelled ? "Cancelled" : `Waiting · ${relTime(outcome.ranAt)}`;
+  const status = statusQuery.data;
+  const phase: ToolConnectionTestCallStatus["phase"] = cancelled ? "cancelled" : status?.phase ?? "waiting";
+
+  // Once the call has been approved and run, mutate into the real result shape
+  // so the tester sees the response (or failure) without re-running.
+  if (phase === "done" && status) {
+    if (status.error) {
+      const errorOutcome: RunOutcome = {
+        result: { decision: "allowed", invocationId: status.invocationId, error: status.error },
+        agentName: outcome.agentName,
+        durationMs: status.durationMs ?? outcome.durationMs,
+        ranAt: status.resolvedAt ? new Date(status.resolvedAt) : outcome.ranAt,
+      };
+      return <ErrorResult outcome={errorOutcome} appName={appName} connectionId={connectionId} />;
+    }
+    const allowedOutcome: RunOutcome = {
+      result: { decision: "allowed", invocationId: status.invocationId, result: status.result },
+      agentName: outcome.agentName,
+      durationMs: status.durationMs ?? outcome.durationMs,
+      ranAt: status.resolvedAt ? new Date(status.resolvedAt) : outcome.ranAt,
+    };
+    return <AllowedResult outcome={allowedOutcome} entry={entry} appName={appName} connectionId={connectionId} />;
+  }
+
+  const requestedAt = status?.requestedAt ? new Date(status.requestedAt) : outcome.ranAt;
+  const where = formatWhere(status?.parameters);
+  const statusLabel =
+    phase === "running"
+      ? "Approved · running"
+      : phase === "denied"
+        ? "Denied — see Review for why"
+        : phase === "cancelled"
+          ? "Cancelled"
+          : phase === "expired"
+            ? "Expired — send it again"
+            : `Waiting · ${relTime(requestedAt)}`;
+  const settled = phase === "denied" || phase === "cancelled" || phase === "expired";
 
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
@@ -1119,16 +1187,19 @@ function AskFirstResult({
         {where && (
           <div className="flex gap-3">
             <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Where</dt>
-            <dd className="text-foreground">{where}</dd>
+            <dd className="break-words text-foreground">{where}</dd>
           </div>
         )}
         <div className="flex gap-3">
           <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</dt>
-          <dd className={cn("text-foreground", cancelled && "text-muted-foreground")}>{statusLabel}</dd>
+          <dd className={cn("flex items-center gap-1.5 text-foreground", settled && "text-muted-foreground")}>
+            {phase === "running" && <Loader2 className="h-3 w-3 animate-spin" />}
+            {statusLabel}
+          </dd>
         </div>
       </dl>
 
-      {!cancelled && (
+      {!settled && (
         <p className="mt-3 text-sm text-foreground">
           Approve it in the{" "}
           <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "review")}>
@@ -1142,7 +1213,7 @@ function AskFirstResult({
         <Button asChild size="sm" variant="outline">
           <Link to={appTabHref(connectionId, "review")}>Open Review tab</Link>
         </Button>
-        {!cancelled && actionRequestId && selectedCompanyId && (
+        {phase === "waiting" && actionRequestId && selectedCompanyId && (
           <Button size="sm" variant="ghost" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
             {cancel.isPending ? "Cancelling…" : "Cancel this request"}
           </Button>

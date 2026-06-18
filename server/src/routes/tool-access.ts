@@ -100,13 +100,13 @@ export function toolAccessRoutes(
   }
   const access = accessService(db);
 
-  async function assertToolsAdmin(req: Request, companyId: string) {
+  async function assertBoardToolPermission(req: Request, companyId: string, permissionKey: PermissionKey) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     const userId = req.actor.userId;
-    if (userId && await access.hasPermission(companyId, "user", userId, "tools:admin")) return;
-    throw forbidden("Missing permission: tools:admin");
+    if (userId && await access.hasPermission(companyId, "user", userId, permissionKey)) return;
+    throw forbidden(`Missing permission: ${permissionKey}`);
   }
 
   async function assertBoardAnyToolPermission(req: Request, companyId: string, permissionKeys: PermissionKey[]) {
@@ -150,6 +150,14 @@ export function toolAccessRoutes(
       return true;
     }
     return false;
+  }
+
+  async function assertToolsAdmin(req: Request, companyId: string) {
+    await assertBoardToolPermission(req, companyId, "tools:admin");
+  }
+
+  async function assertToolsRuntimeManage(req: Request, companyId: string) {
+    await assertBoardToolPermission(req, companyId, "tools:manage_runtime");
   }
 
   function assertToolAppMutationAccess(req: Request, companyId: string) {
@@ -530,6 +538,26 @@ export function toolAccessRoutes(
     }
   });
 
+  router.get("/tool-connections/:connectionId/test-calls/:actionRequestId", async (req, res) => {
+    assertBoard(req);
+    if (!options.toolGateway) {
+      res.status(501).json({ error: "Tool gateway service is not configured" });
+      return;
+    }
+    const connection = await svc.getConnection(req.params.connectionId as string);
+    await assertBoardAnyToolPermission(req, connection.companyId, ["tools:use", "tools:manage_connections"]);
+    try {
+      const status = await options.toolGateway.getTestCallStatus({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        actionRequestId: req.params.actionRequestId as string,
+      });
+      res.json(status);
+    } catch (error) {
+      if (!sendToolGatewayError(res, error)) throw error;
+    }
+  });
+
   router.patch("/tool-connections/:connectionId", validate(updateToolConnectionSchema), async (req, res) => {
     assertBoard(req);
     const existing = await svc.getConnection(req.params.connectionId as string);
@@ -892,23 +920,20 @@ export function toolAccessRoutes(
   );
 
   router.get("/companies/:companyId/tools/runtime-slots", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertToolsRuntimeManage(req, companyId);
     res.json({ runtimeSlots: await svc.listRuntimeSlots(companyId) });
   });
 
   router.post("/companies/:companyId/tools/runtime-slots/:id/stop", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertToolsRuntimeManage(req, companyId);
     res.json(await svc.stopRuntimeSlot(companyId, req.params.id as string, getActorInfo(req)));
   });
 
   router.post("/companies/:companyId/tools/runtime-slots/:id/restart", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertToolsRuntimeManage(req, companyId);
     res.json(await svc.restartRuntimeSlot(companyId, req.params.id as string, getActorInfo(req)));
   });
 

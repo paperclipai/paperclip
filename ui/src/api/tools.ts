@@ -37,6 +37,7 @@ import type {
   ToolConnectionActivityResponse,
   ToolConnectionTestAgentsResponse,
   ToolConnectionTestCallResult,
+  ToolConnectionTestCallStatus,
   ToolActionRequest,
   ToolActionRequestStatus,
   ToolActionRequestsResponse,
@@ -295,6 +296,10 @@ export const toolsApi = {
     api.post<ToolConnectionTestCallResult>(
       `/tool-connections/${connectionId}/test-calls`,
       input,
+    ),
+  getTestCallStatus: (connectionId: string, actionRequestId: string) =>
+    api.get<ToolConnectionTestCallStatus>(
+      `/tool-connections/${connectionId}/test-calls/${actionRequestId}`,
     ),
   importMcpJson: (companyId: string, body: { mcpJson: unknown }) =>
     api.post<McpJsonImportPreview>(`/companies/${companyId}/tools/mcp/import-json`, body),

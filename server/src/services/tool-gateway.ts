@@ -38,6 +38,8 @@ import type {
   SecretVersionSelector,
   ToolAccessDecision,
   ToolAccessDecisionInput,
+  ToolConnectionTestCallStatus,
+  ToolConnectionTestCallStatusPhase,
   ToolCredentialSecretRef,
   ToolMcpGateway,
   ToolMcpGatewayClientSnippet,
@@ -3373,6 +3375,384 @@ export function createToolGatewayService(
     return session;
   }
 
+  /**
+   * A "test-origin" invocation is one created by the Apps → Test tab's
+   * impersonated test call: an out-of-band `actorType: "user"` invocation with
+   * no heartbeat run, issue, or gateway behind it. We key off the durable
+   * invocation columns rather than audit metadata so the signal survives a
+   * reload — and so the live test panel can drive an approved test call to
+   * completion without a real agent run re-invoking it.
+   */
+  function isTestOriginInvocation(invocation: typeof toolInvocations.$inferSelect): boolean {
+    return (
+      invocation.actorType === "user"
+      && invocation.runId === null
+      && invocation.issueId === null
+      && invocation.gatewayId === null
+      && invocation.connectionId !== null
+    );
+  }
+
+  /**
+   * Execute an already-authorized test-tab tool call against the connected MCP
+   * server and record the result/error onto the invocation. Shared by
+   * {@link executeTestCall} (the allow path) and the approval-driven execution
+   * of a parked ask-first request, so both produce identical persistence,
+   * events, and audit entries.
+   */
+  async function runTestToolInvocation(args: {
+    session: ToolGatewaySession;
+    tool: ToolGatewayDescriptor;
+    parameters: unknown;
+    invocationId: string;
+    companyId: string;
+    agentId: string;
+    userId: string;
+    argumentsSummary: ReturnType<typeof summarizeToolValue>;
+    reasonCode: string;
+    matchedPolicyIds: string[];
+    timeoutMs?: number;
+  }): Promise<
+    | { decision: "allowed"; invocationId: string; result: unknown }
+    | { decision: "allowed"; invocationId: string; error: { message: string; reasonCode: string } }
+  > {
+    await db
+      .update(toolInvocations)
+      .set({ status: "executing", startedAt: new Date(), updatedAt: new Date() })
+      .where(eq(toolInvocations.id, args.invocationId));
+    await writeAudit({
+      session: args.session,
+      companyId: args.companyId,
+      agentId: args.agentId,
+      runId: null,
+      issueId: null,
+      actorType: "user",
+      actorId: args.userId,
+      action: "tool_gateway.call_allowed",
+      details: {
+        source: "test",
+        invocationId: args.invocationId,
+        decision: "allow",
+        reasonCode: args.reasonCode,
+        matchedPolicyIds: args.matchedPolicyIds,
+        tool: args.tool.name,
+        ...toolAuditMetadata(args.tool),
+        argumentsSummary: args.argumentsSummary,
+      },
+    });
+
+    const startedAt = Date.now();
+    try {
+      const executionTimeoutMs = timeoutMs(args.timeoutMs);
+      const connectedMcpExecution =
+        args.tool.providerType === "mcp_remote_http"
+          ? await executeRemoteHttpTool(args.session, args.tool, args.parameters, executionTimeoutMs, args.invocationId)
+          : args.tool.providerType === "mcp_local_stdio"
+            ? await executeLocalStdioTool(args.session, args.tool, args.parameters, executionTimeoutMs)
+            : null;
+      if (!connectedMcpExecution) {
+        throw new ToolGatewayHttpError(404, `Tool "${args.tool.name}" not found`, "tool_not_found", {
+          tool: args.tool.name,
+        });
+      }
+      const result = connectedMcpExecution.result;
+      const resultValidation = validateToolContent({
+        value: result,
+        direction: "result",
+        sensitiveMode: "redact",
+        promptInjectionMode: "block",
+      });
+      await db
+        .update(toolInvocations)
+        .set({
+          status: "succeeded",
+          resultHash: resultValidation.summary.sha256 ?? null,
+          resultSummary: resultValidation.summary,
+          resultSizeBytes: resultValidation.summary.sizeBytes ?? null,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(toolInvocations.id, args.invocationId));
+      await writeToolCallEvent({
+        invocationId: args.invocationId,
+        session: args.session,
+        eventType: "call_completed",
+        outcome: "success",
+        toolName: args.tool.name,
+        policyDecision: "allow",
+        reasonCode: "tool_completed",
+        argumentsSummary: args.argumentsSummary,
+        resultSummary: resultValidation.summary,
+        metadata: {
+          source: "test",
+          headerSummary: connectedMcpExecution.headerSummary ?? undefined,
+        },
+        tool: args.tool,
+      });
+      await writeAudit({
+        session: args.session,
+        companyId: args.companyId,
+        agentId: args.agentId,
+        runId: null,
+        issueId: null,
+        actorType: "user",
+        actorId: args.userId,
+        action: "tool_gateway.call_completed",
+        details: {
+          source: "test",
+          invocationId: args.invocationId,
+          decision: "allow",
+          reasonCode: "tool_completed",
+          tool: args.tool.name,
+          ...toolAuditMetadata(args.tool),
+          durationMs: Date.now() - startedAt,
+          result: summarizeResult(resultValidation.value),
+          resultSummary: resultValidation.summary,
+          headerSummary: connectedMcpExecution.headerSummary ?? undefined,
+        },
+      });
+      return {
+        decision: "allowed" as const,
+        invocationId: args.invocationId,
+        result: resultValidation.value,
+      };
+    } catch (err) {
+      const status = err instanceof ToolGatewayHttpError ? err.status : 502;
+      const reasonCode =
+        err instanceof ToolContentValidationError
+          ? err.reasonCode
+          : err instanceof ToolGatewayHttpError
+            ? err.reasonCode
+            : "tool_execution_failed";
+      const message = err instanceof Error ? err.message : String(err);
+      await db
+        .update(toolInvocations)
+        .set({
+          status: status === 504 ? "timed_out" : status === 429 ? "rate_limited" : "failed",
+          errorCode: reasonCode,
+          errorMessage: message,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(toolInvocations.id, args.invocationId));
+      await writeToolCallEvent({
+        invocationId: args.invocationId,
+        session: args.session,
+        eventType: "call_failed",
+        outcome: status === 504 ? "timeout" : "failure",
+        toolName: args.tool.name,
+        policyDecision: status === 504 ? "defer_runtime" : "deny",
+        reasonCode,
+        argumentsSummary: args.argumentsSummary,
+        metadata: {
+          source: "test",
+          ...(err instanceof ToolContentValidationError ? { findings: err.findings } : {}),
+        },
+        tool: args.tool,
+      });
+      await writeAudit({
+        session: args.session,
+        companyId: args.companyId,
+        agentId: args.agentId,
+        runId: null,
+        issueId: null,
+        actorType: "user",
+        actorId: args.userId,
+        action: status === 504 ? "tool_gateway.call_deferred" : "tool_gateway.call_failed",
+        details: {
+          source: "test",
+          invocationId: args.invocationId,
+          decision: status === 504 ? "defer_runtime" : "deny",
+          reasonCode,
+          tool: args.tool.name,
+          ...toolAuditMetadata(args.tool),
+          argumentsSummary: args.argumentsSummary,
+          durationMs: Date.now() - startedAt,
+          error: message,
+        },
+      });
+      return {
+        decision: "allowed" as const,
+        invocationId: args.invocationId,
+        error: { message, reasonCode },
+      };
+    }
+  }
+
+  /**
+   * Drive a freshly-approved test-origin ask-first request to completion. The
+   * Test tab has no agent run to re-invoke the parked call, so approving it in
+   * the Review tab is what executes it — the live status panel then surfaces the
+   * real result. Reconstructs the impersonated test session and the signed
+   * arguments, and never throws: any failure is recorded on the invocation so it
+   * shows up as an error in the panel rather than rolling back the approval.
+   */
+  async function runApprovedTestInvocation(
+    invocation: typeof toolInvocations.$inferSelect,
+    parameters: unknown,
+  ): Promise<void> {
+    const agentId = invocation.agentId;
+    if (!invocation.connectionId || !agentId) return;
+    const userId = invocation.actorId ?? "board";
+    const session: ToolGatewaySession = {
+      id: "test-call",
+      token: "test-call",
+      companyId: invocation.companyId,
+      agentId,
+      runId: null,
+      issueId: null,
+      projectId: null,
+      actorType: "user",
+      actorId: userId,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+    };
+    let tool: ToolGatewayDescriptor | undefined;
+    try {
+      tool = (await connectedMcpToolsForConnection(invocation.companyId, invocation.connectionId)).find(
+        (candidate) =>
+          candidate.name === invocation.toolName || candidate.upstreamToolName === invocation.toolName,
+      );
+    } catch {
+      tool = undefined;
+    }
+    if (!tool) {
+      await db
+        .update(toolInvocations)
+        .set({
+          status: "failed",
+          errorCode: "tool_not_found",
+          errorMessage: `Tool "${invocation.toolName}" is no longer connected`,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(toolInvocations.id, invocation.id));
+      return;
+    }
+    const argumentsSummary = validateToolContent({
+      value: parameters,
+      direction: "arguments",
+      sensitiveMode: "redact",
+      promptInjectionMode: "ignore",
+    }).summary;
+    try {
+      await runTestToolInvocation({
+        session,
+        tool,
+        parameters,
+        invocationId: invocation.id,
+        companyId: invocation.companyId,
+        agentId,
+        userId,
+        argumentsSummary,
+        reasonCode: "approval_granted",
+        matchedPolicyIds: invocation.matchedPolicyIds ?? [],
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await db
+        .update(toolInvocations)
+        .set({
+          status: "failed",
+          errorCode: "tool_execution_failed",
+          errorMessage: message,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(toolInvocations.id, invocation.id));
+    }
+  }
+
+  /**
+   * Project an ask-first test request + its invocation onto the lifecycle the
+   * Test tab panel renders. Recovers the redacted parameter snapshot (the
+   * "Where" row) and, once the call has run, the structured result or error.
+   */
+  function buildTestCallStatus(
+    actionRequest: typeof toolActionRequests.$inferSelect,
+    invocation: typeof toolInvocations.$inferSelect,
+  ): ToolConnectionTestCallStatus {
+    const invocationDone =
+      invocation.status === "succeeded"
+      || invocation.status === "failed"
+      || invocation.status === "timed_out"
+      || invocation.status === "rate_limited"
+      || invocation.status === "denied";
+
+    let phase: ToolConnectionTestCallStatusPhase;
+    if (actionRequest.status === "rejected") {
+      phase = "denied";
+    } else if (actionRequest.status === "cancelled") {
+      phase = "cancelled";
+    } else if (actionRequest.status === "expired") {
+      phase = "expired";
+    } else if (actionRequest.status === "approved" || actionRequest.status === "executed") {
+      phase = invocationDone ? "done" : "running";
+    } else {
+      phase = "waiting";
+    }
+
+    // Recover a redacted, structured snapshot of the parameters for the
+    // "Where" row — the test-call response never echoes them back.
+    let parameters: Record<string, unknown> | null = null;
+    const signed = readSignedToolArgumentsPayload({
+      signedArguments: actionRequest.signedArguments,
+      invocationId: invocation.id,
+      toolName: invocation.toolName,
+      signingSecret: options.toolActionSigningSecret,
+    });
+    if (signed && signed.arguments && typeof signed.arguments === "object" && !Array.isArray(signed.arguments)) {
+      const redacted = validateToolContent({
+        value: signed.arguments,
+        direction: "arguments",
+        sensitiveMode: "redact",
+        promptInjectionMode: "ignore",
+      }).value;
+      if (redacted && typeof redacted === "object" && !Array.isArray(redacted)) {
+        parameters = redacted as Record<string, unknown>;
+      }
+    }
+
+    let result: unknown;
+    let error: ToolConnectionTestCallStatus["error"];
+    if (phase === "done") {
+      if (invocation.status === "succeeded") {
+        const summary = invocation.resultSummary?.summary;
+        if (typeof summary === "string") {
+          try {
+            result = JSON.parse(summary);
+          } catch {
+            result = summary;
+          }
+        } else {
+          result = null;
+        }
+      } else {
+        error = {
+          message: invocation.errorMessage ?? "The call didn't complete.",
+          reasonCode: invocation.errorCode ?? null,
+        };
+      }
+    }
+
+    const durationMs =
+      invocation.startedAt && invocation.completedAt
+        ? Math.max(0, invocation.completedAt.getTime() - invocation.startedAt.getTime())
+        : null;
+
+    return {
+      actionRequestId: actionRequest.id,
+      invocationId: invocation.id,
+      phase,
+      parameters,
+      ...(result !== undefined ? { result } : {}),
+      ...(error ? { error } : {}),
+      durationMs,
+      requestedAt: actionRequest.createdAt.toISOString(),
+      resolvedAt: actionRequest.resolvedAt ? actionRequest.resolvedAt.toISOString() : null,
+    };
+  }
+
   return {
     async listNamedGateways(companyId: string): Promise<ToolMcpGatewayWithTokens[]> {
       const gateways = await db
@@ -3928,168 +4308,51 @@ export function createToolGatewayService(
         };
       }
 
-      await db
-        .update(toolInvocations)
-        .set({ status: "executing", startedAt: new Date(), updatedAt: new Date() })
-        .where(eq(toolInvocations.id, invocationId));
-      await writeAudit({
+      return runTestToolInvocation({
         session,
+        tool,
+        parameters: requestedParameters,
+        invocationId,
         companyId: input.companyId,
         agentId: input.agentId,
-        runId: null,
-        issueId: null,
-        actorType: "user",
-        actorId: input.userId,
-        action: "tool_gateway.call_allowed",
-        details: {
-          source: "test",
-          invocationId,
-          decision: "allow",
-          reasonCode: accessDecision.reasonCode,
-          matchedPolicyIds: accessDecision.matchedPolicyIds,
-          tool: tool.name,
-          ...toolAuditMetadata(tool),
-          argumentsSummary: argumentValidation.summary,
-        },
+        userId: input.userId,
+        argumentsSummary: argumentValidation.summary,
+        reasonCode: accessDecision.reasonCode,
+        matchedPolicyIds: accessDecision.matchedPolicyIds,
+        timeoutMs: input.timeoutMs,
       });
+    },
 
-      const startedAt = Date.now();
-      try {
-        const executionTimeoutMs = timeoutMs(input.timeoutMs);
-        const connectedMcpExecution =
-          tool.providerType === "mcp_remote_http"
-            ? await executeRemoteHttpTool(session, tool, requestedParameters, executionTimeoutMs, invocationId)
-            : tool.providerType === "mcp_local_stdio"
-              ? await executeLocalStdioTool(session, tool, requestedParameters, executionTimeoutMs)
-              : null;
-        if (!connectedMcpExecution) {
-          throw new ToolGatewayHttpError(404, `Tool "${input.toolName}" not found`, "tool_not_found", {
-            connectionId: input.connectionId,
-            tool: input.toolName,
-          });
-        }
-        const result = connectedMcpExecution.result;
-        const resultValidation = validateToolContent({
-          value: result,
-          direction: "result",
-          sensitiveMode: "redact",
-          promptInjectionMode: "block",
-        });
-        await db
-          .update(toolInvocations)
-          .set({
-            status: "succeeded",
-            resultHash: resultValidation.summary.sha256 ?? null,
-            resultSummary: resultValidation.summary,
-            resultSizeBytes: resultValidation.summary.sizeBytes ?? null,
-            completedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(toolInvocations.id, invocationId));
-        await writeToolCallEvent({
-          invocationId,
-          session,
-          eventType: "call_completed",
-          outcome: "success",
-          toolName: tool.name,
-          policyDecision: "allow",
-          reasonCode: "tool_completed",
-          argumentsSummary: argumentValidation.summary,
-          resultSummary: resultValidation.summary,
-          metadata: {
-            source: "test",
-            headerSummary: connectedMcpExecution.headerSummary ?? undefined,
-          },
-          tool,
-        });
-        await writeAudit({
-          session,
-          companyId: input.companyId,
-          agentId: input.agentId,
-          runId: null,
-          issueId: null,
-          actorType: "user",
-          actorId: input.userId,
-          action: "tool_gateway.call_completed",
-          details: {
-            source: "test",
-            invocationId,
-            decision: "allow",
-            reasonCode: "tool_completed",
-            tool: tool.name,
-            ...toolAuditMetadata(tool),
-            durationMs: Date.now() - startedAt,
-            result: summarizeResult(resultValidation.value),
-            resultSummary: resultValidation.summary,
-            headerSummary: connectedMcpExecution.headerSummary ?? undefined,
-          },
-        });
-        return {
-          decision: "allowed" as const,
-          invocationId,
-          result: resultValidation.value,
-        };
-      } catch (err) {
-        const status = err instanceof ToolGatewayHttpError ? err.status : 502;
-        const reasonCode =
-          err instanceof ToolContentValidationError
-            ? err.reasonCode
-            : err instanceof ToolGatewayHttpError
-              ? err.reasonCode
-              : "tool_execution_failed";
-        const message = err instanceof Error ? err.message : String(err);
-        await db
-          .update(toolInvocations)
-          .set({
-            status: status === 504 ? "timed_out" : status === 429 ? "rate_limited" : "failed",
-            errorCode: reasonCode,
-            errorMessage: message,
-            completedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(toolInvocations.id, invocationId));
-        await writeToolCallEvent({
-          invocationId,
-          session,
-          eventType: "call_failed",
-          outcome: status === 504 ? "timeout" : "failure",
-          toolName: tool.name,
-          policyDecision: status === 504 ? "defer_runtime" : "deny",
-          reasonCode,
-          argumentsSummary: argumentValidation.summary,
-          metadata: {
-            source: "test",
-            ...(err instanceof ToolContentValidationError ? { findings: err.findings } : {}),
-          },
-          tool,
-        });
-        await writeAudit({
-          session,
-          companyId: input.companyId,
-          agentId: input.agentId,
-          runId: null,
-          issueId: null,
-          actorType: "user",
-          actorId: input.userId,
-          action: status === 504 ? "tool_gateway.call_deferred" : "tool_gateway.call_failed",
-          details: {
-            source: "test",
-            invocationId,
-            decision: status === 504 ? "defer_runtime" : "deny",
-            reasonCode,
-            tool: tool.name,
-            ...toolAuditMetadata(tool),
-            argumentsSummary: argumentValidation.summary,
-            durationMs: Date.now() - startedAt,
-            error: message,
-          },
-        });
-        return {
-          decision: "allowed" as const,
-          invocationId,
-          error: { message, reasonCode },
-        };
+    /**
+     * Live status of an ask-first test call, polled by the Test tab panel.
+     * Scoped to the connection the panel is bound to and to test-origin
+     * requests only, so it can't be used to read arbitrary action requests.
+     */
+    async getTestCallStatus(input: {
+      companyId: string;
+      connectionId: string;
+      actionRequestId: string;
+    }): Promise<ToolConnectionTestCallStatus> {
+      const [actionRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, input.actionRequestId))
+        .limit(1);
+      if (!actionRequest || actionRequest.companyId !== input.companyId) {
+        throw new ToolGatewayHttpError(404, "Tool action request not found", "action_request_not_found");
       }
+      const [invocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.id, actionRequest.invocationId))
+        .limit(1);
+      if (!invocation || invocation.companyId !== input.companyId) {
+        throw new ToolGatewayHttpError(404, "Tool invocation not found", "invocation_not_found");
+      }
+      if (invocation.connectionId !== input.connectionId || !isTestOriginInvocation(invocation)) {
+        throw new ToolGatewayHttpError(404, "Tool action request not found", "action_request_not_found");
+      }
+      return buildTestCallStatus(actionRequest, invocation);
     },
 
     async approveActionRequest(input: {
@@ -4180,6 +4443,12 @@ export function createToolGatewayService(
         .update(toolInvocations)
         .set({ approvalState: "approved", updatedAt: now })
         .where(eq(toolInvocations.id, invocation.id));
+      // A test-tab ask-first request has no agent run to carry out the parked
+      // call, so approving it is what runs it. Execute against the signed
+      // arguments and record the result on the invocation for the live panel.
+      if (isTestOriginInvocation(invocation)) {
+        await runApprovedTestInvocation({ ...invocation, approvalState: "approved" }, signedPayload.arguments);
+      }
       return updated;
     },
 

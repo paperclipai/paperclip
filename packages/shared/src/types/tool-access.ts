@@ -1190,3 +1190,41 @@ export interface ToolConnectionTestCallResult {
   /** Present (with `decision: "ask_first"`) — the parked approval request. */
   actionRequestId?: string;
 }
+
+/**
+ * Lifecycle phase of an ask-first test call, polled through
+ * `GET /tool-connections/:id/test-calls/:actionRequestId`.
+ *
+ * - `waiting`   — approval still pending in the Review tab.
+ * - `running`   — approved; the tool is executing for the test.
+ * - `done`      — approved and finished; see `result` / `error`.
+ * - `denied`    — declined in the Review tab.
+ * - `cancelled` — request was cancelled or invalidated before approval.
+ * - `expired`   — the approval window lapsed.
+ */
+export type ToolConnectionTestCallStatusPhase =
+  | "waiting"
+  | "running"
+  | "done"
+  | "denied"
+  | "cancelled"
+  | "expired";
+
+/** Live status of an ask-first test call (`GET /tool-connections/:id/test-calls/:actionRequestId`). */
+export interface ToolConnectionTestCallStatus {
+  actionRequestId: string;
+  invocationId: string;
+  phase: ToolConnectionTestCallStatusPhase;
+  /** Redacted snapshot of the parameters the call was made with — powers the "Where" row. */
+  parameters?: Record<string, unknown> | null;
+  /** Present once `phase === "done"` and the tool succeeded. */
+  result?: unknown;
+  /** Present once `phase === "done"` and the tool failed, or when the request was denied/expired. */
+  error?: { message: string; reasonCode: ToolAccessReasonCode | string | null };
+  /** Wall-clock duration of the executed call in ms, when known. */
+  durationMs?: number | null;
+  /** ISO timestamp the request was created — for the "Waiting · {time}" label. */
+  requestedAt: string;
+  /** ISO timestamp the request was resolved (approved/denied/cancelled), when applicable. */
+  resolvedAt?: string | null;
+}
