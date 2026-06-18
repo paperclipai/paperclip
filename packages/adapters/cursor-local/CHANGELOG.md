@@ -1,5 +1,9 @@
 # @paperclipai/adapter-cursor-local
 
+## Unreleased
+
+- Validated against Paperclip's git_worktree workspace strategy via the DevEngineer pilot (PTE-12).
+
 ## 0.3.1
 
 ### Patch Changes
