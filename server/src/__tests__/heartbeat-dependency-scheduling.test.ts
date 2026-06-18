@@ -960,4 +960,139 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       },
     });
   });
+
+  it("never lets concurrent per-agent wakes exceed the global concurrency cap", async () => {
+    // OMO-2542: 여러 에이전트가 동시에 깨어나 각자 wake 디스패치를 돌려도, 전역 running 합계가
+    // PAPERCLIP_GLOBAL_MAX_CONCURRENT_RUNS 를 절대 초과하지 않아야 한다.
+    const previousGlobalCap = process.env.PAPERCLIP_GLOBAL_MAX_CONCURRENT_RUNS;
+    process.env.PAPERCLIP_GLOBAL_MAX_CONCURRENT_RUNS = "2";
+
+    const companyId = randomUUID();
+    const agentIds = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    const issueIds = agentIds.map(() => randomUUID());
+
+    // 시작된 run 이 끝나지 않고 running 상태로 머물도록 어댑터 실행을 게이트로 막는다.
+    let releaseRuns!: () => void;
+    const runsReleased = new Promise<void>((resolve) => {
+      releaseRuns = resolve;
+    });
+    mockAdapterExecute.mockImplementation(async () => {
+      await runsReleased;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Global cap concurrency test run.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values(
+      agentIds.map((id, index) => ({
+        id,
+        companyId,
+        name: `Agent${index}`,
+        role: "engineer",
+        status: "active" as const,
+        adapterType: "codex_local" as const,
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            // 에이전트별 상한은 넉넉히 둬서 전역 상한만이 유일한 제약이 되도록 한다.
+            maxConcurrentRuns: 5,
+          },
+        },
+        permissions: {},
+      })),
+    );
+    await db.insert(issues).values(
+      agentIds.map((agentId, index) => ({
+        id: issueIds[index],
+        companyId,
+        title: `Assignment ${index}`,
+        status: "todo" as const,
+        priority: "high" as const,
+        assigneeAgentId: agentId,
+      })),
+    );
+
+    try {
+      // 4개 에이전트를 동시에 깨운다(개별 wake 디스패치 경로).
+      const wakes = await Promise.all(
+        agentIds.map((agentId, index) =>
+          heartbeat.wakeup(agentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: "issue_assigned",
+            payload: { issueId: issueIds[index] },
+            contextSnapshot: { issueId: issueIds[index], wakeReason: "issue_assigned" },
+          }),
+        ),
+      );
+      // 완료 시 missing-comment 재시도가 추가 run 을 만들지 않도록 각 run 의 코멘트를 미리 넣어둔다.
+      await db.insert(issueComments).values(
+        wakes.map((wake, index) => ({
+          companyId,
+          issueId: issueIds[index],
+          authorAgentId: agentIds[index],
+          authorType: "agent" as const,
+          createdByRunId: wake!.id,
+          body: "Global cap concurrency test run.",
+        })),
+      );
+
+      const countByStatus = async () => {
+        const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+        return {
+          running: runs.filter((r) => r.status === "running").length,
+          queued: runs.filter((r) => r.status === "queued").length,
+          total: runs.length,
+        };
+      };
+
+      // 디스패치가 캡까지 채울 때까지 기다린다.
+      await waitForCondition(async () => (await countByStatus()).running >= 2, 10_000);
+
+      // 핵심 불변식: 동시에 여러 번 표본을 떠도 running 이 전역 상한(2)을 절대 넘지 않는다.
+      for (let sample = 0; sample < 10; sample += 1) {
+        const counts = await countByStatus();
+        expect(counts.running).toBeLessThanOrEqual(2);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+
+      const settled = await countByStatus();
+      expect(settled.running).toBe(2);
+      expect(settled.queued).toBe(2);
+      expect(settled.total).toBe(4);
+
+      // 게이트를 풀면 남은 큐도 캡을 지키며 순차적으로 모두 시작/완료된다.
+      // (완료 후 후속 run 이 추가로 생길 수 있으므로 처음 깨운 4개 run id 만 추적한다.)
+      const wakeRunIds = new Set(wakes.map((wake) => wake!.id));
+      releaseRuns();
+      const originalWakesSucceeded = await waitForCondition(async () => {
+        const runs = await db
+          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns);
+        const tracked = runs.filter((r) => wakeRunIds.has(r.id));
+        return tracked.length === 4 && tracked.every((r) => r.status === "succeeded");
+      }, 20_000);
+      expect(originalWakesSucceeded).toBe(true);
+    } finally {
+      releaseRuns();
+      if (previousGlobalCap === undefined) {
+        delete process.env.PAPERCLIP_GLOBAL_MAX_CONCURRENT_RUNS;
+      } else {
+        process.env.PAPERCLIP_GLOBAL_MAX_CONCURRENT_RUNS = previousGlobalCap;
+      }
+    }
+  }, 40_000);
 });
