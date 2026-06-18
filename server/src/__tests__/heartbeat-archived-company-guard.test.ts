@@ -5,6 +5,7 @@ import {
   agentRuntimeState,
   agentWakeupRequests,
   companies,
+  companySkills,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -41,6 +42,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
     await db.delete(issues);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
