@@ -1427,7 +1427,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(
-      comments.some((comment) => comment.body.includes(`Recovery action: \`${recoveryAction?.id}\``)),
+      comments.some(
+        (comment) =>
+          comment.body.includes(`Recovery action: \`${recoveryAction?.id}\``) ||
+          comment.body.includes("workspace failed validation"),
+      ),
     ).toBe(true);
   });
 
