@@ -626,6 +626,10 @@ importers:
         version: 5.9.3
 
   packages/skills-catalog:
+    dependencies:
+      '@paperclipai/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@types/node':
         specifier: ^24.6.0
