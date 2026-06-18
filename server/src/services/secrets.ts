@@ -184,6 +184,11 @@ type SecretConsumerContext = {
   allowedBindingIds?: string[] | null;
 };
 
+type SecretResolutionOptions = {
+  bindingContext?: SecretConsumerContext;
+  accessContext?: SecretConsumerContext;
+};
+
 export type RuntimeSecretManifestEntry = {
   configPath: string;
   envKey: string | null;
@@ -562,14 +567,16 @@ export function secretService(db: Db) {
     companyId: string,
     secretId: string,
     version: number | "latest",
-    context?: SecretConsumerContext,
+    options?: SecretResolutionOptions,
   ): Promise<RuntimeSecretResolution> {
+    const bindingContext = options?.bindingContext;
+    const accessContext = options?.accessContext ?? bindingContext;
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
     const resolvedVersion = version === "latest" ? secret.latestVersion : version;
     const providerId = secret.provider as SecretProvider;
-    const configPath = context?.configPath ?? null;
+    const configPath = accessContext?.configPath ?? null;
     try {
       if (secret.status === "deleted") {
         throw new HttpError(404, "Secret not found", { code: "secret_deleted" });
@@ -577,7 +584,7 @@ export function secretService(db: Db) {
       if (secret.status !== "active") {
         throw unprocessable("Secret is not active", { code: "secret_inactive" });
       }
-      const binding = await assertBindingContext(companyId, secret.id, context);
+      const binding = await assertBindingContext(companyId, secret.id, bindingContext);
       const versionRow = await getSecretVersion(secret.id, resolvedVersion);
       if (!versionRow) throw new HttpError(404, "Secret version not found", { code: "version_missing" });
       if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
@@ -612,7 +619,7 @@ export function secretService(db: Db) {
           secretId: secret.id,
           version: resolvedVersion,
           provider: providerId,
-          context,
+          context: accessContext,
           outcome: "success",
         }).catch(() => undefined),
       ]);
@@ -636,7 +643,7 @@ export function secretService(db: Db) {
         secretId: secret.id,
         version: resolvedVersion,
         provider: providerId,
-        context,
+        context: accessContext,
         outcome: "failure",
         errorCode,
       }).catch(() => undefined);
@@ -650,7 +657,21 @@ export function secretService(db: Db) {
     version: number | "latest",
     context?: SecretConsumerContext,
   ): Promise<string> {
-    return (await resolveSecretValueInternal(companyId, secretId, version, context)).value;
+    return (await resolveSecretValueInternal(companyId, secretId, version, {
+      bindingContext: context,
+      accessContext: context,
+    })).value;
+  }
+
+  async function resolveSecretValueForEphemeralAccess(
+    companyId: string,
+    secretId: string,
+    version: number | "latest",
+    context: SecretConsumerContext,
+  ): Promise<string> {
+    return (await resolveSecretValueInternal(companyId, secretId, version, {
+      accessContext: context,
+    })).value;
   }
 
   async function normalizeEnvConfig(
@@ -1579,6 +1600,7 @@ export function secretService(db: Db) {
     getById,
     getByName,
     resolveSecretValue,
+    resolveSecretValueForEphemeralAccess,
 
     create: async (
       companyId: string,
@@ -2275,7 +2297,12 @@ export function secretService(db: Db) {
             companyId,
             binding.secretId,
             binding.version,
-            context ? { ...context, configPath: `env.${key}` } : undefined,
+            context
+              ? {
+                  bindingContext: { ...context, configPath: `env.${key}` },
+                  accessContext: { ...context, configPath: `env.${key}` },
+                }
+              : undefined,
           );
           resolved[key] = secretResolution.value;
           manifest.push(secretResolution.manifestEntry);
@@ -2318,7 +2345,12 @@ export function secretService(db: Db) {
             companyId,
             binding.secretId,
             binding.version,
-            context ? { ...context, configPath: `env.${key}` } : undefined,
+            context
+              ? {
+                  bindingContext: { ...context, configPath: `env.${key}` },
+                  accessContext: { ...context, configPath: `env.${key}` },
+                }
+              : undefined,
           );
           env[key] = secretResolution.value;
           manifest.push(secretResolution.manifestEntry);

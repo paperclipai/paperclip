@@ -1953,4 +1953,37 @@ describeEmbeddedPostgres("secretService", () => {
       /not active/i,
     );
   });
+
+  it("records audited ephemeral secret access without requiring a persisted binding", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    const resolved = await svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "user",
+      actorId: "user-1",
+    });
+
+    expect(resolved).toBe("runtime-secret");
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      secretId: secret.id,
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "user",
+      actorId: "user-1",
+      outcome: "success",
+    });
+    expect(JSON.stringify(events)).not.toContain("runtime-secret");
+  });
 });

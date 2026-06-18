@@ -437,6 +437,11 @@ export function environmentRoutes(
         companyId,
         driver: req.body.driver,
         config: req.body.config,
+        accessContext: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          heartbeatRunId: actor.runId,
+        },
         pluginWorkerManager: options.pluginWorkerManager,
       });
       const environment = {

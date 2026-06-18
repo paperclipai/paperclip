@@ -269,6 +269,11 @@ async function resolveConfigSecretRefsForProbe(input: {
   companyId: string;
   config: Record<string, unknown>;
   schema: Record<string, unknown> | null;
+  accessContext?: {
+    actorType: "agent" | "user";
+    actorId: string;
+    heartbeatRunId?: string | null;
+  };
 }): Promise<Record<string, unknown>> {
   const secrets = secretService(input.db);
   let nextConfig = { ...input.config };
@@ -283,7 +288,14 @@ async function resolveConfigSecretRefsForProbe(input: {
     nextConfig = writeConfigValueAtPath(
       nextConfig,
       path,
-      await secrets.resolveSecretValue(input.companyId, trimmed, "latest"),
+      await secrets.resolveSecretValueForEphemeralAccess(input.companyId, trimmed, "latest", {
+        consumerType: "system",
+        consumerId: "environment-probe-config",
+        configPath: path,
+        actorType: input.accessContext?.actorType ?? "system",
+        actorId: input.accessContext?.actorId ?? null,
+        heartbeatRunId: input.accessContext?.heartbeatRunId ?? null,
+      }),
     );
   }
   return nextConfig;
@@ -366,6 +378,11 @@ export function normalizeEnvironmentConfigForProbe(input: {
   companyId: string;
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
+  accessContext?: {
+    actorType: "agent" | "user";
+    actorId: string;
+    heartbeatRunId?: string | null;
+  };
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> | Record<string, unknown> {
   if (input.driver === "ssh") {
@@ -402,6 +419,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
         db: input.db,
         companyId: input.companyId,
         config: validated.normalizedConfig,
+        accessContext: input.accessContext,
         schema:
           validated.driver.configSchema &&
           typeof validated.driver.configSchema === "object" &&

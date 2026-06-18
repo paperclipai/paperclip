@@ -36,6 +36,7 @@ const mockProbeEnvironment = vi.hoisted(() => vi.fn());
 const mockSecretService = vi.hoisted(() => ({
   create: vi.fn(),
   resolveSecretValue: vi.fn(),
+  resolveSecretValueForEphemeralAccess: vi.fn(),
   syncSecretRefsForTarget: vi.fn(),
   remove: vi.fn(),
 }));
@@ -156,6 +157,7 @@ describe("environment routes", () => {
     mockProbeEnvironment.mockReset();
     mockSecretService.create.mockReset();
     mockSecretService.resolveSecretValue.mockReset();
+    mockSecretService.resolveSecretValueForEphemeralAccess.mockReset();
     mockSecretService.syncSecretRefsForTarget.mockReset();
     mockSecretService.remove.mockReset();
     mockSecretService.create.mockResolvedValue({
@@ -163,6 +165,7 @@ describe("environment routes", () => {
     });
     mockSecretService.syncSecretRefsForTarget.mockResolvedValue([]);
     mockSecretService.remove.mockResolvedValue(null);
+    mockSecretService.resolveSecretValueForEphemeralAccess.mockResolvedValue("resolved-provider-key");
     delete process.env.PAPERCLIP_SECRETS_PROVIDER;
     mockValidatePluginEnvironmentDriverConfig.mockReset();
     mockValidatePluginEnvironmentDriverConfig.mockImplementation(async ({ config }) => config);
@@ -1394,7 +1397,6 @@ describe("environment routes", () => {
   });
 
   it("resolves selected secret refs before probing unsaved provider config", async () => {
-    mockSecretService.resolveSecretValue.mockResolvedValue("resolved-provider-key");
     mockValidatePluginSandboxProviderConfig.mockResolvedValue({
       normalizedConfig: {
         template: "base",
@@ -1450,10 +1452,18 @@ describe("environment routes", () => {
     expect(res.status).toBe(200);
     expect(mockEnvironmentService.create).not.toHaveBeenCalled();
     expect(mockSecretService.create).not.toHaveBeenCalled();
-    expect(mockSecretService.resolveSecretValue).toHaveBeenCalledWith(
+    expect(mockSecretService.resolveSecretValueForEphemeralAccess).toHaveBeenCalledWith(
       "company-1",
       "11111111-1111-1111-1111-111111111111",
       "latest",
+      {
+        consumerType: "system",
+        consumerId: "environment-probe-config",
+        configPath: "apiKey",
+        actorType: "user",
+        actorId: "user-1",
+        heartbeatRunId: "run-1",
+      },
     );
     expect(mockProbeEnvironment).toHaveBeenCalledWith(
       expect.anything(),
