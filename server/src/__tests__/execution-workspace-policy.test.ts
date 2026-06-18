@@ -369,13 +369,13 @@ describe("execution workspace policy helpers", () => {
     expect(issueExecutionWorkspaceModeForPersistedWorkspace(undefined)).toBe("agent_default");
   });
 
-  it("disables project execution workspace policy when the instance flag is off", () => {
+  it("keeps explicit project execution workspace policy active when the instance flag is off", () => {
     expect(
       gateProjectExecutionWorkspacePolicy(
         { enabled: true, defaultMode: "isolated_workspace" },
         false,
       ),
-    ).toBeNull();
+    ).toEqual({ enabled: true, defaultMode: "isolated_workspace" });
     expect(
       gateProjectExecutionWorkspacePolicy(
         { enabled: true, defaultMode: "isolated_workspace" },

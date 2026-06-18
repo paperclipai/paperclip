@@ -86,7 +86,11 @@ export function gateProjectExecutionWorkspacePolicy(
   projectPolicy: ProjectExecutionWorkspacePolicy | null,
   isolatedWorkspacesEnabled: boolean,
 ): ProjectExecutionWorkspacePolicy | null {
-  if (!isolatedWorkspacesEnabled) return null;
+  if (!projectPolicy?.enabled) return null;
+  // A persisted project policy is an explicit operator opt-in. Keep honoring it
+  // even when the legacy instance-wide workspace UI flag is disabled, otherwise
+  // API/configured projects silently fall back to the shared checkout.
+  void isolatedWorkspacesEnabled;
   return projectPolicy;
 }
 
