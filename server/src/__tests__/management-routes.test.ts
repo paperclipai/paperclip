@@ -30,6 +30,11 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 
 type Db = ReturnType<typeof createDb>;
 const TEST_SOURCE_COMPANY_ID = "11111111-1111-4111-8111-111111111111";
+const MINUTE_MS = 60 * 1000;
+
+function minutesAgo(minutes: number) {
+  return new Date(Date.now() - minutes * MINUTE_MS);
+}
 
 async function createApp(db: Db, actor: Express.Request["actor"]) {
   const { managementRoutes } = await import("../routes/management.js");
@@ -77,7 +82,7 @@ async function seedAgent(
       runtimeConfig: {},
       permissions: {},
       status,
-      lastHeartbeatAt: new Date("2026-06-16T18:00:00.000Z"),
+      lastHeartbeatAt: minutesAgo(30),
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -170,8 +175,8 @@ describeEmbeddedPostgres("management routes", () => {
         status: "succeeded",
         invocationSource: "assignment",
         livenessState: "completed",
-        startedAt: new Date("2026-06-16T17:55:00.000Z"),
-        finishedAt: new Date("2026-06-16T17:58:00.000Z"),
+        startedAt: minutesAgo(45),
+        finishedAt: minutesAgo(42),
       })
       .returning()
       .then((rows) => rows[0]!);
@@ -209,8 +214,8 @@ describeEmbeddedPostgres("management routes", () => {
         status: "running",
         invocationSource: "on_demand",
         livenessState: "blocked",
-        startedAt: new Date("2026-06-16T18:05:00.000Z"),
-        lastOutputAt: new Date("2026-06-16T18:10:00.000Z"),
+        startedAt: minutesAgo(35),
+        lastOutputAt: minutesAgo(30),
         resultJson: { summary: "Run blocked on dependency", hidden: "nope" },
         contextSnapshot: { issueId: blockedIssue.id },
       })
@@ -256,7 +261,7 @@ describeEmbeddedPostgres("management routes", () => {
         requestedByUserId: "board-user",
         status: "rejected",
         decidedByUserId: "board-user",
-        decidedAt: new Date("2026-06-16T18:18:00.000Z"),
+        decidedAt: minutesAgo(22),
         payload: {
           title: "Reject noisy rollout",
           summary: "Need a narrower rollout",
@@ -273,8 +278,8 @@ describeEmbeddedPostgres("management routes", () => {
       authorUserId: "board-user",
       body:
         "Board note: blocker reports need clearer next actions and links so the daily analyzer can spot recurring ownership gaps quickly.",
-      createdAt: new Date("2026-06-16T18:12:00.000Z"),
-      updatedAt: new Date("2026-06-16T18:12:00.000Z"),
+      createdAt: minutesAgo(28),
+      updatedAt: minutesAgo(28),
     });
 
     await db.insert(activityLog).values([
@@ -294,7 +299,7 @@ describeEmbeddedPostgres("management routes", () => {
             assigneeUserId: null,
           },
         },
-        createdAt: new Date("2026-06-16T18:13:00.000Z"),
+        createdAt: minutesAgo(27),
       },
       {
         companyId: targetCompany.id,
@@ -306,7 +311,7 @@ describeEmbeddedPostgres("management routes", () => {
         details: {
           type: rejectedApproval.type,
         },
-        createdAt: new Date("2026-06-16T18:18:30.000Z"),
+        createdAt: minutesAgo(21),
       },
     ]);
 
@@ -328,11 +333,11 @@ describeEmbeddedPostgres("management routes", () => {
       routineId: routine.id,
       source: "schedule",
       status: "failed",
-      triggeredAt: new Date("2026-06-16T18:20:00.000Z"),
+      triggeredAt: minutesAgo(20),
       failureReason: "grant missing",
       linkedIssueId: blockedIssue.id,
-      createdAt: new Date("2026-06-16T18:20:00.000Z"),
-      updatedAt: new Date("2026-06-16T18:20:00.000Z"),
+      createdAt: minutesAgo(20),
+      updatedAt: minutesAgo(20),
     });
 
     await db.insert(crossCompanyAgentGrants).values({
@@ -542,8 +547,8 @@ describeEmbeddedPostgres("management routes", () => {
         status: "failed",
         invocationSource: "assignment",
         livenessState: "failed",
-        startedAt: new Date("2026-06-16T18:00:00.000Z"),
-        finishedAt: new Date("2026-06-16T18:03:00.000Z"),
+        startedAt: minutesAgo(25),
+        finishedAt: minutesAgo(22),
         resultJson: { summary: "Failure was caused by missing credentials" },
         contextSnapshot: { issueId: issue.id },
       })
@@ -556,8 +561,8 @@ describeEmbeddedPostgres("management routes", () => {
       authorType: "user",
       authorUserId: "board-user",
       body: "Same-company board note with enough detail to remain fully visible to the analyzer caller.",
-      createdAt: new Date("2026-06-16T18:05:00.000Z"),
-      updatedAt: new Date("2026-06-16T18:05:00.000Z"),
+      createdAt: minutesAgo(20),
+      updatedAt: minutesAgo(20),
     });
     await db.insert(activityLog).values({
       companyId: company.id,
@@ -571,7 +576,7 @@ describeEmbeddedPostgres("management routes", () => {
         source: "board_triage",
         _previous: { status: "todo" },
       },
-      createdAt: new Date("2026-06-16T18:06:00.000Z"),
+      createdAt: minutesAgo(19),
     });
     const routine = await db
       .insert(routines)
@@ -589,11 +594,11 @@ describeEmbeddedPostgres("management routes", () => {
       routineId: routine.id,
       source: "schedule",
       status: "failed",
-      triggeredAt: new Date("2026-06-16T18:07:00.000Z"),
+      triggeredAt: minutesAgo(18),
       failureReason: "scheduler timeout with internal detail",
       linkedIssueId: issue.id,
-      createdAt: new Date("2026-06-16T18:07:00.000Z"),
-      updatedAt: new Date("2026-06-16T18:07:00.000Z"),
+      createdAt: minutesAgo(18),
+      updatedAt: minutesAgo(18),
     });
 
     const app = await createApp(db, {
