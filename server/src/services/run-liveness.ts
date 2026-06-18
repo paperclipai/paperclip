@@ -310,6 +310,17 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
   });
 
   if (input.runStatus !== "succeeded") {
+    // LAAP commits HTTP 200 for SSE streaming; if Anthropic upstream dies mid-stream the
+    // body is empty and the Anthropic SDK throws "empty or malformed response". Treat as
+    // empty_response so the bounded continuation retry fires instead of stranded_assigned_issue escalation.
+    const proxyEmptyBodyRe = /empty.*malformed|malformed.*response|API returned.*empty/i;
+    const isProxyEmptyBody =
+      input.errorCode === "adapter_failed" &&
+      ((typeof input.error === "string" && proxyEmptyBodyRe.test(input.error)) ||
+        (typeof input.stderrExcerpt === "string" && proxyEmptyBodyRe.test(input.stderrExcerpt)));
+    if (isProxyEmptyBody) {
+      return output("empty_response", "Adapter failed with empty HTTP 200 (transient proxy fault — bounded retry)");
+    }
     return output("failed", input.errorCode ? `Run ended with ${input.runStatus} (${input.errorCode})` : `Run ended with ${input.runStatus}`);
   }
 

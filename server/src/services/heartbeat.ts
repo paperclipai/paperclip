@@ -612,7 +612,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
     issue.title,
     issue.description ?? "",
     ...comments.map((comment) => comment.body),
-  ]);
+  ]).filter((id) => isUuidLike(id));
   if (mentionedSkillIds.length === 0) return [];
 
   const skillRows = await input.db
@@ -7186,6 +7186,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    opts?: { subprocessExitCode?: number | null },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -7197,12 +7198,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
+    let nextStatus: "running" | "idle" | "error" =
       runningCount > 0
         ? "running"
         : outcome === "succeeded" || outcome === "cancelled"
           ? "idle"
           : "error";
+
+    // If the subprocess exited cleanly (exit code 0) but the run was pre-terminated
+    // as "failed" by process-loss recovery before the subprocess finished, still
+    // transition the agent from "error" to "idle" so the successful work is recognised.
+    // The gate on existing.status === "error" prevents this from masking a first-run
+    // failure where the agent was "running" when finalizeAgentStatus was called.
+    if (nextStatus === "error" && opts?.subprocessExitCode === 0 && existing.status === "error") {
+      nextStatus = "idle";
+    }
 
     const updated = await db
       .update(agents)
@@ -9423,7 +9433,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, { subprocessExitCode: adapterResult.exitCode ?? null });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
