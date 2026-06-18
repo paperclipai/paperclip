@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
@@ -105,6 +105,17 @@ import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+
+function buildInstructionFileRevisionProof(file: { path: string; size: number; content?: string } | null) {
+  if (!file || typeof file.content !== "string") {
+    return null;
+  }
+  return {
+    path: file.path,
+    size: file.size,
+    sha256: createHash("sha256").update(file.content, "utf8").digest("hex"),
+  };
+}
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -2662,6 +2673,7 @@ export function agentRoutes(
     await assertCanManageInstructionsPath(req, existing);
 
     const actor = getActorInfo(req);
+    const beforeFile = await instructions.readFile(existing, req.body.path).catch(() => null);
     const result = await instructions.writeFile(existing, req.body.path, req.body.content, {
       clearLegacyPromptTemplate: req.body.clearLegacyPromptTemplate,
     });
@@ -2670,6 +2682,7 @@ export function agentRoutes(
       result.adapterConfig,
       { strictMode: strictSecretsMode },
     );
+    const revisionKey = `instructionsBundle.files.${result.file.path}`;
     await svc.update(
       id,
       { adapterConfig: normalizedAdapterConfig },
@@ -2678,6 +2691,13 @@ export function agentRoutes(
           createdByAgentId: actor.agentId,
           createdByUserId: actor.actorType === "user" ? actor.actorId : null,
           source: "instructions_bundle_file_put",
+          forceChangedKeys: [revisionKey],
+          beforeConfigExtras: {
+            instructionsBundleFile: buildInstructionFileRevisionProof(beforeFile),
+          },
+          afterConfigExtras: {
+            instructionsBundleFile: buildInstructionFileRevisionProof(result.file),
+          },
         },
       },
     );

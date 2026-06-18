@@ -289,6 +289,51 @@ describe("agent instructions bundle routes", () => {
     );
   });
 
+  it("records config revision proof for a file-only bundle write", async () => {
+    await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1")
+      .send({
+        path: "AGENTS.md",
+        content: "# Updated Agent\n",
+      }));
+
+    expect(mockAgentInstructionsService.readFile).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
+      "AGENTS.md",
+    );
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          instructionsBundleMode: "managed",
+          instructionsRootPath: "/tmp/agent-1",
+          instructionsEntryFile: "AGENTS.md",
+          instructionsFilePath: "/tmp/agent-1/AGENTS.md",
+        }),
+      }),
+      {
+        recordRevision: expect.objectContaining({
+          source: "instructions_bundle_file_put",
+          forceChangedKeys: ["instructionsBundle.files.AGENTS.md"],
+          beforeConfigExtras: {
+            instructionsBundleFile: {
+              path: "AGENTS.md",
+              size: 12,
+              sha256: "2cfdfc8ea8448c4cbfef13a84358d87f328933938e8e1b06fbb8f21ba7a05be8",
+            },
+          },
+          afterConfigExtras: {
+            instructionsBundleFile: {
+              path: "AGENTS.md",
+              size: 18,
+              sha256: "6ebc1436091156200ac6d5f8212205e57f80d34e2c74c5ce6bb6f83038bf29d1",
+            },
+          },
+        }),
+      },
+    );
+  });
+
   it("preserves managed instructions config when switching adapters", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent(),
