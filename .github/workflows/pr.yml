@@ -280,22 +280,23 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
-      - name: Install Chromium system dependencies
+      - name: Install system Chrome for Playwright
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          # GitHub-hosted ubuntu-latest runners already ship Chromium system deps,
-          # but keep an explicit install with a hard timeout for self-hosted/custom images.
-          timeout 120 bash -c '
-            sudo apt-get update -qq
+          # GitHub-hosted ubuntu-latest runners already ship Chromium system deps and Google Chrome.
+          # Keep a short, best-effort refresh so self-hosted/custom images have the required libraries.
+          timeout 60 bash -c '
+            sudo apt-get update -qq || true
             sudo apt-get install -y -qq --no-install-recommends \
               libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0 \
               libcups2t64 libdrm2 libdbus-1-3 libxkbcommon0 \
               libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
               libgbm1 libpango-1.0-0 libcairo2 libasound2t64 \
-              libatspi2.0-0 libwayland-client0
-          ' || echo "WARNING: system-deps install timed out; continuing"
+              libatspi2.0-0 libwayland-client0 || true
+          ' || echo "WARNING: system-deps refresh timed out; continuing"
         shell: bash
+        timeout-minutes: 2
 
       - name: Generate Paperclip config
         run: |
