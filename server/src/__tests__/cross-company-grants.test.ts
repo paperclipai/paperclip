@@ -53,6 +53,33 @@ describe("scopeMatches", () => {
       scopeMatches({ secretId: "x" }, { type: "company", companyId: "c1" }),
     ).toBe(false);
   });
+
+  it("rejects company-level resources when grant is project-scoped", () => {
+    expect(
+      scopeMatches(
+        { projectId: "p1" },
+        { type: "company", companyId: "c1" },
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects agent resources when grant is project-scoped", () => {
+    expect(
+      scopeMatches(
+        { projectId: "p1" },
+        { type: "agent", companyId: "c1", agentId: "a1" },
+      ),
+    ).toBe(false);
+  });
+
+  it("allows matching project resources when grant is project-scoped", () => {
+    expect(
+      scopeMatches(
+        { projectId: "p1" },
+        { type: "project", companyId: "c1", projectId: "p1" },
+      ),
+    ).toBe(true);
+  });
 });
 
 describeEmbeddedPostgres("cross-company grants authorization", () => {
@@ -175,6 +202,35 @@ describeEmbeddedPostgres("cross-company grants authorization", () => {
 
     expect(decision.allowed).toBe(false);
     expect(decision.reason).toBe("deny_budget_exceeded");
+  });
+
+  it("denies company-scope reads when grant is project-scoped", async () => {
+    previousFlag = process.env.PAPERCLIP_CROSS_COMPANY_GRANTS;
+    process.env.PAPERCLIP_CROSS_COMPANY_GRANTS = "enabled";
+
+    const home = await createCompany(db, "home");
+    const target = await createCompany(db, "target");
+    const grantee = await createAgent(db, home.id);
+    const projectId = randomUUID();
+
+    await db.insert(crossCompanyGrants).values({
+      targetCompanyId: target.id,
+      granteeAgentId: grantee.id,
+      granteeHomeCompanyId: home.id,
+      actions: ["issue:read"],
+      scope: { projectId },
+      status: "active",
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: grantee.id, companyId: home.id },
+      action: "issue:read",
+      resource: { type: "company", companyId: target.id },
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("deny_scope");
   });
 
   it("marks expired grants and denies access", async () => {

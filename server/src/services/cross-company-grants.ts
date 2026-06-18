@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { crossCompanyGrants } from "@paperclipai/db";
 import type { AuthorizationAction, AuthorizationResource } from "./authorization.js";
@@ -14,29 +14,100 @@ export function scopeMatches(
 ): boolean {
   if (!scope || Object.keys(scope).length === 0) return true;
 
-  let constrained = false;
-
-  if (typeof scope.projectId === "string") {
-    constrained = true;
-    if (resource.type === "project" && resource.projectId !== scope.projectId) return false;
-    if (resource.type === "issue" && resource.projectId !== scope.projectId) return false;
-  }
-
-  if (Array.isArray(scope.issueIds)) {
-    constrained = true;
-    const issueIds = scope.issueIds.filter((value): value is string => typeof value === "string");
-    if (resource.type !== "issue" || !resource.issueId || !issueIds.includes(resource.issueId)) {
-      return false;
-    }
-  }
-
   for (const key of Object.keys(scope)) {
     if (key !== "projectId" && key !== "issueIds") {
       return false;
     }
   }
 
-  return !constrained ? true : constrained;
+  if (typeof scope.projectId === "string") {
+    if (resource.type === "project") {
+      return resource.projectId === scope.projectId;
+    }
+    if (resource.type === "issue") {
+      return resource.projectId === scope.projectId;
+    }
+    return false;
+  }
+
+  if (Array.isArray(scope.issueIds)) {
+    const issueIds = scope.issueIds.filter((value): value is string => typeof value === "string");
+    return resource.type === "issue" && Boolean(resource.issueId) && issueIds.includes(resource.issueId!);
+  }
+
+  return true;
+}
+
+export type CrossCompanyGrantEvaluation = {
+  allowed: boolean;
+  reason: "allow_cross_company_grant" | "deny_company_boundary" | "deny_scope" | "deny_budget_exceeded";
+  explanation: string;
+  grantId?: string;
+};
+
+export async function evaluateCrossCompanyGrant(
+  db: Db,
+  input: {
+    granteeAgentId: string;
+    targetCompanyId: string;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    now?: number;
+  },
+): Promise<CrossCompanyGrantEvaluation> {
+  if (!crossCompanyGrantsEnabled()) {
+    return {
+      allowed: false,
+      reason: "deny_company_boundary",
+      explanation: "Agent key cannot access another company.",
+    };
+  }
+
+  const service = crossCompanyGrantService(db);
+  const grant = await service.findActiveCrossCompanyGrant({
+    granteeAgentId: input.granteeAgentId,
+    targetCompanyId: input.targetCompanyId,
+    now: input.now,
+  });
+
+  if (!grant) {
+    return {
+      allowed: false,
+      reason: "deny_company_boundary",
+      explanation: "Agent key cannot access another company.",
+    };
+  }
+
+  if (!service.actionAllowedByGrant(grant, input.action)) {
+    return {
+      allowed: false,
+      reason: "deny_company_boundary",
+      explanation: "Agent key cannot access another company.",
+    };
+  }
+
+  if (!scopeMatches(grant.scope, input.resource)) {
+    return {
+      allowed: false,
+      reason: "deny_scope",
+      explanation: "Cross-company grant does not cover the requested scope.",
+    };
+  }
+
+  if (grant.budgetCapCents != null && grant.budgetSpentCents >= grant.budgetCapCents) {
+    return {
+      allowed: false,
+      reason: "deny_budget_exceeded",
+      explanation: "Cross-company grant budget cap has been reached.",
+    };
+  }
+
+  return {
+    allowed: true,
+    reason: "allow_cross_company_grant",
+    explanation: `Cross-company grant ${grant.id} authorizes ${input.action} in ${input.targetCompanyId}.`,
+    grantId: grant.id,
+  };
 }
 
 export function crossCompanyGrantService(db: Db) {
@@ -90,7 +161,7 @@ export function crossCompanyGrantService(db: Db) {
     await db
       .update(crossCompanyGrants)
       .set({
-        budgetSpentCents: grant.budgetSpentCents + input.costCents,
+        budgetSpentCents: sql`${crossCompanyGrants.budgetSpentCents} + ${input.costCents}`,
         updatedAt: new Date(),
       })
       .where(eq(crossCompanyGrants.id, grant.id));
