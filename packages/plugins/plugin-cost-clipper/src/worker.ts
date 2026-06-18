@@ -142,7 +142,9 @@ const plugin = definePlugin({
         const prior = aggregates.agents[costEvent.agentId];
 
         // Detect against the PRIOR baseline (before folding this event in).
-        const detectedAt = event.occurredAt ?? new Date().toISOString();
+        // detectedAt is the wall-clock time we observed the anomaly; the event's
+        // own timestamp is preserved separately as `occurredAt` on the anomaly.
+        const detectedAt = new Date().toISOString();
         const anomaly = detect(prior, costEvent, config, detectedAt);
 
         // Always fold the event into the rolling aggregate, then persist.
