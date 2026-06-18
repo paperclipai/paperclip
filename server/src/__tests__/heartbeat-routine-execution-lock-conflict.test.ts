@@ -330,16 +330,19 @@ describeEmbeddedPostgres("heartbeat routine-execution lock conflict (TWB-748)", 
       .then((rows) => rows[0] ?? null);
     expect(dupWakeup?.status).toBe("skipped");
 
-    // The duplicate routine-execution issue is cancelled so it does not orphan; the
-    // winning issue retains its execution lock.
+    // The duplicate routine-execution issue is cancelled so it does not orphan.
+    // Once the winner reaches a terminal status, finalization may already have
+    // released its lock; the invariant is that the cancelled duplicate never
+    // retains an execution lock.
     const issueRows = await db
       .select({ id: issues.id, status: issues.status, executionRunId: issues.executionRunId })
       .from(issues)
       .where(inArray(issues.id, [firstIssueId, secondIssueId]));
     const cancelledIssues = issueRows.filter((issue) => issue.status === "cancelled");
     expect(cancelledIssues).toHaveLength(1);
-    const lockedIssues = issueRows.filter((issue) => issue.executionRunId === succeeded[0]?.id);
-    expect(lockedIssues).toHaveLength(1);
+    const lockedIssues = issueRows.filter((issue) => issue.executionRunId !== null);
+    expect(lockedIssues.every((issue) => issue.executionRunId === succeeded[0]?.id)).toBe(true);
+    expect(issueRows.filter((issue) => issue.executionRunId === cancelledDuplicates[0]?.id)).toHaveLength(0);
   });
 
   it("baseline: a single routine-execution fire claims the lock and runs", async () => {

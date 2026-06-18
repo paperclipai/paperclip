@@ -149,17 +149,17 @@ export async function resolveDecisionOwnerUserId(db: Db, args: {
     return { userId: explicitUserId, source: "explicit_user" };
   }
 
-  const sourceCommentAuthor = await findSourceCommentAuthor(db, {
-    companyId: args.companyId,
-    sourceCommentId: args.sourceCommentId,
-  });
-  if (sourceCommentAuthor) return sourceCommentAuthor;
-
   const rootHumanRequester = await findRootHumanRequester(db, {
     companyId: args.companyId,
     issueIds: args.issueIds,
   });
   if (rootHumanRequester) return rootHumanRequester;
+
+  const sourceCommentAuthor = await findSourceCommentAuthor(db, {
+    companyId: args.companyId,
+    sourceCommentId: args.sourceCommentId,
+  });
+  if (sourceCommentAuthor) return sourceCommentAuthor;
 
   const currentUserId = normalizeUserId(args.currentUserId);
   if (currentUserId) {

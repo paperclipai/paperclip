@@ -973,6 +973,71 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
+  it("allows checkout managers through the issue boundary when correcting human review routing", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:assign" || input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason:
+        input.action === "tasks:manage_active_checkouts"
+          ? "allow_manager_chain"
+          : input.action === "tasks:assign"
+            ? "allow_simple_company_member"
+            : "deny_missing_grant",
+      explanation:
+        input.action === "tasks:manage_active_checkouts"
+          ? "Allowed because the actor manages the issue assignee in the reporting chain."
+          : input.action === "tasks:assign"
+            ? "Allowed by simple mode company-wide task assignment default."
+            : "No agent permission mapping exists for issue:mutate.",
+    }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue(),
+      ...patch,
+      assigneeAgentId: patch.assigneeAgentId ?? null,
+      assigneeUserId: patch.assigneeUserId ?? "jonas-user",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        assigneeAgentId: null,
+        assigneeUserId: "jonas-user",
+        status: "in_review",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        assigneeAgentId: null,
+        assigneeUserId: "jonas-user",
+        status: "in_review",
+      }),
+    );
+  });
+
+  it("does not let checkout managers bypass the issue boundary for non-routing patches", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts" ? "allow_manager_chain" : "deny_missing_grant",
+      explanation:
+        input.action === "tasks:manage_active_checkouts"
+          ? "Allowed because the actor manages the issue assignee in the reporting chain."
+          : "No agent permission mapping exists for issue:mutate.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Managed update should still fail" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
     ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],
