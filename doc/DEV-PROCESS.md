@@ -35,7 +35,7 @@ anything.
 | **Live / Orchestrator** | The running Paperclip control plane that assigns and runs Cortex agents. Treat it as production. | Controller host: `/home/ubuntu/.paperclip/instances/default/projects/0078c9af-…/8764704b-…/paperclip` (+ its Postgres DB + its serving port) | **Never** a build / test / migrate / seed / restart / port-bind target. Changes reach it only via the governed promotion path (§5). |
 | **Dev (per-issue worktree instance)** | Ephemeral, isolated Paperclip instance with its **own** Postgres DB and server port, created via the `worktree` CLI (`cli/src/commands/worktree.ts`). | Under the worktree home (separate DB + port, printed by `worktree env`) | This is **where agents actually build / run / migrate / seed / smoke-test.** One per issue. Cleaned up when done. |
 | **Execution remote (sandbox)** | The SSH box where the adapter process runs a **synced copy** of the source; changes are exported back to the canonical tree. | `brian@172.31.0.32:2022`, path `/mnt/c/inetpub/.paperclip-runtime/runs/<runId>/workspace` — the legacy **Neoreef Platform** box (`EC2AMAZ-V5Q175O`, IIS/ASP.NET) | **Source edits only.** It is **not** a Paperclip runtime. Do **not** start a Paperclip server/DB here and treat it as "the dev instance." Its `localhost`/ports are not the controller's. |
-| **Staging (optional, deferred)** | Longer-lived shared instance running merged `main`, for integration testing before promotion. | TBD | Not provisioned today. Rely on ephemeral per-issue worktree instances; add staging only if per-issue isolation proves insufficient. |
+| **Staging (optional, deferred)** | Longer-lived shared instance running merged `master`, for integration testing before promotion. | TBD | Not provisioned today. Rely on ephemeral per-issue worktree instances; add staging only if per-issue isolation proves insufficient. |
 
 ### Why the distinction is load-bearing
 
@@ -124,7 +124,7 @@ side effect of a task.
 
 ```bash
 # 1. Create an isolated worktree instance (own DB + port), minimal seed
-npx paperclipai worktree:make <name> --start-point origin/main --seed-mode minimal
+npx paperclipai worktree:make <name> --start-point origin/master --seed-mode minimal
 
 # 2. Enter the worktree and source ITS environment (own port lives here)
 cd <worktree-path>
@@ -143,9 +143,9 @@ npx paperclipai worktree:cleanup <name>
 
 ### Merge path
 
-- Branch per issue → PR to `Neoreef/paperclip` (**fork-first** if a personal fork remote
-  exists; the synced run workspace has no git remote, so the merge path runs from the
-  canonical source / a fork, not the sandbox copy).
+- Branch per issue → PR to `Neoreef/paperclip`, **base branch `master`** (**fork-first**
+  if a personal fork remote exists; the synced run workspace has no git remote, so the
+  merge path runs from the canonical source / a fork, not the sandbox copy).
 - PR must satisfy `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`, and the
   `.github/workflows/pr.yml` CI gates; `pnpm typecheck && pnpm test && pnpm build` must be
   green in the isolated worktree instance first.
@@ -153,13 +153,16 @@ npx paperclipai worktree:cleanup <name>
   **Docker For Untrusted PR Review** flow (`doc/UNTRUSTED-PR-REVIEW.md`).
 - `check:no-git-push` guards accidental pushes — keep it on.
 
+> The gates, the `master` trigger, and the fork-first flow above are verified with
+> file-level evidence in **§6**.
+
 ### Promotion to the live instance (governed, reversible)
 
-Updating the live orchestrator from `main` is a discrete, **CTO-approved** operation,
+Updating the live orchestrator from `master` is a discrete, **CTO-approved** operation,
 never an incidental side effect of a task:
 
 1. `npx paperclipai db:backup` **first**.
-2. Pull `main` → `pnpm install && pnpm build` → `pnpm db:generate && pnpm db:migrate`
+2. Pull `master` → `pnpm install && pnpm build` → `pnpm db:generate && pnpm db:migrate`
    (prefer a low-activity window; never while the live instance is mid-build).
 3. `npx paperclipai doctor --repair` + health check.
 4. **Rollback** if unhealthy: restore the backup, revert to the previous build.
@@ -167,7 +170,105 @@ never an incidental side effect of a task:
 The detailed promotion + rollback runbook is tracked as
 [NEO-198](/NEO/issues/NEO-198).
 
-## 6. References
+## 6. Verified CI / PR Path
+
+This section records the **verified** merge path for `Neoreef/paperclip`: what gates run,
+on which branch, and from where pushes originate. Verified against the workspace at
+`af2e0036` (file:line citations are to that tree).
+
+### 6.1 The integration branch is `master`, and the PR gate fires on it
+
+`pr.yml` triggers only on PRs **targeting `master`**:
+
+```yaml
+# .github/workflows/pr.yml:3-6
+on:
+  pull_request:
+    branches:
+      - master
+```
+
+`master` (not `main`) is the canonical integration branch: every branch-gated workflow
+keys on it — `pr.yml`, `docker.yml`, `release.yml`, and `refresh-lockfile.yml` — and the
+repo history merges `upstream/master`. **A PR opened against any other branch (e.g. `main`)
+does not trigger `pr.yml` at all**, so the base branch must be `master`.
+
+GitHub runs the **base repository's** workflow definition for `pull_request` events. The
+gates therefore execute on `Neoreef/paperclip` (the base) regardless of whether the PR head
+lives on the canonical repo or on a personal fork — a fork's own Actions never substitute
+for the base repo's required checks. Recent squash-merged PRs (#6–#10 in `git log`) are
+direct evidence the gate has been exercising on real PRs into `master`.
+
+### 6.2 CI gates (`pr.yml`) — evidence
+
+| Gate (job) | What it enforces | Evidence (`.github/workflows/pr.yml`) |
+|---|---|---|
+| `policy` | Blocks manual `pnpm-lock.yaml` edits, validates Dockerfile deps stage, **runs `check:no-git-push` + its test**, validates the release package manifest + bootstrap, regenerates the lockfile when manifests change. | lines 13–90 |
+| `typecheck_release_registry` | `typecheck:build-gaps` + release-registry coverage. | 92–127 |
+| `general_tests` (matrix: `server`, `workspaces-a`, `workspaces-b`) | Grouped general suites. | 129–171 |
+| `build` | `pnpm build`. | 192–224 |
+| `verify_serialized_server` (4 shards) | Serialized server suites. | 226–274 |
+| `canary_dry_run` | `release.sh canary --skip-verify --dry-run`. | 276–329 |
+| `e2e` | Playwright e2e (Chrome, LLM-skipped). | 331–396 |
+| `verify` (**required check**) | Aggregate gate: `always()`, asserts `typecheck_release_registry`, `general_tests`, and `build` each `== success`. This is the legacy required-check name branch protection points at. | 173–190 |
+
+### 6.3 `check:no-git-push` stays enabled
+
+The guard rejects `git push` (and remote-mutating git invocations) in adapter/runtime
+source — the local execution-workspace cwd is the only cross-run persistence boundary, so
+adapter/runtime code must never push. It is wired into CI as part of the **required
+`policy` job**, not an optional lane:
+
+```yaml
+# .github/workflows/pr.yml:52-56
+- name: Reject git push in adapter/runtime code
+  run: node ./scripts/check-no-git-push.mjs
+- name: Test no-git-push check
+  run: node --test ./scripts/check-no-git-push.test.mjs
+```
+
+- npm scripts: `check:no-git-push` → `node scripts/check-no-git-push.mjs`;
+  `test:check-no-git-push` → `node --test scripts/check-no-git-push.test.mjs` (`package.json`).
+- The guard scans `packages/adapters`, `packages/adapter-utils`, `server/src`, `cli/src`
+  (`scripts/check-no-git-push.mjs:25-30`); the only escape hatch is an explicit
+  `paperclip:allow-git-push` marker reserved for reviewed, operator-configured paths.
+
+Keep this step in `pr.yml` and the script in `package.json`; removing either silently drops
+the guard.
+
+### 6.4 Fork-first push + PR-template flow
+
+The synced run workspace has **no git remote configured** (`git remote -v` is empty —
+verified this run), so you cannot push from the sandbox. The merge path runs from the
+canonical checkout or a personal fork:
+
+1. Branch per issue from `origin/master`.
+2. **Fork-first:** push the branch to your personal fork if one exists; otherwise push the
+   branch on the canonical repo. (No remote in the sandbox copy — push from a real checkout.)
+3. Open the PR with **base `Neoreef/paperclip:master`**.
+4. Fill `.github/PULL_REQUEST_TEMPLATE.md` — Thinking Path, Linked Issues, What Changed,
+   Verification, Risks, **Model Used**, and the Checklist (incl. "All Paperclip CI gates are
+   green" and "Greptile is 5/5"). `CONTRIBUTING.md` → "Use the PR Template" requires the
+   template even when the PR is opened via the GitHub API/tooling (copy it in manually).
+5. CI (`pr.yml` on the base) must be green; `pnpm typecheck && pnpm test && pnpm build` must
+   pass in the isolated worktree instance first (§5).
+
+### 6.5 Large / untrusted diffs — Docker review
+
+For diffs you do not want touching the host, review inside the isolated container
+(`doc/UNTRUSTED-PR-REVIEW.md`):
+
+```sh
+docker compose -f docker/docker-compose.untrusted-review.yml run --rm --service-ports review
+review-checkout-pr <owner>/<repo> <pr#>
+```
+
+It keeps `gh`/`codex`/`claude` auth, the clone, installs, and the local DB inside container
+volumes; it does **not** mount the host repo, host home, or SSH agent by default. Treat the
+PR as hostile input; run `pnpm install`/`pnpm dev` only when you intentionally want to
+execute the PR's code.
+
+## 7. References
 
 - Plan & governance: [NEO-189](/NEO/issues/NEO-189) (Board-approved; CTO conditions C1–C3).
 - `paperclip-dev` skill — the same Hard Rules, applied to every agent at runtime.
