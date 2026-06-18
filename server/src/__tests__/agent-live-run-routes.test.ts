@@ -586,6 +586,22 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("rejects client supplied timer wakeup source before heartbeat policy", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
+        .send({
+          source: "timer",
+          triggerDetail: "ping",
+          reason: "client_timer_ping",
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("calls heartbeat.wakeup with the legacy minimal shape when the body is empty", async () => {
     const res = await requestApp(
       await createApp(),

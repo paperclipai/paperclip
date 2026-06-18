@@ -721,7 +721,7 @@ export function registerAgentCommands(program: Command): void {
       .description("Request a heartbeat wakeup for an agent")
       .argument("<agentRef>", "Agent ID or shortname/url-key")
       .option("-C, --company-id <id>", "Company ID for shortname/url-key lookup")
-      .option("--source <source>", "Invocation source (timer, assignment, on_demand, automation)", "on_demand")
+      .option("--source <source>", "Invocation source (assignment, on_demand, automation)", "on_demand")
       .option("--trigger <trigger>", "Trigger detail (manual, ping, callback, system)", "manual")
       .option("--reason <text>", "Wakeup reason")
       .option("--payload <json>", "JSON object payload")

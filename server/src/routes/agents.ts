@@ -3159,7 +3159,8 @@ export function agentRoutes(
   // Shared handler body for the wakeup-style endpoints. The two routes differ
   // only in:
   //  - `source` — the modern /wakeup endpoint reads it from the request body
-  //    (timer|assignment|on_demand|automation) while the legacy
+  //    (assignment|on_demand|automation; timer is reserved for the server
+  //    scheduler) while the legacy
   //    /heartbeat/invoke endpoint hardcodes "on_demand", since it has only
   //    ever produced on-demand invocations.
   //  - skipped-response shape — the modern endpoint surfaces the rich

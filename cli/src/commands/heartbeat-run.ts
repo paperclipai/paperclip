@@ -4,7 +4,7 @@ import type { Agent, HeartbeatRun, HeartbeatRunEvent, HeartbeatRunStatus } from 
 import { getCLIAdapter } from "../adapters/index.js";
 import { resolveCommandContext } from "./client/common.js";
 
-const HEARTBEAT_SOURCES = ["timer", "assignment", "on_demand", "automation"] as const;
+const HEARTBEAT_SOURCES = ["assignment", "on_demand", "automation"] as const;
 const HEARTBEAT_TRIGGERS = ["manual", "ping", "callback", "system"] as const;
 const TERMINAL_STATUSES = new Set<HeartbeatRunStatus>(["succeeded", "failed", "cancelled", "timed_out"]);
 const POLL_INTERVAL_MS = 200;

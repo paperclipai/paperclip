@@ -148,7 +148,7 @@ heartbeat
   .option("--api-key <token>", "Bearer token for agent-authenticated calls")
   .option(
     "--source <source>",
-    "Invocation source (timer | assignment | on_demand | automation)",
+    "Invocation source (assignment | on_demand | automation)",
     "on_demand",
   )
   .option("--trigger <trigger>", "Trigger detail (manual | ping | callback | system)", "manual")
