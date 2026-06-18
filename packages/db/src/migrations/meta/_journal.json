@@ -719,8 +719,15 @@
     {
       "idx": 102,
       "version": "7",
+      "when": 1781490100000,
+      "tag": "0102_managed_sandbox_dedup_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
       "when": 1778966210569,
-      "tag": "0102_plugin_config_company_scope",
+      "tag": "0103_plugin_config_company_scope",
       "breakpoints": true
     }
   ]

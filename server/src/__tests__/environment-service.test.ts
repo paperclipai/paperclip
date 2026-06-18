@@ -300,6 +300,74 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect((rows[0]?.metadata as Record<string, unknown>)?.managedKubernetesSandbox).toBe(true);
   });
 
+  it("rejects a second managed-sandbox row for the same company at the DB level", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const now = new Date();
+    await db.insert(environments).values({
+      companyId,
+      name: "First",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "kubernetes" },
+      metadata: { managedByPaperclip: true, managedKubernetesSandbox: true },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Partial unique index environments_company_managed_sandbox_idx rejects a
+    // second row matching driver='sandbox' AND managedByPaperclip=true for the
+    // same company. This is the DB-level invariant that replaced the previous
+    // application-side post-insert convergence loop.
+    const secondInsert = db.insert(environments).values({
+      companyId,
+      name: "Second",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "kubernetes" },
+      metadata: { managedByPaperclip: true, managedKubernetesSandbox: true },
+      createdAt: new Date(now.getTime() + 1),
+      updatedAt: new Date(now.getTime() + 1),
+    });
+    let raisedConstraint: string | null = null;
+    try {
+      await secondInsert;
+    } catch (error) {
+      raisedConstraint =
+        (error as { constraint_name?: string; cause?: { constraint_name?: string } })
+          ?.constraint_name ??
+        (error as { cause?: { constraint_name?: string } })?.cause?.constraint_name ??
+        "unknown";
+    }
+    expect(raisedConstraint).toBe("environments_company_managed_sandbox_idx");
+
+    // Index does NOT cover tenant-created sandbox rows (no managedByPaperclip
+    // marker) — operators must be able to keep multiple tenant sandbox envs.
+    await db.insert(environments).values({
+      companyId,
+      name: "Tenant Sandbox",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "fake" },
+      metadata: { tenant: true },
+      createdAt: new Date(now.getTime() + 2),
+      updatedAt: new Date(now.getTime() + 2),
+    });
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")));
+    expect(rows).toHaveLength(2);
+  });
+
   it("does not treat a non-kubernetes sandbox environment as the managed k8s env", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

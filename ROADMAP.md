@@ -48,7 +48,7 @@ Paperclip should support explicit review and approval stages as first-class work
 
 Paperclip needs a clearer path from solo operator to real human teams. That means shared board access, safer collaboration, and a better model for several humans supervising the same autonomous company.
 
-### ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+### ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b / Novita agents)
 
 We want agents to run in more remote and sandboxed environments while preserving the same Paperclip control-plane model. This makes the system safer, more flexible, and more useful outside a single trusted local machine.
 

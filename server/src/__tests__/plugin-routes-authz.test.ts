@@ -148,7 +148,7 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(res.status).toBe(200);
     const packageNames = res.body.map((plugin: { packageName: string }) => plugin.packageName);
     const byPackageName = new Map(
-      res.body.map((plugin: { packageName: string; experimental: boolean }) => [plugin.packageName, plugin]),
+      res.body.map((plugin: { packageName: string; experimental: boolean; hasBuiltEntrypoints: boolean }) => [plugin.packageName, plugin]),
     );
     expect(packageNames).toContain("@paperclipai/plugin-workspace-diff");
     expect(packageNames).toContain("@paperclipai/plugin-llm-wiki");
@@ -159,6 +159,7 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(byPackageName.get("@paperclipai/plugin-llm-wiki")?.experimental).toBe(true);
     expect(byPackageName.get("@paperclipai/plugin-modal")?.experimental).toBe(true);
     expect(byPackageName.get("@paperclipai/plugin-authoring-smoke-example")?.experimental).toBe(false);
+    expect(typeof byPackageName.get("@paperclipai/plugin-workspace-diff")?.hasBuiltEntrypoints).toBe("boolean");
   }, 20_000);
 
   it("rejects plugin installation for non-admin board users", async () => {
