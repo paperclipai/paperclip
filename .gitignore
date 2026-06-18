@@ -51,6 +51,17 @@ diagnostics/
 # Doc maintenance cursor
 .doc-review-cursor
 
+# Agent-generated temp scripts and output files (root-level only)
+artifacts/
+FUL-*.md
+FUL-*.txt
+FUL-*.json
+FUL-*.sql
+agents.json
+agents-list.json
+agent-routing-check.txt
+api-check.json
+
 # Playwright
 tests/e2e/test-results/
 tests/e2e/playwright-report/
