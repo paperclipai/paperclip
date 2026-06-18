@@ -53,6 +53,9 @@ diagnostics/
 
 # Agent-generated temp scripts and output files (root-level only)
 artifacts/
+
+# Runtime data directories (model routing state, etc.)
+help2day/model-routing/
 FUL-*.md
 FUL-*.txt
 FUL-*.json
