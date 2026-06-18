@@ -834,6 +834,67 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.createChild).not.toHaveBeenCalled();
   });
 
+  it("auto-closes an existing pull request review child when PR work product reaches closed", async () => {
+    mockWorkProductService.getById.mockResolvedValueOnce({
+      id: "product-pr-4",
+      issueId,
+      companyId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #124",
+      url: "https://github.com/paperclipai/paperclip/pull/124",
+      status: "ready_for_review",
+      metadata: { paperclipPullRequestReviewChildIssueId: "review-child-3" },
+    });
+    mockWorkProductService.update.mockResolvedValueOnce({
+      id: "product-pr-4",
+      issueId,
+      companyId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #124",
+      url: "https://github.com/paperclipai/paperclip/pull/124",
+      status: "closed",
+      metadata: { paperclipPullRequestReviewChildIssueId: "review-child-3" },
+    });
+    mockIssueService.getById
+      .mockResolvedValueOnce(makeIssue())
+      .mockResolvedValueOnce({
+        ...makeIssue({
+          id: "review-child-3",
+          parentId: issueId,
+          status: "todo",
+          assigneeAgentId: null,
+        }),
+      });
+
+    const app = await createApp(ownerActor());
+    const res = await request(app)
+      .patch("/api/work-products/product-pr-4")
+      .send({ status: "closed" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "review-child-3",
+      expect.objectContaining({
+        status: "done",
+        actorAgentId: ownerAgentId,
+        actorUserId: null,
+      }),
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "review-child-3",
+      expect.stringContaining("Pull request work product `PR #124` reached `closed`."),
+      expect.objectContaining({ runId: ownerRunId }),
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "review-child-3",
+      expect.stringContaining("terminal status `closed`"),
+      expect.objectContaining({ runId: ownerRunId }),
+    );
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+  });
+
   it("preserves board mutations on active checkouts", async () => {
     const app = await createApp(boardActor());
 

@@ -238,6 +238,13 @@ function shouldCreatePullRequestReviewTask(product: {
   return product.type === "pull_request" && !PULL_REQUEST_REVIEW_TERMINAL_STATUSES.has(product.status);
 }
 
+function pullRequestTerminalStatusClosureMessage(status: string) {
+  if (status === "merged") {
+    return "Paperclip closed this review task automatically because the PR is now merged.";
+  }
+  return `Paperclip closed this review task automatically because the PR reached terminal status \`${status}\`.`;
+}
+
 function getPullRequestReviewChildIssueIdFromMetadata(
   metadata: Record<string, unknown> | null | undefined,
 ) {
@@ -1050,16 +1057,16 @@ export function issueRoutes(
 
     const existing = await findExistingPullRequestReviewChild(input.issue, input.product);
     if (!shouldCreatePullRequestReviewTask(input.product)) {
-      if (input.product.status === "merged" && existing && existing.status !== "done") {
+      if (existing && existing.status !== "done") {
         await svc.update(existing.id, {
           status: "done",
           actorAgentId: input.actor.agentId,
           actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
         });
         await svc.addComment(existing.id, [
-          `Pull request work product \`${input.product.title}\` reached \`merged\`.`,
+          `Pull request work product \`${input.product.title}\` reached \`${input.product.status}\`.`,
           "",
-          "Paperclip closed this review task automatically because the PR is now merged.",
+          pullRequestTerminalStatusClosureMessage(input.product.status),
         ].join("\n"), { runId: input.actor.runId ?? null });
       }
       return;
