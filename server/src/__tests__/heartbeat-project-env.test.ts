@@ -300,6 +300,19 @@ describe("extractMentionedSkillIdsFromSources", () => {
       ]),
     ).toEqual([validSkillId]);
   });
+
+  it("returns slug strings verbatim when a mention was authored with a slug instead of a UUID", () => {
+    // Skill mention links should embed the skill UUID as the skillId, but
+    // manually-authored or legacy mentions may use the slug directly.
+    // extractMentionedSkillIdsFromSources returns whatever string was in the
+    // URL — the caller is responsible for separating UUIDs from slugs before
+    // querying the database.
+    const slugHref = buildSkillMentionHref("plane-pc", "plane-pc");
+
+    expect(
+      extractMentionedSkillIdsFromSources([`Use [/plane-pc](${slugHref})`]),
+    ).toEqual(["plane-pc"]);
+  });
 });
 
 describe("applyRunScopedMentionedSkillKeys", () => {
