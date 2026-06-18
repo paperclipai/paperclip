@@ -10420,6 +10420,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        const isTerminalIssue = issue.status === "done" || issue.status === "cancelled";
+        const isInteractionWake = allowsIssueInteractionWake(enrichedContextSnapshot);
+        if (isTerminalIssue && !isInteractionWake) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_terminal_status",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
         const cancelStaleScheduledRetry = async (scheduledRun: typeof heartbeatRuns.$inferSelect) => {
           const issueCancelled = issue.status === "cancelled";
           if (
@@ -11287,6 +11306,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await cancelPendingWakeupsForBudgetScope(scope);
   }
 
+  async function cancelStaleQueuedRuns(companyId: string) {
+    const queuedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      );
+
+    const cancelled: Array<{ runId: string; reason: string; issueId: string | null }> = [];
+
+    for (const run of queuedRuns) {
+      const context = parseObject(run.contextSnapshot);
+      const issueId = readNonEmptyString(context.issueId);
+      if (!issueId) continue;
+
+      const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
+      if (staleness.stale) {
+        await cancelQueuedRunForStaleIssue(run, issueId, staleness);
+        cancelled.push({ runId: run.id, reason: staleness.reason, issueId });
+        logger.info(
+          { runId: run.id, issueId, errorCode: staleness.errorCode },
+          "cancelStaleQueuedRuns: cancelled stale queued run",
+        );
+      }
+    }
+
+    return { cancelledCount: cancelled.length, cancelled };
+  }
+
   return {
     list: async (companyId: string, agentId?: string, limit?: number) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
@@ -11604,6 +11655,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+
+   cancelStaleQueuedRuns,
 
     cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
 

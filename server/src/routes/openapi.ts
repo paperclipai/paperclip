@@ -2826,6 +2826,17 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/heartbeat-runs/stale/cancel",
+  tags: ["runs"],
+  summary: "Cancel stale queued runs for a company",
+  request: {
+    body: jsonBody(z.object({ companyId: z.string() })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/heartbeat-runs/{runId}/watchdog-decisions",
   tags: ["runs"],
   summary: "Submit watchdog decisions for a run",
