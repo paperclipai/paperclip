@@ -36,6 +36,10 @@ const SECRET_TEXT_HINTS = [
   "ghu_",
   "ghs_",
   "ghr_",
+  "xox",
+  "xapp",
+  "sbp_",
+  "://",
 ] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
