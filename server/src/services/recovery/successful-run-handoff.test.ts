@@ -184,6 +184,23 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue for successful comment-driven wakes", () => {
+    expect(decide({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: "issue_commented",
+          commentId: "comment-1",
+          wakeCommentIds: ["comment-1"],
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "comment-driven wake already owns the next action",
+    });
+  });
+
   it("uses a stable one-attempt idempotency key", () => {
     expect(buildFinishSuccessfulRunHandoffIdempotencyKey({
       issueId: "issue-1",

@@ -86,6 +86,17 @@ export function environmentRoutes(
     throw forbidden("Missing permission: environments:manage");
   }
 
+  async function assertCanReadSecretsForDraftProbe(req: Request, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation);
+    }
+  }
+
   async function actorCanReadEnvironmentConfigurations(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
 
@@ -431,14 +442,23 @@ export function environmentRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCanMutateEnvironments(req, companyId);
+      if (req.body.driver === "sandbox") {
+        // Draft sandbox probes can resolve unbound secret refs, so require
+        // the same company-scoped secret-read capability before normalization.
+        await assertCanReadSecretsForDraftProbe(req, companyId);
+      }
       const actor = getActorInfo(req);
-      const probeActorType = req.actor.type === "board" ? "board" : "agent";
       const normalizedConfig = await normalizeEnvironmentConfigForProbe({
         db,
         companyId,
-        actorType: probeActorType,
         driver: req.body.driver,
         config: req.body.config,
+        accessContext: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          actorSource: actor.actorSource,
+          heartbeatRunId: actor.runId,
+        },
         pluginWorkerManager: options.pluginWorkerManager,
       });
       const environment = {

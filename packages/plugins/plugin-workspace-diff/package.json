@@ -42,7 +42,6 @@
     "diff"
   ],
   "scripts": {
-    "postinstall": "node ../../../scripts/link-plugin-dev-sdk.mjs",
     "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "tsc && node ./scripts/build-ui.mjs",
     "clean": "rm -rf dist",

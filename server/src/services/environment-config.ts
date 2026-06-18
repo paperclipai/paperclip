@@ -13,7 +13,7 @@ import type {
   SecretVersionSelector,
   SshEnvironmentConfig,
 } from "@paperclipai/shared";
-import { forbidden, unprocessable } from "../errors.js";
+import { unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
 import {
@@ -267,9 +267,14 @@ async function resolveConfigSecretRefsForRuntime(input: {
 async function resolveConfigSecretRefsForProbe(input: {
   db: Db;
   companyId: string;
-  actorType: "board" | "agent";
   config: Record<string, unknown>;
   schema: Record<string, unknown> | null;
+  accessContext?: {
+    actorType: "agent" | "user";
+    actorId: string;
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    heartbeatRunId?: string | null;
+  };
 }): Promise<Record<string, unknown>> {
   const secrets = secretService(input.db);
   let nextConfig = { ...input.config };
@@ -278,16 +283,21 @@ async function resolveConfigSecretRefsForProbe(input: {
     if (typeof current !== "string") continue;
     const trimmed = current.trim();
     if (!isUuidSecretRef(trimmed)) continue;
-    if (input.actorType !== "board") {
-      throw forbidden("Only board authentication can resolve unbound secret refs for unsaved probes");
-    }
     // Unsaved draft probes do not have an environment record yet, so they
     // cannot rely on environment-bound secret resolution. Resolve directly for
     // this ephemeral board-only probe and never persist the plaintext value.
     nextConfig = writeConfigValueAtPath(
       nextConfig,
       path,
-      await secrets.resolveSecretValue(input.companyId, trimmed, "latest"),
+      await secrets.resolveSecretValueForEphemeralAccess(input.companyId, trimmed, "latest", {
+        consumerType: "system",
+        consumerId: "environment-probe-config",
+        configPath: path,
+        actorType: input.accessContext?.actorType ?? "system",
+        actorId: input.accessContext?.actorId ?? null,
+        actorSource: input.accessContext?.actorSource,
+        heartbeatRunId: input.accessContext?.heartbeatRunId ?? null,
+      }),
     );
   }
   return nextConfig;
@@ -368,9 +378,14 @@ export function normalizeEnvironmentConfig(input: {
 export function normalizeEnvironmentConfigForProbe(input: {
   db: Db;
   companyId: string;
-  actorType: "board" | "agent";
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
+  accessContext?: {
+    actorType: "agent" | "user";
+    actorId: string;
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    heartbeatRunId?: string | null;
+  };
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> | Record<string, unknown> {
   if (input.driver === "ssh") {
@@ -406,8 +421,8 @@ export function normalizeEnvironmentConfigForProbe(input: {
       ...(await resolveConfigSecretRefsForProbe({
         db: input.db,
         companyId: input.companyId,
-        actorType: input.actorType,
         config: validated.normalizedConfig,
+        accessContext: input.accessContext,
         schema:
           validated.driver.configSchema &&
           typeof validated.driver.configSchema === "object" &&
