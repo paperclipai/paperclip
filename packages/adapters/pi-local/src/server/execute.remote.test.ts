@@ -239,6 +239,7 @@ describe("pi remote execution", () => {
         id: "agent-1",
         companyId: "company-1",
         name: "Pi Builder",
+        role: "engineer",
         adapterType: "pi_local",
         adapterConfig: {},
       },
