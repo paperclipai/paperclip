@@ -38,6 +38,16 @@ function resolveSelfOrigin(req: Request): string {
   return `${protocol}://${host}`;
 }
 
+function resolveTrustedBrowserOrigin(req: Request, fallbackOrigin: string): string {
+  const inboundOrigin = originOnly(req.header("origin") ?? null);
+  if (inboundOrigin) return inboundOrigin;
+
+  const inboundRefererOrigin = originOnly(req.header("referer") ?? null);
+  if (inboundRefererOrigin) return inboundRefererOrigin;
+
+  return fallbackOrigin;
+}
+
 async function insertSupabaseRows(table: string, rows: Array<Record<string, unknown>>): Promise<{ ok: boolean; skipped?: boolean; error?: string }> {
   const supabaseUrl = normalizeBaseUrl(process.env.SUPABASE_URL);
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
@@ -134,11 +144,14 @@ export function sinkDinkAgentWorkflowRoutes() {
 
     try {
       const origin = resolveSelfOrigin(req);
+      const trustedBrowserOrigin = resolveTrustedBrowserOrigin(req, origin);
       const wrappedRoute = `${origin}/api/sink-dink/ai-campaign/create`;
       const campaignResponse = await fetch(wrappedRoute, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Origin: trustedBrowserOrigin,
+          Referer: `${trustedBrowserOrigin}/NSD/dashboard`,
           ...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
           ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}),
         },
@@ -169,6 +182,7 @@ export function sinkDinkAgentWorkflowRoutes() {
           tone,
           durationSec,
           wrappedRoute,
+          trustedBrowserOrigin,
           campaignBatchId: campaign.batchId ?? null,
           campaignHttpStatus: campaignResponse.status,
           successCount,
@@ -195,6 +209,7 @@ export function sinkDinkAgentWorkflowRoutes() {
         campaign,
         diagnostics: {
           resolvedOrigin: origin,
+          trustedBrowserOrigin,
           wrappedRoute,
           campaignHttpStatus: campaignResponse.status,
         },
