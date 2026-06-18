@@ -227,3 +227,24 @@ source = source.replace(
 
 writeFileSync(routePath, source, "utf8");
 console.log("Patched SINK DINK AI campaign route: strict API-only, no fallback content.");
+
+const appPath = "server/src/app.ts";
+let appSource = readFileSync(appPath, "utf8");
+const artifactImportLine = 'import { sinkDinkArtifactRoutes } from "./routes/sink-dink-artifacts.js";';
+const artifactReviewImportLine = 'import { sinkDinkArtifactReviewRoutes } from "./routes/sink-dink-artifact-review.js";';
+if (!appSource.includes(artifactReviewImportLine)) {
+  if (!appSource.includes(artifactImportLine)) {
+    throw new Error("Expected artifact route import not found before review mount");
+  }
+  appSource = appSource.replace(artifactImportLine, `${artifactImportLine}\n${artifactReviewImportLine}`);
+}
+const artifactMountLine = "  api.use(sinkDinkArtifactRoutes());";
+const artifactReviewMountLine = "  api.use(sinkDinkArtifactReviewRoutes());";
+if (!appSource.includes(artifactReviewMountLine)) {
+  if (!appSource.includes(artifactMountLine)) {
+    throw new Error("Expected artifact route mount not found before review mount");
+  }
+  appSource = appSource.replace(artifactMountLine, `${artifactMountLine}\n${artifactReviewMountLine}`);
+}
+writeFileSync(appPath, appSource, "utf8");
+console.log("Mounted SINK DINK artifact review route in app.ts");
