@@ -50,6 +50,6 @@
     "@paperclipai/shared": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0"
+    "@types/node": "^22.19.21"
   }
 }
