@@ -20,7 +20,12 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { browserName: "chromium" },
+      use: {
+        browserName: "chromium",
+        // CI runners ship Google Chrome; use it instead of downloading
+        // Chromium from the Playwright CDN, which hangs on extraction.
+        channel: process.env.PLAYWRIGHT_CHROMIUM_CHANNEL || undefined,
+      },
     },
   ],
   outputDir: "./test-results",
