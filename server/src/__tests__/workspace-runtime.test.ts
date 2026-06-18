@@ -403,7 +403,7 @@ describe("realizeExecutionWorkspace", () => {
 
     expect(first.strategy).toBe("git_worktree");
     expect(first.created).toBe(true);
-    expect(first.branchName).toBe("PAP-447-add-worktree-support");
+    expect(first.branchName).toBe("add-worktree-support");
     expect(first.cwd).toContain(path.join(".paperclip", "worktrees"));
     await expect(fs.stat(path.join(first.cwd, ".git"))).resolves.toBeTruthy();
 
@@ -510,7 +510,7 @@ describe("realizeExecutionWorkspace", () => {
 
   it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {
     const repoRoot = await createTempRepo();
-    const branchName = "PAP-447-add-worktree-support";
+    const branchName = "add-worktree-support";
     const poisonedPath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
     await fs.mkdir(poisonedPath, { recursive: true });
 
@@ -546,7 +546,7 @@ describe("realizeExecutionWorkspace", () => {
 
   it("reuses the current linked worktree instead of nesting another worktree inside it", async () => {
     const repoRoot = await createTempRepo();
-    const branchName = "PAP-1355-worktree-reuse";
+    const branchName = "worktree-reuse";
     const currentWorktree = path.join(repoRoot, ".paperclip", "worktrees", branchName);
 
     await fs.mkdir(path.dirname(currentWorktree), { recursive: true });
@@ -644,12 +644,12 @@ describe("realizeExecutionWorkspace", () => {
           companyId: "company-1",
         },
       }),
-    ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on "unexpected-branch" instead of "PAP-447-add-worktree-support"\)\./);
+    ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on "unexpected-branch" instead of "add-worktree-support"\)\./);
   });
 
   it("reuses an already checked out branch from git worktree metadata even when the target path differs", async () => {
     const repoRoot = await createTempRepo();
-    const branchName = "PAP-1355-worktree-reuse";
+    const branchName = "worktree-reuse";
     const existingWorktree = path.join(repoRoot, ".paperclip", "worktrees", branchName);
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
@@ -730,7 +730,7 @@ describe("realizeExecutionWorkspace", () => {
     });
 
     expect(realized.branchName).toBe(
-      "PAP-991-there-should-be-a-setting-for-the-allowance-of-thumbs-up-thumbs-down-data-rm-rf",
+      "there-should-be-a-setting-for-the-allowance-of-thumbs-up-thumbs-down-data-rm-rf",
     );
     expect(realized.branchName?.includes("/")).toBe(false);
     expect(path.basename(realized.cwd)).toBe(realized.branchName);
@@ -766,8 +766,42 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
-    expect(realized.branchName).toBe("release/PAP-992.hotfix-april-1");
-    expect(path.basename(realized.cwd)).toBe("PAP-992.hotfix-april-1");
+    expect(realized.branchName).toBe("release/hotfix-april-1");
+    expect(path.basename(realized.cwd)).toBe("hotfix-april-1");
+  });
+
+  it("strips issue identifiers from branch template output and slug text", async () => {
+    const repoRoot = await createTempRepo();
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "feature/{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-template-strip",
+        identifier: "pap-993",
+        title: "pap-993 hotfix rollout",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.branchName).toBe("feature/hotfix-rollout");
+    expect(path.basename(realized.cwd)).toBe("hotfix-rollout");
   });
 
   it("runs a configured provision command inside the derived worktree", async () => {
@@ -816,7 +850,7 @@ describe("realizeExecutionWorkspace", () => {
     });
 
     await expect(fs.readFile(path.join(workspace.cwd, ".paperclip-provision-branch"), "utf8")).resolves.toBe(
-      "PAP-448-run-provision-command\n",
+      "run-provision-command\n",
     );
     await expect(fs.readFile(path.join(workspace.cwd, ".paperclip-provision-base"), "utf8")).resolves.toBe(
       `${repoRoot}\n`,
@@ -1073,7 +1107,7 @@ describe("realizeExecutionWorkspace", () => {
       const envContents = await fs.readFile(envPath, "utf8");
       const configContents = JSON.parse(await fs.readFile(configPath, "utf8"));
       const configStats = await fs.lstat(configPath);
-      const expectedInstanceId = "pap-885-show-worktree-banner";
+      const expectedInstanceId = "show-worktree-banner";
       const expectedInstanceRoot = path.join(
         isolatedWorktreeHome,
         "instances",
@@ -1093,7 +1127,7 @@ describe("realizeExecutionWorkspace", () => {
       expect(envVars.PAPERCLIP_INSTANCE_ID).toBe(expectedInstanceId);
       expect(await fs.realpath(envVars.PAPERCLIP_CONFIG!)).toBe(await fs.realpath(configPath));
       expect(envVars.PAPERCLIP_IN_WORKTREE).toBe("true");
-      expect(envVars.PAPERCLIP_WORKTREE_NAME).toBe("PAP-885-show-worktree-banner");
+      expect(envVars.PAPERCLIP_WORKTREE_NAME).toBe("show-worktree-banner");
 
       process.chdir(workspace.cwd);
       expect(resolvePaperclipConfigPath()).toBe(configPath);
@@ -1599,7 +1633,7 @@ describe("realizeExecutionWorkspace", () => {
     ]);
     expect(operations[0]?.command).toContain("git worktree add");
     expect(operations[0]?.metadata).toMatchObject({
-      branchName: "PAP-540-record-workspace-operations",
+      branchName: "record-workspace-operations",
       created: true,
     });
     expect(operations[1]?.command).toBe("bash ./scripts/provision.sh");
@@ -1658,7 +1692,7 @@ describe("realizeExecutionWorkspace", () => {
 
   it("reuses an existing branch without resetting it when recreating a missing worktree", async () => {
     const repoRoot = await createTempRepo();
-    const branchName = "PAP-450-recreate-missing-worktree";
+    const branchName = "recreate-missing-worktree";
 
     await runGit(repoRoot, ["checkout", "-b", branchName]);
     await fs.writeFile(path.join(repoRoot, "feature.txt"), "preserve me\n", "utf8");
@@ -1702,7 +1736,7 @@ describe("realizeExecutionWorkspace", () => {
 
   it("reattaches a missing persisted git worktree before manual control starts it", async () => {
     const repoRoot = await createTempRepo();
-    const branchName = "PAP-451-restore-persisted-worktree";
+    const branchName = "restore-persisted-worktree";
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.writeFile(
       path.join(repoRoot, "scripts", "restore.sh"),
@@ -2312,7 +2346,7 @@ describe("ensureRuntimeServicesForRun", () => {
 
   it("does not reuse project-scoped shared services across different workspace launch contexts", async () => {
     const primaryWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-primary-"));
-    const worktreeWorkspaceRoot = path.join(primaryWorkspaceRoot, ".paperclip", "worktrees", "PAP-874-chat-speed-issues");
+    const worktreeWorkspaceRoot = path.join(primaryWorkspaceRoot, ".paperclip", "worktrees", "chat-speed-issues");
     await fs.mkdir(worktreeWorkspaceRoot, { recursive: true });
 
     const primaryWorkspace = buildWorkspace(primaryWorkspaceRoot);
@@ -2321,7 +2355,7 @@ describe("ensureRuntimeServicesForRun", () => {
       source: "task_session",
       strategy: "git_worktree",
       cwd: worktreeWorkspaceRoot,
-      branchName: "PAP-874-chat-speed-issues",
+      branchName: "chat-speed-issues",
       worktreePath: worktreeWorkspaceRoot,
     };
     const serviceCommand =

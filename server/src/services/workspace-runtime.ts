@@ -358,12 +358,23 @@ function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<R
 }
 
 function sanitizeSlugPart(value: string | null | undefined, fallback: string): string {
-  const raw = (value ?? "").trim().toLowerCase();
+  const raw = stripPaperclipIssueIdentifiers(value ?? "").trim().toLowerCase();
   const normalized = raw
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^[-_]+|[-_]+$/g, "");
   return normalized.length > 0 ? normalized : fallback;
+}
+
+function stripPaperclipIssueIdentifiers(value: string): string {
+  return value
+    .split("/")
+    .map((segment) => segment
+      .replace(/(^|[._-])[a-z][a-z0-9]{1,3}-\d+(?=$|[._-])/gi, "$1")
+      .replace(/[._-]{2,}/g, "-")
+      .replace(/^[._-]+|[._-]+$/g, ""))
+    .filter((segment) => segment.length > 0)
+    .join("/");
 }
 
 function renderWorkspaceTemplate(template: string, input: {
@@ -395,12 +406,17 @@ function renderWorkspaceTemplate(template: string, input: {
 }
 
 function sanitizeBranchName(value: string): string {
-  return value
-    .trim()
-    .replace(/[^A-Za-z0-9._/-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^[-/.]+|[-/.]+$/g, "")
-    .slice(0, 120) || "paperclip-work";
+  const sanitized = stripPaperclipIssueIdentifiers(value.trim())
+    .split("/")
+    .map((segment) => segment
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/\.{2,}/g, ".")
+      .replace(/^[-._]+|[-._]+$/g, ""))
+    .filter((segment) => segment.length > 0)
+    .join("/")
+    .slice(0, 120);
+  return sanitized || "paperclip-work";
 }
 
 function isAbsolutePath(value: string) {
