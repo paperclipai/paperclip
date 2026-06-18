@@ -61,6 +61,8 @@ describe("databaseCheck — embedded postgres temp-dir guard", () => {
     expect(result.message).toMatch(/temp directory/i);
     expect(result.message).toMatch(/ephemeral/i);
     expect(result.repairHint).toContain("PAPERCLIP_HOME");
+    // Must warn BEFORE creating anything — don't bootstrap the throwaway temp dir.
+    expect(fs.existsSync(tmpDataDir)).toBe(false);
   });
 
   it("does NOT warn for a temp data dir when not in worktree mode (intentional ephemeral/CI use)", async () => {
