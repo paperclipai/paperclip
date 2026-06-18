@@ -267,7 +267,7 @@ async function resolveConfigSecretRefsForRuntime(input: {
 async function resolveConfigSecretRefsForProbe(input: {
   db: Db;
   companyId: string;
-  actorType: "board" | "agent" | "none";
+  actorType: "board" | "agent";
   config: Record<string, unknown>;
   schema: Record<string, unknown> | null;
 }): Promise<Record<string, unknown>> {
@@ -278,8 +278,8 @@ async function resolveConfigSecretRefsForProbe(input: {
     if (typeof current !== "string") continue;
     const trimmed = current.trim();
     if (!isUuidSecretRef(trimmed)) continue;
-    if (input.actorType === "agent") {
-      throw forbidden("Agent authentication cannot resolve unbound secret refs for unsaved probes");
+    if (input.actorType !== "board") {
+      throw forbidden("Only board authentication can resolve unbound secret refs for unsaved probes");
     }
     // Unsaved draft probes do not have an environment record yet, so they
     // cannot rely on environment-bound secret resolution. Resolve directly for
@@ -368,7 +368,7 @@ export function normalizeEnvironmentConfig(input: {
 export function normalizeEnvironmentConfigForProbe(input: {
   db: Db;
   companyId: string;
-  actorType: "board" | "agent" | "none";
+  actorType: "board" | "agent";
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
   pluginWorkerManager?: PluginWorkerManager;

@@ -432,10 +432,11 @@ export function environmentRoutes(
       const companyId = req.params.companyId as string;
       await assertCanMutateEnvironments(req, companyId);
       const actor = getActorInfo(req);
+      const probeActorType = req.actor.type === "board" ? "board" : "agent";
       const normalizedConfig = await normalizeEnvironmentConfigForProbe({
         db,
         companyId,
-        actorType: req.actor.type,
+        actorType: probeActorType,
         driver: req.body.driver,
         config: req.body.config,
         pluginWorkerManager: options.pluginWorkerManager,
