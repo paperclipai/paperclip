@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, environmentLeases, environments } from "@paperclipai/db";
+import { environmentLeases, environments } from "@paperclipai/db";
 import {
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_LEASE_CLEANUP_STATUSES,
@@ -199,90 +199,87 @@ export function environmentService(db: Db) {
       companyId: string,
       config: KubernetesEnvironmentConfigInput,
     ): Promise<Environment> => {
-      return db.transaction(async (tx) => {
-        await tx.execute(
-          sql`select ${companies.id} from ${companies} where ${companies.id} = ${companyId} for update`,
+      const desiredConfig: Record<string, unknown> = {
+        ...config,
+        provider: KUBERNETES_PROVIDER_KEY,
+      };
+      const desiredMetadata: Record<string, unknown> = {
+        managedByPaperclip: true,
+        [KUBERNETES_MANAGED_MARKER]: true,
+      };
+
+      const existing = await db
+        .select()
+        .from(environments)
+        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+        .orderBy(asc(environments.createdAt), asc(environments.id))
+        .then((rows) =>
+          rows.find(
+            (row) =>
+              (row.metadata as Record<string, unknown> | null)?.[KUBERNETES_MANAGED_MARKER] === true,
+          ) ?? null,
         );
 
-        const desiredConfig: Record<string, unknown> = {
-          ...config,
-          provider: KUBERNETES_PROVIDER_KEY,
-        };
-        const desiredMetadata: Record<string, unknown> = {
-          managedByPaperclip: true,
-          [KUBERNETES_MANAGED_MARKER]: true,
-        };
-
-        const existing = await tx
-          .select()
-          .from(environments)
-          .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
-          .orderBy(asc(environments.createdAt), asc(environments.id))
-          .then((rows) =>
-            rows.find(
-              (row) =>
-                (row.metadata as Record<string, unknown> | null)?.[KUBERNETES_MANAGED_MARKER] === true,
-            ) ?? null,
-          );
-
-        const now = new Date();
-        if (existing) {
-          const updated = await tx
-            .update(environments)
-            .set({
-              config: desiredConfig,
-              metadata: { ...(existing.metadata ?? {}), ...desiredMetadata },
-              status: "active",
-              updatedAt: now,
-            })
-            .where(eq(environments.id, existing.id))
-            .returning()
-            .then((rows) => rows[0] ?? existing);
-          return toEnvironment(updated);
-        }
-
-        const row = await tx
-          .insert(environments)
-          .values({
-            companyId,
-            name: DEFAULT_KUBERNETES_ENVIRONMENT_NAME,
-            description: DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION,
-            driver: "sandbox",
-            status: "active",
+      const now = new Date();
+      if (existing) {
+        const updated = await db
+          .update(environments)
+          .set({
             config: desiredConfig,
-            metadata: desiredMetadata,
-            createdAt: now,
+            metadata: { ...(existing.metadata ?? {}), ...desiredMetadata },
+            status: "active",
             updatedAt: now,
           })
+          .where(eq(environments.id, existing.id))
           .returning()
-          .then((rows) => rows[0] ?? null);
-        if (!row) {
-          throw new Error("Failed to ensure kubernetes environment");
-        }
+          .then((rows) => rows[0] ?? existing);
+        return toEnvironment(updated);
+      }
 
-        // Concurrency: the schema's (companyId, driver) unique index is partial
-        // on driver='local' only, so serialize managed k8s creation on the
-        // parent company row until a partial unique index can enforce it.
-        const winner = await tx
-          .select()
-          .from(environments)
-          .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
-          .orderBy(asc(environments.createdAt), asc(environments.id))
-          .then(
-            (rows) =>
-              rows.find(
-                (candidate) =>
-                  (candidate.metadata as Record<string, unknown> | null)?.[
-                    KUBERNETES_MANAGED_MARKER
-                  ] === true,
-              ) ?? null,
-          );
-        if (winner && winner.id !== row.id) {
-          await tx.delete(environments).where(eq(environments.id, row.id));
-          return toEnvironment(winner);
-        }
-        return toEnvironment(row);
-      });
+      // The partial unique index `environments_company_managed_sandbox_idx`
+      // (added in migration 0102) enforces "at most one Paperclip-managed
+      // sandbox row per company" at the DB level. Use ON CONFLICT DO NOTHING
+      // keyed on that index so concurrent callers can race the INSERT — only
+      // one succeeds; losers re-read the surviving row.
+      const inserted = await db
+        .insert(environments)
+        .values({
+          companyId,
+          name: DEFAULT_KUBERNETES_ENVIRONMENT_NAME,
+          description: DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION,
+          driver: "sandbox",
+          status: "active",
+          config: desiredConfig,
+          metadata: desiredMetadata,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing({
+          target: [environments.companyId],
+          where: sql`${environments.driver} = 'sandbox' AND (${environments.metadata} ->> 'managedByPaperclip')::boolean = true`,
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (inserted) return toEnvironment(inserted);
+
+      const winner = await db
+        .select()
+        .from(environments)
+        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+        .orderBy(asc(environments.createdAt), asc(environments.id))
+        .then(
+          (rows) =>
+            rows.find(
+              (candidate) =>
+                (candidate.metadata as Record<string, unknown> | null)?.[
+                  KUBERNETES_MANAGED_MARKER
+                ] === true,
+            ) ?? null,
+        );
+      if (!winner) {
+        throw new Error("Failed to ensure kubernetes environment");
+      }
+      return toEnvironment(winner);
     },
 
     /**
