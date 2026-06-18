@@ -311,6 +311,29 @@ function isProductiveSuccessfulRun(input: {
   return Boolean(input.detectedProgressSummary);
 }
 
+export function isExplicitLiveMonitorContinuationComment(body: string | null | undefined) {
+  const normalized = (body ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!normalized) return false;
+
+  const namesLiveMonitor =
+    normalized.includes("live monitor") ||
+    normalized.includes("conversation monitor") ||
+    normalized.includes("active monitor");
+  if (!namesLiveMonitor) return false;
+
+  const saysNoCurrentInput =
+    normalized.includes("no pending") ||
+    normalized.includes("no new") ||
+    normalized.includes("no actionable") ||
+    normalized.includes("waiting for the next");
+  if (!saysNoCurrentInput) return false;
+
+  return normalized.includes("input") ||
+    normalized.includes("request") ||
+    normalized.includes("message") ||
+    normalized.includes("chat");
+}
+
 export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   sourceRunId: string;
@@ -350,6 +373,7 @@ export function decideSuccessfulRunHandoff(input: {
   hasExplicitBlockerPath: boolean;
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
+  hasExplicitLiveMonitorContinuation: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
 }): SuccessfulRunHandoffDecision {
@@ -387,6 +411,9 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };
+  if (input.hasExplicitLiveMonitorContinuation) {
+    return { kind: "skip", reason: "explicit live monitor continuation owns the next action" };
+  }
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };
   if (input.idempotentWakeExists) {
     return { kind: "skip", reason: "corrective handoff wake already exists for this source run" };
