@@ -142,6 +142,9 @@ function buildAgent(id: string, name: string, decisions: Record<string, ToolConn
       allowedCount: tools.filter((t) => t.decision === "allowed").length,
       askFirstCount: tools.filter((t) => t.decision === "ask_first").length,
       offCount: tools.filter((t) => t.decision === "off").length,
+      lastChangedAt: null,
+      lastChangedByAgentId: null,
+      lastChangedByName: null,
       tools,
     },
   };
@@ -212,11 +215,11 @@ function runScript(steps: Step[]) {
   tick(0);
 }
 
-function seededClient(): QueryClient {
+function seededClient(agents: ToolConnectionTestAgent[]): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { staleTime: Infinity, gcTime: Infinity, retry: false, refetchOnMount: false } },
   });
-  client.setQueryData(queryKeys.tools.testAgents(CONNECTION), { agents: AGENTS });
+  client.setQueryData(queryKeys.tools.testAgents(CONNECTION), { agents });
   return client;
 }
 
@@ -224,12 +227,16 @@ function TestHost({
   script,
   runResult,
   runDelayMs = 120,
+  agents = AGENTS,
+  quarantined = [],
 }: {
   script?: Step[];
   runResult?: ToolConnectionTestCallResult;
   runDelayMs?: number;
+  agents?: ToolConnectionTestAgent[];
+  quarantined?: ToolCatalogEntry[];
 }) {
-  const client = useMemo(() => seededClient(), []);
+  const client = useMemo(() => seededClient(agents), [agents]);
   const fetchPatched = useRef(false);
 
   // Stub the test-call POST so the run states render without a backend.
@@ -259,7 +266,7 @@ function TestHost({
   return (
     <QueryClientProvider client={client}>
       <div className="mx-auto max-w-3xl p-6">
-        <TestPanel connectionId={CONNECTION} appName="Google Sheets" active={CATALOG} />
+        <TestPanel connectionId={CONNECTION} appName="Google Sheets" active={CATALOG} quarantined={quarantined} />
       </div>
     </QueryClientProvider>
   );
@@ -351,4 +358,38 @@ export const RunningState: Story = {
 export const OffAction: Story = {
   name: "Off — explanation + open Permissions",
   render: () => <TestHost script={[{ kind: "expand", title: "Delete a row" }]} />,
+};
+
+// PAP-11404 — Off side panel polish: audit hint + quarantined variant.
+
+const AGENTS_WITH_AUDIT: ToolConnectionTestAgent[] = AGENTS.map((agent, i) =>
+  i === 0
+    ? {
+        ...agent,
+        effectiveAccess: {
+          ...agent.effectiveAccess,
+          lastChangedAt: new Date("2026-06-17T09:00:00Z").toISOString(),
+          lastChangedByAgentId: "agent-admin",
+          lastChangedByName: "Dotta",
+        },
+      }
+    : agent,
+);
+
+export const OffAuditHint: Story = {
+  name: "Off — last-changed audit hint (PAP-11404)",
+  render: () => (
+    <TestHost agents={AGENTS_WITH_AUDIT} script={[{ kind: "expand", title: "Delete a row" }]} />
+  ),
+};
+
+const QUARANTINED: ToolCatalogEntry[] = [
+  { ...tool("q1", "rename_sheet", "Rename a sheet", "Change a sheet's name.", false), status: "quarantined" } as ToolCatalogEntry,
+];
+
+export const QuarantinedAction: Story = {
+  name: "New — quarantined action not yet on (PAP-11404)",
+  render: () => (
+    <TestHost quarantined={QUARANTINED} script={[{ kind: "expand", title: "Rename a sheet" }]} />
+  ),
 };

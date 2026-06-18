@@ -360,7 +360,7 @@ export function AppDetail() {
         />
       )}
       {activeTab === "test" && (
-        <TestPanel connectionId={connectionId} appName={appName} active={active} />
+        <TestPanel connectionId={connectionId} appName={appName} active={active} quarantined={quarantined} />
       )}
       {activeTab === "activity" && (
         <ActivityPanel

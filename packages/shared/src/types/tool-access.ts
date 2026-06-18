@@ -1152,6 +1152,16 @@ export interface ToolConnectionAccessSummary {
   allowedCount: number;
   askFirstCount: number;
   offCount: number;
+  /**
+   * When this agent's access to the connection was last reconfigured (ISO
+   * timestamp), powering the "Last changed by {Actor} · {relativeTime}" hint in
+   * the Test tab Off side panel. Null when no governing config has a timestamp.
+   */
+  lastChangedAt: string | null;
+  /** Agent who made the most recent change, when attributable (policy/binding edits only). */
+  lastChangedByAgentId: string | null;
+  /** Resolved display name for {@link lastChangedByAgentId}. */
+  lastChangedByName: string | null;
   tools: ToolConnectionTestToolAccess[];
 }
 

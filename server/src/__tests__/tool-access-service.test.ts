@@ -669,6 +669,33 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("surfaces a last-changed audit hint attributed to the agent that authored the governing policy", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const actor = boardSessionActor(company.id, "operator", userId);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Allow with author ${randomUUID()}`,
+      policyType: "allow",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+      createdByAgentId: agent.id,
+    });
+
+    const app = createRouteApp(db, actor, createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }));
+    const res = await request(app)
+      .get(`/api/tool-connections/${connection.id}/test-agents`)
+      .expect(200);
+
+    const summary = res.body.agents[0].effectiveAccess;
+    expect(typeof summary.lastChangedAt).toBe("string");
+    expect(summary.lastChangedByAgentId).toBe(agent.id);
+    expect(summary.lastChangedByName).toBe(agent.name);
+  });
+
   it("executes allowed test calls as a board user while attributing the selected agent", async () => {
     const company = await createCompany(db);
     const userId = `tool-tester-${randomUUID()}`;

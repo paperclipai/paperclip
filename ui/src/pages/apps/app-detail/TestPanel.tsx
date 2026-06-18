@@ -119,11 +119,14 @@ export function TestPanel({
   connectionId,
   appName,
   active,
+  quarantined = [],
 }: {
   connectionId: string;
   appName: string;
   /** Active (non-quarantined, non-removed) catalog entries. */
   active: ToolCatalogEntry[];
+  /** New, not-yet-reviewed actions — shown as Off so they're reachable to test. */
+  quarantined?: ToolCatalogEntry[];
 }) {
   const testAgentsQuery = useQuery({
     queryKey: queryKeys.tools.testAgents(connectionId),
@@ -185,9 +188,12 @@ export function TestPanel({
     );
   };
 
+  const quarantinedActions = [...quarantined].sort(byName);
+
   const visibleRead = readActions.filter(matches);
   const visibleWrite = writeActions.filter(matches);
-  const visibleCount = visibleRead.length + visibleWrite.length;
+  const visibleQuarantined = quarantinedActions.filter(matches);
+  const visibleCount = visibleRead.length + visibleWrite.length + visibleQuarantined.length;
 
   if (testAgentsQuery.isLoading) {
     return (
@@ -199,7 +205,7 @@ export function TestPanel({
     );
   }
 
-  if (active.length === 0) {
+  if (active.length === 0 && quarantinedActions.length === 0) {
     return <EmptyState connectionId={connectionId} appName={appName} />;
   }
 
@@ -251,7 +257,7 @@ export function TestPanel({
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
-          <FilterChip label={`All ${active.length}`} active={kindFilter === "all"} onClick={() => setKindFilter("all")} />
+          <FilterChip label={`All ${active.length + quarantinedActions.length}`} active={kindFilter === "all"} onClick={() => setKindFilter("all")} />
           <FilterChip label={`Read ${readActions.length}`} active={kindFilter === "read"} onClick={() => setKindFilter("read")} />
           <FilterChip label={`Write ${writeActions.length}`} active={kindFilter === "write"} onClick={() => setKindFilter("write")} />
         </div>
@@ -278,6 +284,16 @@ export function TestPanel({
               heading={`Write (${visibleWrite.length})`}
               entries={visibleWrite}
               decisionFor={decisionFor}
+              agent={selectedAgent}
+              {...sharedRowProps}
+            />
+          )}
+          {visibleQuarantined.length > 0 && selectedAgent && (
+            <ActionGroup
+              heading={`New (${visibleQuarantined.length})`}
+              subheading="New actions wait, switched off, until you turn them on."
+              entries={visibleQuarantined}
+              decisionFor={() => "off" as const}
               agent={selectedAgent}
               {...sharedRowProps}
             />
@@ -513,12 +529,14 @@ type RowSharedProps = {
 
 function ActionGroup({
   heading,
+  subheading,
   entries,
   decisionFor,
   agent,
   ...shared
 }: {
   heading: string;
+  subheading?: string;
   entries: ToolCatalogEntry[];
   decisionFor: (entry: ToolCatalogEntry) => ToolConnectionTestDecision;
   agent: ToolConnectionTestAgent;
@@ -526,6 +544,7 @@ function ActionGroup({
   return (
     <section>
       <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{heading}</h3>
+      {subheading && <p className="mb-1.5 -mt-1 text-xs text-muted-foreground">{subheading}</p>}
       <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
         {entries.map((entry) => (
           <ActionRow
@@ -1169,6 +1188,15 @@ function OffExplanation({
       ? "An admin set it to Off for all agents using this app."
       : `${agent.name}'s access profile sets this action to Off.`;
 
+  // "Last changed by {Actor} · {relativeTime}" — only the access config carries
+  // this; a quarantined action has never been configured, so there's nothing to
+  // attribute. Actor is omitted when the latest edit isn't agent-attributable.
+  const { lastChangedAt, lastChangedByName } = agent.effectiveAccess;
+  const auditHint =
+    entry.status !== "quarantined" && lastChangedAt
+      ? `Last changed${lastChangedByName ? ` by ${lastChangedByName}` : ""} · ${relTime(new Date(lastChangedAt))}`
+      : null;
+
   const otherSettings = others.map((a) => ({ name: a.name, decision: decisionOf(a) }));
   const tryAgents = others.filter((a) => decisionOf(a) !== "off");
 
@@ -1198,6 +1226,7 @@ function OffExplanation({
       <aside className="rounded-md border border-border bg-card p-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Why this is off</p>
         <p className="mt-1.5 text-xs text-muted-foreground">{whyBody}</p>
+        {auditHint && <p className="mt-1.5 text-[11px] text-muted-foreground">{auditHint}</p>}
         {otherSettings.length > 0 && (
           <div className="mt-3">
             <p className="text-[11px] font-medium text-muted-foreground">Other agents using {appName}:</p>

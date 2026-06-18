@@ -22,7 +22,9 @@ import {
   toolInvocations,
   toolMcpGateways,
   toolMcpGatewayTokens,
+  toolPolicies,
   toolProfileBindings,
+  toolProfileEntries,
   toolProfiles,
   toolStdioCommandTemplates,
 } from "@paperclipai/db";
@@ -897,6 +899,82 @@ export function createToolGatewayService(
     if (!agent || agent.companyId !== companyId) {
       throw new ToolGatewayHttpError(404, "Agent not found for company", "agent_not_found");
     }
+  }
+
+  /**
+   * "Last changed by {Actor} · {relativeTime}" audit hint for the Test tab Off
+   * side panel. Looks across the configuration that governs this agent's access
+   * to the connection — the policies that matched, the profiles in effect, the
+   * entries that scope them to this connection, and the bindings that assigned
+   * those profiles to the agent — and reports the most recent edit. Only
+   * policies and bindings carry an actor, so the attributed agent name is best
+   * effort: when the latest edit was a profile/entry toggle (no actor column),
+   * the timestamp is still returned but the actor is null.
+   */
+  async function summarizeAccessLastChange(input: {
+    companyId: string;
+    connectionId: string;
+    agentId: string;
+    policyIds: string[];
+    profileIds: string[];
+  }): Promise<{ lastChangedAt: string | null; lastChangedByAgentId: string | null; lastChangedByName: string | null }> {
+    const empty = { lastChangedAt: null, lastChangedByAgentId: null, lastChangedByName: null };
+    const candidates: Array<{ updatedAt: Date; agentId: string | null }> = [];
+
+    if (input.policyIds.length > 0) {
+      const policies = await db
+        .select({ updatedAt: toolPolicies.updatedAt, agentId: toolPolicies.createdByAgentId })
+        .from(toolPolicies)
+        .where(and(eq(toolPolicies.companyId, input.companyId), inArray(toolPolicies.id, input.policyIds)));
+      candidates.push(...policies.map((row) => ({ updatedAt: row.updatedAt, agentId: row.agentId })));
+    }
+
+    if (input.profileIds.length > 0) {
+      const [profiles, entries, bindings] = await Promise.all([
+        db
+          .select({ updatedAt: toolProfiles.updatedAt })
+          .from(toolProfiles)
+          .where(and(eq(toolProfiles.companyId, input.companyId), inArray(toolProfiles.id, input.profileIds))),
+        db
+          .select({ updatedAt: toolProfileEntries.updatedAt })
+          .from(toolProfileEntries)
+          .where(and(
+            eq(toolProfileEntries.companyId, input.companyId),
+            inArray(toolProfileEntries.profileId, input.profileIds),
+            eq(toolProfileEntries.connectionId, input.connectionId),
+          )),
+        db
+          .select({ updatedAt: toolProfileBindings.updatedAt, agentId: toolProfileBindings.createdByAgentId })
+          .from(toolProfileBindings)
+          .where(and(
+            eq(toolProfileBindings.companyId, input.companyId),
+            inArray(toolProfileBindings.profileId, input.profileIds),
+            eq(toolProfileBindings.targetType, "agent"),
+            eq(toolProfileBindings.targetId, input.agentId),
+          )),
+      ]);
+      candidates.push(...profiles.map((row) => ({ updatedAt: row.updatedAt, agentId: null })));
+      candidates.push(...entries.map((row) => ({ updatedAt: row.updatedAt, agentId: null })));
+      candidates.push(...bindings.map((row) => ({ updatedAt: row.updatedAt, agentId: row.agentId })));
+    }
+
+    if (candidates.length === 0) return empty;
+    const latest = candidates.reduce((a, b) => (b.updatedAt.getTime() > a.updatedAt.getTime() ? b : a));
+
+    let lastChangedByName: string | null = null;
+    if (latest.agentId) {
+      const [actor] = await db
+        .select({ name: agents.name })
+        .from(agents)
+        .where(eq(agents.id, latest.agentId))
+        .limit(1);
+      lastChangedByName = actor?.name ?? null;
+    }
+    return {
+      lastChangedAt: latest.updatedAt.toISOString(),
+      lastChangedByAgentId: latest.agentId,
+      lastChangedByName,
+    };
   }
 
   async function resolveRunContext(input: {
@@ -3675,15 +3753,26 @@ export function createToolGatewayService(
           decision: testDecision,
           reasonCode: decision.reasonCode,
           matchedPolicyIds: decision.matchedPolicyIds,
+          effectiveProfileIds: decision.effectiveProfileIds,
         };
       }));
+      const lastChange = await summarizeAccessLastChange({
+        companyId: input.companyId,
+        connectionId: input.connectionId,
+        agentId: input.agentId,
+        policyIds: [...new Set(decisions.flatMap((decision) => decision.matchedPolicyIds))],
+        profileIds: [...new Set(decisions.flatMap((decision) => decision.effectiveProfileIds))],
+      });
       return {
         connectionId: input.connectionId,
         toolCount: decisions.length,
         allowedCount: decisions.filter((decision) => decision.decision === "allowed").length,
         askFirstCount: decisions.filter((decision) => decision.decision === "ask_first").length,
         offCount: decisions.filter((decision) => decision.decision === "off").length,
-        tools: decisions,
+        lastChangedAt: lastChange.lastChangedAt,
+        lastChangedByAgentId: lastChange.lastChangedByAgentId,
+        lastChangedByName: lastChange.lastChangedByName,
+        tools: decisions.map(({ effectiveProfileIds: _effectiveProfileIds, ...tool }) => tool),
       };
     },
 
