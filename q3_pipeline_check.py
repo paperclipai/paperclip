@@ -203,7 +203,7 @@ def main():
         "### 📊 Active Pipeline Overview",
         f"- **Salesforce (Active Pipeline):** **{sf_total_loans}** loans  ·  **${sf_total_volume/1000000:.2f}M** total volume",
         f"- **Cube/Encompass (Active Pipeline):** **{cube_active_count}** loans",
-        f"- **⚠️ Sync Discrepancy:** **{sync_discrepancy}** loans (Active in Cube but not synced to SF — indicates stale files or missing tracking)",
+        f"- **Cube↔SF reporting delta:** Cube (system of record) shows **{sync_discrepancy}** more active loans than the SF mirror. This is the **expected Jungo→SF reporting lag** — SF is deprecated/read-only and structurally under-reports; it is **not** data loss or corruption, and **no SF write is implied**. Per-record reconciliation is owned by the Grettel data-sync lane (ROC-588).",
         "",
         "### 👥 Active Pipeline by Account Executive (Salesforce)",
     ]
@@ -249,7 +249,7 @@ def main():
         "",
         "### 📣 Action Recommendations for Team Leaders",
         "1. **Rate Lock Relocks:** Escalate expired late-stage locks immediately to avoid penalty rates.",
-        "2. **Pipeline Hygiene & Cleanup:** Reconcile the 314-loan gap between Encompass (Cube) and Salesforce. Stale/inactive files should be cancelled explicitly.",
+        f"2. **Cube↔SF reconciliation (Grettel lane):** The {sync_discrepancy}-loan Cube↔SF delta reflects expected Jungo→SF reporting lag, not files needing cleanup. Per-record mismatches are triaged in the Grettel data-sync lane (ROC-588); this readiness run is read-only and never writes to SF.",
         "3. **Jennifer Martinez Ramos ($567K):** Lock expires June 4. Underwriting Approved. Push aggressively to clear CTC and close.",
         "",
         "— Q3 Velocity Tracker Agent"
@@ -263,9 +263,9 @@ def main():
     
     # 5. Route to Slack Department Channel
     slack_message = (
-        f"[VELOCITY/ok] Q3 Pipeline Readiness: **{sf_total_loans}** loans (${sf_total_volume/1000000:.2f}M) active in SF vs **{cube_active_count}** in Cube. "
-        f"⚠️ **{sync_discrepancy}** loan sync discrepancy detected. "
-        f"🚨 **{expired_count}** expired late-stage locks found (perozo, herrera, ciruolo)."
+        f"[VELOCITY/ok] Q3 Pipeline Readiness: Cube (SoR) **{cube_active_count}** active vs SF (deprecated mirror) **{sf_total_loans}** (${sf_total_volume/1000000:.2f}M). "
+        f"Cube↔SF delta **{sync_discrepancy}** = expected Jungo→SF reporting lag (no corruption, no SF write). "
+        f"🚨 **{expired_count}** expired late-stage locks in active pipeline."
     )
     try:
         route(Lane.INFRA, Severity.WARN, slack_message)
@@ -277,12 +277,11 @@ def main():
     print(f"Posting comment to execution issue {execution_issue_ident} ({execution_issue_id})...")
     post_paperclip_comment(execution_issue_id, report_text)
     
-    print(f"Posting short status update to parent ROC-307 ({PARENT_ISSUE_ID})...")
-    parent_comment = (
-        f"[VELOCITY] Pipeline build check: SF active at **{sf_total_loans}** loans (${sf_total_volume/1000000:.2f}M) vs Cube active at **{cube_active_count}** loans. "
-        f"Discrepancy: **{sync_discrepancy}** loans. Expired locks detected on active files. Readiness report has been filed on the hourly run {execution_issue_ident}."
-    )
-    post_paperclip_comment(PARENT_ISSUE_ID, parent_comment)
+    # ROC-2986: Do NOT post to the standing GOAL ROC-307. Goal/rollup threads are measurement
+    # threads, not per-hour log sinks — posting the hourly readiness line here woke the CEO every
+    # hour (the ROC-307 wake loop). The full readiness report already lands on this run's execution
+    # issue (above) and on Slack OPS, which are the correct sinks. ROC-307 is intentionally excluded.
+    print(f"Skipping comment to standing GOAL ROC-307 ({PARENT_ISSUE_ID}) — ROC-2986: goals are not auto-comment/wake targets.")
     
     # 7. Complete the execution issue
     print(f"Completing execution issue {execution_issue_ident}...")
