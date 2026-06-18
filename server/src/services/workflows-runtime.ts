@@ -22,10 +22,11 @@ type ParsedAdkInlineNode = {
 type ParsedAdkDefinition = {
   variableName: string;
   relativePath: string;
-  kind: "agent" | "loop";
+  definitionKind: "agent" | "loop" | "workflow" | "join";
   name: string;
   description: string | null;
-  subAgentRefs: string[];
+  childRefs: string[];
+  workflowEdges: Array<{ sourceRefs: string[]; targetRefs: string[] }>;
   inlineSubAgents: ParsedAdkInlineNode[];
   toolRefs: string[];
 };
@@ -38,6 +39,7 @@ type WorkflowPipelineNode = {
   functionName: string | null;
   ordinal: number;
   parentKey: string | null;
+  parentKeys: string[];
   depth: number;
   agentName: string | null;
   description: string | null;
@@ -180,6 +182,55 @@ function parsePythonListArg(block: string, argName: string) {
   return extractBalancedSection(block, bracketIndex, "[", "]");
 }
 
+function extractIdentifierRefs(source: string) {
+  const refs: string[] = [];
+  const seen = new Set<string>();
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index];
+    const nextThree = source.slice(index, index + 3);
+    if (char === "#") {
+      const lineBreakIndex = source.indexOf("\n", index + 1);
+      index = lineBreakIndex < 0 ? source.length : lineBreakIndex;
+      continue;
+    }
+    if (nextThree === '"""' || nextThree === "'''") {
+      const closeIndex = source.indexOf(nextThree, index + 3);
+      index = closeIndex < 0 ? source.length : closeIndex + 3;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const quote = char;
+      index += 1;
+      while (index < source.length) {
+        const current = source[index];
+        if (current === "\\") {
+          index += 2;
+          continue;
+        }
+        index += 1;
+        if (current === quote) break;
+      }
+      continue;
+    }
+    if (/[A-Za-z_]/.test(char)) {
+      let end = index + 1;
+      while (end < source.length && /[A-Za-z0-9_]/.test(source[end] ?? "")) {
+        end += 1;
+      }
+      const ref = source.slice(index, end);
+      if (!seen.has(ref)) {
+        seen.add(ref);
+        refs.push(ref);
+      }
+      index = end;
+      continue;
+    }
+    index += 1;
+  }
+  return refs;
+}
+
 function splitTopLevelListItems(listBody: string) {
   const items: string[] = [];
   let current = "";
@@ -248,7 +299,7 @@ function splitTopLevelListItems(listBody: string) {
 
 function parseAdkDefinitions(relativePath: string, contents: string): ParsedAdkDefinition[] {
   const definitions: ParsedAdkDefinition[] = [];
-  const pattern = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(Agent|LoopAgent)\s*\(/gm;
+  const pattern = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(Agent|LoopAgent|Workflow|JoinNode)\s*\(/gm;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(contents)) !== null) {
     const variableName = match[1] ?? "";
@@ -283,13 +334,35 @@ function parseAdkDefinitions(relativePath: string, contents: string): ParsedAdkD
       return refMatch?.[1] ? [refMatch[1]] : [];
     });
 
+    const workflowEdges =
+      constructor === "Workflow"
+        ? splitTopLevelListItems(parsePythonListArg(callBody, "edges") ?? "").flatMap((item) => {
+            const refs = extractIdentifierRefs(item);
+            if (refs.length === 0) return [];
+            return [
+              {
+                sourceRefs: refs.slice(0, 1),
+                targetRefs: refs.slice(1),
+              },
+            ];
+          })
+        : [];
+
     definitions.push({
       variableName,
       relativePath,
-      kind: constructor === "LoopAgent" ? "loop" : "agent",
+      definitionKind:
+        constructor === "LoopAgent"
+          ? "loop"
+          : constructor === "Workflow"
+            ? "workflow"
+            : constructor === "JoinNode"
+              ? "join"
+              : "agent",
       name: parsePythonStringArg(callBody, "name") ?? variableName,
       description: parsePythonStringArg(callBody, "description"),
-      subAgentRefs,
+      childRefs: subAgentRefs,
+      workflowEdges,
       inlineSubAgents,
       toolRefs,
     });
@@ -309,6 +382,7 @@ function chooseEntrypointFromContents(
     const contents = contentsByPath.get(filePath) ?? "";
     let score = relativePathPriority(relativePath);
     if (/^\s*root_agent\s*=\s*[A-Za-z_][A-Za-z0-9_]*\s*$/m.test(contents)) score += 500;
+    if (/^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*Workflow\s*\(/m.test(contents)) score += 120;
     if (/^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*(Agent|LoopAgent)\s*\(/m.test(contents)) score += 80;
     if (score > bestScore) {
       bestScore = score;
@@ -318,15 +392,24 @@ function chooseEntrypointFromContents(
   return bestFile;
 }
 
-function findRootAdkVariable(entryContents: string, definitions: Map<string, ParsedAdkDefinition>) {
+function findRootAdkVariable(
+  entryContents: string,
+  definitions: Map<string, ParsedAdkDefinition>,
+  entryRelativePath: string,
+) {
   const aliasMatch = entryContents.match(/^\s*root_agent\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*$/m);
   if (aliasMatch?.[1] && definitions.has(aliasMatch[1])) return aliasMatch[1];
-  for (const definition of definitions.values()) {
-    if (definition.relativePath === "agent.py" || definition.relativePath.endsWith("/agent.py")) {
+  const entryDefinitions = [...definitions.values()].filter((definition) => definition.relativePath === entryRelativePath);
+  for (const definition of entryDefinitions) {
+    if (definition.definitionKind === "workflow") {
       return definition.variableName;
     }
   }
-  return definitions.values().next().value?.variableName ?? null;
+  return (
+    entryDefinitions.find(
+      (definition) => definition.relativePath === "agent.py" || definition.relativePath.endsWith("/agent.py"),
+    )?.variableName ?? entryDefinitions[0]?.variableName ?? definitions.values().next().value?.variableName ?? null
+  );
 }
 
 function inferNodeKind(name: string, fallback: AdkNodeKind): AdkNodeKind {
@@ -406,8 +489,27 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
   const pipelineNodes: WorkflowPipelineNode[] = [];
 
   if (adkDefinitions.size > 0) {
-    const rootVar = findRootAdkVariable(contentsByPath.get(entryPath) ?? "", adkDefinitions);
+    const rootVar = findRootAdkVariable(contentsByPath.get(entryPath) ?? "", adkDefinitions, entrypoint);
     const visited = new Set<string>();
+    const pipelineNodeByVariableName = new Map<string, WorkflowPipelineNode>();
+    const workflowDefinition = rootVar ? adkDefinitions.get(rootVar) ?? null : null;
+    const workflowEdges = workflowDefinition?.definitionKind === "workflow" ? workflowDefinition.workflowEdges : [];
+    const outgoingWorkflowRefs = new Map<string, string[]>();
+    const incomingWorkflowRefs = new Set<string>();
+    for (const edge of workflowEdges) {
+      for (const sourceRef of edge.sourceRefs) {
+        const list = outgoingWorkflowRefs.get(sourceRef) ?? [];
+        for (const targetRef of edge.targetRefs) {
+          if (!list.includes(targetRef)) {
+            list.push(targetRef);
+          }
+        }
+        outgoingWorkflowRefs.set(sourceRef, list);
+      }
+      for (const targetRef of edge.targetRefs) {
+        incomingWorkflowRefs.add(targetRef);
+      }
+    }
     let ordinal = 0;
     const addToolTarget = (definition: ParsedAdkDefinition, toolName: string, parentKey: string, depth: number) => {
       const key = `tool:${parentKey}:${toolName}`;
@@ -419,6 +521,7 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
         functionName: toolName,
         ordinal: ordinal++,
         parentKey,
+        parentKeys: [parentKey],
         depth,
         agentName: null,
         description: null,
@@ -434,26 +537,52 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
       }
     };
     const visitDefinition = (variableName: string, parentKey: string | null, depth: number) => {
-      if (visited.has(variableName)) return;
       const definition = adkDefinitions.get(variableName);
       if (!definition) return;
+      const existingNode = pipelineNodeByVariableName.get(variableName);
+      if (visited.has(variableName)) {
+        if (
+          definition.definitionKind === "join" &&
+          existingNode &&
+          parentKey != null &&
+          !existingNode.parentKeys.includes(parentKey)
+        ) {
+          existingNode.parentKeys.push(parentKey);
+          existingNode.depth = Math.min(existingNode.depth, depth);
+        }
+        return;
+      }
       visited.add(variableName);
-      const key = `${definition.kind}:${definition.name}`;
-      pipelineNodes.push({
+      if (definition.definitionKind === "workflow") {
+        const childRefs =
+          workflowDefinition?.variableName === definition.variableName
+            ? [...outgoingWorkflowRefs.keys()].filter((childRef) => !incomingWorkflowRefs.has(childRef))
+            : definition.childRefs;
+        for (const childRef of childRefs) {
+          visitDefinition(childRef, parentKey, depth);
+        }
+        return;
+      }
+      const key = `${definition.definitionKind}:${definition.name}`;
+      const parentKeys = parentKey == null ? [] : [parentKey];
+      const node: WorkflowPipelineNode = {
         key,
         label: definition.name,
-        kind: inferNodeKind(definition.name, definition.kind),
+        kind:
+          definition.definitionKind === "join"
+            ? "phase"
+            : inferNodeKind(definition.name, definition.definitionKind === "loop" ? "loop" : "agent"),
         filePath: definition.relativePath,
         functionName: definition.variableName,
         ordinal: ordinal++,
         parentKey,
+        parentKeys,
         depth,
         agentName: definition.name,
         description: definition.description,
-      });
-      for (const subAgentRef of definition.subAgentRefs) {
-        visitDefinition(subAgentRef, key, depth + 1);
-      }
+      };
+      pipelineNodeByVariableName.set(variableName, node);
+      pipelineNodes.push(node);
       for (const inlineNode of definition.inlineSubAgents) {
         pipelineNodes.push({
           key: `validator:${inlineNode.name}`,
@@ -463,6 +592,7 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
           functionName: inlineNode.className,
           ordinal: ordinal++,
           parentKey: key,
+          parentKeys: [key],
           depth: depth + 1,
           agentName: inlineNode.name,
           description: null,
@@ -470,6 +600,13 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
       }
       for (const toolName of definition.toolRefs) {
         addToolTarget(definition, toolName, key, depth + 1);
+      }
+      const childRefs =
+        workflowDefinition?.variableName != null
+          ? [...new Set([...(definition.childRefs ?? []), ...(outgoingWorkflowRefs.get(definition.variableName) ?? [])])]
+          : definition.childRefs;
+      for (const childRef of childRefs) {
+        visitDefinition(childRef, key, depth + 1);
       }
     };
     if (rootVar) {
@@ -501,6 +638,7 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
           functionName,
           ordinal: ordinal++,
           parentKey: null,
+          parentKeys: [],
           depth: 0,
           agentName: null,
           description: null,
@@ -521,6 +659,7 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
           functionName: node.functionName,
           ordinal: node.ordinal,
           parentKey: node.parentKey,
+          parentKeys: node.parentKeys,
           depth: node.depth,
           agentName: node.agentName,
           description: node.description,

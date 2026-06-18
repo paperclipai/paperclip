@@ -6,6 +6,7 @@ export interface WorkflowPipelinePhase {
   functionName: string | null;
   ordinal: number;
   parentKey?: string | null;
+  parentKeys?: string[];
   depth?: number;
   agentName?: string | null;
   description?: string | null;
