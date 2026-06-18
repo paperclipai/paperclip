@@ -2027,6 +2027,39 @@ describeEmbeddedPostgres("secretService", () => {
     expect(resolved).toBe("runtime-secret");
   });
 
+  it("preserves agent jwt source for ephemeral secret authorization", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-agent-jwt-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "JWT Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      status: "idle",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const resolved = await svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "agent",
+      actorId: agentId,
+      actorSource: "agent_jwt",
+    });
+
+    expect(resolved).toBe("runtime-secret");
+  });
+
   it("rejects ephemeral secret access for actors without secret-read authorization", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

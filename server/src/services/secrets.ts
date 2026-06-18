@@ -688,7 +688,7 @@ export function secretService(db: Db) {
             type: "agent" as const,
             agentId: context.actorId,
             companyId,
-            source: "agent_key" as const,
+            source: context.actorSource === "agent_jwt" ? "agent_jwt" as const : "agent_key" as const,
           }
         : {
             type: "board" as const,
