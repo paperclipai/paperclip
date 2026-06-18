@@ -1370,21 +1370,22 @@ function NewSkillWizard({
       ) : step === 1 ? (
         <div className="space-y-4">
           <div className="flex items-center gap-3">
-            <SkillCardIcon
-              size={48}
-              card={{
-                key: effectiveSlug || draft.name || "new-skill",
-                skillId: null,
-                catalogRef: null,
-                name: draft.name || "New Skill",
-                slug: effectiveSlug || "skill",
-                author: "you",
-                version: null,
-                description: draft.tagline,
-                categories: draft.categories,
-                iconUrl: null,
-                color: draft.color,
-                starCount: 0,
+              <SkillCardIcon
+                size={48}
+                card={{
+                  key: effectiveSlug || draft.name || "new-skill",
+                  skillId: null,
+                  catalogRef: null,
+                  name: draft.name || "New Skill",
+                  slug: effectiveSlug || "skill",
+                  author: "you",
+                  version: null,
+                  tagline: draft.tagline || null,
+                  description: draft.tagline,
+                  categories: draft.categories,
+                  iconUrl: null,
+                  color: draft.color,
+                  starCount: 0,
                 agentCount: 0,
                 forkCount: 0,
                 installed: false,
@@ -2954,6 +2955,7 @@ export function SkillDetailPage({
                   slug: detail.slug,
                   author: detail.authorName ?? source.label,
                   version: null,
+                  tagline: detail.tagline,
                   description: detail.description,
                   categories: detail.categories,
                   iconUrl: detail.iconUrl,
