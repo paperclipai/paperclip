@@ -60,6 +60,7 @@
             "group": "Agent Developer",
             "pages": [
               "guides/agent-developer/how-agents-work",
+              "guides/agent-developer/agents-runtime",
               "guides/agent-developer/heartbeat-protocol",
               "guides/agent-developer/writing-a-skill",
               "guides/agent-developer/task-workflow",

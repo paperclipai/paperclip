@@ -73,6 +73,18 @@ The main agent process runs as the shim (PID 1 under tini). The shim:
 
 The shim makes no assumptions about command structure; it is harness-agnostic. New harnesses swap the command/args; the base image stays the same.
 
+## Runtime Boundary and External Services
+
+Agent runtime images define what a containerized or sandboxed agent can execute. The agent does not inherit binaries from the Paperclip host. Host tools such as `docker`, `psql`, `redis-cli`, `kubectl`, cloud CLIs, or local admin scripts are unavailable unless this image installs them or the sandbox provider deliberately mounts/exposes them.
+
+When an agent needs an external service, prefer network-native access:
+
+- pass service URLs and credentials through per-run env vars or mounted secrets
+- use Paperclip runtime-service controls for workspace services
+- call HTTP APIs, database endpoints, MCP tools, or provider SDKs available inside the runtime
+
+If logs show `[DATA UNAVAILABLE: command not found]`, verify the command exists in the runtime image or sandbox, not just on the host. Resolve it by extending the image, selecting a runtime that includes the tool, adding an intentional mount, or changing the workflow to use the service's API endpoint instead of a host CLI.
+
 ## Security Model
 
 - **Non-root execution**: user 1000:1000, no capability grants

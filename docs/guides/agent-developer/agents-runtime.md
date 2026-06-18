@@ -1,7 +1,7 @@
 # Agent Runtime Guide
 
 Status: User-facing guide
-Last updated: 2026-03-26
+Last updated: 2026-06-18
 Audience: Operators setting up and running agents in Paperclip
 
 ## 1. What this system does
@@ -50,6 +50,8 @@ External plugin adapters (install via the adapter manager or API):
 
 For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
 
+Container-backed and sandbox-backed adapters are different: the agent process runs inside the adapter's configured runtime container or remote sandbox, not directly on the Paperclip host. Commands available on the host, such as `docker`, `psql`, `redis-cli`, cloud CLIs, or internal admin scripts, are not automatically available to the agent. They must be installed in the runtime image, mounted into the sandbox, or exposed through a network/API endpoint that the runtime can reach.
+
 ## 3.2 Runtime behavior
 
 In agent runtime settings, configure heartbeat policy:
@@ -69,6 +71,8 @@ For local adapters, set:
 - `graceSec` (time before force-kill after timeout/cancel)
 - optional env vars and extra CLI args
 - use **Test environment** in agent configuration to run adapter-specific diagnostics before saving
+
+For container or sandbox runtimes, treat `cwd`, env vars, mounted files, and installed binaries as properties of that runtime environment. If an agent needs Postgres, Redis, Docker, Kubernetes, or another external service, prefer service URLs, HTTP APIs, MCP tools, or Paperclip runtime-service controls over assuming the matching host CLI exists in the sandbox.
 
 ## 3.4 Prompt templates
 
@@ -154,10 +158,13 @@ If runs fail repeatedly:
 Typical failure causes:
 
 - CLI not installed/authenticated
+- command not installed in the adapter runtime container/sandbox
 - bad working directory
 - malformed adapter args/env
 - prompt too broad or missing constraints
 - process timeout
+
+If an agent reports `[DATA UNAVAILABLE: command not found]`, first determine where that command was executed. In a container or sandbox run, it means the command was missing from the agent runtime, even if the same command exists on the host. Fix by installing the binary in the runtime image, mounting it intentionally, configuring the adapter to use a runtime that includes it, or switching the workflow to a network/API-native path such as an HTTP client available in the runtime, Paperclip API endpoints, or an MCP tool.
 
 Claude-specific note:
 
@@ -165,13 +172,14 @@ Claude-specific note:
 
 ## 9. Security and risk notes
 
-Local CLI adapters run unsandboxed on the host machine.
+Local CLI adapters run unsandboxed on the host machine. Container-backed and sandbox-backed adapters run inside their configured runtime boundary.
 
 That means:
 
 - prompt instructions matter
 - configured credentials/env vars are sensitive
 - working directory permissions matter
+- host-only tools and sockets are not available unless deliberately exposed to the runtime
 
 Start with least privilege where possible, and avoid exposing secrets in broad reusable prompts unless intentionally required.
 
