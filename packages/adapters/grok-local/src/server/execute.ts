@@ -228,7 +228,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const grokSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredGrokSkillNames = resolvePaperclipDesiredSkillNames(config, grokSkillEntries);
+  const desiredGrokSkillNames = resolvePaperclipDesiredSkillNames(config, grokSkillEntries, agent.role ?? null);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const stagedAssets = await stageGrokProjectAssets({
     cwd,
