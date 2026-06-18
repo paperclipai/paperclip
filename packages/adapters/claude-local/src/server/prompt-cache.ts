@@ -5,6 +5,7 @@ import { createHash, type Hash } from "node:crypto";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import {
   ensurePaperclipSkillSymlink,
+  materializePaperclipSkillCopy,
   resolvePaperclipInstanceRootForAdapter,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -151,10 +152,14 @@ export async function prepareClaudePromptBundle(input: {
     try {
       await ensurePaperclipSkillSymlink(entry.source, target);
     } catch (err) {
-      await onLog(
-        "stderr",
-        `[paperclip] Failed to materialize Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+      try {
+        await materializePaperclipSkillCopy(entry.source, target);
+      } catch (copyErr) {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to materialize Claude skill "${entry.key}" into ${skillsHome}: symlink=${err instanceof Error ? err.message : String(err)}; copy=${copyErr instanceof Error ? copyErr.message : String(copyErr)}\n`,
+        );
+      }
     }
   }
 

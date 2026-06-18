@@ -137,6 +137,10 @@ async function createExpectedSymlink(target: string, source: string): Promise<vo
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EEXIST" && await isExpectedSymlink(target, source)) return;
+    if (code === "EPERM" || code === "EACCES") {
+      await fs.copyFile(source, target);
+      return;
+    }
     throw error;
   }
 }
