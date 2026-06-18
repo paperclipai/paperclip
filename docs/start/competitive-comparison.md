@@ -1,6 +1,6 @@
 ---
 title: Competitive Comparison
-summary: How Paperclip compares to agent frameworks, orchestrators, and enterprise platforms
+description: How Paperclip compares to agent frameworks, orchestrators, and enterprise platforms
 ---
 
 # Paperclip vs. the AI Agent Ecosystem
