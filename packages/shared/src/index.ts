@@ -568,6 +568,7 @@ export type {
   IssueCommentPresentation,
   IssueThreadInteractionActorFields,
   InteractionResolutionMethod,
+  InteractionResolutionAuditMetadata,
   InteractionResolutionAudit,
   SuggestedTaskDraft,
   SuggestTasksPayload,

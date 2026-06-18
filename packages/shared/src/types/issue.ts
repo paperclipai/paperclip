@@ -679,6 +679,12 @@ export type InteractionResolutionMethod =
   | "api_automated"
   | "unknown";
 
+export interface InteractionResolutionAuditMetadata {
+  method: InteractionResolutionMethod;
+  requestId?: string | null;
+  resolvedAt?: Date | string | null;
+}
+
 export interface InteractionResolutionAudit extends IssueThreadInteractionActorFields {
   id: string;
   companyId: string;
@@ -691,6 +697,7 @@ export interface InteractionResolutionAudit extends IssueThreadInteractionActorF
   resolvedAt: Date | string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
+  resolutionAudit?: InteractionResolutionAuditMetadata | null;
 }
 
 export interface SuggestedTaskDraft {
@@ -857,6 +864,7 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   createdAt: Date | string;
   updatedAt: Date | string;
   resolvedAt?: Date | string | null;
+  resolutionAudit?: InteractionResolutionAuditMetadata | null;
 }
 
 export interface SuggestTasksInteraction extends IssueThreadInteractionBase {
