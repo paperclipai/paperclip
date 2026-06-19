@@ -159,6 +159,6 @@ describe.sequential("auth routes", () => {
       .patch("/api/auth/profile")
       .send({ name: "Jane Example", image: "not-a-url" });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
   });
 });

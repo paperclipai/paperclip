@@ -324,6 +324,11 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   };
 }
 
+function sanitizeCwdToClaudeProjectDir(cwd: string): string {
+  const stripped = cwd.startsWith("/") ? cwd.slice(1) : cwd;
+  return "-" + stripped.replaceAll("/", "-").replaceAll(".", "-");
+}
+
 export async function runClaudeLogin(input: {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -423,6 +428,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   let loggedEnv = initialLoggedEnv;
+
+  // Pin Claude Code's memory to a consistent, agent-scoped directory.
+  // Claude derives the memory path from cwd; different heartbeat cwds create separate memory dirs.
+  // When agentHome is available and CLAUDE_CONFIG_DIR is not explicitly configured, set it to
+  // <agentHome>/.claude so all agent config is scoped to the agent's workspace. Then symlink the
+  // per-cwd project memory dir to the canonical agentHome-based memory dir so memories are shared
+  // regardless of which project directory the heartbeat runs in.
+  if (!executionTargetIsRemote && !hasExplicitClaudeConfigDir && agentHome) {
+    const agentClaudeConfigDir = path.join(agentHome, ".claude");
+    env.CLAUDE_CONFIG_DIR = agentClaudeConfigDir;
+    loggedEnv = { ...loggedEnv, CLAUDE_CONFIG_DIR: agentClaudeConfigDir };
+    const canonicalProjectDir = path.join(agentClaudeConfigDir, "projects", sanitizeCwdToClaudeProjectDir(agentHome));
+    const canonicalMemoryDir = path.join(canonicalProjectDir, "memory");
+    await fs.mkdir(canonicalMemoryDir, { recursive: true });
+    // If the heartbeat is running from a different cwd, symlink that cwd's memory dir to the canonical one.
+    if (cwd && path.resolve(cwd) !== path.resolve(agentHome)) {
+      const cwdProjectDir = path.join(agentClaudeConfigDir, "projects", sanitizeCwdToClaudeProjectDir(path.resolve(cwd)));
+      await fs.mkdir(cwdProjectDir, { recursive: true });
+      const cwdMemoryDir = path.join(cwdProjectDir, "memory");
+      let shouldSymlink = true;
+      try {
+        const stat = await fs.lstat(cwdMemoryDir);
+        // Only replace if it's already a symlink (previously set up) — preserve real memory dirs.
+        if (stat.isSymbolicLink()) {
+          await fs.unlink(cwdMemoryDir);
+        } else {
+          shouldSymlink = false;
+        }
+      } catch {
+        // Doesn't exist yet — symlink it.
+      }
+      if (shouldSymlink) {
+        await fs.symlink(canonicalMemoryDir, cwdMemoryDir);
+      }
+    }
+    await onLog("stdout", `[paperclip] Agent memory pinned to ${canonicalMemoryDir}.\n`);
+  }
+
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const terminalResultCleanupGraceMs = Math.max(
     0,
