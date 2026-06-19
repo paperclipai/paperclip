@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -404,5 +404,82 @@ describe("gemini remote execution", () => {
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
     expect(runChildProcess).not.toHaveBeenCalled();
+  });
+});
+
+describe("gemini local prompt transport", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("streams a large prompt via stdin instead of argv to avoid Windows cmd.exe argv limits", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-stdin-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const instructionsPath = path.join(rootDir, "AGENTS.md");
+    const longInstructions = "X".repeat(12_000);
+    await writeFile(instructionsPath, longInstructions, "utf8");
+
+    await execute({
+      runId: "run-stdin-1",
+      agent: {
+        id: "agent-stdin",
+        companyId: "company-1",
+        name: "Gemini Stdin Test",
+        adapterType: "gemini_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "gemini",
+        cwd: workspaceDir,
+        instructionsFilePath: instructionsPath,
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { stdin?: string }]
+      | undefined;
+    const args = call?.[2] ?? [];
+    const opts = call?.[3] ?? {};
+
+    // No argv element should contain the long instructions payload.
+    for (const arg of args) {
+      expect(arg).not.toContain(longInstructions);
+      // Sanity-check that no individual arg is dangerously large either.
+      expect(arg.length).toBeLessThan(2_000);
+    }
+
+    // --prompt must NOT be in argv: Gemini CLI 0.38.2 enters headless mode
+    // automatically when stdin is piped, and rejects --prompt + stdin together
+    // ("Cannot use both a positional prompt and the --prompt (-p) flag together").
+    expect(args).not.toContain("--prompt");
+    expect(args).not.toContain("-p");
+
+    // The full prompt — including the long instructions prefix — must be on stdin.
+    expect(typeof opts.stdin).toBe("string");
+    expect(opts.stdin).toContain(longInstructions);
+    expect((opts.stdin ?? "").length).toBeGreaterThan(longInstructions.length);
   });
 });
