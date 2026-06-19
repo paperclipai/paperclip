@@ -20,7 +20,6 @@ function route(input: Partial<Parameters<typeof routeShopifySkillKeys>[0]>) {
     agentRole: null,
     agentCapabilities: null,
     goalTitle: null,
-    projectTags: [],
     ...input,
   });
 }
@@ -117,17 +116,6 @@ describe("routeShopifySkillKeys", () => {
     expect(output.gated).toBe(false);
   });
 
-  it("fires the Shopify gate from project tags alone", () => {
-    const output = route({
-      issueTitle: "Triage routing issue",
-      issueDescription: "Need help with task routing.",
-      projectTags: ["shopify"],
-    });
-
-    expect(toSuffixes(output.skillKeys)).toEqual(["shopify-dev"]);
-    expect(output.gated).toBe(false);
-  });
-
   it("honors config declaration order when priorities tie", () => {
     const config: ShopifyRouterConfig = {
       ...DEFAULT_SHOPIFY_ROUTER_CONFIG,
@@ -143,7 +131,6 @@ describe("routeShopifySkillKeys", () => {
       agentRole: null,
       agentCapabilities: null,
       goalTitle: null,
-      projectTags: [],
     }, config);
 
     expect(toSuffixes(output.skillKeys).slice(0, 4)).toEqual([
