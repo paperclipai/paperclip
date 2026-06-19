@@ -544,6 +544,7 @@ describe("IssueChatThread", () => {
     );
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute("data-pending-work-mode")).toBe("planning");
+    expect(toggle?.getAttribute("aria-pressed")).toBe("true");
     expect(toggle?.textContent).toContain("Plan mode");
 
     act(() => {
@@ -551,7 +552,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("shows a persistent neutral mode chip on a standard issue and toggles to planning through its menu", () => {
+  it("shows a persistent neutral mode chip on a standard issue and selects planning through its menu", () => {
     const root = createRoot(container);
     const onWorkModeChange = vi.fn();
 
@@ -589,10 +590,10 @@ describe("IssueChatThread", () => {
     });
 
     const menuItem = document.querySelector(
-      '[data-testid="issue-chat-composer-work-mode-menu-toggle"]',
+      '[data-testid="issue-chat-composer-work-mode-menu-planning"]',
     ) as HTMLButtonElement | null;
     expect(menuItem).not.toBeNull();
-    expect(menuItem?.textContent).toContain("Switch to plan mode");
+    expect(menuItem?.textContent).toContain("Plan mode");
 
     act(() => {
       menuItem?.click();
@@ -603,6 +604,70 @@ describe("IssueChatThread", () => {
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("planning");
     expect(composer?.className).toContain("amber");
     expect(chip?.textContent).toContain("Plan mode");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("selects ask mode from the composer menu and cycles work modes with cmd-period", () => {
+    const root = createRoot(container);
+    const onWorkModeChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueWorkMode="standard"
+            onWorkModeChange={onWorkModeChange}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const chip = container.querySelector(
+      '[data-testid="issue-chat-composer-work-mode-toggle"]',
+    ) as HTMLButtonElement | null;
+    const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
+    expect(chip).not.toBeNull();
+    expect(composer).not.toBeNull();
+
+    act(() => {
+      chip?.click();
+    });
+
+    const askMenuItem = document.querySelector(
+      '[data-testid="issue-chat-composer-work-mode-menu-ask"]',
+    ) as HTMLButtonElement | null;
+    expect(askMenuItem).not.toBeNull();
+    expect(askMenuItem?.textContent).toContain("Ask mode");
+
+    act(() => {
+      askMenuItem?.click();
+    });
+
+    expect(onWorkModeChange).not.toHaveBeenCalled();
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("ask");
+    expect(composer?.className).toContain("sky");
+    expect(chip?.textContent).toContain("Ask mode");
+
+    act(() => {
+      composer?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
+        key: ".",
+        metaKey: true,
+      }));
+    });
+
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
+    expect(chip?.textContent).toContain("Agent mode");
 
     act(() => {
       root.unmount();

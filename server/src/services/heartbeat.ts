@@ -2886,7 +2886,14 @@ export function buildPaperclipTaskMarkdown(input: {
       `- Issue: ${quoteTaskScalar(issue.identifier || issue.id)}`,
       `- Title: ${quoteTaskScalar(issue.title)}`,
     );
-    if (issue.workMode === "planning") {
+    if (issue.workMode === "ask") {
+      lines.push(
+        `- Work mode: ${quoteTaskScalar("ask")}`,
+        "",
+        "Ask mode directive:",
+        "Answer the question directly in the issue thread. Do not write implementation code, and do not produce an implementation plan. Use tools only for investigation or temporary scratch work when needed; the deliverable is the answer.",
+      );
+    } else if (issue.workMode === "planning") {
       let directive = "Make the plan only. Do not write code or perform implementation work.";
       if (wakeComment) {
         directive = "Update the plan only. Do not write code or perform implementation work.";

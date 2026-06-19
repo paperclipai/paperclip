@@ -1637,6 +1637,23 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Plan mode");
   });
 
+  it("passes ask work mode to the issue chat thread and renders the ask badge", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({ workMode: "ask" }));
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      issueWorkMode: "ask",
+    });
+    expect(container.textContent).toContain("Ask mode");
+  });
+
   it("falls back to execCommand when copying the task from an insecure context", async () => {
     const clipboardWrite = vi.fn(async () => {
       throw new Error("Clipboard API blocked");
@@ -1833,11 +1850,11 @@ describe("IssueDetail", () => {
     expect(typeof lastChatThreadProps?.onWorkModeChange).toBe("function");
 
     await act(async () => {
-      lastChatThreadProps?.onWorkModeChange?.("planning");
+      lastChatThreadProps?.onWorkModeChange?.("ask");
     });
     await flushReact();
 
-    expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { workMode: "planning" });
+    expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { workMode: "ask" });
     expect(localStorage.getItem("paperclip:issue-comment-draft:issue-1")).toBe("Draft follow-up message");
     expect(container.textContent).toContain("planning-notes.txt");
     localStorage.removeItem("paperclip:issue-comment-draft:issue-1");
