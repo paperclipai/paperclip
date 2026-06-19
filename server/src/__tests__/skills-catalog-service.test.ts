@@ -214,7 +214,7 @@ describe("skills catalog service", () => {
     expect(mockRequireResolve).toHaveBeenCalledWith("@paperclipai/skills-catalog/catalog.json");
   });
 
-  it("returns an empty list and logs a warning when the manifest cannot be resolved", async () => {
+  it("returns an empty list, caches package-resolution failure, and logs only once when the manifest cannot be resolved", async () => {
     mockRequireResolve.mockImplementation(() => {
       const error = new Error("not found") as Error & { code?: string };
       error.code = "ERR_MODULE_NOT_FOUND";
@@ -224,9 +224,12 @@ describe("skills catalog service", () => {
     const service = await import("../services/skills-catalog.js");
 
     expect(service.listCatalogSkillsOrEmpty()).toEqual([]);
+    expect(service.listCatalogSkillsOrEmpty()).toEqual([]);
+    expect(mockRequireResolve).toHaveBeenCalledTimes(1);
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       { err: expect.any(service.CatalogManifestUnavailableError) },
       "skills catalog manifest unavailable; returning empty catalog",
     );
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
   });
 });

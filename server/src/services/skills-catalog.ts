@@ -34,10 +34,15 @@ let cachedCatalogManifest: {
   mtimeMs: number;
   size: number;
 } | null = null;
-let cachedCatalogPaths: {
+let cachedCatalogPaths:
+  | {
   packageRoot: string;
   manifestPath: string;
-} | null = null;
+}
+  | false
+  | null = null;
+let cachedCatalogPathsError: CatalogManifestUnavailableError | null = null;
+let loggedCatalogUnavailableWarning = false;
 
 export class CatalogManifestUnavailableError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -86,19 +91,26 @@ function resolveDevCatalogPaths() {
 }
 
 function resolveCatalogPaths() {
+  if (cachedCatalogPaths === false && cachedCatalogPathsError) {
+    throw cachedCatalogPathsError;
+  }
   if (cachedCatalogPaths) {
     return cachedCatalogPaths;
   }
   try {
     cachedCatalogPaths = resolvePublishedCatalogPaths();
+    cachedCatalogPathsError = null;
     return cachedCatalogPaths;
   } catch (publishedError) {
     const devPaths = resolveDevCatalogPaths();
     if (devPaths) {
       cachedCatalogPaths = devPaths;
+      cachedCatalogPathsError = null;
       return cachedCatalogPaths;
     }
-    throw new CatalogManifestUnavailableError(packageResolutionFailureMessage(), { cause: publishedError });
+    cachedCatalogPathsError = new CatalogManifestUnavailableError(packageResolutionFailureMessage(), { cause: publishedError });
+    cachedCatalogPaths = false;
+    throw cachedCatalogPathsError;
   }
 }
 
@@ -257,12 +269,17 @@ export function listCatalogSkills(query: CatalogSkillListQuery = {}): CatalogSki
 
 export function listCatalogSkillsOrEmpty(query: CatalogSkillListQuery = {}): CatalogSkill[] {
   try {
-    return listCatalogSkills(query);
+    const skills = listCatalogSkills(query);
+    loggedCatalogUnavailableWarning = false;
+    return skills;
   } catch (error) {
     if (!isCatalogManifestUnavailableError(error)) {
       throw error;
     }
-    logger.warn({ err: error }, "skills catalog manifest unavailable; returning empty catalog");
+    if (!loggedCatalogUnavailableWarning) {
+      logger.warn({ err: error }, "skills catalog manifest unavailable; returning empty catalog");
+      loggedCatalogUnavailableWarning = true;
+    }
     return [];
   }
 }
