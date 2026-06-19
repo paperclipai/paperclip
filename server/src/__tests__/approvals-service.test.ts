@@ -8,9 +8,16 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
+const mockSecretService = vi.hoisted(() => ({
+  syncEnvBindingsForTarget: vi.fn(),
+}));
 
 vi.mock("../services/agents.js", () => ({
   agentService: vi.fn(() => mockAgentService),
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: vi.fn(() => mockSecretService),
 }));
 
 vi.mock("../services/hire-hook.js", () => ({
@@ -58,9 +65,35 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
 describe("approvalService resolution idempotency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockAgentService.activatePendingApproval.mockResolvedValue(undefined);
-    mockAgentService.create.mockResolvedValue({ id: "agent-1" });
+    mockAgentService.activatePendingApproval.mockResolvedValue({
+      agent: {
+        id: "agent-1",
+        adapterConfig: {
+          env: {
+            API_KEY: {
+              type: "secret_ref",
+              secretId: "secret-1",
+              version: "latest",
+            },
+          },
+        },
+      },
+      activated: true,
+    });
+    mockAgentService.create.mockResolvedValue({
+      id: "agent-1",
+      adapterConfig: {
+        env: {
+          API_KEY: {
+            type: "secret_ref",
+            secretId: "secret-1",
+            version: "latest",
+          },
+        },
+      },
+    });
     mockAgentService.terminate.mockResolvedValue(undefined);
+    mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
     mockNotifyHireApproved.mockResolvedValue(undefined);
   });
 
@@ -102,6 +135,58 @@ describe("approvalService resolution idempotency", () => {
 
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
+    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
+      "company-1",
+      { targetType: "agent", targetId: "agent-1" },
+      {
+        API_KEY: {
+          type: "secret_ref",
+          secretId: "secret-1",
+          version: "latest",
+        },
+      },
+    );
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("syncs secret bindings when approval creates the agent from payload", async () => {
+    const approved = {
+      ...createApproval("approved"),
+      payload: {
+        name: "New Agent",
+        adapterConfig: {
+          env: {
+            API_KEY: {
+              type: "secret_ref",
+              secretId: "secret-1",
+              version: "latest",
+            },
+          },
+        },
+      },
+    };
+    const dbStub = createDbStub([[{ ...createApproval("pending"), payload: approved.payload }]], [approved]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        adapterConfig: approved.payload.adapterConfig,
+      }),
+    );
+    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
+      "company-1",
+      { targetType: "agent", targetId: "agent-1" },
+      {
+        API_KEY: {
+          type: "secret_ref",
+          secretId: "secret-1",
+          version: "latest",
+        },
+      },
+    );
   });
 });

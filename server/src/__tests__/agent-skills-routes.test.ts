@@ -51,6 +51,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
 const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+  syncEnvBindingsForTarget: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -96,6 +97,10 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
 
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
+}));
+
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: vi.fn(() => mockAdapter),
   findActiveServerAdapter: vi.fn(() => mockAdapter),
@@ -127,6 +132,10 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => mockWorkspaceOperationService,
+  }));
+
+  vi.doMock("../services/secrets.js", () => ({
+    secretService: () => mockSecretService,
   }));
 
   vi.doMock("../adapters/index.js", () => ({
@@ -249,6 +258,7 @@ describe.sequential("agent skill routes", () => {
       agent: makeAgent("claude_local"),
     });
     mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: { env: {} } });
+    mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
         key: "paperclipai/paperclip/paperclip",
@@ -805,6 +815,44 @@ describe.sequential("agent skill routes", () => {
       "approval-1",
       [sourceIssueId],
       { agentId: null, userId: "local-board" },
+    );
+  });
+
+  it("syncs pending-hire secret bindings before persisting the approval-backed agent", async () => {
+    const db = createDb(true);
+
+    const res = await request(await createApp(db))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "Secretive Agent",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: {
+              type: "secret_ref",
+              secretId: "33333333-3333-4333-8333-333333333333",
+              version: "latest",
+            },
+          },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const approvalInput = mockApprovalService.create.mock.calls.at(-1)?.[1] as
+      | { payload?: { agentId?: string } }
+      | undefined;
+    const hiredAgentId = expectResponseId(approvalInput?.payload?.agentId);
+    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
+      "company-1",
+      { targetType: "agent", targetId: hiredAgentId },
+      {
+        OPENAI_API_KEY: {
+          type: "secret_ref",
+          secretId: "33333333-3333-4333-8333-333333333333",
+          version: "latest",
+        },
+      },
     );
   });
 

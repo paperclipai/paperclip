@@ -4,14 +4,17 @@ import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
+import { syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { secretService } from "./secrets.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
+  const secretsSvc = secretService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
   type ApprovalRecord = typeof approvals.$inferSelect;
@@ -113,7 +116,15 @@ export function approvalService(db: Db) {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
-          await agentsSvc.activatePendingApproval(payloadAgentId);
+          const activation = await agentsSvc.activatePendingApproval(payloadAgentId);
+          if (activation?.agent) {
+            await syncAgentAdapterEnvBindings({
+              secretsSvc,
+              companyId: updated.companyId,
+              agentId: activation.agent.id,
+              adapterConfig: activation.agent.adapterConfig,
+            });
+          }
           hireApprovedAgentId = payloadAgentId;
         } else {
           const created = await agentsSvc.create(updated.companyId, {
@@ -137,6 +148,12 @@ export function approvalService(db: Db) {
             spentMonthlyCents: 0,
             permissions: undefined,
             lastHeartbeatAt: null,
+          });
+          await syncAgentAdapterEnvBindings({
+            secretsSvc,
+            companyId: updated.companyId,
+            agentId: created.id,
+            adapterConfig: created.adapterConfig,
           });
           hireApprovedAgentId = created?.id ?? null;
         }
