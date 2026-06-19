@@ -1028,8 +1028,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         })
     );
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+
+    const checkoutReleasedIssue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.checkoutRunId === null ? row : null;
+      })
+    );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
-    expect(issue?.checkoutRunId).toBeNull();
+    expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
@@ -1517,8 +1524,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(recoveryAction?.nextAction).toContain("Bind the missing secret");
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments.some((comment) => comment.body.includes("secret/env bindings are missing"))).toBe(true);
+    const configurationComment = await waitForValue(async () => {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      return rows.find((comment) => comment.body.includes("secret/env bindings are missing")) ?? null;
+    });
+    expect(configurationComment).toBeTruthy();
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {
