@@ -36,6 +36,7 @@ import {
 } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { scheduleMainContentFocus } from "../lib/main-content-focus";
+import { pinDocumentScrollToZero } from "../lib/pin-document-scroll";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
@@ -78,6 +79,9 @@ export function Layout() {
   const location = useLocation();
   const navigationType = useNavigationType();
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
+  // The Skills Store renders its own secondary (category) sidebar, so the main
+  // app nav collapses to its rail throughout the /skills section (PAP-10879).
+  const isSkillsRoute = /(^|\/)skills(\/|$)/.test(location.pathname);
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
@@ -148,10 +152,11 @@ export function Layout() {
   // is active, but does NOT mutate the persisted preference. Clearing the force
   // on cleanup restores the user's expanded/collapsed choice when navigating
   // off the takeover route (PAP-10694).
+  const forceRailCollapsed = hasSecondarySidebar || isSkillsRoute;
   useLayoutEffect(() => {
-    setForceCollapsed(hasSecondarySidebar);
+    setForceCollapsed(forceRailCollapsed);
     return () => setForceCollapsed(false);
-  }, [hasSecondarySidebar, setForceCollapsed]);
+  }, [forceRailCollapsed, setForceCollapsed]);
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
@@ -420,11 +425,22 @@ export function Layout() {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
 
-    document.body.style.overflow = isMobile ? "visible" : "hidden";
+    document.body.style.overflow = isMobile ? "visible" : "clip";
 
     return () => {
       document.body.style.overflow = previousOverflow;
     };
+  }, [isMobile]);
+
+  // `scrollIntoView` walks every ancestor scroll container. On a long thread
+  // the post-submit `scrollIntoView` on the new comment reaches `<html>` and
+  // animates `documentElement.scrollTop` via the browser's internal scroll
+  // algorithm, which bypasses the CSS `overflow` on the root element and
+  // visually shifts the entire shell (sidebar included) off-screen. Pin
+  // both roots to scrollTop=0 on every scroll tick.
+  useEffect(() => {
+    if (isMobile) return;
+    return pinDocumentScrollToZero();
   }, [isMobile]);
 
   useEffect(() => {
@@ -452,7 +468,7 @@ export function Layout() {
       <div
       className={cn(
         "bg-background text-foreground pt-[env(safe-area-inset-top)]",
-        isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-hidden",
+        isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-clip",
       )}
       >
       <a
@@ -463,7 +479,7 @@ export function Layout() {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
-      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
+      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button
             type="button"
@@ -536,7 +552,12 @@ export function Layout() {
               tabIndex={-1}
               className={cn(
                 "flex-1 p-4 outline-none md:p-6",
-                isMobile ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]" : "overflow-auto",
+                // Reserve the scrollbar gutter on desktop so pages whose height
+                // changes (e.g. switching skill-detail tabs) don't widen/shift
+                // when the vertical scrollbar appears or disappears (PAP-10907).
+                isMobile
+                  ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]"
+                  : "overflow-auto [scrollbar-gutter:stable]",
               )}
             >
               {hasUnknownCompanyPrefix ? (

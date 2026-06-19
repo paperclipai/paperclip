@@ -61,12 +61,14 @@ describe("server adapter registry", () => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
+    setOverridePaused("hermes_local", true);
   });
 
   afterEach(() => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
+    setOverridePaused("hermes_local", false);
     hermesExecuteMock.mockClear();
   });
 
@@ -383,6 +385,105 @@ describe("server adapter registry", () => {
     expect(patchedCtx.config.hermesCommand).toBe("runtime-hermes");
     expect(patchedCtx.agent.adapterConfig.hermesCommand).toBe("agent-hermes");
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
+
+  it("passes Hermes custom providers through extraArgs while injecting auth", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          provider: "custom:paperclip-openai",
+          extraArgs: ["--source", "tool"],
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.provider).toBe("custom:paperclip-openai");
+    expect(patchedCtx.agent.adapterConfig.extraArgs).toEqual([
+      "--source",
+      "tool",
+      "--provider",
+      "custom:paperclip-openai",
+    ]);
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
+
+  it("does not duplicate an explicit Hermes provider extraArg", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          provider: "custom:paperclip-openai",
+          extraArgs: ["--provider=custom:paperclip-openai"],
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.extraArgs).toEqual([
+      "--provider=custom:paperclip-openai",
+    ]);
+  });
+
+  it("does not duplicate spaced Hermes provider extraArgs", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          provider: "custom:paperclip-openai",
+          extraArgs: ["--provider", "custom:paperclip-openai"],
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.extraArgs).toEqual([
+      "--provider",
+      "custom:paperclip-openai",
+    ]);
   });
 
   it("passes the original Hermes context through when authToken is absent", async () => {

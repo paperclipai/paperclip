@@ -1,4 +1,9 @@
 /// <reference path="./types/express.d.ts" />
+// Kicks off the OTel bootstrap as early as possible (no-op unless
+// OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
+// instrumentationReady before opening DB connections or constructing the
+// HTTP server, so trace coverage does not depend on incidental timing.
+import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -95,6 +100,9 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  // Tracing must be active (or have failed and logged) before the first DB
+  // connection or the HTTP server exists — see instrumentation.ts.
+  await instrumentationReady;
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
@@ -745,56 +753,73 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
-  
-    // Reap orphaned running runs at startup while in-memory execution state is empty,
-    // then resume any persisted queued runs that were waiting on the previous process.
-    void heartbeat
-      .reapOrphanedRuns()
-      .then(() => heartbeat.promoteDueScheduledRetries())
-      .then(async (promotion) => {
-        await heartbeat.resumeQueuedRuns();
-        const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-        if (
-          promotion.promoted > 0 ||
-          reconciled.assignmentDispatched > 0 ||
-          reconciled.dispatchRequeued > 0 ||
-          reconciled.continuationRequeued > 0 ||
-          reconciled.successfulRunHandoffEscalated > 0 ||
-          reconciled.escalated > 0
-        ) {
-          logger.warn(
-            { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-            "startup heartbeat recovery changed assigned issue state",
+
+    // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
+    // into a dead "running" row during startup recovery.
+    await (async () => {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const result = await heartbeat.reapOrphanedRuns();
+          logger.info(
+            { reaped: result.reaped, runIds: result.runIds },
+            "startup reap of orphaned heartbeat runs complete",
           );
+          break;
+        } catch (err) {
+          if (attempt < 2) {
+            logger.warn({ err, attempt }, "startup reap failed, retrying");
+          } else {
+            logger.error(
+              { err },
+              "startup reap of orphaned heartbeat runs failed after retry — periodic reaper will serve as degraded backstop",
+            );
+          }
         }
-      })
-      .then(async () => {
-        const reconciled = await heartbeat.reconcileIssueGraphLiveness();
-        if (reconciled.escalationsCreated > 0) {
-          logger.warn({ ...reconciled }, "startup issue-graph liveness reconciliation created escalations");
-        }
-      })
-      .then(async () => {
-        const scanned = await heartbeat.scanSilentActiveRuns();
-        if (scanned.created > 0 || scanned.escalated > 0) {
-          logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
-        }
-      })
-      .then(async () => {
-        const swept = await heartbeat.sweepStaleIssueLocks();
-        if (swept.cleared > 0) {
-          logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
-        }
-      })
-      .then(async () => {
-        const reviewed = await heartbeat.reconcileProductivityReviews();
-        if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-          logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
-        }
-      })
-      .catch((err) => {
-        logger.error({ err }, "startup heartbeat recovery failed");
-      });
+      }
+
+      const promotion = await heartbeat.promoteDueScheduledRetries();
+      await heartbeat.resumeQueuedRuns();
+      const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+      if (
+        promotion.promoted > 0 ||
+        reconciled.assignmentDispatched > 0 ||
+        reconciled.dispatchRequeued > 0 ||
+        reconciled.continuationRequeued > 0 ||
+        reconciled.successfulRunHandoffEscalated > 0 ||
+        reconciled.escalated > 0
+      ) {
+        logger.warn(
+          { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+          "startup heartbeat recovery changed assigned issue state",
+        );
+      }
+
+      const issueGraphReconciled = await heartbeat.reconcileIssueGraphLiveness();
+      if (issueGraphReconciled.escalationsCreated > 0) {
+        logger.warn(
+          { ...issueGraphReconciled },
+          "startup issue-graph liveness reconciliation created escalations",
+        );
+      }
+
+      const scanned = await heartbeat.scanSilentActiveRuns();
+      if (scanned.created > 0 || scanned.escalated > 0) {
+        logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
+      }
+
+      const swept = await heartbeat.sweepStaleIssueLocks();
+      if (swept.cleared > 0) {
+        logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
+      }
+
+      const reviewed = await heartbeat.reconcileProductivityReviews();
+      if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+        logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
+      }
+    })().catch((err) => {
+      logger.error({ err }, "startup heartbeat recovery failed");
+    });
+
     setInterval(() => {
       void heartbeat
         .tickTimers(new Date())
@@ -986,6 +1011,10 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
         }
       }
+
+      // Flush buffered OTel spans before the process goes away; without this
+      // await the exporter's final batch is dropped on exit.
+      await shutdownInstrumentation();
 
       process.exit(0);
     };

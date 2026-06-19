@@ -52,6 +52,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompanySearchQuery,
   type CompanySearchResponse,
@@ -558,6 +559,44 @@ function executionPrincipalsEqual(
   return left.type === "agent" ? left.agentId === right.agentId : left.userId === right.userId;
 }
 
+function actorMatchesExecutionParticipant(
+  actor: { actorType: "user" | "agent"; actorId: string },
+  participant: ParsedExecutionState["currentParticipant"] | null,
+) {
+  if (!participant) return false;
+  // Require the actor kind to match the participant kind before comparing ids. Without this
+  // an agent and a user that happen to share an id value would falsely satisfy participant
+  // gating on the auto-approval path.
+  if (participant.type !== actor.actorType) return false;
+  return participant.type === "agent" ? participant.agentId === actor.actorId : participant.userId === actor.actorId;
+}
+
+// Negation/rejection markers that invalidate an otherwise approval-looking heading.
+// Match common phrasings ("NOT APPROVED", "Do not approve", "Not approving", "Changes requested",
+// "Rejected", "Denied", "Blocked") so a reviewer comment intending to reject cannot auto-complete
+// the issue. We rely on the heading being a single line, so testing the heading text alone is safe.
+const APPROVAL_NEGATION_REGEX =
+  /\b(?:NOT|REJECT(?:ED|ING|S)?|DENY|DENIED|DENYING|BLOCK(?:ED|ING|S)?|CHANGES?\s+REQUESTED)\b/i;
+
+function isApprovalReviewComment(body: string) {
+  const normalized = body.replace(/\r\n?/g, "\n");
+  const headingMatch = normalized.match(/(?:^|\n)##\s*Review:\s*([^\n]*)/i);
+  if (headingMatch) {
+    const headingText = headingMatch[1];
+    if (/\bAPPROVED\b/i.test(headingText) && !APPROVAL_NEGATION_REGEX.test(headingText)) {
+      return true;
+    }
+  }
+  // Require the `kind: review` and `decision: approved` lines to appear on truly consecutive
+  // lines (no blank-line separation) so prose like "the previous sprint decision: approved"
+  // can't combine with an unrelated `kind: review` line elsewhere in the body to trigger
+  // auto-approval. Use `[ \t]*` between the lines so `\s*` does not silently swallow a newline.
+  return (
+    /^[ \t]*kind[ \t]*:[ \t]*review[ \t]*\n[ \t]*decision[ \t]*:[ \t]*approved[ \t]*$/im.test(normalized)
+    || /^[ \t]*decision[ \t]*:[ \t]*approved[ \t]*\n[ \t]*kind[ \t]*:[ \t]*review[ \t]*$/im.test(normalized)
+  );
+}
+
 function buildExecutionStageWakeContext(input: {
   state: ParsedExecutionState;
   wakeRole: ExecutionStageWakeContext["wakeRole"];
@@ -709,7 +748,23 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  actorRunId: string | null | undefined;
+  checkoutRunId: string | null | undefined;
+  executionRunId: string | null | undefined;
 }) {
+  // Local-CLI agents post comments under user auth, so the actor.type is "user"
+  // even though the comment originates from the same heartbeat run that owns
+  // the issue lock. Without this guard, an agent that closes its own issue and
+  // then posts a follow-up comment in the same run silently reopens it.
+  // Suppress the implicit move whenever the comment's source run matches the
+  // issue's checkout/execution run.
+  if (
+    typeof input.actorRunId === "string"
+    && input.actorRunId.length > 0
+    && (input.actorRunId === input.checkoutRunId || input.actorRunId === input.executionRunId)
+  ) {
+    return false;
+  }
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
@@ -732,6 +787,25 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
 
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
   return status === "done" || status === "blocked" || status === "todo" || status === "in_progress";
+}
+
+// Log-class comment from the assignee agent on a terminal (done/cancelled)
+// issue is not a reopen signal. When the caller did not pass `resume: true`,
+// this forces the reopen path off even if `reopen: true` was sent.
+function isAssigneeSelfCommentOnTerminalIssue(input: {
+  hasCommentBody: boolean;
+  resumeRequested: boolean;
+  issueStatus: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+  actorType: "agent" | "user";
+  actorId: string;
+}) {
+  if (!input.hasCommentBody) return false;
+  if (input.resumeRequested) return false;
+  if (!isClosedIssueStatus(input.issueStatus)) return false;
+  if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
+  if (input.actorType !== "agent") return false;
+  return input.actorId === input.assigneeAgentId;
 }
 
 function queueResolvedInteractionContinuationWakeup(input: {
@@ -917,6 +991,13 @@ function buildExecutionStageWakeup(input: {
   }
 
   return null;
+}
+
+class AutoApprovalIssueMissingError extends Error {
+  constructor() {
+    super("Issue not found during auto-approval transaction");
+    this.name = "AutoApprovalIssueMissingError";
+  }
 }
 
 export function issueRoutes(
@@ -2367,6 +2448,8 @@ export function issueRoutes(
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
     const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
+    const assigneeAgentFilterRaw = req.query.assigneeAgentId;
+    let assigneeAgentId: string | null | undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -2408,12 +2491,29 @@ export function issueRoutes(
       res.status(400).json({ error: "hasPlanDocument must be true or false when provided" });
       return;
     }
+    if (assigneeAgentFilterRaw !== undefined) {
+      if (typeof assigneeAgentFilterRaw !== "string") {
+        res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
+        return;
+      }
+      const normalizedAssigneeAgentFilter = assigneeAgentFilterRaw.trim();
+      if (normalizedAssigneeAgentFilter.length === 0) {
+        assigneeAgentId = undefined;
+      } else if (normalizedAssigneeAgentFilter.toLowerCase() === "null") {
+        assigneeAgentId = null;
+      } else if (isUuidLike(normalizedAssigneeAgentFilter)) {
+        assigneeAgentId = normalizedAssigneeAgentFilter;
+      } else {
+        res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
+        return;
+      }
+    }
     const offset = parsedOffset ?? 0;
 
     const rawResult = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
-      status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      status: req.query.status as string | string[] | undefined,
+      assigneeAgentId,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
       touchedByUserId,
@@ -2492,7 +2592,7 @@ export function issueRoutes(
 
     const blockedCountFilters = {
       attention: "blocked",
-      status: req.query.status as string | undefined,
+      status: req.query.status as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
@@ -4780,16 +4880,28 @@ export function issueRoutes(
     const shouldResumeInProgressScheduledRetry =
       !!scheduledRetryForHumanComment &&
       scheduledRetryForHumanComment.agentId === requestedAssigneeAgentId;
+    const assigneeSelfCommentOnTerminal = isAssigneeSelfCommentOnTerminalIssue({
+      hasCommentBody: !!commentBody,
+      resumeRequested: resumeRequested === true,
+      issueStatus: existing.status,
+      assigneeAgentId: existing.assigneeAgentId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+    });
     const effectiveMoveToTodoRequested =
-      explicitMoveToTodoRequested ||
-      (!!commentBody &&
-        shouldImplicitlyMoveCommentedIssueToTodo({
-          issueStatus: existing.status,
-          assigneeAgentId: requestedAssigneeAgentId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-        })) ||
-      shouldResumeInProgressScheduledRetry;
+      !assigneeSelfCommentOnTerminal &&
+      (explicitMoveToTodoRequested ||
+        (!!commentBody &&
+          shouldImplicitlyMoveCommentedIssueToTodo({
+            issueStatus: existing.status,
+            assigneeAgentId: requestedAssigneeAgentId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            actorRunId: actor.runId,
+            checkoutRunId: existing.checkoutRunId,
+            executionRunId: existing.executionRunId,
+          })) ||
+        shouldResumeInProgressScheduledRetry);
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
       : null;
@@ -6546,15 +6658,27 @@ export function issueRoutes(
     const shouldResumeInProgressScheduledRetry =
       !!scheduledRetryForHumanComment &&
       scheduledRetryForHumanComment.agentId === issue.assigneeAgentId;
+    const assigneeSelfCommentOnTerminal = isAssigneeSelfCommentOnTerminalIssue({
+      hasCommentBody: true,
+      resumeRequested: resumeRequested === true,
+      issueStatus: issue.status,
+      assigneeAgentId: issue.assigneeAgentId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+    });
     const effectiveMoveToTodoRequested =
-      explicitMoveToTodoRequested ||
-      shouldImplicitlyMoveCommentedIssueToTodo({
-        issueStatus: issue.status,
-        assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-      }) ||
-      shouldResumeInProgressScheduledRetry;
+      !assigneeSelfCommentOnTerminal &&
+      (explicitMoveToTodoRequested ||
+        shouldImplicitlyMoveCommentedIssueToTodo({
+          issueStatus: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          actorRunId: actor.runId,
+          checkoutRunId: issue.checkoutRunId,
+          executionRunId: issue.executionRunId,
+        }) ||
+        shouldResumeInProgressScheduledRetry);
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
@@ -6567,6 +6691,8 @@ export function issueRoutes(
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
     let currentIssue = issue;
+    let issueBeforeCommentDecision = issue;
+    let commentDecisionStageWakeup: ReturnType<typeof buildExecutionStageWakeup> | null = null;
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
 
     let scheduledRetrySupersededByComment = false;
@@ -6654,16 +6780,143 @@ export function issueRoutes(
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
-    }, {
-      authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-      presentation: req.body.presentation ?? null,
-      metadata: req.body.metadata ?? null,
-      sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-    });
+    const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
+    const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
+    const shouldAutoApproveReviewComment =
+      currentIssue.status === "in_review" &&
+      currentExecutionState?.status === "pending" &&
+      actorMatchesExecutionParticipant(actor, currentExecutionState.currentParticipant ?? null) &&
+      isApprovalReviewComment(req.body.body);
+
+    // Persist the comment and the auto-approval state transition atomically when both apply.
+    // Without a single transaction, a 422 (or any error) thrown by the status update after the
+    // comment is inserted would leave an orphan comment without the corresponding state change.
+    let comment: Awaited<ReturnType<typeof svc.addComment>>;
+    if (shouldAutoApproveReviewComment) {
+      const transition = applyIssueExecutionPolicyTransition({
+        issue: currentIssue,
+        policy: currentExecutionPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        commentBody: req.body.body,
+      });
+      const decisionId = transition.decision ? randomUUID() : null;
+      if (decisionId) {
+        const nextExecutionState = transition.patch.executionState;
+        if (!nextExecutionState || typeof nextExecutionState !== "object") {
+          throw new Error("Execution policy decision patch is missing executionState");
+        }
+        transition.patch.executionState = {
+          ...nextExecutionState,
+          lastDecisionId: decisionId,
+        };
+      }
+
+      issueBeforeCommentDecision = currentIssue;
+      const updatePatch = {
+        ...transition.patch,
+        status: typeof transition.patch.status === "string" ? transition.patch.status : "done",
+        actorAgentId: actor.agentId ?? null,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      };
+
+      const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+      const commentOptions = {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+        sourceTrust,
+      };
+      let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
+      try {
+        txResult = await db.transaction(async (tx) => {
+          const insertedComment = await svc.addComment(
+            id,
+            req.body.body,
+            {
+              agentId: actor.agentId ?? undefined,
+              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              runId: actor.runId,
+            },
+            commentOptions,
+            tx,
+          );
+          const updated = await svc.update(id, updatePatch, tx);
+          // Throw (not return null) so drizzle rolls back the inserted comment when the issue
+          // has been concurrently deleted between the initial fetch and the in-transaction update.
+          if (!updated) throw new AutoApprovalIssueMissingError();
+
+          if (transition.decision && decisionId) {
+            await tx.insert(issueExecutionDecisions).values({
+              id: decisionId,
+              companyId: updated.companyId,
+              issueId: updated.id,
+              stageId: transition.decision.stageId,
+              stageType: transition.decision.stageType,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              outcome: transition.decision.outcome,
+              body: transition.decision.body,
+              createdByRunId: actor.runId ?? null,
+            });
+          }
+
+          return { comment: insertedComment, issue: updated };
+        });
+      } catch (err) {
+        if (err instanceof AutoApprovalIssueMissingError) {
+          res.status(404).json({ error: "Issue not found" });
+          return;
+        }
+        throw err;
+      }
+      comment = txResult.comment;
+      currentIssue = txResult.issue;
+      // Mirror the normal status-change audit trail: every other in_review -> done path
+      // emits an `issue.updated` activity, so emit one here too for the auto-approval path.
+      if (issueBeforeCommentDecision.status !== currentIssue.status) {
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            status: currentIssue.status,
+            identifier: currentIssue.identifier,
+            source: "auto_approval_comment",
+            _previous: { status: issueBeforeCommentDecision.status },
+          },
+        });
+      }
+      commentDecisionStageWakeup = buildExecutionStageWakeup({
+        issueId: currentIssue.id,
+        previousState: currentExecutionState,
+        nextState: parseIssueExecutionState(currentIssue.executionState),
+        interruptedRunId,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    } else {
+      comment = await svc.addComment(id, req.body.body, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      }, {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+        sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+      });
+    }
+
     await issueReferencesSvc.syncComment(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -6735,14 +6988,32 @@ export function issueRoutes(
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
-      const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+      type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
+      const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
+      const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
+        const wakeIssueId =
+          wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
+            ? wakeup.payload.issueId
+            : currentIssue.id;
+        const key = `${agentId}:${wakeIssueId}`;
+        if (wakeups.has(key)) return;
+        wakeups.set(key, { agentId, wakeup });
+      };
+
+      if (commentDecisionStageWakeup) {
+        addWakeup(commentDecisionStageWakeup.agentId, commentDecisionStageWakeup.wakeup);
+      }
+
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      // Re-derive closed-ness from the post-mutation issue so the auto-approval
+      // transition (in_review -> done) suppresses a stale `issue_commented` wake
+      // to the returnAssignee for an already-completed issue.
+      const skipWake = selfComment || isClosedIssueStatus(currentIssue.status);
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
-          wakeups.set(assigneeId, {
+          addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
             reason: "issue_reopened_via_comment",
@@ -6769,7 +7040,7 @@ export function issueRoutes(
             },
           });
         } else {
-          wakeups.set(assigneeId, {
+          addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
             reason: "issue_commented",
@@ -6804,9 +7075,8 @@ export function issueRoutes(
       }
 
       for (const mentionedId of mentionedIds) {
-        if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
-        wakeups.set(mentionedId, {
+        addWakeup(mentionedId, {
           source: "automation",
           triggerDetail: "system",
           reason: "issue_comment_mentioned",
@@ -6824,7 +7094,67 @@ export function issueRoutes(
         });
       }
 
-      for (const [agentId, wakeup] of wakeups.entries()) {
+      const becameDone = issueBeforeCommentDecision.status !== "done" && currentIssue.status === "done";
+      if (becameDone) {
+        const dependents = await svc.listWakeableBlockedDependents(currentIssue.id);
+        for (const dependent of dependents) {
+          addWakeup(dependent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_blockers_resolved",
+            payload: {
+              issueId: dependent.id,
+              resolvedBlockerIssueId: currentIssue.id,
+              blockerIssueIds: dependent.blockerIssueIds,
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: dependent.id,
+              taskId: dependent.id,
+              wakeReason: "issue_blockers_resolved",
+              source: "issue.blockers_resolved",
+              resolvedBlockerIssueId: currentIssue.id,
+              blockerIssueIds: dependent.blockerIssueIds,
+            },
+          });
+        }
+      }
+
+      const becameTerminal =
+        !["done", "cancelled"].includes(issueBeforeCommentDecision.status) &&
+        ["done", "cancelled"].includes(currentIssue.status);
+      if (becameTerminal && currentIssue.parentId) {
+        const parent = await svc.getWakeableParentAfterChildCompletion(currentIssue.parentId);
+        if (parent) {
+          addWakeup(parent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_children_completed",
+            payload: {
+              issueId: parent.id,
+              completedChildIssueId: currentIssue.id,
+              childIssueIds: parent.childIssueIds,
+              childIssueSummaries: parent.childIssueSummaries,
+              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: parent.id,
+              taskId: parent.id,
+              wakeReason: "issue_children_completed",
+              source: "issue.children_completed",
+              completedChildIssueId: currentIssue.id,
+              childIssueIds: parent.childIssueIds,
+              childIssueSummaries: parent.childIssueSummaries,
+              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+            },
+          });
+        }
+      }
+
+      for (const { agentId, wakeup } of wakeups.values()) {
         heartbeat
           .wakeup(agentId, wakeup)
           .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));

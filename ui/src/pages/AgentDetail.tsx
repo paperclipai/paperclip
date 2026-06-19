@@ -22,6 +22,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { resolveSkillSummaryText } from "../lib/company-skill-summary";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
@@ -1611,6 +1612,7 @@ function ConfigurationTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
+      pushToast({ title: "Agent saved", tone: "success" });
     },
     onError: (err) => {
       setAwaitingRefreshAfterSave(false);
@@ -1656,7 +1658,7 @@ function ConfigurationTab({
       <AgentConfigForm
         mode="edit"
         agent={agent}
-        onSave={(patch) => updateAgent.mutate(patch)}
+        onSave={(patch) => updateAgent.mutateAsync(patch)}
         isSaving={isConfigSaving}
         adapterModels={adapterModels}
         onDirtyChange={onDirtyChange}
@@ -2779,6 +2781,7 @@ export function AgentSkillsTab({
             const renderSkillRow = (skill: SkillRow) => {
               const adapterEntry = skill.adapterEntry ?? adapterEntryByKey.get(skill.key);
               const required = Boolean(adapterEntry?.required);
+              const summaryText = resolveSkillSummaryText(skill, { fallbackKey: true });
               const rowClassName = cn(
                 "flex items-start gap-3 border-b border-border px-3 py-3 text-sm last:border-b-0",
                 skill.readOnly ? "bg-muted/20" : "hover:bg-accent/20",
@@ -2798,9 +2801,9 @@ export function AgentSkillsTab({
                       </Link>
                     ) : null}
                   </div>
-                  {skill.description && (
+                  {summaryText && (
                     <MarkdownBody className="mt-1 text-xs text-muted-foreground prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                      {skill.description}
+                      {summaryText}
                     </MarkdownBody>
                   )}
                   {skill.readOnly && skill.originLabel && (

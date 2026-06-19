@@ -694,6 +694,41 @@
       "when": 1780534200000,
       "tag": "0098_project_icon",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1781130000000,
+      "tag": "0099_skills_store_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1781480000000,
+      "tag": "0100_skill_install_count_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1781490000000,
+      "tag": "0101_plugin_company_id_tenant_isolation",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1781490100000,
+      "tag": "0102_managed_sandbox_dedup_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1781490200000,
+      "tag": "0103_agent_error_reason",
+      "breakpoints": true
     }
   ]
 }

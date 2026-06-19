@@ -68,6 +68,8 @@ import {
   type IssueChatComposerHandle,
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
+import { IssueChatThreadClassic } from "../components/IssueChatThreadClassic";
+import { useConferenceRoomChatEnabled } from "../hooks/useConferenceRoomChatEnabled";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
@@ -116,6 +118,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { formatIssueActivityAction } from "@/lib/activity-format";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
 import { buildIssueSiblingNavigation, shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
 import { filterIssueDescendants } from "../lib/issue-tree";
@@ -800,6 +803,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onResumeFromBacklog,
   resumeFromBacklogPending,
 }: IssueDetailChatTabProps) {
+  // Conference Room Chat experimental flag (PAP-136/PAP-139): ON renders the
+  // NUX thread (bubbles, metadata rows, composer chrome); OFF renders the
+  // frozen master fork so the task thread looks exactly like master.
+  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
+  const ThreadComponent = conferenceRoomChatEnabled ? IssueChatThread : IssueChatThreadClassic;
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -950,7 +958,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           </Button>
         </div>
       ) : null}
-      <IssueChatThread
+      <ThreadComponent
         composerRef={composerRef}
         comments={commentsWithRunMeta}
         interactions={interactions}
@@ -1478,6 +1486,18 @@ export function IssueDetail() {
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  // Bounded pool of recently-updated issues to back the `@task` reference picker
+  // (PAP-95f). The picker filters this list client-side by identifier/title.
+  // Gated on the Conference Room Chat flag (PAP-139): flag off keeps master's
+  // mention set (no task options, no extra query).
+  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
+  const { data: mentionIssues = [] } = useQuery({
+    queryKey: resolvedCompanyId ? queryKeys.issues.mentionPool(resolvedCompanyId) : ["issues", "mention-pool", "pending"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { limit: 100, sortField: "updated", sortDir: "desc" }),
+    enabled: !!resolvedCompanyId && conferenceRoomChatEnabled,
+    staleTime: 60_000,
+    placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(resolvedCompanyId ?? "pending"),
+  });
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -1610,8 +1630,9 @@ export function IssueDetail() {
       agents,
       projects: orderedProjects,
       members: companyMembers?.users,
+      issues: conferenceRoomChatEnabled ? mentionIssues : undefined,
     });
-  }, [agents, companyMembers?.users, orderedProjects]);
+  }, [agents, companyMembers?.users, orderedProjects, mentionIssues, conferenceRoomChatEnabled]);
 
   const resolvedProject = useMemo(
     () => (issue?.projectId ? orderedProjects.find((project) => project.id === issue.projectId) ?? issue.project ?? null : null),
@@ -3074,10 +3095,18 @@ export function IssueDetail() {
     const title = decodeEntities(issue.title);
     const body = decodeEntities(issue.description ?? "");
     const md = `# ${issue.identifier}: ${title}\n\n${body}`.trimEnd();
-    await navigator.clipboard.writeText(md);
-    setCopied(true);
-    pushToast({ title: "Copied to clipboard", tone: "success" });
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await copyTextToClipboard(md);
+      setCopied(true);
+      pushToast({ title: "Copied to clipboard", tone: "success" });
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      pushToast({
+        title: "Copy failed",
+        body: error instanceof Error ? error.message : "Unable to copy task markdown",
+        tone: "error",
+      });
+    }
   };
 
   // Gmail-style mobile toolbar when viewing an issue from inbox.
@@ -3642,9 +3671,9 @@ export function IssueDetail() {
           {issue.workMode === "planning" ? (
             <span
               className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 shrink-0"
-              title="This task is in planning mode."
+              title={conferenceRoomChatEnabled ? "This task is in plan mode." : "This task is in planning mode."}
             >
-              Planning
+              {conferenceRoomChatEnabled ? "Plan mode" : "Planning"}
             </span>
           ) : null}
 
