@@ -16,6 +16,7 @@ const mockApprovalService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(),
+  cancelRunForReassignedIssue: vi.fn(async () => null),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({

@@ -49,6 +49,7 @@ const mockBudgetService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelActiveForAgent: vi.fn(),
+  cancelRunForReassignedIssue: vi.fn(async () => null),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
