@@ -125,10 +125,14 @@ export const issues = pgTable(
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
-    evidenceVerdictEvaluatedIdx: index("issues_company_evidence_verdict_evaluated_idx").on(
-      table.companyId,
-      table.lastEvidenceVerdictEvaluatedAt,
-    ),
+    // Partial on `last_evidence_verdict IS NOT NULL` (BLO-10777 follow-up): the
+    // only consumer (dashboard scorecard query) always carries that filter, so a
+    // partial index is an exact predicate match — smaller, and unambiguously the
+    // planner's choice over any other `(company_id, …)` index. Hardens
+    // dashboard-service.test.ts's EXPLAIN guard against future sibling indexes.
+    evidenceVerdictEvaluatedIdx: index("issues_company_evidence_verdict_evaluated_idx")
+      .on(table.companyId, table.lastEvidenceVerdictEvaluatedAt)
+      .where(sql`${table.lastEvidenceVerdict} is not null`),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),
