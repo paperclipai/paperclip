@@ -494,6 +494,7 @@ To prevent code-changing or remediation issues from being completed without prop
 
 #### Validation Rules
 For any issue in a Dark Factory project:
+0. **Runs Directory Available**: The factory runs directory (configured via `DARK_FACTORY_RUN_DIR` or `FACTORY_RUNS_DIR`) must exist and be accessible by the server. If this directory is missing or inaccessible, the Done transition is blocked.
 1. **Pull Request Required**: A linked implementation PR (either via comment containing a pull request URL or as a linked work product) is mandatory for all code-changing or remediation tasks.
 2. **PR Merged Status**: The linked PR must be successfully merged in GitHub (verified via `gh pr view`).
 3. **No Mistakes Gate Pass**: The merged PR's head commit must have a verified "No Mistakes" gate pass. This can be met by either:

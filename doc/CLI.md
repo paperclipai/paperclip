@@ -840,8 +840,11 @@ Local Paperclip data lives under the selected instance root. `PAPERCLIP_HOME` ch
         │   └── master.key                        # local_encrypted master key
         ├── workspaces/                           # default agent workspaces
         ├── projects/                             # project execution workspaces
-        ├── companies/                            # per-company adapter homes (e.g. codex-home)
-        └── codex-home/                           # per-instance codex home (when not company-scoped)
+        └── companies/
+            └── <company-id>/
+                └── agents/
+                    └── <agent-id>/
+                        └── codex-home/           # isolated, per-agent codex home (shares/host inheritance blocked)
 ```
 
 Default paths for the canonical install:

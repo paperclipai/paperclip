@@ -47,6 +47,7 @@ backlog -> todo -> in_progress -> in_review -> done
 
 ### Guarded Done Transitions (Dark Factory Projects)
 In projects designated as Dark Factory, issues cannot transition to `done` unless:
+0. The factory runs directory exists and is accessible by the server (resolvable via `DARK_FACTORY_RUN_DIR` or `FACTORY_RUNS_DIR`).
 1. There is a linked GitHub PR that has been merged.
 2. The merged PR has a verified No Mistakes gate pass matching the PR's head commit.
 
