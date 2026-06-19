@@ -135,6 +135,16 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/sandbox-providers/kubernetes",
+    "name": "@paperclipai/plugin-kubernetes",
+    "publishFromCi": false
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/novita",
+    "name": "@paperclipai/plugin-novita-sandbox",
+    "publishFromCi": false
+  },
+  {
     "dir": "ui",
     "name": "@paperclipai/ui",
     "publishFromCi": true

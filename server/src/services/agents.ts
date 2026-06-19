@@ -24,8 +24,10 @@ import {
   type AgentEligibilityAgent,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { secretService } from "./secrets.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -218,6 +220,8 @@ export function deduplicateAgentName(
 }
 
 export function agentService(db: Db) {
+  const secretsSvc = secretService(db);
+
   function currentUtcMonthWindow(now = new Date()) {
     const year = now.getUTCFullYear();
     const month = now.getUTCMonth();
@@ -371,6 +375,19 @@ export function agentService(db: Db) {
     }
   }
 
+  async function syncAgentSecretBindings(
+    agent: { id: string; companyId: string; adapterConfig: unknown },
+    dbClient: Db = db,
+  ) {
+    const scopedSecretsSvc = dbClient === db ? secretsSvc : secretService(dbClient);
+    await syncAgentAdapterEnvBindings({
+      secretsSvc: scopedSecretsSvc,
+      companyId: agent.companyId,
+      agentId: agent.id,
+      adapterConfig: agent.adapterConfig,
+    });
+  }
+
   async function updateAgent(
     id: string,
     data: Partial<typeof agents.$inferInsert>,
@@ -415,33 +432,45 @@ export function agentService(db: Db) {
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
-    const updated = await db
-      .update(agents)
-      .set({ ...normalizedPatch, updatedAt: new Date() })
-      .where(eq(agents.id, id))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    const normalizedUpdated = updated ? await getById(updated.id) : null;
+    return db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const updated = await tx
+        .update(agents)
+        .set({ ...normalizedPatch, updatedAt: new Date() })
+        .where(eq(agents.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
 
-    if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
-      const afterConfig = buildConfigSnapshot(normalizedUpdated);
-      const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
-      if (changedKeys.length > 0) {
-        await db.insert(agentConfigRevisions).values({
-          companyId: normalizedUpdated.companyId,
-          agentId: normalizedUpdated.id,
-          createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
-          createdByUserId: options?.recordRevision?.createdByUserId ?? null,
-          source: options?.recordRevision?.source ?? "patch",
-          rolledBackFromRevisionId: options?.recordRevision?.rolledBackFromRevisionId ?? null,
-          changedKeys,
-          beforeConfig: beforeConfig as unknown as Record<string, unknown>,
-          afterConfig: afterConfig as unknown as Record<string, unknown>,
-        });
+      if (Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
+        await syncAgentSecretBindings(updated, txDb);
       }
-    }
 
-    return normalizedUpdated;
+      const normalizedUpdated = await agentService(txDb).getById(updated.id);
+      if (!normalizedUpdated) {
+        throw notFound("Agent not found");
+      }
+
+      if (shouldRecordRevision && beforeConfig) {
+        const afterConfig = buildConfigSnapshot(normalizedUpdated);
+        const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
+        if (changedKeys.length > 0) {
+          await tx.insert(agentConfigRevisions).values({
+            companyId: normalizedUpdated.companyId,
+            agentId: normalizedUpdated.id,
+            createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
+            createdByUserId: options?.recordRevision?.createdByUserId ?? null,
+            source: options?.recordRevision?.source ?? "patch",
+            rolledBackFromRevisionId: options?.recordRevision?.rolledBackFromRevisionId ?? null,
+            changedKeys,
+            beforeConfig: beforeConfig as unknown as Record<string, unknown>,
+            afterConfig: afterConfig as unknown as Record<string, unknown>,
+          });
+        }
+      }
+
+      return normalizedUpdated;
+    });
   }
 
   return {
@@ -474,13 +503,20 @@ export function agentService(db: Db) {
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
-      const created = await db
-        .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
-        .returning()
-        .then((rows) => rows[0]);
-
-      return requireGetById(created.id);
+      return db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const created = await tx
+          .insert(agents)
+          .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
+          .returning()
+          .then((rows) => rows[0]);
+        await syncAgentSecretBindings(created, txDb);
+        const normalizedCreated = await agentService(txDb).getById(created.id);
+        if (!normalizedCreated) {
+          throw notFound("Agent not found");
+        }
+        return normalizedCreated;
+      });
     },
 
     update: updateAgent,
@@ -496,6 +532,7 @@ export function agentService(db: Db) {
           status: "paused",
           pauseReason: reason,
           pausedAt: new Date(),
+          errorReason: null,
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
@@ -518,6 +555,7 @@ export function agentService(db: Db) {
           status: "idle",
           pauseReason: null,
           pausedAt: null,
+          errorReason: null,
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
@@ -543,6 +581,7 @@ export function agentService(db: Db) {
           status: "idle",
           pauseReason: null,
           pausedAt: null,
+          errorReason: null,
           updatedAt: new Date(),
         })
         .where(and(eq(agents.id, id), eq(agents.status, "error")))
@@ -565,6 +604,7 @@ export function agentService(db: Db) {
           status: "terminated",
           pauseReason: null,
           pausedAt: null,
+          errorReason: null,
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id));
@@ -611,15 +651,25 @@ export function agentService(db: Db) {
     },
 
     activatePendingApproval: async (id: string) => {
-      const updated = await db
-        .update(agents)
-        .set({ status: "idle", updatedAt: new Date() })
-        .where(and(eq(agents.id, id), eq(agents.status, "pending_approval")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const activatedAgent = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const updated = await tx
+          .update(agents)
+          .set({ status: "idle", updatedAt: new Date() })
+          .where(and(eq(agents.id, id), eq(agents.status, "pending_approval")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+        await syncAgentSecretBindings(updated, txDb);
+        const agent = await agentService(txDb).getById(updated.id);
+        if (!agent) {
+          throw notFound("Agent not found");
+        }
+        return agent;
+      });
 
-      if (updated) {
-        return { agent: await requireGetById(updated.id), activated: true };
+      if (activatedAgent) {
+        return { agent: activatedAgent, activated: true };
       }
 
       const existing = await getById(id);

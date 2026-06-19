@@ -424,6 +424,23 @@ function AcpxLocalTranscriptStory() {
 
 const SKILLS_COMPANY_ID = "company-storybook";
 
+const defaultStoreSkillFields = {
+  iconUrl: null,
+  color: null,
+  tagline: null,
+  authorName: null,
+  homepageUrl: null,
+  categories: [],
+  sharingScope: "company" as const,
+  publicShareToken: null,
+  forkedFromSkillId: null,
+  forkedFromCompanyId: null,
+  starCount: 0,
+  installCount: 1,
+  forkCount: 0,
+  currentVersionId: null,
+};
+
 const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
   {
     id: "skill-paperclip",
@@ -439,6 +456,7 @@ const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
     trustLevel: "scripts_executables",
     compatibility: "compatible",
     fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+    ...defaultStoreSkillFields,
     createdAt: new Date("2026-04-12T09:00:00.000Z"),
     updatedAt: new Date("2026-04-22T15:30:00.000Z"),
     attachedAgentCount: 4,
@@ -466,6 +484,7 @@ const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
     trustLevel: "markdown_only",
     compatibility: "compatible",
     fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+    ...defaultStoreSkillFields,
     createdAt: new Date("2026-04-15T10:00:00.000Z"),
     updatedAt: new Date("2026-04-25T12:00:00.000Z"),
     attachedAgentCount: 2,
@@ -493,6 +512,7 @@ const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
     trustLevel: "assets",
     compatibility: "compatible",
     fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+    ...defaultStoreSkillFields,
     createdAt: new Date("2026-04-18T11:00:00.000Z"),
     updatedAt: new Date("2026-04-26T09:30:00.000Z"),
     attachedAgentCount: 1,
