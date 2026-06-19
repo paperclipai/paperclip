@@ -470,6 +470,89 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it("cancels queued routine max-turn continuations without explicit opt-in before the run starts", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Routine max-turn continuation without opt-in",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      originKind: "routine_execution",
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      invocationSource: "automation",
+      scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      contextExtras: {
+        retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      },
+    });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: runId,
+        executionAgentNameKey: "claudecoder",
+        executionLockedAt: new Date("2026-04-20T12:00:00.000Z"),
+      })
+      .where(eq(issues.id, issueId));
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("routine_execution_auto_continuation_disabled");
+    expect(run?.resultJson).toMatchObject({ stopReason: "routine_execution_auto_continuation_disabled" });
+    expect(wakeup?.status).toBe("skipped");
+    expect(wakeup?.error).toContain("allowMaxTurnContinuation");
+    expect(issue).toEqual({
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("cancels queued max-turn continuations when another continuation owns the issue lock", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
