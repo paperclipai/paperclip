@@ -92,7 +92,7 @@ function formatQuotaResetTime(iso: string | null | undefined): string | null {
   })}`;
 }
 
-function RoundedUsageBar({
+function DottedUsageBar({
   usedPercent,
   className,
 }: {
@@ -100,19 +100,32 @@ function RoundedUsageBar({
   className?: string;
 }) {
   const used = Math.min(100, Math.max(0, usedPercent));
-  const available = Math.max(0, 100 - used);
+  const segmentCount = 28;
+  const usedSegments = used <= 0
+    ? 0
+    : Math.max(1, Math.min(segmentCount, Math.round((used / 100) * segmentCount)));
   return (
-    <div className={cn("flex h-3 overflow-hidden rounded-full border border-border/50 bg-muted/25", className)}>
-      <div
-        className="h-full rounded-r-full bg-red-500 transition-[width] duration-200"
-        style={{ width: `${used}%` }}
-        aria-label={`${Math.round(used)}% used`}
-      />
-      <div
-        className="h-full rounded-l-full bg-green-500/80 transition-[width] duration-200"
-        style={{ width: `${available}%` }}
-        aria-label={`${Math.round(available)}% available`}
-      />
+    <div
+      className={cn(
+        "grid h-4 grid-cols-[repeat(28,minmax(0,1fr))] items-center gap-1 rounded-full border border-border/50 bg-muted/20 px-1",
+        className,
+      )}
+      aria-label={`${Math.round(used)}% used, ${Math.max(0, Math.round(100 - used))}% available`}
+    >
+      {Array.from({ length: segmentCount }).map((_, index) => {
+        const isUsed = index < usedSegments;
+        return (
+          <span
+            key={index}
+            className={cn(
+              "h-2 min-w-0 rounded-full transition-colors duration-200",
+              isUsed
+                ? "bg-red-500/90 shadow-[0_0_8px_rgba(239,68,68,0.22)]"
+                : "bg-green-500/75 shadow-[0_0_8px_rgba(34,197,94,0.18)]",
+            )}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -526,7 +539,7 @@ export function Dashboard() {
                           </p>
                         </div>
                       </div>
-                      <RoundedUsageBar usedPercent={observedPercent} className="mt-2" />
+                      <DottedUsageBar usedPercent={observedPercent} className="mt-2" />
                       <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px] text-muted-foreground">
                         <span>5h {formatTokens(credentialUsageWindowTokens(usage, "5h"))}</span>
                         <span className="text-right">7d {formatCents(weekValue)}</span>
@@ -565,7 +578,7 @@ export function Dashboard() {
                                 </div>
                               ) : null}
                               {window.usedPercent != null ? (
-                                <RoundedUsageBar usedPercent={window.usedPercent} />
+                                <DottedUsageBar usedPercent={window.usedPercent} />
                               ) : null}
                             </div>
                           ))
