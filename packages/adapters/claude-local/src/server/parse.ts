@@ -220,6 +220,27 @@ export function isClaudeImageProcessingError(parsed: Record<string, unknown>): b
   );
 }
 
+/**
+ * Detects the deterministic 400 the Anthropic API returns when a resumed
+ * (`--resume`) transcript's latest assistant message carries `thinking` /
+ * `redacted_thinking` blocks that the resume request would have to alter.
+ * With interleaved thinking enabled this makes the session impossible to
+ * resume; restarting with a fresh session is the only recovery. Sibling of
+ * {@link isClaudeUnknownSessionError} — both classify resume-incompatible
+ * failures that a fresh-session retry resolves.
+ */
+export function isClaudeThinkingBlockMutationError(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) =>
+    /(?:thinking|redacted_thinking)[\s\S]{0,200}?cannot be modified/i.test(msg) ||
+    /when[\s`]*thinking[\s`]*is enabled[\s\S]{0,200}?must start with[\s\S]{0,40}?thinking/i.test(msg),
+  );
+}
+
 function buildClaudeTransientHaystack(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;
