@@ -45,7 +45,7 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
+  "id" | "companyId" | "identifier" | "title" | "status" | "workMode" | "assigneeAgentId" | "assigneeUserId" | "executionState"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -372,6 +372,7 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "issue is no longer assigned to the source run agent" };
   }
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
+  if (issue.workMode === "pulse") return { kind: "skip", reason: "pulse issue is intentionally permanent" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
