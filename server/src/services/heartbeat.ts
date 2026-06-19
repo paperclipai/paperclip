@@ -8861,6 +8861,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }),
           } : {}),
         });
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: abortReason,
+        });
         await releaseIssueExecutionAndPromote(run);
         return;
       }
