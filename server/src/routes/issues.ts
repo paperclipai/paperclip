@@ -4983,6 +4983,27 @@ export function issueRoutes(
       actor.actorType,
     );
     await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+
+    // Idempotency: if the same idempotencyKey is sent twice, return the existing issue.
+    if (rawCreateBody.idempotencyKey) {
+      const [existing] = await db
+        .select({ id: issueRows.id })
+        .from(issueRows)
+        .where(
+          and(
+            eq(issueRows.companyId, companyId),
+            eq(issueRows.idempotencyKey, rawCreateBody.idempotencyKey),
+            notInArray(issueRows.status, ["cancelled"]),
+          ),
+        )
+        .limit(1);
+      if (existing) {
+        const full = await svc.getById(existing.id);
+        res.json(full);
+        return;
+      }
+    }
+
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
