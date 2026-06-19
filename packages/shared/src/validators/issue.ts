@@ -403,6 +403,7 @@ const createIssueBaseSchema = z.object({
     agentId: z.string().uuid(),
     instructions: multilineTextSchema.optional().nullable(),
   }).strict().optional().nullable(),
+  idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
