@@ -86,7 +86,8 @@ type GatewayClientRequestOptions = {
   expectFinal?: boolean;
 };
 
-const PROTOCOL_VERSION = 3;
+export const MIN_PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 const DEFAULT_SCOPES = ["operator.admin"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
@@ -875,7 +876,7 @@ async function autoApproveDevicePairing(params: {
 
     await client.connect(
       () => ({
-        minProtocol: PROTOCOL_VERSION,
+        minProtocol: MIN_PROTOCOL_VERSION,
         maxProtocol: PROTOCOL_VERSION,
         client: {
           id: params.clientId,
@@ -1269,7 +1270,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const hello = await client.connect((nonce) => {
         const signedAtMs = Date.now();
         const connectParams: Record<string, unknown> = {
-          minProtocol: PROTOCOL_VERSION,
+          minProtocol: MIN_PROTOCOL_VERSION,
           maxProtocol: PROTOCOL_VERSION,
           client: {
             id: clientId,
