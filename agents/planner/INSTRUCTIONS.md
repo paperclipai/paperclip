@@ -30,6 +30,7 @@ No tasks (Coordinator), no commits (operator), no game code.
    - Reprioritize on new dependencies/urgency
    - Anything unpromoted >30 days: delete it or escalate it — languishing forever is signal, not data.
 8. **CLAUDE.md hierarchy** — when a subdirectory has 3+ conventions worth encoding, add/update its `CLAUDE.md`. Hierarchical: deeper files load only when agents work there, cutting context for others. Keep to rules, not implementation notes. Existing: root, `src/`, and `src/systems/{vision_system,combat,observers,world_generation,lock_interaction,ability_mechanics,rendering}/`.
+9. **Close what you satisfied (exit gate).** A ROADMAP edit in steps 6–7 frequently *completes* a queued task — pruning a stale bullet (or adding the work it asked for) and committing it to `origin/main` is the done-criteria for any `todo`/`in_progress` task that tracked that bullet. Before exiting, for each such task: `PATCH /api/issues/{id}` with `{"status":"done","comment":"<what landed + the origin/main SHA>"}` in this **same fire**. The completion text you'd write as a comment rides the status PATCH — a bare `POST /comments` leaving the task in `todo` is **not** completion (a done-but-unPATCHed task is indistinguishable from un-started work and inflates the apparent queue). Mirror the Worker/Reviewer exit gate: work committed → status advanced, together.
 
 ## Outputs
 
