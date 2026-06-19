@@ -550,10 +550,21 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       setTestActionPending(false);
     }
   }, [selectedCompanyId, isCreate, isDirty, handleSave, testEnvironment]);
-  const triggerTestEnvironment = useCallback(() => {
-    if (testEnvironmentDisabled) return;
-    void runEnvironmentTest().catch(() => undefined);
+  // `runEnvironmentTest` (and `testEnvironmentDisabled`) change identity on every
+  // render because `useMutation` returns a fresh result object each time. Hold the
+  // latest behavior in a ref so the trigger handed to the parent stays referentially
+  // stable — otherwise the `onTestActionChange` effect below re-runs every render,
+  // pushing a new function into parent state and causing an infinite update loop.
+  const triggerRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    triggerRef.current = () => {
+      if (testEnvironmentDisabled) return;
+      void runEnvironmentTest().catch(() => undefined);
+    };
   }, [runEnvironmentTest, testEnvironmentDisabled]);
+  const triggerTestEnvironment = useCallback(() => {
+    triggerRef.current();
+  }, []);
 
   useEffect(() => {
     if (!showAdapterTestEnvironmentButton || !props.onTestActionChange) return;
