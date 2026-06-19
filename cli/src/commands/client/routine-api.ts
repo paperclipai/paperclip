@@ -16,6 +16,7 @@ interface CompanyOptions extends BaseClientOptions {
 interface JsonOptions extends CompanyOptions {
   payloadJson?: string;
   limit?: string;
+  pipeline?: string;
 }
 
 export function registerRoutineApiCommands(program: Command): void {
@@ -37,7 +38,9 @@ export function registerRoutineApiCommands(program: Command): void {
       }),
     { includeCompany: false },
   );
-  addCompanyPost(routine, "create", "Create a routine", "routines");
+  addCompanyPost(routine, "create", "Create a routine", "routines", (command) =>
+    command.option("--pipeline <idOrKey>", "Mark the routine as backing pipeline automation"),
+  );
   addIdGet(routine, "get", "Get a routine", "routines");
   addIdPatch(routine, "update", "Update a routine", "routines");
   addIdGet(routine, "revisions", "List routine revisions", "routines", "revisions");
@@ -94,11 +97,22 @@ export function registerRoutineApiCommands(program: Command): void {
   );
 }
 
-function addCompanyPost(parent: Command, name: string, description: string, path: string): void {
-  addCommonClientOptions(parent.command(name).description(description).option("-C, --company-id <id>", "Company ID").requiredOption("--payload-json <json>", "JSON payload").action(async (opts: JsonOptions) => {
+function addCompanyPost(
+  parent: Command,
+  name: string,
+  description: string,
+  path: string,
+  configure?: (command: Command) => Command,
+): void {
+  const command = parent.command(name).description(description).option("-C, --company-id <id>", "Company ID").requiredOption("--payload-json <json>", "JSON payload");
+  addCommonClientOptions((configure?.(command) ?? command).action(async (opts: JsonOptions) => {
     try {
       const ctx = resolveCommandContext(opts, { requireCompany: true });
-      printOutput(await ctx.api.post(`${apiPath`/api/companies/${ctx.companyId}`}/${path}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+      const payload = parseJson(opts.payloadJson ?? "{}");
+      const body = opts.pipeline && isJsonObject(payload)
+        ? { ...payload, originKind: "pipeline_automation", originId: opts.pipeline }
+        : payload;
+      printOutput(await ctx.api.post(`${apiPath`/api/companies/${ctx.companyId}`}/${path}`, body), { json: ctx.json });
     } catch (err) {
       handleCommandError(err);
     }
@@ -151,4 +165,8 @@ function addIdDelete(parent: Command, name: string, description: string, resourc
 
 function parseJson(value: string): unknown {
   return JSON.parse(value) as unknown;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

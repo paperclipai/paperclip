@@ -6,6 +6,7 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
+      enablePipelines: true,
       enableIssuePlanDecompositions: true,
       enableCloudSync: true,
       autoRestartDevServerWhenIdle: true,
@@ -16,11 +17,18 @@ describe("instance settings service", () => {
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
       enableStreamlinedLeftNavigation: false,
+      enablePipelines: true,
       enableIssuePlanDecompositions: true,
       enableCloudSync: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
+    });
+  });
+
+  it("defaults pipelines to disabled", () => {
+    expect(normalizeExperimentalSettings({})).toMatchObject({
+      enablePipelines: false,
     });
   });
 });

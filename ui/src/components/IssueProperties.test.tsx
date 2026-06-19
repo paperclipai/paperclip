@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type {
   ExecutionWorkspace,
@@ -114,6 +114,14 @@ vi.mock("@/components/ui/popover", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 async function flush() {
   await act(async () => {
@@ -407,6 +415,76 @@ describe("IssueProperties", () => {
     });
 
     expect(onAddSubIssue).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+  });
+
+  it("renders linked pipeline cases as source links", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        linkedCases: [
+          {
+            id: "case-1",
+            caseKey: "launch-copy",
+            title: "Launch copy",
+            status: "open",
+            role: "work",
+            pipeline: {
+              id: "pipeline-1",
+              key: "release",
+              name: "Release Pipeline",
+            },
+            stage: {
+              id: "stage-1",
+              key: "working",
+              name: "Working",
+              kind: "working",
+            },
+          },
+          {
+            id: "case-2",
+            caseKey: "review",
+            title: "Review",
+            status: "done",
+            role: "automation",
+            pipeline: {
+              id: "pipeline-2",
+              key: "qa",
+              name: "QA",
+            },
+            stage: {
+              id: "stage-2",
+              key: "done",
+              name: "Done",
+              kind: "terminal",
+            },
+          },
+        ],
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Source");
+    expect(container.textContent).toContain("Release Pipeline / launch-copy");
+    expect(container.textContent).toContain("QA / review");
+    expect(container.querySelector('a[href="/pipelines/pipeline-1/items/case-1"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/pipelines/pipeline-2/items/case-2"]')).not.toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("hides the source row when an issue has no linked pipeline cases", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.querySelector('a[href^="/pipelines/"]')).toBeNull();
+    expect(container.textContent).not.toContain("Source");
 
     act(() => root.unmount());
   });

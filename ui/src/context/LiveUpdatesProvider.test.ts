@@ -15,6 +15,29 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("refreshes pipeline queries when live-run state changes", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+    };
+
+    __liveUpdatesTestUtils.invalidateHeartbeatQueries(
+      queryClient as never,
+      "company-1",
+      {
+        runId: "run-1",
+        agentId: "agent-1",
+        status: "running",
+      },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: ["pipelines"],
+    });
+  });
+
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

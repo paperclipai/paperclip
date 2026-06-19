@@ -44,6 +44,7 @@ import {
   updateRoutineTriggerSchema,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
+  runRoutineIntakeFormSchema,
   // Goal
   createGoalSchema,
   updateGoalSchema,
@@ -1835,6 +1836,18 @@ registry.registerPath({
     body: jsonBody(runRoutineSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/routines/{id}/intake-form",
+  tags: ["routines"],
+  summary: "Run a routine from an intake form submission",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(runRoutineIntakeFormSchema),
+  },
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({

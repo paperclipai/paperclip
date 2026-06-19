@@ -236,6 +236,21 @@ export type {
   CompanyArtifactsResponse,
 } from "./artifact.js";
 export type {
+  PipelineCaseConversationSource,
+  PipelineCaseLiveness,
+  PipelineCaseLivenessState,
+  PipelineCaseConversationSourceLinkRole,
+  PipelineCaseConversationSourceReason,
+  PipelineAutomationRetryBlocker,
+  PipelineAutomationRetryCleanupOptions,
+  PipelineAutomationRetryEffectCounts,
+  PipelineAutomationRetryPlan,
+  PipelineAutomationRetryRequest,
+  PipelineAutomationRetryRoutineRef,
+  PipelineAutomationRetryScope,
+  PipelineAutomationRetryStageRef,
+} from "./pipeline.js";
+export type {
   Issue,
   IssueWorkMode,
   IssueAssigneeAdapterOverrides,
@@ -261,6 +276,7 @@ export type {
   IssueRetryNowOutcome,
   IssueRetryNowResponse,
   IssueReferenceSource,
+  IssueLinkedPipelineCase,
   IssueRelatedWorkItem,
   IssueRelatedWorkSummary,
   IssueRelation,

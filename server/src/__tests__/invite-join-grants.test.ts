@@ -71,6 +71,7 @@ describe("human invite roles", () => {
       { permissionKey: "environments:manage", scope: null },
       { permissionKey: "users:invite", scope: null },
       { permissionKey: "users:manage_permissions", scope: null },
+      { permissionKey: "pipelines:write", scope: null },
       { permissionKey: "tasks:assign", scope: null },
       { permissionKey: "joins:approve", scope: null },
     ]);
@@ -81,6 +82,7 @@ describe("human invite roles", () => {
       { permissionKey: "agents:create", scope: null },
       { permissionKey: "environments:manage", scope: null },
       { permissionKey: "users:invite", scope: null },
+      { permissionKey: "pipelines:write", scope: null },
       { permissionKey: "tasks:assign", scope: null },
       { permissionKey: "joins:approve", scope: null },
     ]);
@@ -103,6 +105,7 @@ describe("human invite roles", () => {
 
   it("falls back to role grants when human invite defaults omit explicit grants", () => {
     expect(humanJoinGrantsFromDefaults(null, "operator")).toEqual([
+      { permissionKey: "pipelines:write", scope: null },
       { permissionKey: "tasks:assign", scope: null },
     ]);
   });

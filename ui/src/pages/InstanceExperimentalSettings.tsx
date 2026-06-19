@@ -208,6 +208,7 @@ export function InstanceExperimentalSettings() {
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const enableStreamlinedLeftNavigation =
     experimentalQuery.data?.enableStreamlinedLeftNavigation === true;
+  const enablePipelines = experimentalQuery.data?.enablePipelines === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
@@ -351,6 +352,24 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Pipelines</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show pipeline boards, review queue, learnings, settings, item detail pages, and pipeline slash-command
+              suggestions.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enablePipelines}
+            onCheckedChange={() => toggleMutation.mutate({ enablePipelines: !enablePipelines })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle pipelines experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Cloud Sync</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces.
@@ -377,7 +396,9 @@ export function InstanceExperimentalSettings() {
           </div>
           <ToggleSwitch
             checked={autoRestartDevServerWhenIdle}
-            onCheckedChange={() => toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
+            onCheckedChange={() =>
+              toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })
+            }
             disabled={toggleMutation.isPending}
             aria-label="Toggle guarded dev-server auto-restart"
           />

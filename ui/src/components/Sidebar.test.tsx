@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -202,15 +202,16 @@ describe("Sidebar", () => {
       container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
     ).toBe("true");
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
 
-  it("classic (flag OFF): New Task button, Tasks label, per-project collapsible, no top-level Projects link", async () => {
+  it("classic (flag OFF): Task wording, per-project collapsible, no top-level Projects", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enableStreamlinedLeftNavigation: false,
+      enablePipelines: false,
     });
     const root = await renderSidebar();
 
@@ -220,6 +221,9 @@ describe("Sidebar", () => {
     const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
     expect(navLabels).toContain("Tasks");
     expect(navLabels).not.toContain("Issues");
+    expect(navLabels).not.toContain("Review queue");
+    expect(navLabels).not.toContain("Pipelines");
+    expect(navLabels).not.toContain("Learnings");
     // No top-level Projects nav link in classic mode (D5 option A).
     expect(navLabels).not.toContain("Projects");
 
@@ -229,7 +233,29 @@ describe("Sidebar", () => {
       container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
     ).toBe("false");
 
-    await act(async () => {
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows pipeline navigation only when the pipelines experimental flag is enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enablePipelines: true,
+    });
+    const root = await renderSidebar();
+
+    const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
+    expect(navLabels).toContain("Review queue");
+    expect(navLabels).toContain("Pipelines");
+    expect(navLabels).toContain("Learnings");
+
+    const pipelinesLink = [...container.querySelectorAll("nav a")].find(
+      (anchor) => anchor.textContent?.trim() === "Pipelines",
+    );
+    expect(pipelinesLink?.getAttribute("href")).toBe("/pipelines");
+
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -306,7 +332,7 @@ describe("Sidebar", () => {
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute("aria-expanded")).toBe("true");
 
-    act(() => {
+    flushSync(() => {
       toggle?.click();
     });
     expect(mockSidebar.toggleCollapsed).toHaveBeenCalledTimes(1);
@@ -363,7 +389,7 @@ describe("Sidebar", () => {
     const pin = container.querySelector<HTMLButtonElement>('button[aria-label="Keep sidebar expanded"]');
     expect(pin).not.toBeNull();
 
-    act(() => {
+    flushSync(() => {
       pin?.click();
     });
     expect(mockSidebar.setCollapsed).toHaveBeenCalledWith(false);

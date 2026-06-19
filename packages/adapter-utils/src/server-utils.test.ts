@@ -929,6 +929,114 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
   });
+
+  it("preserves stage secret manifest entries, labels, and provider health in serialized wake payloads", () => {
+    const payload = {
+      reason: "issue_children_completed",
+      issue: {
+        id: "parent-1",
+        identifier: "PAP-901",
+        title: "Resolve stage secret usage",
+        status: "in_progress",
+        priority: "medium",
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      stageSecrets: [
+        {
+          configPath: "env.API_KEY",
+          envKey: "API_KEY",
+          secretId: "secret-1",
+          bindingId: "binding-1",
+          secretKey: "api-key",
+          version: 3,
+          provider: "local_encrypted",
+          outcome: "success",
+          usageLabel: "Primary API key",
+          providerConfigHealth: {
+            configId: "cfg-1",
+            provider: "local_encrypted",
+            status: "warning",
+            message: "Provider vault health is warning",
+            details: {
+              code: "provider_needs_attention",
+              message: "Provider vault health is warning",
+              guidance: ["Rotate provider credentials."],
+            },
+          },
+        },
+      ],
+    };
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).not.toBeNull();
+    expect(JSON.parse(serialized ?? "{}")).toMatchObject({
+      issue: { identifier: "PAP-901" },
+      stageSecrets: [
+        {
+          configPath: "env.API_KEY",
+          usageLabel: "Primary API key",
+          providerConfigHealth: {
+            configId: "cfg-1",
+            status: "warning",
+          },
+        },
+      ],
+    });
+  });
+
+  it("renders stage secret usage and provider health lines in wake prompts", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-902",
+        title: "Stage secret health",
+        status: "in_progress",
+        priority: "high",
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      stageSecrets: [
+        {
+          configPath: "env.PAPERCLIP_TOKEN",
+          envKey: "PAPERCLIP_TOKEN",
+          secretId: "secret-2",
+          secretKey: "paperclip-token",
+          version: 2,
+          provider: "aws_secrets_manager",
+          outcome: "failure",
+          usageLabel: "Build token",
+          errorCode: "provider_error",
+          providerConfigHealth: {
+            configId: "cfg-2",
+            provider: "aws_secrets_manager",
+            status: "error",
+            message: "Provider vault credentials invalid",
+            details: {
+              code: "provider_error",
+              message: "Provider vault credentials invalid",
+            },
+          },
+        },
+      ],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Stage secrets:");
+    expect(prompt).toContain("env.PAPERCLIP_TOKEN");
+    expect(prompt).toContain("provider: aws_secrets_manager");
+    expect(prompt).toContain("usage label: Build token");
+    expect(prompt).toContain("error code: provider_error");
+    expect(prompt).toContain("provider config health: error");
+    expect(prompt).toContain("health message: Provider vault credentials invalid");
+  });
 });
 
 describe("applyPaperclipWorkspaceEnv", () => {

@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
+import { buildPipelineMentionHref, buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import {
   computeMentionMenuPosition,
   findClosestAutocompleteAnchor,
@@ -563,6 +563,16 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("keeps pipeline slash queries active across spaces", () => {
+    expect(findMentionMatch("/pipeline:Content Production assets", "/pipeline:Content Production assets".length)).toEqual({
+      trigger: "skill",
+      marker: "/",
+      query: "pipeline:Content Production assets",
+      atPos: 0,
+      endPos: "/pipeline:Content Production assets".length,
+    });
+  });
+
   it("does not treat Enter as skill autocomplete accept", () => {
     expect(shouldAcceptAutocompleteKey("Enter", "skill")).toBe(false);
     expect(shouldAcceptAutocompleteKey("Enter", "skill", true)).toBe(true);
@@ -651,6 +661,28 @@ describe("MarkdownEditor", () => {
     });
 
     expect(found).toBe(routineLink);
+  });
+
+  it("finds pipeline anchors by mention metadata instead of visible text", () => {
+    const editable = document.createElement("div");
+    const pipelineLink = document.createElement("a");
+    pipelineLink.setAttribute("href", buildPipelineMentionHref("pipeline-123", "assets"));
+    pipelineLink.textContent = "/pipeline:Content Production / Assets ";
+    editable.appendChild(pipelineLink);
+
+    const found = findClosestAutocompleteAnchor(editable, {
+      id: "pipeline:pipeline-123:assets",
+      kind: "pipeline",
+      pipelineId: "pipeline-123",
+      stageKey: "assets",
+      name: "Content Production",
+      key: "content-production",
+      stageName: "Assets",
+      href: buildPipelineMentionHref("pipeline-123", "assets"),
+      aliases: ["pipeline:Content Production Assets"],
+    });
+
+    expect(found).toBe(pipelineLink);
   });
 
   it("places the caret after the mention's trailing space when present", () => {

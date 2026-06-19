@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import {
   parseAgentMentionHref,
   parseIssueReferenceHref,
+  parsePipelineMentionHref,
   parseProjectMentionHref,
   parseRoutineMentionHref,
   parseSkillMentionHref,
@@ -24,6 +25,11 @@ export type ParsedMentionChip =
       kind: "project";
       projectId: string;
       color: string | null;
+    }
+  | {
+      kind: "pipeline";
+      pipelineId: string;
+      stageKey: string | null;
     }
   | {
       kind: "user";
@@ -69,6 +75,15 @@ export function parseMentionChipHref(href: string): ParsedMentionChip | null {
       kind: "project",
       projectId: project.projectId,
       color: project.color,
+    };
+  }
+
+  const pipeline = parsePipelineMentionHref(href);
+  if (pipeline) {
+    return {
+      kind: "pipeline",
+      pipelineId: pipeline.pipelineId,
+      stageKey: pipeline.stageKey,
     };
   }
 

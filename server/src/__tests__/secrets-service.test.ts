@@ -94,6 +94,24 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/same company/i);
   });
 
+  it("rejects reserved Paperclip keys during env normalization", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(companyId, {
+        PAPERCLIP_API_KEY: { type: "plain", value: "should-not-persist" },
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("PAPERCLIP_API_KEY"),
+      details: {
+        code: "reserved_env_key",
+        key: "PAPERCLIP_API_KEY",
+      },
+    });
+  });
+
   it("prevents duplicate bindings for a target config path", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -288,6 +306,71 @@ describeEmbeddedPostgres("secretService", () => {
       outcome: "success",
     });
     expect(JSON.stringify(events)).not.toContain("routine-super-secret");
+  });
+
+  it("includes usage labels and provider config health in resolved env manifest entries", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const [agent] = await db
+      .insert(agents)
+      .values({
+        companyId,
+        name: "ApiAgent",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      })
+      .returning();
+    const providerConfig = await svc.createProviderConfig(companyId, {
+      provider: "local_encrypted",
+      displayName: "Local warning config",
+      config: {},
+    });
+    await db
+      .update(companySecretProviderConfigs)
+      .set({
+        healthStatus: "warning",
+        healthMessage: "Vault health check reported intermittent failures.",
+        healthDetails: {
+          code: "provider_needs_attention",
+          message: "Vault health check reported intermittent failures.",
+          guidance: ["Review key rotation cadence."],
+        },
+      })
+      .where(eq(companySecretProviderConfigs.id, providerConfig.id));
+    const secret = await svc.create(companyId, {
+      name: `labeled-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      providerConfigId: providerConfig.id,
+      value: "secret-value",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agent!.id,
+      configPath: "env.API_KEY",
+      label: "Primary API key",
+    });
+
+    const resolved = await svc.resolveEnvBindings(companyId, {
+      API_KEY: { type: "secret_ref" as const, secretId: secret.id, version: "latest" as const },
+    }, {
+      consumerType: "agent",
+      consumerId: agent!.id,
+      actorType: "agent",
+      actorId: agent!.id,
+    });
+
+    expect(resolved.manifest[0]).toMatchObject({
+      usageLabel: "Primary API key",
+      providerConfigHealth: {
+        status: "warning",
+        details: expect.objectContaining({
+          code: "provider_needs_attention",
+        }),
+      },
+    });
   });
 
   it("records stable redacted failure codes for routine env secret resolution", async () => {

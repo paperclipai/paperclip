@@ -6,6 +6,7 @@ import {
   heartbeatRuns,
   instanceUserRoles,
   issues,
+  pipelines,
   principalPermissionGrants,
   projects,
 } from "@paperclipai/db";
@@ -328,6 +329,7 @@ async function scopeAllows(
         ? requestedScope.targetAgentId
         : null;
   const requestedProjectId = typeof requestedScope.projectId === "string" ? requestedScope.projectId : null;
+  const requestedPipelineId = typeof requestedScope.pipelineId === "string" ? requestedScope.pipelineId : null;
   let constrained = false;
 
   const projectIds = [
@@ -338,6 +340,16 @@ async function scopeAllows(
   if (projectIds.length > 0) {
     constrained = true;
     if (!scopeIncludesId(projectIds, requestedProjectId)) return false;
+  }
+
+  const pipelineIds = [
+    ...scopeValueList(grantScope.pipelineId),
+    ...scopeValueList(grantScope.pipelineIds),
+    ...prefixedScopeValues(grantScope, "pipeline:"),
+  ];
+  if (pipelineIds.length > 0) {
+    constrained = true;
+    if (!scopeIncludesId(pipelineIds, requestedPipelineId)) return false;
   }
 
   const targetAgentIds = [
@@ -534,6 +546,15 @@ export function authorizationService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function pipelineCreatedByAgent(companyId: string, pipelineId: string, agentId: string): Promise<boolean> {
+    const row = await db
+      .select({ createdByAgentId: pipelines.createdByAgentId })
+      .from(pipelines)
+      .where(and(eq(pipelines.companyId, companyId), eq(pipelines.id, pipelineId)))
+      .then((rows) => rows[0] ?? null);
+    return row?.createdByAgentId === agentId;
+  }
+
   async function loadIssue(issueId: string): Promise<IssueAuthorizationRow | null> {
     return db
       .select({
@@ -723,6 +744,7 @@ export function authorizationService(db: Db) {
 
     if (
       input.action === "company_scope:read" ||
+      input.action === "pipelines:write" ||
       input.action === "runtime:manage" ||
       input.action === "secrets:read"
     ) {
@@ -1053,6 +1075,26 @@ export function authorizationService(db: Db) {
         reason: "allow_self",
         explanation: "Allowed because the actor is waking itself.",
       });
+    }
+
+    if (input.action === "pipelines:write") {
+      if (!isSimpleAssignableAgentStatus(actorAgent.status)) {
+        return deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: "Actor agent is not active for simple mode pipeline write access.",
+        });
+      }
+      const pipelineId = isPlainRecord(input.scope) ? readString(input.scope.pipelineId) : null;
+      if (!pipelineId || await pipelineCreatedByAgent(companyId, pipelineId, actorAgentId)) {
+        return allow({
+          action: input.action,
+          reason: "allow_simple_company_member",
+          explanation: pipelineId
+            ? "Allowed because the agent created this pipeline."
+            : "Allowed by simple mode same-company agent pipeline creation default.",
+        });
+      }
     }
 
     if (input.action === "tasks:assign") {

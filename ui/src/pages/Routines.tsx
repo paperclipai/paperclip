@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "@/lib/router";
 import { ArrowUpDown, Check, ChevronDown, ChevronRight, Layers, Plus, Repeat } from "lucide-react";
 import { routinesApi } from "../api/routines";
+import { pipelinesApi, type PipelineListItem } from "../api/pipelines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
@@ -74,6 +75,7 @@ type RoutineViewState = {
   sortDir: RoutineSortDir;
   groupBy: RoutineGroupBy;
   collapsedGroups: string[];
+  showPipelineAutomationInline: boolean;
 };
 
 type RoutineGroup = {
@@ -87,6 +89,7 @@ const defaultRoutineViewState: RoutineViewState = {
   sortDir: "asc",
   groupBy: "project",
   collapsedGroups: [],
+  showPipelineAutomationInline: false,
 };
 
 function getRoutineViewState(key: string): RoutineViewState {
@@ -195,6 +198,26 @@ export function sortRoutines(
   });
 }
 
+export function buildPipelineAutomationGroups(
+  routines: RoutineListItem[],
+  pipelineById: Map<string, Pick<PipelineListItem, "id" | "key" | "name">>,
+): RoutineGroup[] {
+  const groups = groupBy(routines, (routine) => routine.originId ?? "__unknown_pipeline");
+  return Object.keys(groups)
+    .sort((left, right) => {
+      const leftLabel = left === "__unknown_pipeline" ? "Unknown pipeline" : (pipelineById.get(left)?.name ?? "Unknown pipeline");
+      const rightLabel = right === "__unknown_pipeline" ? "Unknown pipeline" : (pipelineById.get(right)?.name ?? "Unknown pipeline");
+      return leftLabel.localeCompare(rightLabel);
+    })
+    .map((key) => ({
+      key,
+      label: key === "__unknown_pipeline"
+        ? "Unknown pipeline"
+        : (pipelineById.get(key)?.name ?? "Unknown pipeline"),
+      items: groups[key]!,
+    }));
+}
+
 function buildRoutinesTabHref(tab: RoutinesTab) {
   return tab === "runs" ? "/routines?tab=runs" : "/routines";
 }
@@ -261,6 +284,11 @@ export function Routines() {
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const { data: pipelines } = useQuery({
+    queryKey: queryKeys.pipelines.list(selectedCompanyId!),
+    queryFn: () => pipelinesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const { data: companyMembers } = useQuery({
@@ -416,10 +444,24 @@ export function Routines() {
     () => new Map((projects ?? []).map((project) => [project.id, project])),
     [projects],
   );
+  const pipelineById = useMemo(
+    () => new Map((pipelines ?? []).map((pipeline) => [pipeline.id, pipeline])),
+    [pipelines],
+  );
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-  const visibleRoutines = useMemo(
+  const nonArchivedRoutines = useMemo(
     () => (routines ?? []).filter((routine) => routine.status !== "archived"),
     [routines],
+  );
+  const pipelineAutomationRoutines = useMemo(
+    () => nonArchivedRoutines.filter((routine) => routine.originKind === "pipeline_automation"),
+    [nonArchivedRoutines],
+  );
+  const visibleRoutines = useMemo(
+    () => routineViewState.showPipelineAutomationInline
+      ? nonArchivedRoutines
+      : nonArchivedRoutines.filter((routine) => routine.originKind !== "pipeline_automation"),
+    [nonArchivedRoutines, routineViewState.showPipelineAutomationInline],
   );
   const sortedRoutines = useMemo(
     () => sortRoutines(visibleRoutines, routineViewState.sortField, routineViewState.sortDir),
@@ -428,6 +470,13 @@ export function Routines() {
   const routineGroups = useMemo(
     () => buildRoutineGroups(sortedRoutines, routineViewState.groupBy, projectById, agentById),
     [agentById, projectById, routineViewState.groupBy, sortedRoutines],
+  );
+  const pipelineAutomationGroups = useMemo(
+    () => buildPipelineAutomationGroups(
+      sortRoutines(pipelineAutomationRoutines, routineViewState.sortField, routineViewState.sortDir),
+      pipelineById,
+    ),
+    [pipelineAutomationRoutines, pipelineById, routineViewState.sortDir, routineViewState.sortField],
   );
   const recentRunsIssueLinkState = useMemo(
     () =>
@@ -521,8 +570,23 @@ export function Routines() {
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
               {visibleRoutines.length} routine{visibleRoutines.length === 1 ? "" : "s"}
+              {!routineViewState.showPipelineAutomationInline && pipelineAutomationRoutines.length > 0
+                ? `, ${pipelineAutomationRoutines.length} pipeline automation`
+                : ""}
             </p>
             <div className="flex items-center gap-1">
+              {pipelineAutomationRoutines.length > 0 ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => updateRoutineView({
+                    showPipelineAutomationInline: !routineViewState.showPipelineAutomationInline,
+                  })}
+                >
+                  {routineViewState.showPipelineAutomationInline ? "Group automation" : "Show automation inline"}
+                </Button>
+              ) : null}
               <Popover>
                 <PopoverTrigger asChild>
                   <Button variant="ghost" size="sm" className="text-xs" title="Sort">
@@ -877,7 +941,7 @@ export function Routines() {
 
       {activeTab === "routines" ? (
         <div>
-          {visibleRoutines.length === 0 ? (
+          {visibleRoutines.length === 0 && pipelineAutomationRoutines.length === 0 ? (
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
@@ -930,6 +994,57 @@ export function Routines() {
                   </CollapsibleContent>
                 </Collapsible>
               ))}
+              {!routineViewState.showPipelineAutomationInline && pipelineAutomationRoutines.length > 0 ? (
+                <Collapsible defaultOpen={false}>
+                  <div className="flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0">
+                    <CollapsibleTrigger className="flex items-center gap-1.5">
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
+                      <span className="text-sm font-semibold uppercase tracking-wide">
+                        Pipeline automation
+                      </span>
+                    </CollapsibleTrigger>
+                    <span className="text-xs text-muted-foreground">
+                      {pipelineAutomationRoutines.length} routines
+                    </span>
+                  </div>
+                  <CollapsibleContent>
+                    {pipelineAutomationGroups.map((group) => {
+                      const pipeline = group.key === "__unknown_pipeline" ? null : pipelineById.get(group.key) ?? null;
+                      return (
+                        <div key={group.key} className="border-t border-border/70">
+                          <div className="flex items-center justify-between gap-3 px-6 py-1.5 text-sm">
+                            {pipeline ? (
+                              <Link to={`/pipelines/${pipeline.id}`} className="font-medium text-foreground hover:underline">
+                                {pipeline.name}
+                              </Link>
+                            ) : (
+                              <span className="font-medium text-foreground">{group.label}</span>
+                            )}
+                            <span className="text-xs text-muted-foreground">
+                              {group.items.length} routine{group.items.length === 1 ? "" : "s"}
+                            </span>
+                          </div>
+                          {group.items.map((routine) => (
+                            <RoutineListRow
+                              key={routine.id}
+                              routine={routine}
+                              projectById={projectById}
+                              agentById={agentById}
+                              runningRoutineId={runningRoutineId}
+                              statusMutationRoutineId={statusMutationRoutineId}
+                              href={`/routines/${routine.id}`}
+                              runNowButton
+                              onRunNow={handleRunNow}
+                              onToggleEnabled={handleToggleEnabled}
+                              onToggleArchived={handleToggleArchived}
+                            />
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </CollapsibleContent>
+                </Collapsible>
+              ) : null}
             </div>
           )}
         </div>

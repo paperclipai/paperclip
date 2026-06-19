@@ -61,6 +61,8 @@ export interface Routine {
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  originKind?: string;
+  originId?: string | null;
   variables: RoutineVariable[];
   env?: RoutineEnvConfig | null;
   latestRevisionId: string | null;
@@ -101,6 +103,8 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   status: RoutineStatus;
   concurrencyPolicy: RoutineConcurrencyPolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
+  originKind?: string;
+  originId?: string | null;
   variables: RoutineVariable[];
   env: RoutineEnvConfig | null;
 }

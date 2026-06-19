@@ -43,7 +43,7 @@ export const pipelineStages = pgTable(
   (table) => ({
     pipelineKeyUq: uniqueIndex("pipeline_stages_pipeline_key_uq").on(table.pipelineId, table.key),
     pipelinePositionIdx: index("pipeline_stages_pipeline_position_idx").on(table.pipelineId, table.position),
-    kindCheck: check("pipeline_stages_kind_check", sql`${table.kind} in ('open', 'working', 'review', 'done', 'cancelled')`),
+    kindCheck: check("pipeline_stages_kind_check", sql`${table.kind} in ('working', 'review', 'done', 'cancelled')`),
   }),
 );
 

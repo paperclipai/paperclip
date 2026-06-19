@@ -1,10 +1,10 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-06-08
+Date: 2026-06-17
 Audience: Product and engineering
 
-This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
+This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, blocker relationships, and pipeline item liveness.
 
 `doc/SPEC-implementation.md` remains the V1 contract. This document is the detailed execution model behind that contract.
 
@@ -391,13 +391,114 @@ A blocker chain is covered only when its unresolved leaf is live or explicitly w
 
 A `blocked` issue is stalled when the unresolved blocker leaf has no active run, queued wake, typed participant, pending interaction or approval, user owner, external owner/action, or recovery action. In that case the parent should show the first stalled leaf instead of presenting the dependency as calmly covered.
 
-## 9. Crash and Restart Recovery
+## 9. Pipeline Item Action-Path Contract
+
+Pipeline items are control-plane work objects, not a replacement issue lifecycle. A non-terminal pipeline item is healthy only when the pipeline surface can answer "what moves this item forward next?" using the same action-path vocabulary as issues.
+
+The contract applies to `pipeline_cases` whose `terminalKind` is null. A terminal item (`done` or `cancelled`) has no liveness requirement beyond preserving the event trail that moved it there.
+
+Valid pipeline item action-path primitives are:
+
+- a current, unexpired item lease held by a reachable human or agent owner
+- a linked `work` or `automation` issue that is live, explicitly waiting, or recoverable under the issue liveness contract
+- a review stage with a valid configured approver who can still act
+- a first-class case blocker chain whose unresolved leaf items are themselves live or explicitly waiting
+- a first-class issue blocker chain on a linked issue whose unresolved leaf issues are live or explicitly waiting
+- an entry automation ledger, retry, monitor, or explicit recovery action with a bounded owner and next step
+- durable stage-effect evidence plus a valid next action, such as a verified breakdown result followed by live child items or an allowed transition
+
+Pipeline case events, issue links, system comments, routine-run ids, and stage metadata are evidence. They are not sufficient liveness paths by themselves. In particular, `automation_executed` and the creation of a linked automation issue prove that entry automation was dispatched. They do not prove that the pipeline item is complete.
+
+### Stage effects
+
+Stage kind and stage config define what "progress" means for an item.
+
+- `working` stages are healthy when a lease, linked work issue, linked automation issue, blocker chain, monitor, or recovery action owns the next move.
+- `review` stages are healthy when the configured approver is still valid and reachable, or when a linked issue/interaction/recovery path explicitly owns the review decision.
+- `done` and `cancelled` stages set `terminalKind`; they are terminal dispositions, not waiting states.
+- disabled stages, archived pipelines, invalid transition edges, invalid target stages, stale workflow versions, and failed stage gates are not healthy resting states. They must become visible as blocked/recovery work unless a human owner is actively resolving them.
+
+Entry effects are part of the stage contract. When a stage has `onEnter: { type: "run_routine" }`, entry is incomplete until one of these is true:
+
+- no automation is currently configured for that stage
+- the automation ledger failed and a bounded retry or recovery action owns the next step
+- the automation ledger succeeded, the linked automation issue is live or explicitly waiting, and the issue liveness contract covers the next move
+- the linked automation issue produced durable case evidence that satisfies the stage effect, such as a transition, review suggestion, `breakdown_created`, child case creation, terminal disposition, or an explicit recovery handoff
+
+Automation must not run while unresolved case blockers prevent the item from entering productive work. When blockers later resolve, `blockers_resolved` is evidence that retry is allowed; it is not by itself a live path. Paperclip must either dispatch a bounded continuation, expose a manual rerun path, or open recovery work.
+
+### Linked issues and issue blockers
+
+`pipeline_case_issue_links` attach issue liveness to a pipeline item. `work` and `automation` links can be action paths only when their linked issues are non-terminal and healthy under Section 8, or when their terminal result is paired with the case mutation expected by the stage.
+
+A linked issue in `done` is completion evidence for the issue. It is pipeline progress only when the item also records the expected case-side effect. Examples include a transition event, a `breakdown_created` event with matching children, a review decision, or an item update that changes the material state. A linked issue in `cancelled`, `blocked`, or stalled `in_progress` propagates that waiting/recovery state to the item instead of letting the item appear healthy.
+
+Issue comments on linked work are evidence. They do not complete a pipeline item unless they are converted into a durable action-path primitive such as a wake, blocker, review decision, transition, interaction, or recovery action.
+
+### Case blockers
+
+`pipeline_case_blockers` are the pipeline equivalent of issue blockers. A blocked item is healthy only when every unresolved blocker leaf is live or explicitly waiting. A blocker case resolves the dependency by reaching `terminalKind = "done"`; `cancelled` is not success unless a stage-specific or operator decision records why cancellation satisfies the dependency.
+
+When a blocker case changes materially after a dependent item already consumed it, Paperclip records upstream drift. Unresolved drift is a stage gate, not background noise. The dependent item remains healthy only when the drift is acknowledged, converted into new work, or represented by a blocker/recovery path with a named owner.
+
+Case blockers and issue blockers can coexist. The item liveness view should surface the first stalled leaf across both graphs rather than reporting the item as generally blocked.
+
+### Breakdown stages
+
+A breakdown-configured stage is verified by case-side evidence, not by prose in the automation issue.
+
+The durable breakdown result is:
+
+- an `updated` case event whose payload has `kind: "breakdown_created"`
+- the target pipeline id, target stage key, piece noun, request keys, and item count recorded in that payload
+- child cases with `parentCaseId` pointing at the source item and `requestKey` values matching the breakdown request keys
+- the optional parent transition named by `breakdown.advanceTo`, when configured
+
+`breakdown_created` alone is evidence, not completion. The item is healthy after breakdown only when the recorded children and transition evidence match the breakdown config, or when an explicit recovery action owns the mismatch.
+
+If `breakdown.waitForPieces` is true, the parent item is waiting on its child rollup. That wait is healthy only when every open child item has its own action path, and the parent has either the expected `children_terminal`/auto-advance evidence, a valid `whenFinishedMoveTo` transition still available, or recovery work for a failed auto-advance. Zero-child breakdowns satisfy the gate only when the breakdown explicitly created a zero-child result and the implementation records the explicit zero-children pass.
+
+Retries of breakdown creation must be idempotent by parent item and request key. A retry may reuse already-created children and fill missing children; it must not create sibling duplicates for the same breakdown request.
+
+### Permission preflight and revalidation
+
+Pipeline liveness never weakens authorization. Before dispatching automation, rerunning automation, moving an item, creating breakdown children, resolving review, or auto-advancing after child completion, Paperclip must revalidate the current company, pipeline, target pipeline, stage, routine, actor, assignee, transition, approval, and blocker gates that apply to that action.
+
+Permission-preflight blockers are explicit blockers or recovery signals caused by current policy or configuration. Examples include:
+
+- the target pipeline or target stage is archived, disabled, missing, or cross-company
+- the actor or automation assignee can no longer create or mutate work in the target pipeline
+- the entry routine no longer belongs to the company or no longer has a valid assignee
+- a review approver was removed, paused, or no longer matches the stage config
+- a transition edge, child gate, unresolved drift gate, or case blocker now forbids the action
+
+Existing automation ledgers, routine revisions, issue links, accepted breakdown instructions, and `breakdown_created` evidence do not grandfather permissions. Permission-change revalidation happens when work is queued or waiting: the next delivery, retry, rerun, or recovery pass must re-check the current policy. If authorization has been lost, Paperclip must surface the item as blocked or recoverable. It must not fall back to a less restricted target pipeline, silently create children in the source pipeline, skip the target stage, or run under a broader system identity to preserve forward motion.
+
+If authorization is later restored, a bounded rerun may continue from the previous durable evidence and idempotency keys.
+
+### Bounded rerun and recovery
+
+Pipeline automatic recovery follows the same conservative rule as issue recovery: retry lost continuity when ownership and authorization are clear, then surface explicit recovery instead of looping.
+
+Automatic stage-entry automation is idempotent by `(caseId, automationId, triggeringEventId)`. A manual current-stage rerun intentionally creates a new triggering event, and that event becomes the rerun fingerprint. Breakdown retries are idempotent by `(parentCaseId, requestKey)` for each child. Recovery actions should also carry an idempotency fingerprint for the failed signal they repair.
+
+A rerun is valid only when all of these still hold:
+
+- the item is non-terminal
+- the stage still has the same relevant automation or breakdown effect
+- case blockers and issue blockers no longer prevent the action
+- current permission preflight passes
+- the retry budget for the same signal is not exhausted
+
+When the retry budget is exhausted, or when Paperclip cannot safely identify the correct owner or action, the item must expose an explicit recovery action. The recovery action should name the source item, failed stage effect, evidence event or ledger, intended owner, retry or monitor policy, and required outcome: restored, delegated, blocked, false positive, escalated, or cancelled.
+
+## 10. Crash and Restart Recovery
 
 Paperclip now treats crash/restart recovery as a stranded-assigned-work problem, not just a stranded-run problem.
 
 There are two distinct failure modes.
 
-### 9.1 Stranded assigned `todo`
+### 10.1 Stranded assigned `todo`
 
 Example:
 
@@ -413,7 +514,7 @@ Recovery rule:
 
 This is a dispatch recovery, not a continuation recovery.
 
-### 9.2 Stranded assigned `in_progress`
+### 10.2 Stranded assigned `in_progress`
 
 Example:
 
@@ -429,13 +530,13 @@ Recovery rule:
 
 This is an active-work continuity recovery.
 
-### 9.3 Recovery model-profile lane
+### 10.3 Recovery model-profile lane
 
 Cheap model profiles are only for status-only operational recovery overhead. Paperclip may request `modelProfile: "cheap"` for bounded recovery-owner work that updates task liveness, clears bad status, records a disposition, or asks for human/manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`.
 
 Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
 
-## 10. Startup and Periodic Reconciliation
+## 11. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
 
@@ -449,7 +550,7 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
-## 11. Silent Active-Run Watchdog
+## 12. Silent Active-Run Watchdog
 
 An active run can still be unhealthy even when its process is `running`. Paperclip treats prolonged output silence as a watchdog signal, not as proof that the run is failed.
 
@@ -501,7 +602,7 @@ This is distinct from productivity review. Productivity review asks whether an a
 
 Detached process cleanup is operational hygiene, not source issue liveness. Cleanup should be best-effort and auditable. If cleanup fails but the source issue is already terminal with same-run durable evidence, Paperclip should preserve the cleanup failure on the run/watchdog audit trail and route only the cleanup concern to bounded recovery when a real owner/action remains.
 
-## 12. Auto-Recover vs Explicit Recovery vs Human Escalation
+## 13. Auto-Recover vs Explicit Recovery vs Human Escalation
 
 Paperclip uses three different recovery outcomes, depending on how much it can safely infer.
 
@@ -545,7 +646,7 @@ Examples:
 
 In these cases Paperclip should leave a visible issue/comment trail instead of silently retrying.
 
-## 13. What This Does Not Mean
+## 14. What This Does Not Mean
 
 These semantics do not change V1 into an auto-reassignment system.
 
@@ -562,7 +663,7 @@ The recovery model is intentionally conservative:
 - open an explicit recovery action when the system can identify a bounded recovery owner/action
 - escalate visibly when the system cannot safely keep going
 
-## 14. Practical Interpretation
+## 15. Practical Interpretation
 
 For a board operator, the intended meaning is:
 

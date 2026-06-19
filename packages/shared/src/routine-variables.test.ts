@@ -5,6 +5,7 @@ import {
   getBuiltinRoutineVariableValues,
   interpolateRoutineTemplate,
   isBuiltinRoutineVariable,
+  reconcileRoutineVariablesWithTemplate,
   syncRoutineVariablesWithTemplate,
 } from "./routine-variables.js";
 
@@ -13,6 +14,14 @@ describe("routine variable helpers", () => {
     expect(
       extractRoutineVariableNames("Review {{repo}} and {{priority}} for {{repo}}"),
     ).toEqual(["repo", "priority"]);
+  });
+
+  it("extracts escaped underscore placeholder names emitted by markdown editors", () => {
+    expect(
+      extractRoutineVariableNames("Greet {{customer\\_name}} on {{event\\_date}}"),
+    ).toEqual(["customer_name", "event_date"]);
+    expect(extractRoutineVariableNames("Use {{a\\_b\\_c}}")).toEqual(["a_b_c"]);
+    expect(extractRoutineVariableNames("Ignore {{ \\_bad}} but keep {{good\\_name}}")).toEqual(["good_name"]);
   });
 
   it("deduplicates placeholder names across the routine title and description", () => {
@@ -35,6 +44,63 @@ describe("routine variable helpers", () => {
     ]);
   });
 
+  it("syncs escaped underscore placeholders to unescaped variable names", () => {
+    expect(
+      syncRoutineVariablesWithTemplate("Review {{customer\\_name}} for {{customer\\_name}}", []),
+    ).toEqual([
+      { name: "customer_name", label: null, type: "text", defaultValue: null, required: true, options: [] },
+    ]);
+  });
+
+  it("carries settings across a single-placeholder rename", () => {
+    expect(
+      reconcileRoutineVariablesWithTemplate("Review {{new_topic}}", [
+        {
+          name: "old_topic",
+          label: "Topic",
+          type: "select",
+          defaultValue: "urgent",
+          required: false,
+          options: ["urgent", "later"],
+        },
+      ]),
+    ).toEqual([
+      {
+        name: "new_topic",
+        label: "Topic",
+        type: "select",
+        defaultValue: "urgent",
+        required: false,
+        options: ["urgent", "later"],
+      },
+    ]);
+  });
+
+  it("preserves manual variables until explicitly removed", () => {
+    expect(
+      reconcileRoutineVariablesWithTemplate("Review {{topic}}", [
+        { name: "topic", label: "Topic", type: "text", defaultValue: null, required: true, options: [] },
+        { name: "customer", label: "Customer", type: "text", defaultValue: null, required: false, options: [] },
+      ], { manualVariableNames: ["customer"] }),
+    ).toEqual([
+      { name: "topic", label: "Topic", type: "text", defaultValue: null, required: true, options: [] },
+      { name: "customer", label: "Customer", type: "text", defaultValue: null, required: false, options: [] },
+    ]);
+  });
+
+  it("drops stale template-derived variables that no longer appear", () => {
+    expect(
+      reconcileRoutineVariablesWithTemplate("Review {{topic}}", [
+        { name: "topic", label: "Topic", type: "text", defaultValue: null, required: true, options: [] },
+        { name: "old_typing", label: "Old typing", type: "text", defaultValue: null, required: true, options: [] },
+        { name: "customer", label: "Customer", type: "text", defaultValue: null, required: false, options: [] },
+      ], { manualVariableNames: ["customer"] }),
+    ).toEqual([
+      { name: "topic", label: "Topic", type: "text", defaultValue: null, required: true, options: [] },
+      { name: "customer", label: "Customer", type: "text", defaultValue: null, required: false, options: [] },
+    ]);
+  });
+
   it("interpolates provided variable values into the routine template", () => {
     expect(
       interpolateRoutineTemplate("Review {{repo}} for {{priority}}", {
@@ -42,6 +108,15 @@ describe("routine variable helpers", () => {
         priority: "high",
       }),
     ).toBe("Review paperclip for high");
+  });
+
+  it("interpolates escaped underscore placeholders with unescaped variable values", () => {
+    expect(
+      interpolateRoutineTemplate("Greet {{customer\\_name}} on {{event\\_date}}", {
+        customer_name: "Ada",
+        event_date: "Friday",
+      }),
+    ).toBe("Greet Ada on Friday");
   });
 
   it("identifies built-in variable names", () => {

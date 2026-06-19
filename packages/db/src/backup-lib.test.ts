@@ -233,7 +233,8 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             "id" serial PRIMARY KEY,
             "parent_id" uuid NOT NULL REFERENCES "public"."backup_parent_records"("id") ON DELETE CASCADE,
             "status" "plugin_backup_scope"."plugin_status" NOT NULL,
-            "note" text NOT NULL
+            "note" text NOT NULL,
+            CONSTRAINT "plugin_rows_note_nonempty_check" CHECK ("note" <> '')
           );
           CREATE TABLE "plugin_backup_scope"."audit_rows" (
             "id" serial PRIMARY KEY,
@@ -301,6 +302,33 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             VALUES ('11111111-1111-4111-8111-111111111111', 'done', 'first')
           `),
         ).rejects.toThrow();
+
+        const checkRows = await restoreSql.unsafe<{ constraint_name: string }[]>(`
+          SELECT c.conname AS constraint_name
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+          WHERE n.nspname = 'plugin_backup_scope'
+            AND t.relname = 'plugin_rows'
+            AND c.conname = 'plugin_rows_note_nonempty_check'
+        `);
+        expect(checkRows).toEqual([{ constraint_name: "plugin_rows_note_nonempty_check" }]);
+
+        await expect(
+          restoreSql.unsafe(`
+            INSERT INTO "plugin_backup_scope"."plugin_rows" ("parent_id", "status", "note")
+            VALUES ('11111111-1111-4111-8111-111111111111', 'done', '')
+          `),
+        ).rejects.toThrow();
+
+        await restoreSql.unsafe(`
+          ALTER TABLE "plugin_backup_scope"."plugin_rows"
+          DROP CONSTRAINT "plugin_rows_note_nonempty_check"
+        `);
+        await restoreSql.unsafe(`
+          INSERT INTO "plugin_backup_scope"."plugin_rows" ("parent_id", "status", "note")
+          VALUES ('11111111-1111-4111-8111-111111111111', 'done', '')
+        `);
       } finally {
         await sourceSql.end();
         await restoreSql.end();

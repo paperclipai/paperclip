@@ -5,12 +5,13 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Routines, buildRoutineGroups, sortRoutines } from "./Routines";
+import { Routines, buildPipelineAutomationGroups, buildRoutineGroups, sortRoutines } from "./Routines";
 
 let currentSearch = "";
 
 const navigateMock = vi.fn();
 const routinesListMock = vi.fn<(companyId: string) => Promise<RoutineListItem[]>>();
+const pipelinesListMock = vi.fn<(companyId: string) => Promise<Array<{ id: string; key: string; name: string }>>>();
 const issuesListMock = vi.fn<(companyId: string, filters?: Record<string, unknown>) => Promise<Issue[]>>();
 const markdownEditorRenderMock = vi.fn((props: { mentions?: Array<{ id: string; name: string }> }) => props);
 const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
@@ -46,6 +47,12 @@ vi.mock("../api/routines", () => ({
     create: vi.fn(),
     update: vi.fn(),
     run: vi.fn(),
+  },
+}));
+
+vi.mock("../api/pipelines", () => ({
+  pipelinesApi: {
+    list: (companyId: string) => pipelinesListMock(companyId),
   },
 }));
 
@@ -251,6 +258,8 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     status: "active",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
+    originKind: "manual",
+    originId: null,
     variables: [],
     latestRevisionId: null,
     latestRevisionNumber: 1,
@@ -332,10 +341,12 @@ describe("Routines page", () => {
     currentSearch = "";
     navigateMock.mockReset();
     routinesListMock.mockReset();
+    pipelinesListMock.mockReset();
     issuesListMock.mockReset();
     markdownEditorRenderMock.mockClear();
     issuesListRenderMock.mockClear();
     localStorage.clear();
+    pipelinesListMock.mockResolvedValue([{ id: "pipeline-1", key: "content", name: "Content pipeline" }]);
   });
 
   afterEach(() => {
@@ -415,6 +426,22 @@ describe("Routines page", () => {
       "routine-2",
     ]);
     expect(routines.map((routine) => routine.id)).toEqual(["routine-1", "routine-2"]);
+  });
+
+  it("groups pipeline automation routines by pipeline", () => {
+    const groups = buildPipelineAutomationGroups(
+      [
+        createRoutine({ id: "routine-1", title: "Draft", originKind: "pipeline_automation", originId: "pipeline-1" }),
+        createRoutine({ id: "routine-2", title: "Publish", originKind: "pipeline_automation", originId: "pipeline-2" }),
+      ],
+      new Map([
+        ["pipeline-1", { id: "pipeline-1", key: "content", name: "Content" }],
+        ["pipeline-2", { id: "pipeline-2", key: "release", name: "Release" }],
+      ]),
+    );
+
+    expect(groups.map((group) => group.label)).toEqual(["Content", "Release"]);
+    expect(groups[0]?.items.map((item) => item.title)).toEqual(["Draft"]);
   });
 
   it("renders the routines sort control before the group control", async () => {
@@ -530,6 +557,63 @@ describe("Routines page", () => {
     expect(text).toContain("1 routine");
     expect(text).toContain("Morning sync");
     expect(text).not.toContain("Archived cleanup");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps pipeline automation routines out of the default list and shows a collapsed automation group", async () => {
+    routinesListMock.mockResolvedValue([
+      createRoutine({ id: "routine-1", title: "Morning sync", status: "active" }),
+      createRoutine({
+        id: "routine-2",
+        title: "Pipeline draft",
+        status: "active",
+        originKind: "pipeline_automation",
+        originId: "pipeline-1",
+      }),
+    ]);
+    issuesListMock.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Pipeline automation"); attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+    }
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("1 routine, 1 pipeline automation");
+    expect(text).toContain("Morning sync");
+    expect(text).toContain("Pipeline automation");
+    expect(text).not.toContain("Pipeline draft");
+
+    await act(async () => {
+      const trigger = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Pipeline automation"),
+      );
+      trigger?.click();
+      await flush();
+    });
+
+    expect(container.textContent).toContain("Content pipeline");
+    expect(container.textContent).toContain("Pipeline draft");
 
     await act(async () => {
       root.unmount();

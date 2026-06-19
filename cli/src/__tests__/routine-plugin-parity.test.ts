@@ -39,7 +39,7 @@ describe("routine and plugin parity commands", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await run(["routine", "list", "--company-id", COMPANY_ID, "--project-id", "p1"]);
-    await run(["routine", "create", "--company-id", COMPANY_ID, "--payload-json", "{}"]);
+    await run(["routine", "create", "--company-id", COMPANY_ID, "--payload-json", "{}", "--pipeline", "content"]);
     await run(["routine", "get", ROUTINE_ID]);
     await run(["routine", "update", ROUTINE_ID, "--payload-json", "{}"]);
     await run(["routine", "revisions", ROUTINE_ID]);
@@ -67,6 +67,10 @@ describe("routine and plugin parity commands", () => {
       ["POST", `http://localhost:3100/api/routine-triggers/${TRIGGER_ID}/rotate-secret`],
       ["POST", "http://localhost:3100/api/routine-triggers/public/public-id/fire"],
     ]);
+    expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string)).toMatchObject({
+      originKind: "pipeline_automation",
+      originId: "content",
+    });
   });
 
   it("wraps deeper plugin endpoints", async () => {

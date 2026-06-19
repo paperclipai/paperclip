@@ -413,6 +413,25 @@ export interface IssueRelatedWorkSummary {
   inbound: IssueRelatedWorkItem[];
 }
 
+export interface IssueLinkedPipelineCase {
+  id: string;
+  caseKey: string;
+  title: string;
+  status: string;
+  role: string;
+  pipeline: {
+    id: string;
+    key: string;
+    name: string;
+  };
+  stage: {
+    id: string;
+    key: string;
+    name: string;
+    kind: string;
+  };
+}
+
 export interface IssueExecutionStagePrincipal {
   type: "agent" | "user";
   agentId?: string | null;
@@ -565,6 +584,7 @@ export interface Issue {
   goal?: Goal | null;
   currentExecutionWorkspace?: ExecutionWorkspace | null;
   workProducts?: IssueWorkProduct[];
+  linkedCases?: IssueLinkedPipelineCase[];
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;

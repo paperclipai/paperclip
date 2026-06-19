@@ -86,6 +86,7 @@ interface MarkdownEditorProps {
 
 export interface MarkdownEditorRef {
   focus: () => void;
+  insertMarkdown: (markdown: string) => void;
 }
 
 function readHtmlAttribute(attrs: string, name: string): string | null {
@@ -267,6 +268,15 @@ export function findMentionMatch(
   if (atPos === -1) return null;
   const query = text.slice(atPos + 1, offset);
   if (trigger === "skill" && /\s/.test(query) && !query.toLowerCase().startsWith("routine:")) {
+    if (query.toLowerCase().startsWith("pipeline:")) {
+      return {
+        trigger: trigger ?? "mention",
+        marker: marker ?? "@",
+        query,
+        atPos,
+        endPos: offset,
+      };
+    }
     return null;
   }
 
@@ -432,6 +442,9 @@ function mentionMarkdown(option: MentionOption): string {
 }
 
 function slashCommandLabel(option: SlashCommandOption): string {
+  if (option.kind === "pipeline") {
+    return option.stageKey ? `/pipeline:${option.name} / ${option.stageName ?? option.stageKey}` : `/pipeline:${option.name}`;
+  }
   return option.kind === "routine" ? `/routine:${option.name}` : `/${option.slug}`;
 }
 
@@ -439,11 +452,14 @@ function slashCommandMarkdown(option: SlashCommandOption): string {
   if (option.kind === "routine") {
     return `[${slashCommandLabel(option)}](${buildRoutineMentionHref(option.routineId)}) `;
   }
+  if (option.kind === "pipeline") {
+    return `[${slashCommandLabel(option)}](${option.href}) `;
+  }
   return `[/${option.slug}](${option.href}) `;
 }
 
 function autocompleteMarkdown(option: AutocompleteOption): string {
-  return option.kind === "skill" || option.kind === "routine"
+  return option.kind === "skill" || option.kind === "routine" || option.kind === "pipeline"
     ? slashCommandMarkdown(option)
     : mentionMarkdown(option);
 }
@@ -480,6 +496,11 @@ function autocompleteOptionMatchesLink(option: AutocompleteOption, href: string)
   }
   if (option.kind === "routine") {
     return parsed.kind === "routine" && parsed.routineId === option.routineId;
+  }
+  if (option.kind === "pipeline") {
+    return parsed.kind === "pipeline" &&
+      parsed.pipelineId === option.pipelineId &&
+      parsed.stageKey === option.stageKey;
   }
 
   if (option.kind === "project" && option.projectId) {
@@ -666,7 +687,29 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }
       ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
-  }), [richEditorError]);
+    insertMarkdown: (markdown: string) => {
+      if (readOnly) return;
+      if (richEditorError) {
+        const textarea = fallbackTextareaRef.current;
+        if (!textarea) {
+          onChange(`${value}${markdown}`);
+          return;
+        }
+        const start = textarea.selectionStart ?? value.length;
+        const end = textarea.selectionEnd ?? start;
+        const next = `${value.slice(0, start)}${markdown}${value.slice(end)}`;
+        onChange(next);
+        window.requestAnimationFrame(() => {
+          textarea.focus();
+          const caret = start + markdown.length;
+          textarea.setSelectionRange(caret, caret);
+        });
+        return;
+      }
+      ref.current?.insertMarkdown(markdown);
+      ref.current?.focus();
+    },
+  }), [onChange, readOnly, richEditorError, value]);
 
   const autoSizeFallbackTextarea = useCallback((element: HTMLTextAreaElement | null) => {
     if (!element) return;
@@ -808,7 +851,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         continue;
       }
 
-      if (parsed.kind === "skill" || parsed.kind === "routine") {
+      if (parsed.kind === "skill" || parsed.kind === "routine" || parsed.kind === "pipeline") {
         applyMentionChipDecoration(link, parsed);
         continue;
       }
@@ -1298,7 +1341,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               >
                 {option.kind === "routine" ? (
                   <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                ) : option.kind === "skill" ? (
+                ) : option.kind === "skill" || option.kind === "pipeline" ? (
                   <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "project" && option.projectId ? (
                   <span
@@ -1314,7 +1357,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   />
                 )}
                 <span>
-                  {option.kind === "skill" || option.kind === "routine"
+                  {option.kind === "skill" || option.kind === "routine" || option.kind === "pipeline"
                     ? slashCommandLabel(option)
                     : option.name}
                 </span>

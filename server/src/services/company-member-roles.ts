@@ -31,6 +31,7 @@ export function grantsForHumanRole(
         { permissionKey: "environments:manage", scope: null },
         { permissionKey: "users:invite", scope: null },
         { permissionKey: "users:manage_permissions", scope: null },
+        { permissionKey: "pipelines:write", scope: null },
         { permissionKey: "tasks:assign", scope: null },
         { permissionKey: "joins:approve", scope: null },
       ];
@@ -39,11 +40,15 @@ export function grantsForHumanRole(
         { permissionKey: "agents:create", scope: null },
         { permissionKey: "environments:manage", scope: null },
         { permissionKey: "users:invite", scope: null },
+        { permissionKey: "pipelines:write", scope: null },
         { permissionKey: "tasks:assign", scope: null },
         { permissionKey: "joins:approve", scope: null },
       ];
     case "operator":
-      return [{ permissionKey: "tasks:assign", scope: null }];
+      return [
+        { permissionKey: "pipelines:write", scope: null },
+        { permissionKey: "tasks:assign", scope: null },
+      ];
     case "viewer":
       return [];
   }

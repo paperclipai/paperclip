@@ -1047,6 +1047,58 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
+  it("does not fail when automation case fields are missing required variables and records interpolation warnings", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "repo triage for {{repo}} by {{owner}}",
+        description: "Notify {{owner}} about {{repo}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "repo", label: null, type: "text", defaultValue: null, required: true, options: [] },
+          { name: "owner", label: null, type: "text", defaultValue: null, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+
+    const run = await svc.runRoutine(variableRoutine.id, {
+      source: "api",
+      caseFields: {
+        repo: "paperclip",
+      },
+    });
+    expect(run.status).toBe("issue_created");
+
+    const storedIssue = await db
+      .select({ title: issues.title, description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    const storedRun = await db
+      .select({ triggerPayload: routineRuns.triggerPayload })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(storedIssue?.title).toBe("repo triage for paperclip by ");
+    expect(storedIssue?.description).toBe("Notify  about paperclip");
+    expect(storedRun?.triggerPayload).toMatchObject({
+      interpolationWarnings: ["owner"],
+      variables: {
+        repo: "paperclip",
+      },
+    });
+  });
+
   it("attaches the selected execution workspace to manually triggered routine issues", async () => {
     const { companyId, projectId, routine, svc } = await seedFixture();
     const projectWorkspaceId = randomUUID();

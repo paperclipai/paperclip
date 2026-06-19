@@ -855,6 +855,26 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
+    const allCheckConstraints = await sql<{
+      constraint_name: string;
+      schema_name: string;
+      tablename: string;
+      constraint_definition: string;
+    }[]>`
+      SELECT
+        c.conname AS constraint_name,
+        n.nspname AS schema_name,
+        t.relname AS tablename,
+        pg_get_constraintdef(c.oid, true) AS constraint_definition
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE c.contype = 'c'
+        AND ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+      ORDER BY n.nspname, t.relname, c.conname
+    `;
+    const checkConstraints = allCheckConstraints.filter((entry) => includedTableNames.has(tableKey(entry.schema_name, entry.tablename)));
+
     // Indexes (non-primary, non-unique-constraint)
     const allIndexes = await sql<{ schema_name: string; tablename: string; indexdef: string }[]>`
       SELECT schemaname AS schema_name, tablename, indexdef
@@ -928,6 +948,16 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
         }
         await writer.drain();
+      }
+      emit("");
+    }
+
+    if (checkConstraints.length > 0) {
+      emit("-- Check constraints");
+      for (const constraint of checkConstraints) {
+        emitStatement(
+          `ALTER TABLE ${quoteQualifiedName(constraint.schema_name, constraint.tablename)} ADD CONSTRAINT ${quoteIdentifier(constraint.constraint_name)} ${constraint.constraint_definition};`,
+        );
       }
       emit("");
     }

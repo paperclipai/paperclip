@@ -536,6 +536,7 @@ export function IssueProperties({
       .filter((identifier) => !excluded.has(identifier))
       .map((identifier) => ({ id: identifier, identifier, title: identifier }));
   }, [childIssues, issue.blockedBy, issue.blocks, issue.relatedWork?.outbound, referencedIssueIdentifiers]);
+  const linkedPipelineCases = issue.linkedCases ?? [];
   const projectLink = (id: string | null) => {
     if (!id) return null;
     const project = projects?.find((p) => p.id === id) ?? null;
@@ -1850,6 +1851,27 @@ export function IssueProperties({
         >
           {projectContent}
         </PropertyPicker>
+
+        {linkedPipelineCases.length > 0 ? (
+          <PropertyRow label="Source">
+            {linkedPipelineCases.map((linkedCase) => {
+              const caseLabel = linkedCase.caseKey || linkedCase.title;
+              return (
+                <Link
+                  key={linkedCase.id}
+                  to={`/pipelines/${linkedCase.pipeline.id}/items/${linkedCase.id}`}
+                  className="inline-flex min-w-0 max-w-full items-center gap-1 rounded px-1.5 py-0.5 text-sm text-primary transition-colors hover:bg-accent/50 hover:underline"
+                  title={`${linkedCase.pipeline.name}: ${linkedCase.title}`}
+                >
+                  <span className="min-w-0 truncate">
+                    {linkedCase.pipeline.name} / {caseLabel}
+                  </span>
+                  <ExternalLink className="h-3 w-3 shrink-0" />
+                </Link>
+              );
+            })}
+          </PropertyRow>
+        ) : null}
 
         <PropertyPicker
           inline={inline}

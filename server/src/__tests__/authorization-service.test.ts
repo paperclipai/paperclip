@@ -248,6 +248,30 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("simple mode");
   });
 
+  it("allows simple-mode pipeline writes by same-company agents without explicit grants", async () => {
+    const company = await createCompany(db, "PipelineWriteDefault");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "pipelines:write",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_simple_company_member",
+    });
+    expect(decision.explanation).toContain("pipeline creation");
+  });
+
   it("limits low-trust issue reads to the configured project and root issue boundary", async () => {
     const company = await createCompany(db, "LowTrustIssueReads");
     const project = await createProject(db, company.id, "Allowed");
@@ -368,6 +392,11 @@ describeEmbeddedPostgres("authorization service", () => {
     await expect(authorization.decide({
       actor,
       action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+    await expect(authorization.decide({
+      actor,
+      action: "pipelines:write",
       resource: { type: "company", companyId: company.id },
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
     await expect(authorization.decide({

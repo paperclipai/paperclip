@@ -242,6 +242,8 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect([200, 201]).toContain(createRes.status);
     expect(createRes.body.title).toBe("Daily standup prep");
     expect(createRes.body.assigneeAgentId).toBe(agentId);
+    expect(createRes.body.originKind).toBe("manual");
+    expect(createRes.body.originId).toBeNull();
 
     const routineId = createRes.body.id as string;
 
@@ -274,6 +276,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(listRes.status).toBe(200);
     const listed = listRes.body.find((r: { id: string }) => r.id === routineId);
     expect(listed).toBeDefined();
+    expect(listed.originKind).toBe("manual");
     expect(listed.triggers).toHaveLength(1);
     expect(listed.triggers[0].cronExpression).toBe("0 10 * * 1-5");
     expect(listed.triggers[0].timezone).toBe("UTC");
@@ -325,6 +328,52 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         "routine.run_triggered",
       ]),
     );
+  }, 15_000);
+
+  it("supports create-time routine origin marking and list origin filters", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const manual = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Manual routine",
+        assigneeAgentId: agentId,
+      })
+      .expect(201);
+
+    const pipeline = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Pipeline routine",
+        assigneeAgentId: agentId,
+        originKind: "pipeline_automation",
+        originId: "pipeline-1",
+      })
+      .expect(201);
+
+    expect(pipeline.body).toMatchObject({
+      originKind: "pipeline_automation",
+      originId: "pipeline-1",
+    });
+
+    const pipelineOnly = await request(app)
+      .get(`/api/companies/${companyId}/routines?originKind=pipeline_automation`)
+      .expect(200);
+    expect(pipelineOnly.body.map((routine: { id: string }) => routine.id)).toEqual([pipeline.body.id]);
+
+    const manualOnly = await request(app)
+      .get(`/api/companies/${companyId}/routines?excludeOriginKinds=pipeline_automation`)
+      .expect(200);
+    expect(manualOnly.body.map((routine: { id: string }) => routine.id)).toEqual([manual.body.id]);
   }, 15_000);
 
   it("runs routines with variable inputs and interpolates the execution issue description", async () => {

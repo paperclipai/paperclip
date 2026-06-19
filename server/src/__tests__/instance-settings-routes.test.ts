@@ -64,6 +64,7 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableEnvironments: false,
       enableIsolatedWorkspaces: false,
+      enablePipelines: false,
       enableIssuePlanDecompositions: false,
       enableCloudSync: false,
       autoRestartDevServerWhenIdle: false,
@@ -83,6 +84,7 @@ describe("instance settings routes", () => {
       experimental: {
         enableEnvironments: true,
         enableIsolatedWorkspaces: true,
+        enablePipelines: true,
         enableIssuePlanDecompositions: true,
         enableCloudSync: true,
         autoRestartDevServerWhenIdle: false,
@@ -127,6 +129,7 @@ describe("instance settings routes", () => {
     expect(getRes.body).toEqual({
       enableEnvironments: false,
       enableIsolatedWorkspaces: false,
+      enablePipelines: false,
       enableIssuePlanDecompositions: false,
       enableCloudSync: false,
       autoRestartDevServerWhenIdle: false,
@@ -242,6 +245,24 @@ describe("instance settings routes", () => {
 
     expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
       enableEnvironments: true,
+    });
+  });
+
+  it("allows local board users to update pipeline controls", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enablePipelines: true })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enablePipelines: true,
     });
   });
 

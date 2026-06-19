@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAgentMentionHref,
+  buildPipelineMentionHref,
   buildProjectMentionHref,
   buildRoutineMentionHref,
   buildSkillMentionHref,
   buildUserMentionHref,
   extractAgentMentionIds,
+  extractPipelineMentions,
   extractProjectMentionIds,
   extractRoutineMentionIds,
   extractSkillMentionIds,
   extractUserMentionIds,
   parseAgentMentionHref,
+  parsePipelineMentionHref,
   parseProjectMentionHref,
   parseRoutineMentionHref,
   parseSkillMentionHref,
@@ -59,5 +62,16 @@ describe("project-mentions", () => {
       routineId: "routine-123",
     });
     expect(extractRoutineMentionIds(`[/routine:Weekly review](${href})`)).toEqual(["routine-123"]);
+  });
+
+  it("round-trips pipeline mentions with stage metadata", () => {
+    const href = buildPipelineMentionHref("pipeline-123", "asset-review");
+    expect(parsePipelineMentionHref(href)).toEqual({
+      pipelineId: "pipeline-123",
+      stageKey: "asset-review",
+    });
+    expect(extractPipelineMentions(`[/pipeline:Assets / asset review](${href})`)).toEqual([
+      { pipelineId: "pipeline-123", stageKey: "asset-review" },
+    ]);
   });
 });

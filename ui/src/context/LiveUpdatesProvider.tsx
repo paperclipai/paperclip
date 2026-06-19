@@ -628,6 +628,7 @@ function invalidateHeartbeatQueries(
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  queryClient.invalidateQueries({ queryKey: ["pipelines"] });
 
   const agentId = readString(payload.agentId);
   if (agentId) {
@@ -919,6 +920,7 @@ export const __liveUpdatesTestUtils = {
   closeSocketQuietly,
   hydrateVisibleIssueComment,
   invalidateActivityQueries,
+  invalidateHeartbeatQueries,
   invalidateVisibleIssueRunQueries,
   resolveLiveCompanyId,
   shouldDeferIssueRefetchForVisibleAgentActivity,

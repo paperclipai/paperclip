@@ -417,6 +417,28 @@ type PaperclipWakeTreeHoldSummary = {
   reason: string | null;
 };
 
+type PaperclipWakeStageSecretProviderConfigHealth = {
+  configId: string;
+  provider: string;
+  status: string;
+  message: string;
+  details: Record<string, unknown>;
+};
+
+type PaperclipWakeStageSecretManifestEntry = {
+  configPath: string;
+  envKey: string | null;
+  secretId: string;
+  bindingId?: string | null;
+  secretKey: string;
+  version: number;
+  provider: string;
+  outcome: "success" | "failure";
+  usageLabel?: string | null;
+  providerConfigHealth?: PaperclipWakeStageSecretProviderConfigHealth | null;
+  errorCode?: string | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -436,6 +458,7 @@ type PaperclipWakePayload = {
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
+  stageSecrets: PaperclipWakeStageSecretManifestEntry[];
   requestedCount: number;
   includedCount: number;
   missingCount: number;
@@ -543,6 +566,59 @@ function normalizePaperclipWakeTreeHoldSummary(value: unknown): PaperclipWakeTre
   return { holdId, rootIssueId, mode, reason };
 }
 
+function normalizePaperclipWakeStageSecretProviderConfigHealth(
+  value: unknown,
+): PaperclipWakeStageSecretProviderConfigHealth | null {
+  const health = parseObject(value);
+  const details = asRecord(health.details) ?? {};
+  const configId = asString(health.configId, "");
+  const provider = asString(health.provider, "");
+  const status = asString(health.status, "").trim();
+  const message = asString(health.message, "").trim() || "Provider vault health is unavailable.";
+
+  if (!configId && !provider && !status && !message && Object.keys(details).length === 0) {
+    return null;
+  }
+
+  return {
+    configId: configId.trim(),
+    provider: provider.trim(),
+    status,
+    message,
+    details,
+  };
+}
+
+function normalizePaperclipWakeStageSecretManifestEntry(
+  value: unknown,
+): PaperclipWakeStageSecretManifestEntry | null {
+  const entry = parseObject(value);
+  const configPath = asString(entry.configPath, "").trim();
+  const secretId = asString(entry.secretId, "").trim();
+  const secretKey = asString(entry.secretKey, "").trim();
+  if (!configPath || !secretId || !secretKey) return null;
+
+  const outcomeRaw = asString(entry.outcome, "").trim();
+  const outcome = outcomeRaw === "failure" ? "failure" : "success";
+  const versionValue = asNumber(entry.version, 1);
+
+  return {
+    configPath,
+    envKey: asString(entry.envKey, "").trim() || null,
+    secretId,
+    bindingId: asString(entry.bindingId, "").trim() || null,
+    secretKey,
+    version: versionValue > 0 ? Math.trunc(versionValue) : 0,
+    provider: asString(entry.provider, "").trim() || "unknown",
+    outcome,
+    usageLabel: asString(entry.usageLabel, "").trim() || null,
+    providerConfigHealth: normalizePaperclipWakeStageSecretProviderConfigHealth(
+      entry.providerConfigHealth,
+    ),
+    errorCode: asString(entry.errorCode, "").trim() || null,
+  };
+}
+
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
   const principal = parseObject(value);
   const typeRaw = asString(principal.type, "").trim().toLowerCase();
@@ -622,9 +698,14 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => normalizePaperclipWakeBlockerSummary(entry))
         .filter((entry): entry is PaperclipWakeBlockerSummary => Boolean(entry))
     : [];
+  const stageSecrets = Array.isArray(payload.stageSecrets)
+    ? payload.stageSecrets
+        .map((entry) => normalizePaperclipWakeStageSecretManifestEntry(entry))
+        .filter((entry): entry is PaperclipWakeStageSecretManifestEntry => Boolean(entry))
+    : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && stageSecrets.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -647,6 +728,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
     comments,
+    stageSecrets,
     requestedCount: asNumber(commentWindow.requestedCount, comments.length || commentIds.length),
     includedCount: asNumber(commentWindow.includedCount, comments.length),
     missingCount: asNumber(commentWindow.missingCount, 0),
@@ -840,6 +922,38 @@ export function renderPaperclipWakePrompt(
     }
     if (continuation.instruction) {
       lines.push(`- instruction: ${continuation.instruction}`);
+    }
+  }
+
+  if (normalized.stageSecrets.length > 0) {
+    lines.push("", "Stage secrets:");
+    for (const secret of normalized.stageSecrets) {
+      lines.push(`- ${secret.configPath}`);
+      lines.push(`  provider: ${secret.provider}`);
+      lines.push(`  secret: ${secret.secretId} (${secret.secretKey})`);
+      if (secret.usageLabel) {
+        lines.push(`  usage label: ${secret.usageLabel}`);
+      }
+      if (secret.errorCode) {
+        lines.push(`  error code: ${secret.errorCode}`);
+      }
+      if (secret.providerConfigHealth) {
+        const health = secret.providerConfigHealth;
+        const guidance = Array.isArray(health.details.guidance)
+          ? health.details.guidance
+              .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+              .filter((entry) => entry.length > 0)
+          : [];
+        lines.push(`  provider config health: ${health.status}`);
+        lines.push(`  health message: ${health.message}`);
+        const code = asString(health.details.code, "").trim();
+        if (code) {
+          lines.push(`  health code: ${code}`);
+        }
+        if (guidance.length > 0) {
+          lines.push(`  health guidance: ${guidance.join("; ")}`);
+        }
+      }
     }
   }
 

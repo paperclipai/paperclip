@@ -2414,6 +2414,12 @@ export async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
+  const paperclipSecrets = parseObject(input.contextSnapshot.paperclipSecrets);
+  const stageSecrets = Array.isArray(paperclipSecrets.manifest)
+    ? paperclipSecrets.manifest.filter((entry): entry is Record<string, unknown> => {
+      return entry !== null && typeof entry === "object" && !Array.isArray(entry);
+    })
+    : [];
   const issueSummary =
     input.issueSummary ??
     (issueId
@@ -2430,7 +2436,12 @@ export async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  if (
+    commentIds.length === 0 &&
+    Object.keys(executionStage).length === 0 &&
+    !issueSummary &&
+    stageSecrets.length === 0
+  ) return null;
 
   const commentRows =
     commentIds.length === 0
@@ -2603,6 +2614,7 @@ export async function buildPaperclipWakePayload(input: {
     interactionKind: readNonEmptyString(input.contextSnapshot.interactionKind),
     interactionStatus: readNonEmptyString(input.contextSnapshot.interactionStatus),
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
+    stageSecrets,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
     activeTreeHold: parseObject(input.contextSnapshot.activeTreeHold),
