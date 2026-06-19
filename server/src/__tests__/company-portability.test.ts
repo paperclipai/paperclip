@@ -2529,6 +2529,83 @@ describe("company portability", () => {
     });
   });
 
+  it("warns when an imported agent bundle instructs a direct push to the default branch with no PR step (PEN-1048)", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      status: input.status,
+    }));
+
+    const result = await portability.importBundle({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": ["---", "name: Import", "includes:", "  - agents/engineer/AGENTS.md", "---", ""].join("\n"),
+          "agents/engineer/AGENTS.md": ["---", "name: Engineer", "slug: engineer", "kind: agent", "---", "", "# Engineer", ""].join("\n"),
+          "agents/engineer/skills/git-workflow.md": [
+            "# Git Workflow",
+            "",
+            "## Direct-to-Main Flow",
+            "",
+            "1. git add -A",
+            "2. git commit -m \"msg\"",
+            "3. git push origin main",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": ["schema: paperclip/v1", "agents:", "  engineer:", "    adapter:", "      type: codex_local", "      config: {}", ""].join("\n"),
+        },
+      },
+      include: { company: false, agents: true, projects: false, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(result.warnings).toContainEqual(expect.stringContaining("direct push to the default branch"));
+    expect(result.warnings).toContainEqual(expect.stringContaining("skills/git-workflow.md"));
+  });
+
+  it("does not warn when the agent bundle uses a PR flow (PEN-1048 control)", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      status: input.status,
+    }));
+
+    const result = await portability.importBundle({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": ["---", "name: Import", "includes:", "  - agents/engineer/AGENTS.md", "---", ""].join("\n"),
+          "agents/engineer/AGENTS.md": ["---", "name: Engineer", "slug: engineer", "kind: agent", "---", "", "# Engineer", ""].join("\n"),
+          "agents/engineer/skills/git-workflow.md": [
+            "# Git Workflow",
+            "",
+            "Never push directly to main/master — there is no direct-to-main path.",
+            "",
+            "1. git switch -c feat/x origin/master",
+            "2. git push -u origin feat/x",
+            "3. gh pr create --fill",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": ["schema: paperclip/v1", "agents:", "  engineer:", "    adapter:", "      type: codex_local", "      config: {}", ""].join("\n"),
+        },
+      },
+      include: { company: false, agents: true, projects: false, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(result.warnings).not.toContainEqual(expect.stringContaining("direct push to the default branch"));
+  });
+
   it("disables timer heartbeats on imported agents", async () => {
     const portability = companyPortabilityService({} as any);
 

@@ -2997,6 +2997,41 @@ export function parseGitHubSourceUrl(rawUrl: string) {
 }
 
 
+/**
+ * PEN-1048 guard: detect agent instruction bundles that prescribe a direct push
+ * to the default branch (e.g. `git push origin main`) with no pull-request step.
+ * On PR-gated repos such a push is rejected, so the agent strands its work as a
+ * "complete" comment instead of opening a PR. Advisory only — emitted as an
+ * import warning so the operator can fix the bundle's git-workflow skill.
+ *
+ * Checked per file so a sibling pr-workflow.md cannot mask a broken
+ * git-workflow.md, and gated on the *absence* of a PR-creation verb in the same
+ * file so corrected bundles (which say "never push to main" alongside
+ * `gh pr create`) do not false-positive.
+ */
+const DIRECT_PUSH_TO_DEFAULT_RE = /\bgit\s+push\b[^\n]*\borigin\b[^\n]*\b(?:main|master)\b/i;
+const PR_CREATION_VERB_RE = /\bgh\s+pr\s+create\b|create\s+a\s+pull\s+request|open(?:s|ing)?\s+a\s+(?:pull\s+request|pr)\b/i;
+
+function detectDirectToMainBundleWarnings(
+  agentSlug: string,
+  bundleFiles: Record<string, string>,
+): string[] {
+  const warnings: string[] = [];
+  for (const [filePath, content] of Object.entries(bundleFiles)) {
+    if (typeof content !== "string") continue;
+    if (DIRECT_PUSH_TO_DEFAULT_RE.test(content) && !PR_CREATION_VERB_RE.test(content)) {
+      warnings.push(
+        `Agent ${agentSlug} bundle file ${filePath} instructs a direct push to the default branch ` +
+        `(git push origin main/master) with no pull-request step. PR-gated repositories reject direct ` +
+        `pushes, so the agent will strand work as a "complete" comment instead of opening a PR (PEN-1048). ` +
+        `Update the git-workflow skill to a PR flow (gh pr create) before relying on this agent.`,
+      );
+    }
+  }
+  return warnings;
+}
+
+
 export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companies = companyService(db);
   const agents = agentService(db);
@@ -4548,6 +4583,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
           if (!markdownRaw && !fallbackPromptTemplate) {
             warnings.push(`Missing AGENTS markdown for ${manifestAgent.slug}; imported with an empty managed bundle.`);
+          }
+
+          for (const warning of detectDirectToMainBundleWarnings(manifestAgent.slug, bundleFiles)) {
+            warnings.push(warning);
           }
 
           // Apply adapter overrides from request if present
