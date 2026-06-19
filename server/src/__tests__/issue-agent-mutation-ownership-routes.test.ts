@@ -19,6 +19,7 @@ const mockIssueService = vi.hoisted(() => ({
   getAttachmentById: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
+  getComment: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   list: vi.fn(),
@@ -376,6 +377,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getAttachmentById.mockReset();
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.getById.mockReset();
+    mockIssueService.getComment.mockReset();
     mockIssueService.getRelationSummaries.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockIssueService.list.mockReset();
@@ -484,6 +486,12 @@ describe("agent issue mutation checkout ownership", () => {
     mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.getByIdentifier.mockResolvedValue(null);
+    mockIssueService.getComment.mockResolvedValue({
+      id: "comment-1",
+      issueId,
+      companyId,
+      body: "Mentioned reply context.",
+    });
     mockIssueService.list.mockResolvedValue([makeIssue()]);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
@@ -799,6 +807,23 @@ describe("agent issue mutation checkout ownership", () => {
       order: "desc",
       limit: null,
     });
+  });
+
+  it("rejects peer agents from reading a specific comment when issue read is outside their boundary", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .get(`/api/issues/${issueId}/comments/comment-1`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
+    expect(mockIssueService.getComment).not.toHaveBeenCalled();
   });
 
   it("keeps true issue mutations denied for mentioned peer agents", async () => {

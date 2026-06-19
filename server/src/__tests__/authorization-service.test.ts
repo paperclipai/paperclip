@@ -706,6 +706,54 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
+  it("allows a mentioned non-assignee to comment when the mention author is the issue assignee", async () => {
+    const company = await createCompany(db, "MentionCommentAssigneeGrant");
+    const allowedProject = await createProject(db, company.id, "MentionAssigneeAllowed");
+    const targetProject = await createProject(db, company.id, "MentionAssigneeTarget");
+    const assigneeAgent = await createAgent(db, company.id, { role: "coach" });
+    const mentionedAgent = await createAgent(db, company.id, {
+      role: "qa",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Assignee-authored mention reply target",
+      projectId: targetProject.id,
+      assigneeAgentId: assigneeAgent.id,
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      authorAgentId: assigneeAgent.id,
+      authorType: "agent",
+      body: `[@QA](agent://${mentionedAgent.id}) please reply on this issue.`,
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: { type: "agent", agentId: mentionedAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        assigneeAgentId: assigneeAgent.id,
+        status: issue.status,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_mention_grant",
+    });
+  });
+
   it("does not grant mention-scoped issue access from self-authored or unauthorized-author comments", async () => {
     const company = await createCompany(db, "MentionCommentDenied");
     const allowedProject = await createProject(db, company.id, "MentionDeniedAllowed");
