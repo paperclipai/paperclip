@@ -249,6 +249,20 @@ describe("issue dependency wakeups in issue routes", () => {
         },
       ],
       childIssueSummaryTruncated: false,
+      openDescendantSummaries: [
+        {
+          id: "grand-1",
+          identifier: "PAP-201",
+          title: "Grandchild still backlog",
+          status: "backlog",
+          priority: "medium",
+          parentIssueId: "child-0",
+          depth: 2,
+        },
+      ],
+      openDescendantCount: 1,
+      openDescendantSummaryTruncated: false,
+      subtreeAuditTruncated: false,
     });
 
     const res = await request(await createApp()).patch("/api/issues/child-1").send({ status: "done" });
@@ -264,10 +278,23 @@ describe("issue dependency wakeups in issue routes", () => {
             childIssueSummaries: expect.arrayContaining([
               expect.objectContaining({ identifier: "PAP-101", summary: "Last child finished." }),
             ]),
+            openDescendantCount: 1,
+            openDescendantSummaries: expect.arrayContaining([
+              expect.objectContaining({
+                identifier: "PAP-201",
+                status: "backlog",
+                parentIssueId: "child-0",
+                depth: 2,
+              }),
+            ]),
           }),
           contextSnapshot: expect.objectContaining({
             childIssueSummaries: expect.arrayContaining([
               expect.objectContaining({ identifier: "PAP-100", summary: "First child finished." }),
+            ]),
+            openDescendantCount: 1,
+            openDescendantSummaries: expect.arrayContaining([
+              expect.objectContaining({ identifier: "PAP-201", status: "backlog" }),
             ]),
           }),
         }),
