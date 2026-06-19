@@ -620,6 +620,16 @@ DB backups are not full instance filesystem backups. For full local disaster
 recovery, also back up local storage files and the local encrypted secrets key if
 those providers are enabled.
 
+## Logging
+
+The server logs to both stdout and `<logDir>/server.log`. Environment overrides:
+
+- `PAPERCLIP_LOG_DIR=/absolute/or/~/path` — directory holding `server.log`
+- `PAPERCLIP_LOG_FORMAT=pretty|json` — output rendering (default `pretty`).
+  Use `json` for one JSON object per line, ready to ship to Grafana Loki, ELK,
+  or any structured-log backend without parsing ANSI/pretty output. Also
+  settable via `logging.format` in `config.json`; the env var takes precedence.
+
 ## Secrets in Dev
 
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.

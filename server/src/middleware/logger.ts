@@ -17,10 +17,26 @@ function resolveServerLogDir(): string {
   return resolveDefaultLogsDir();
 }
 
+// Render format for both log streams. Precedence: env > config file > default.
+// "json" emits one JSON object per line (machine-parseable for log shippers
+// like Grafana Loki / ELK); "pretty" keeps the human-readable pino-pretty
+// output (default, back-compatible).
+function resolveLogFormat(): "pretty" | "json" {
+  const envOverride = process.env.PAPERCLIP_LOG_FORMAT?.trim().toLowerCase();
+  if (envOverride === "pretty" || envOverride === "json") return envOverride;
+
+  const fileFormat = readConfigFile()?.logging.format;
+  if (fileFormat === "pretty" || fileFormat === "json") return fileFormat;
+
+  return "pretty";
+}
+
 const logDir = resolveServerLogDir();
 fs.mkdirSync(logDir, { recursive: true });
 
 const logFile = path.join(logDir, "server.log");
+
+const logFormat = resolveLogFormat();
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -28,23 +44,38 @@ const sharedOpts = {
   singleLine: true,
 };
 
+// "json": raw pino JSON via the built-in pino/file transport (stdout = fd 1,
+// plus the rotated-by-nothing server.log). "pretty": pino-pretty as before.
+const transportTargets: pino.TransportTargetOptions[] = logFormat === "json"
+  ? [
+      {
+        target: "pino/file",
+        options: { destination: 1 },
+        level: "info",
+      },
+      {
+        target: "pino/file",
+        options: { destination: logFile, mkdir: true },
+        level: "debug",
+      },
+    ]
+  : [
+      {
+        target: "pino-pretty",
+        options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
+        level: "info",
+      },
+      {
+        target: "pino-pretty",
+        options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
+        level: "debug",
+      },
+    ];
+
 export const logger = pino({
   level: "debug",
   redact: ["req.headers.authorization"],
-}, pino.transport({
-  targets: [
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
-      level: "info",
-    },
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
-      level: "debug",
-    },
-  ],
-}));
+}, pino.transport({ targets: transportTargets }));
 
 export const httpLogger = pinoHttp({
   logger,
