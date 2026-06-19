@@ -11,6 +11,7 @@ import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
 import { healthRoutes } from "./routes/health.js";
+import { healthzRoutes } from "./routes/healthz.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
@@ -217,6 +218,7 @@ export async function createApp(
       companyDeletionEnabled: opts.companyDeletionEnabled,
     }),
   );
+  api.use("/healthz", healthzRoutes(db));
   api.use(openApiRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
