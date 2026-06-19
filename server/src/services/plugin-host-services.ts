@@ -2620,6 +2620,17 @@ export function buildHostServices(
         const rows = await milestoneSvc.list(companyId, params.projectId as string | undefined);
         return applyWindow(rows, params);
       },
+      async create(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return milestoneSvc.create(companyId, {
+          name: params.name,
+          projectId: params.projectId,
+          description: params.description,
+          targetDate: params.targetDate,
+          sortOrder: params.sortOrder,
+        });
+      },
     },
 
     access: {

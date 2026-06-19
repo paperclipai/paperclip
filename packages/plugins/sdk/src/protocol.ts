@@ -1423,6 +1423,17 @@ export interface WorkerToHostMethods {
     params: { companyId: string; projectId?: string; limit?: number; offset?: number },
     result: Milestone[],
   ];
+  "milestones.create": [
+    params: {
+      companyId: string;
+      name: string;
+      projectId?: string | null;
+      description?: string | null;
+      targetDate?: string | null;
+      sortOrder?: number;
+    },
+    result: Milestone,
+  ];
 
   // Access
   "access.members.list": [

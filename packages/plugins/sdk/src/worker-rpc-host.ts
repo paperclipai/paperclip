@@ -1245,6 +1245,16 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             offset: input.offset,
           });
         },
+        async create(input) {
+          return callHost("milestones.create", {
+            companyId: input.companyId,
+            name: input.name,
+            projectId: input.projectId,
+            description: input.description,
+            targetDate: input.targetDate,
+            sortOrder: input.sortOrder,
+          });
+        },
       },
 
       access: {

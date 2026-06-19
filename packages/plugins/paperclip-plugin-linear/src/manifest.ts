@@ -31,6 +31,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issue.comments.create",
     "goals.read",
     "milestones.read",
+    "milestones.write",
     // Plugin state & entities
     "plugin.state.read",
     "plugin.state.write",

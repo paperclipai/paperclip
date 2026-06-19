@@ -2288,6 +2288,25 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           (m) => m.companyId === cid && (!input.projectId || m.projectId === input.projectId),
         );
       },
+      async create(input) {
+        requireCapability(manifest, capabilitySet, "milestones.write");
+        const cid = requireCompanyId(input.companyId);
+        const id = `ms-${Math.random().toString(36).slice(2)}`;
+        const now = new Date().toISOString();
+        const m: Milestone = {
+          id,
+          companyId: cid,
+          projectId: input.projectId ?? null,
+          name: input.name,
+          description: input.description ?? null,
+          targetDate: input.targetDate ?? null,
+          sortOrder: input.sortOrder ?? 0,
+          createdAt: now,
+          updatedAt: now,
+        };
+        milestones.set(id, m);
+        return m;
+      },
     },
     access: {
       members: {

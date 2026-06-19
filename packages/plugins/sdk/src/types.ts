@@ -1750,9 +1750,9 @@ export interface PluginGoalsClient {
 }
 
 /**
- * `ctx.milestones` — read milestones.
+ * `ctx.milestones` — read and write milestones.
  *
- * Requires `milestones.read`.
+ * `list` requires `milestones.read`; `create` requires `milestones.write`.
  */
 export interface PluginMilestonesClient {
   list(input: {
@@ -1761,6 +1761,14 @@ export interface PluginMilestonesClient {
     limit?: number;
     offset?: number;
   }): Promise<Milestone[]>;
+  create(input: {
+    companyId: string;
+    name: string;
+    projectId?: string | null;
+    description?: string | null;
+    targetDate?: string | null;
+    sortOrder?: number;
+  }): Promise<Milestone>;
 }
 
 // ---------------------------------------------------------------------------

@@ -1193,27 +1193,77 @@ const plugin = definePlugin({
         (context?.companyId as string | null | undefined) ??
         (typeof params?.companyId === "string" ? params.companyId : null) ??
         (await getCompanyId(ctx));
-      if (!companyId) return { reconciled: 0, created: 0, error: "company not connected" };
+      if (!companyId) return { reconciled: 0, created: 0, imported: 0, error: "company not connected" };
 
       const token = await resolveToken(ctx);
       let reconciled = 0;
       let created = 0;
+      let imported = 0;
 
-      // Walk all Paperclip milestones in the company.
+      // Phase 1: Linear → Paperclip import.
+      // Walk all project links for this company and import any Linear milestones
+      // that do not yet exist as Paperclip milestones.
+      let projectLinkOffset = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const page = await ctx.state.list({
+          scopeKind: "instance",
+          namespace: "default",
+          stateKeyPrefix: STATE_KEYS.projectLinkPrefix,
+          limit: 50,
+          offset: projectLinkOffset,
+        });
+        if (page.entries.length === 0) break;
+        projectLinkOffset += page.entries.length;
+
+        for (const entry of page.entries) {
+          if (!isProjectLink(entry.value)) continue;
+          if (entry.value.paperclipCompanyId !== companyId) continue;
+
+          const linearMilestones = await linear.listProjectMilestones(
+            ctx.http.fetch.bind(ctx.http), token, entry.value.linearProjectId,
+          );
+
+          for (const lm of linearMilestones) {
+            // Skip if already linked
+            const existing = await sync.getMilestoneLinkByLinear(ctx, lm.id);
+            if (existing) { reconciled++; continue; }
+
+            // Create the Paperclip milestone
+            const pc = await ctx.milestones.create({
+              companyId,
+              name: lm.name,
+              projectId: entry.value.paperclipProjectId,
+              description: lm.description ?? null,
+              targetDate: lm.targetDate ?? null,
+            });
+
+            await sync.createMilestoneLink(ctx, {
+              paperclipMilestoneId: pc.id,
+              paperclipCompanyId: companyId,
+              paperclipProjectId: entry.value.paperclipProjectId,
+              linearMilestoneId: lm.id,
+              linearMilestoneName: lm.name,
+            });
+            imported++;
+          }
+
+          await new Promise((r) => setTimeout(r, 150)); // rate-limit headroom
+        }
+      }
+
+      // Phase 2: Paperclip → Linear sync.
+      // Walk all Paperclip milestones and create any that are missing in Linear.
       const pcMilestones = await ctx.milestones.list({ companyId });
       for (const milestone of pcMilestones) {
-        // Skip milestones not attached to a project
         if (!milestone.projectId) continue;
 
-        // Skip milestones already mapped
         const existingLink = await sync.getMilestoneLink(ctx, milestone.id);
         if (existingLink) { reconciled++; continue; }
 
-        // Project must be linked to Linear
         const projectLink = await sync.getProjectLink(ctx, milestone.projectId);
         if (!projectLink) continue;
 
-        // Try to find a matching Linear milestone by name
         const linearMilestones = await linear.listProjectMilestones(
           ctx.http.fetch.bind(ctx.http), token, projectLink.linearProjectId,
         );
@@ -1232,7 +1282,6 @@ const plugin = definePlugin({
           });
           reconciled++;
         } else {
-          // Create in Linear
           const lm = await linear.createProjectMilestone(ctx.http.fetch.bind(ctx.http), token, {
             name: milestone.name,
             projectId: projectLink.linearProjectId,
@@ -1250,8 +1299,8 @@ const plugin = definePlugin({
         }
       }
 
-      ctx.logger.info(`Milestone reconcile done: ${reconciled} matched, ${created} created`);
-      return { reconciled, created };
+      ctx.logger.info(`Milestone reconcile done: ${reconciled} reconciled, ${imported} imported from Linear, ${created} pushed to Linear`);
+      return { reconciled, created, imported };
     });
 
     // One-time bounded backfill: write Paperclip back-links for already-mirrored
