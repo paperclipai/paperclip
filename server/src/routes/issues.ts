@@ -4963,6 +4963,22 @@ export function issueRoutes(
       }
     }
 
+    if (typeof updateFields.parentId === 'string') {
+      const parent = await svc.getById(updateFields.parentId);
+      if (!parent || parent.companyId !== existing.companyId) {
+        res.status(400).json({ error: 'parent issue not found' });
+        return;
+      }
+    }
+
+    if (typeof updateFields.goalId === 'string') {
+      const goal = await goalsSvc.getById(updateFields.goalId);
+      if (!goal || goal.companyId !== existing.companyId) {
+        res.status(400).json({ error: 'goal not found' });
+        return;
+      }
+    }
+
     let issue;
     try {
       if (transition.decision && decisionId) {
