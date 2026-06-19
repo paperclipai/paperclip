@@ -11,6 +11,7 @@ type SelectResult = unknown[];
 
 function createDbStub(selectResults: SelectResult[]) {
   const pendingSelects = [...selectResults];
+  const pendingExecutes: SelectResult[] = [];
   const selectWhere = vi.fn(async () => pendingSelects.shift() ?? []);
   const selectThen = vi.fn((resolve: (value: unknown[]) => unknown) => Promise.resolve(resolve(pendingSelects.shift() ?? [])));
   const selectOrderBy = vi.fn(async () => pendingSelects.shift() ?? []);
@@ -47,6 +48,10 @@ function createDbStub(selectResults: SelectResult[]) {
       select,
       insert,
       update,
+      execute: vi.fn(async () => pendingExecutes.shift() ?? []),
+    },
+    queueExecute: (rows: unknown[]) => {
+      pendingExecutes.push(rows);
     },
     queueInsert: (rows: unknown[]) => {
       pendingInserts.push(rows);
@@ -148,6 +153,77 @@ describe("budgetService", () => {
       companyId: "company-1",
       scopeType: "agent",
       scopeId: "agent-1",
+    });
+  });
+
+  it("creates a hard-stop incident and cancels work for an issue tree budget", async () => {
+    const policy = {
+      id: "policy-issue-tree-1",
+      companyId: "company-1",
+      scopeType: "issue_tree",
+      scopeId: "issue-parent",
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [policy],
+      [{ total: 150 }],
+      [],
+      [{
+        companyId: "company-1",
+        title: "Parent work",
+        identifier: "PAP-100",
+      }],
+    ]);
+    dbStub.queueExecute([{ id: "issue-parent" }, { id: "issue-child" }]);
+    dbStub.queueExecute([{ id: "issue-parent" }, { id: "issue-child" }]);
+    dbStub.queueInsert([{
+      id: "approval-issue-tree-1",
+      companyId: "company-1",
+      status: "pending",
+    }]);
+    dbStub.queueInsert([{
+      id: "incident-issue-tree-1",
+      companyId: "company-1",
+      policyId: "policy-issue-tree-1",
+      approvalId: "approval-issue-tree-1",
+    }]);
+    dbStub.queueUpdate([]);
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope });
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-child",
+      projectId: null,
+    } as any);
+
+    expect(dbStub.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        policyId: "policy-issue-tree-1",
+        thresholdType: "hard",
+        amountLimit: 100,
+        amountObserved: 150,
+        approvalId: "approval-issue-tree-1",
+      }),
+    );
+    expect(dbStub.updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "paused",
+      }),
+    );
+    expect(cancelWorkForScope).toHaveBeenCalledWith({
+      companyId: "company-1",
+      scopeType: "issue_tree",
+      scopeId: "issue-parent",
     });
   });
 

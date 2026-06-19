@@ -19,6 +19,7 @@ There are no execution grandchildren.
 - Execution lanes must not create child issues.
 - Engineer, QA, fix, and review loops stay inside the same execution-lane issue thread.
 - Hard blockers are reported in the execution lane and escalated to the PM, execution manager, CEO, or board through comments, status, blockers, review, approval, or issue-thread interactions.
+- Parent issues can set `budgetLimits.issueTreeCents` to cap the parent plus direct lanes, and `budgetLimits.childIssuesCents` to cap execution lanes only.
 
 ## Role Rules
 
@@ -49,3 +50,4 @@ The issue service rejects:
 - creating more than 10 direct children under one parent.
 
 UI surfaces should hide sub-issue creation for execution lanes, but backend enforcement is authoritative.
+Issue budget hard-stops also apply to issue trees: `issue_tree` cancels parent plus lanes, and `issue_children` cancels lanes without cancelling the parent board-facing thread.

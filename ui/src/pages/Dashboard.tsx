@@ -23,7 +23,7 @@ import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents, formatTokens } from "../lib/utils";
 import { Bot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Eye, KeyRound } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
-import { AnimatedNumber, DotMatrixText, LedProgress } from "../components/NothingAesthetic";
+import { AnimatedNumber, DotMatrixText } from "../components/NothingAesthetic";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
@@ -47,6 +47,76 @@ function credentialUsageWindowTokens(usage: CredentialUsage | undefined, label: 
   return window.inputTokens + window.cachedInputTokens + window.outputTokens;
 }
 
+function credentialUsageBreakdown(usage: CredentialUsage | undefined): string {
+  if (!usage) return "input miss 0 · cached 0 · output 0";
+  return [
+    `input miss ${formatTokens(usage.inputTokens)}`,
+    `cached ${formatTokens(usage.cachedInputTokens)}`,
+    `output ${formatTokens(usage.outputTokens)}`,
+  ].join(" · ");
+}
+
+function credentialModelTitle(usage: CredentialUsage | undefined): string {
+  const models = usage?.models ?? [];
+  if (models.length === 0) return "Model-aware value uses recorded model pricing when available.";
+  return models
+    .slice(0, 8)
+    .map((model) => {
+      const tokens = model.inputTokens + model.cachedInputTokens + model.outputTokens;
+      return [
+        `${model.model} (${model.provider}/${model.biller})`,
+        `${formatTokens(tokens)} tok`,
+        `${formatCents(model.apiEquivalentCostCents)} API value`,
+        model.pricingLabel ?? "recorded/fallback pricing",
+      ].join(" · ");
+    })
+    .join("\n");
+}
+
+function credentialTopModelLabel(usage: CredentialUsage | undefined): string {
+  const top = usage?.models?.[0];
+  if (!top) return "model-aware";
+  return top.model.length > 18 ? `${top.model.slice(0, 17)}…` : top.model;
+}
+
+function formatQuotaResetTime(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return null;
+  return `resets ${date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  })}`;
+}
+
+function RoundedUsageBar({
+  usedPercent,
+  className,
+}: {
+  usedPercent: number;
+  className?: string;
+}) {
+  const used = Math.min(100, Math.max(0, usedPercent));
+  const available = Math.max(0, 100 - used);
+  return (
+    <div className={cn("flex h-3 overflow-hidden rounded-full border border-border/50 bg-muted/25", className)}>
+      <div
+        className="h-full rounded-r-full bg-red-500 transition-[width] duration-200"
+        style={{ width: `${used}%` }}
+        aria-label={`${Math.round(used)}% used`}
+      />
+      <div
+        className="h-full rounded-l-full bg-green-500/80 transition-[width] duration-200"
+        style={{ width: `${available}%` }}
+        aria-label={`${Math.round(available)}% available`}
+      />
+    </div>
+  );
+}
+
 function compactQuotaLabel(label: string): string {
   const normalized = label.toLowerCase();
   if (normalized.includes("session")) return "5h";
@@ -55,13 +125,6 @@ function compactQuotaLabel(label: string): string {
   if (normalized.includes("week")) return "week";
   if (normalized.includes("extra")) return "extra";
   return label.length > 14 ? `${label.slice(0, 13)}…` : label;
-}
-
-function quotaTone(usedPercent: number | null | undefined): "default" | "warning" | "danger" | "success" {
-  if (usedPercent == null) return "default";
-  if (usedPercent >= 90) return "danger";
-  if (usedPercent >= 70) return "warning";
-  return "success";
 }
 
 export function Dashboard() {
@@ -143,9 +206,9 @@ export function Dashboard() {
 
   const { data: credentialUsageResp } = useQuery({
     queryKey: selectedCompanyId
-      ? ["credentials", selectedCompanyId, "usage", 30]
-      : ["credentials", "none", "usage", 30],
-    queryFn: () => credentialsApi.usage(selectedCompanyId!, 30),
+      ? ["credentials", selectedCompanyId, "usage", "mtd"]
+      : ["credentials", "none", "usage", "mtd"],
+    queryFn: () => credentialsApi.usage(selectedCompanyId!, { period: "month" }),
     enabled: !!selectedCompanyId,
     refetchInterval: 60_000,
   });
@@ -172,17 +235,17 @@ export function Dashboard() {
     const usageRows = credentialUsageResp?.usage ?? [];
     let tokens5h = 0;
     let value7dCents = 0;
-    let value30dCents = 0;
-    let billed30dCents = 0;
+    let valueMtdCents = 0;
+    let billedMtdCents = 0;
     let maxCredentialTokens = 1;
     for (const usage of usageRows) {
       tokens5h += credentialUsageWindowTokens(usage, "5h");
       value7dCents += usage.windows.find((entry) => entry.label === "7d")?.apiEquivalentCostCents ?? 0;
-      value30dCents += usage.apiEquivalentCostCents;
-      billed30dCents += usage.costCents;
+      valueMtdCents += usage.apiEquivalentCostCents;
+      billedMtdCents += usage.costCents;
       maxCredentialTokens = Math.max(maxCredentialTokens, credentialUsageTokens(usage));
     }
-    return { tokens5h, value7dCents, value30dCents, billed30dCents, maxCredentialTokens };
+    return { tokens5h, value7dCents, valueMtdCents, billedMtdCents, maxCredentialTokens };
   }, [credentialUsageResp]);
 
   // Stalled tasks: open issues whose blocker-attention says they're stalled or
@@ -391,12 +454,12 @@ export function Dashboard() {
                   </DotMatrixText>
                 </div>
                 <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
-                  <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">30d value / billed</p>
+                  <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">MTD value / billed</p>
                   <DotMatrixText className="text-xl leading-tight text-foreground">
-                    <AnimatedNumber value={credentialUsageTotals.value30dCents} format={(n) => formatCents(Math.round(n))} />
+                    <AnimatedNumber value={credentialUsageTotals.valueMtdCents} format={(n) => formatCents(Math.round(n))} />
                   </DotMatrixText>
                   <p className="text-[10px] text-muted-foreground">
-                    billed {formatCents(credentialUsageTotals.billed30dCents)}
+                    billed {formatCents(credentialUsageTotals.billedMtdCents)}
                   </p>
                 </div>
               </div>
@@ -414,40 +477,56 @@ export function Dashboard() {
                   const visibleQuotaWindows = row.quotaWindows
                     .filter((entry) => entry.usedPercent != null || entry.valueLabel)
                     .slice(0, 4);
+                  const quotaStatusLabel = row.stale
+                    ? "stale"
+                    : row.disabledAt
+                      ? "disabled"
+                      : row.cooldownUntil
+                        ? "cooling"
+                        : row.type;
+                  const quotaStatusTitle = row.stale && row.cachedAt
+                    ? `Showing last successful quota sample from ${new Date(row.cachedAt).toLocaleString()}`
+                    : undefined;
                   return (
                     <div key={row.credentialId} className="rounded-md border border-border/60 bg-muted/20 px-3 py-3">
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate text-xs font-medium">{row.name}</span>
                         <span className={cn(
                           "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
-                          row.disabledAt
+                          row.stale
+                            ? "bg-amber-500/10 text-amber-600"
+                            : row.disabledAt
                             ? "bg-destructive/10 text-destructive"
                             : row.cooldownUntil
                               ? "bg-sky-500/10 text-sky-600"
                               : "bg-muted text-muted-foreground",
-                        )}>
-                          {row.disabledAt ? "disabled" : row.cooldownUntil ? "cooling" : row.type}
+                        )}
+                        title={quotaStatusTitle}
+                        >
+                          {quotaStatusLabel}
                         </span>
                       </div>
                       <div className="mt-2 flex items-end justify-between gap-2">
                         <div>
-                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">30d tokens</p>
+                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">MTD tokens</p>
                           <DotMatrixText className="text-base leading-none">
                             {formatTokens(totalTokens)}
                           </DotMatrixText>
+                          <p className="mt-1 max-w-[12rem] truncate text-[10px] text-muted-foreground" title={credentialUsageBreakdown(usage)}>
+                            {credentialUsageBreakdown(usage)}
+                          </p>
                         </div>
                         <div className="text-right">
                           <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">API value</p>
-                          <span className="text-xs tabular-nums">
+                          <span className="text-xs tabular-nums" title={credentialModelTitle(usage)}>
                             {formatCents(usage?.apiEquivalentCostCents ?? 0)}
                           </span>
+                          <p className="mt-1 max-w-[9rem] truncate text-[10px] text-muted-foreground" title={credentialModelTitle(usage)}>
+                            {credentialTopModelLabel(usage)}
+                          </p>
                         </div>
                       </div>
-                      <LedProgress
-                        percent={observedPercent}
-                        tone={totalTokens > 0 ? "live" : "muted"}
-                        className="mt-2"
-                      />
+                      <RoundedUsageBar usedPercent={observedPercent} className="mt-2" />
                       <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px] text-muted-foreground">
                         <span>5h {formatTokens(credentialUsageWindowTokens(usage, "5h"))}</span>
                         <span className="text-right">7d {formatCents(weekValue)}</span>
@@ -455,12 +534,17 @@ export function Dashboard() {
                       <div
                         className="mt-3 space-y-1.5"
                         title={row.quotaWindows
-                          .map((entry) => `${entry.label}: ${entry.usedPercent != null ? `${Math.round(entry.usedPercent)}% used` : entry.valueLabel ?? "reported"}`)
+                          .map((entry) => `${entry.label}: ${entry.usedPercent != null ? `${Math.round(entry.usedPercent)}% used, ${Math.max(0, Math.round(100 - entry.usedPercent))}% available` : entry.valueLabel ?? "reported"}${entry.resetsAt ? ` · ${formatQuotaResetTime(entry.resetsAt)}` : ""}`)
                           .join(" · ")}
                       >
+                        {row.stale && row.error ? (
+                          <p className="text-[10px] text-amber-600" title={row.error}>
+                            stale quota sample
+                          </p>
+                        ) : null}
                         {!row.supported ? (
                           <p className="text-[10px] text-muted-foreground">quota n/a</p>
-                        ) : !row.ok ? (
+                        ) : !row.ok && visibleQuotaWindows.length === 0 ? (
                           <p className="text-[10px] text-amber-600">{row.error ?? "quota unavailable"}</p>
                         ) : visibleQuotaWindows.length === 0 ? (
                           <p className="text-[10px] text-muted-foreground">quota ok</p>
@@ -475,12 +559,13 @@ export function Dashboard() {
                                     : window.valueLabel ?? "ok"}
                                 </span>
                               </div>
+                              {formatQuotaResetTime(window.resetsAt) ? (
+                                <div className="truncate text-[10px] text-muted-foreground">
+                                  {formatQuotaResetTime(window.resetsAt)}
+                                </div>
+                              ) : null}
                               {window.usedPercent != null ? (
-                                <LedProgress
-                                  percent={window.usedPercent}
-                                  tone={quotaTone(window.usedPercent)}
-                                  showDeficitNotch={window.usedPercent >= 90}
-                                />
+                                <RoundedUsageBar usedPercent={window.usedPercent} />
                               ) : null}
                             </div>
                           ))

@@ -9878,6 +9878,73 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return rows.map((row) => row.id);
   }
 
+  async function listIssueScopedRunIds(companyId: string, issueId: string, includeRoot: boolean) {
+    const finalFilter = includeRoot ? sql`` : sql`WHERE id <> ${issueId}`;
+    const rows = await db.execute(sql`
+      WITH RECURSIVE issue_tree(id) AS (
+        SELECT (${issues.id})::text
+        FROM ${issues}
+        WHERE ${issues.companyId} = ${companyId}
+          AND ${issues.id} = ${issueId}
+          AND ${issues.hiddenAt} IS NULL
+        UNION ALL
+        SELECT child.id::text
+        FROM ${issues} child
+        JOIN issue_tree ON child.parent_id::text = issue_tree.id
+        WHERE child.company_id = ${companyId}
+          AND child.hidden_at IS NULL
+      )
+      SELECT DISTINCT ${heartbeatRuns.id}::text AS id
+      FROM ${heartbeatRuns}
+      WHERE ${heartbeatRuns.companyId} = ${companyId}
+        AND ${heartbeatRuns.status} IN (${sql.join(CANCELLABLE_HEARTBEAT_RUN_STATUSES.map((status) => sql`${status}`), sql`, `)})
+        AND coalesce(
+          ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+          ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+        ) IN (SELECT id FROM issue_tree ${finalFilter})
+    `);
+    return Array.isArray(rows)
+      ? rows
+        .map((row) => (row as { id?: unknown }).id)
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [];
+  }
+
+  async function listIssueScopedWakeupIds(companyId: string, issueId: string, includeRoot: boolean) {
+    const finalFilter = includeRoot ? sql`` : sql`WHERE id <> ${issueId}`;
+    const rows = await db.execute(sql`
+      WITH RECURSIVE issue_tree(id) AS (
+        SELECT (${issues.id})::text
+        FROM ${issues}
+        WHERE ${issues.companyId} = ${companyId}
+          AND ${issues.id} = ${issueId}
+          AND ${issues.hiddenAt} IS NULL
+        UNION ALL
+        SELECT child.id::text
+        FROM ${issues} child
+        JOIN issue_tree ON child.parent_id::text = issue_tree.id
+        WHERE child.company_id = ${companyId}
+          AND child.hidden_at IS NULL
+      )
+      SELECT DISTINCT ${agentWakeupRequests.id}::text AS id
+      FROM ${agentWakeupRequests}
+      WHERE ${agentWakeupRequests.companyId} = ${companyId}
+        AND ${agentWakeupRequests.status} IN ('queued', 'deferred_issue_execution')
+        AND ${agentWakeupRequests.runId} IS NULL
+        AND coalesce(
+          ${agentWakeupRequests.payload} ->> 'issueId',
+          ${agentWakeupRequests.payload} ->> 'taskId',
+          ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
+          ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
+        ) IN (SELECT id FROM issue_tree ${finalFilter})
+    `);
+    return Array.isArray(rows)
+      ? rows
+        .map((row) => (row as { id?: unknown }).id)
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [];
+  }
+
   async function cancelPendingWakeupsForBudgetScope(scope: BudgetEnforcementScope) {
     const now = new Date();
     let wakeupIds: string[] = [];
@@ -9907,8 +9974,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ),
         )
         .then((rows) => rows.map((row) => row.id));
-    } else {
+    } else if (scope.scopeType === "project") {
       wakeupIds = await listProjectScopedWakeupIds(scope.companyId, scope.scopeId);
+    } else if (scope.scopeType === "issue_tree" || scope.scopeType === "issue_children") {
+      wakeupIds = await listIssueScopedWakeupIds(
+        scope.companyId,
+        scope.scopeId,
+        scope.scopeType === "issue_tree",
+      );
     }
 
     if (wakeupIds.length === 0) return 0;
@@ -9994,7 +10067,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
-  async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause") {
+  async function cancelActiveForAgentInternal(
+    agentId: string,
+    reason = "Cancelled due to agent pause",
+    options: { force?: boolean } = {},
+  ) {
     const agent = await getAgent(agentId);
     const runs = await db
       .select()
@@ -10026,15 +10103,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           pid: running.child.pid ?? run.processPid,
           processGroupId: running.processGroupId ?? run.processGroupId,
           graceMs: Math.max(1, running.graceSec) * 1000,
+          force: options.force,
         });
         runningProcesses.delete(run.id);
       } else if (run.processPid || run.processGroupId) {
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
           processGroupId: run.processGroupId,
+          force: options.force,
         });
       }
-      await releaseIssueExecutionAndPromote(run);
+      await releaseIssueExecutionAndPromote({ ...run, status: "cancelled" }, { suppressImmediateRecovery: true });
     }
 
     return runs.length;
@@ -10059,7 +10138,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ),
           )
           .then((rows) => rows.map((row) => row.id))
-        : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
+        : scope.scopeType === "project"
+          ? await listProjectScopedRunIds(scope.companyId, scope.scopeId)
+          : scope.scopeType === "issue_tree" || scope.scopeType === "issue_children"
+            ? await listIssueScopedRunIds(scope.companyId, scope.scopeId, scope.scopeType === "issue_tree")
+            : [];
 
     for (const runId of runIds) {
       await cancelRunInternal(runId, "Cancelled due to budget pause");
@@ -10382,7 +10465,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         force: options?.force,
       }),
 
-    cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+    cancelActiveForAgent: (agentId: string, reason?: string, options?: { force?: boolean }) =>
+      cancelActiveForAgentInternal(agentId, reason, options),
 
     cancelBudgetScopeWork,
 

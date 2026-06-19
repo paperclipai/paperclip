@@ -7,6 +7,7 @@ import {
   budgetPolicies,
   companies,
   costEvents,
+  issues,
   projects,
 } from "@paperclipai/db";
 import type {
@@ -120,6 +121,26 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
     };
   }
 
+  if (scopeType === "issue_tree" || scopeType === "issue_children") {
+    const row = await db
+      .select({
+        companyId: issues.companyId,
+        title: issues.title,
+        identifier: issues.identifier,
+      })
+      .from(issues)
+      .where(eq(issues.id, scopeId))
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Issue not found");
+    const issueName = row.identifier ? `${row.title} (${row.identifier})` : row.title;
+    return {
+      companyId: row.companyId,
+      name: scopeType === "issue_children" ? `Execution lanes for ${issueName}` : issueName,
+      paused: false,
+      pauseReason: null,
+    };
+  }
+
   const row = await db
     .select({
       companyId: projects.companyId,
@@ -139,6 +160,53 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
   };
 }
 
+async function listIssueScopeIds(
+  db: Db,
+  companyId: string,
+  rootIssueId: string,
+  includeRoot: boolean,
+) {
+  const result = await db.execute(sql`
+    WITH RECURSIVE issue_tree(id) AS (
+      SELECT ${issues.id}
+      FROM ${issues}
+      WHERE ${issues.companyId} = ${companyId}
+        AND ${issues.id} = ${rootIssueId}
+        AND ${issues.hiddenAt} IS NULL
+      UNION ALL
+      SELECT child.id
+      FROM ${issues} child
+      JOIN issue_tree ON child.parent_id = issue_tree.id
+      WHERE child.company_id = ${companyId}
+        AND child.hidden_at IS NULL
+    )
+    SELECT id::text AS id
+    FROM issue_tree
+    ${includeRoot ? sql`` : sql`WHERE id <> ${rootIssueId}`}
+  `);
+  return Array.isArray(result)
+    ? result
+      .map((row) => (row as { id?: unknown }).id)
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+    : [];
+}
+
+async function issueBelongsToBudgetScope(
+  db: Db,
+  policy: Pick<PolicyRow, "companyId" | "scopeType" | "scopeId">,
+  issueId: string | null | undefined,
+) {
+  if (!issueId) return false;
+  if (policy.scopeType !== "issue_tree" && policy.scopeType !== "issue_children") return false;
+  const ids = await listIssueScopeIds(
+    db,
+    policy.companyId,
+    policy.scopeId,
+    policy.scopeType === "issue_tree",
+  );
+  return ids.includes(issueId);
+}
+
 async function computeObservedAmount(
   db: Db,
   policy: Pick<PolicyRow, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">,
@@ -148,6 +216,16 @@ async function computeObservedAmount(
   const conditions = [eq(costEvents.companyId, policy.companyId)];
   if (policy.scopeType === "agent") conditions.push(eq(costEvents.agentId, policy.scopeId));
   if (policy.scopeType === "project") conditions.push(eq(costEvents.projectId, policy.scopeId));
+  if (policy.scopeType === "issue_tree" || policy.scopeType === "issue_children") {
+    const issueIds = await listIssueScopeIds(
+      db,
+      policy.companyId,
+      policy.scopeId,
+      policy.scopeType === "issue_tree",
+    );
+    if (issueIds.length === 0) return 0;
+    conditions.push(inArray(costEvents.issueId, issueIds));
+  }
   const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
   if (policy.windowKind === "calendar_month_utc") {
     conditions.push(gte(costEvents.occurredAt, start));
@@ -212,6 +290,9 @@ async function markApprovalStatus(
 export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
   async function pauseScopeForBudget(policy: PolicyRow) {
     const now = new Date();
+    if (policy.scopeType === "issue_tree" || policy.scopeType === "issue_children") {
+      return;
+    }
     if (policy.scopeType === "agent") {
       await db
         .update(agents)
@@ -259,6 +340,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
 
   async function resumeScopeFromBudget(policy: PolicyRow) {
     const now = new Date();
+    if (policy.scopeType === "issue_tree" || policy.scopeType === "issue_children") {
+      return;
+    }
     if (policy.scopeType === "agent") {
       await db
         .update(agents)
@@ -514,7 +598,11 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       }
 
       const metric = input.metric ?? "billed_cents";
-      const windowKind = input.windowKind ?? (input.scopeType === "project" ? "lifetime" : "calendar_month_utc");
+      const windowKind = input.windowKind ?? (
+        input.scopeType === "project" || input.scopeType === "issue_tree" || input.scopeType === "issue_children"
+          ? "lifetime"
+          : "calendar_month_utc"
+      );
       const amount = Math.max(0, Math.floor(input.amount));
       const nextIsActive = amount > 0 && (input.isActive ?? true);
       const existing = await db
@@ -652,16 +740,31 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           and(
             eq(budgetPolicies.companyId, event.companyId),
             eq(budgetPolicies.isActive, true),
-            inArray(budgetPolicies.scopeType, ["company", "agent", "project"]),
+            inArray(budgetPolicies.scopeType, ["company", "agent", "project", "issue_tree", "issue_children"]),
           ),
         );
 
-      const relevantPolicies = candidatePolicies.filter((policy) => {
-        if (policy.scopeType === "company") return policy.scopeId === event.companyId;
-        if (policy.scopeType === "agent") return policy.scopeId === event.agentId;
-        if (policy.scopeType === "project") return Boolean(event.projectId) && policy.scopeId === event.projectId;
-        return false;
-      });
+      const relevantPolicies: PolicyRow[] = [];
+      for (const policy of candidatePolicies) {
+        if (policy.scopeType === "company" && policy.scopeId === event.companyId) {
+          relevantPolicies.push(policy);
+          continue;
+        }
+        if (policy.scopeType === "agent" && policy.scopeId === event.agentId) {
+          relevantPolicies.push(policy);
+          continue;
+        }
+        if (policy.scopeType === "project" && Boolean(event.projectId) && policy.scopeId === event.projectId) {
+          relevantPolicies.push(policy);
+          continue;
+        }
+        if (
+          (policy.scopeType === "issue_tree" || policy.scopeType === "issue_children")
+          && await issueBelongsToBudgetScope(db, policy, event.issueId)
+        ) {
+          relevantPolicies.push(policy);
+        }
+      }
 
       for (const policy of relevantPolicies) {
         if (policy.metric !== "billed_cents" || policy.amount <= 0) continue;
@@ -807,6 +910,36 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             scopeId: agentId,
             scopeName: agent.name,
             reason: "Agent cannot start because its budget hard-stop is still exceeded.",
+          };
+        }
+      }
+
+      const candidateIssueId = context?.issueId ?? null;
+      if (candidateIssueId) {
+        const issuePolicies = await db
+          .select()
+          .from(budgetPolicies)
+          .where(
+            and(
+              eq(budgetPolicies.companyId, companyId),
+              inArray(budgetPolicies.scopeType, ["issue_tree", "issue_children"]),
+              eq(budgetPolicies.isActive, true),
+              eq(budgetPolicies.metric, "billed_cents"),
+            ),
+          );
+        for (const policy of issuePolicies) {
+          if (!policy.hardStopEnabled || policy.amount <= 0) continue;
+          if (!(await issueBelongsToBudgetScope(db, policy, candidateIssueId))) continue;
+          const observed = await computeObservedAmount(db, policy);
+          if (observed < policy.amount) continue;
+          const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+          return {
+            scopeType: policy.scopeType as BudgetScopeType,
+            scopeId: policy.scopeId,
+            scopeName: normalizeScopeName(policy.scopeType as BudgetScopeType, scope.name),
+            reason: policy.scopeType === "issue_children"
+              ? "Execution lanes cannot start because their issue budget hard-stop is exceeded."
+              : "Issue work cannot start because its parent budget hard-stop is exceeded.",
           };
         }
       }

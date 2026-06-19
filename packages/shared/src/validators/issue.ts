@@ -25,6 +25,7 @@ import {
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_STATUSES,
+  BUDGET_WINDOW_KINDS,
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
@@ -328,6 +329,11 @@ const createIssueBaseSchema = z.object({
   visibility: z.enum(["private", "company"]).optional(),
   dueDate: z.string().datetime().nullable().optional(),
   workLeadDays: z.number().int().min(0).max(365).nullable().optional(),
+  budgetLimits: z.object({
+    issueTreeCents: z.number().int().nonnegative().optional().nullable(),
+    childIssuesCents: z.number().int().nonnegative().optional().nullable(),
+    windowKind: z.enum(BUDGET_WINDOW_KINDS).optional().default("lifetime"),
+  }).optional().nullable(),
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({

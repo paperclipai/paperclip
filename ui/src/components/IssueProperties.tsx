@@ -25,6 +25,7 @@ import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects"
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
+import { buildIssueLabelParts } from "../lib/issue-labels";
 import { isHumanControlWorkItemType } from "../lib/issue-work-items";
 import { formatMonitorOffset } from "../lib/issue-monitor";
 import { formatRetryReason } from "../lib/runRetryState";
@@ -275,15 +276,25 @@ function RemovableIssueReferencePill({
   onRemove: (issueId: string) => void;
 }) {
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
-  const issueLabel = issue.identifier ?? issue.title;
-  const confirmLabel = issue.identifier ? `${issue.identifier}: ${issue.title}` : issue.title;
+  const issuePathId = issue.identifier ?? issue.id;
+  const labelParts = buildIssueLabelParts(issue);
+  const confirmLabel = labelParts.identifierSuffix
+    ? `${labelParts.title} (${labelParts.identifierSuffix})`
+    : labelParts.title;
   const content = (
     <>
       <StatusIcon status={issue.status} className="h-3 w-3 shrink-0" />
-      <span className="truncate">{issueLabel}</span>
+      <span className="inline-flex min-w-0 items-center gap-1">
+        <span className="truncate">{labelParts.title}</span>
+        {labelParts.identifierSuffix ? (
+          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+            {labelParts.identifierSuffix}
+          </span>
+        ) : null}
+      </span>
     </>
   );
-  const removeLabel = `Remove ${issueLabel} as blocker`;
+  const removeLabel = `Remove ${labelParts.text} as blocker`;
   const handleRemove = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -302,8 +313,8 @@ function RemovableIssueReferencePill({
           "paperclip-mention-chip paperclip-mention-chip--issue group",
           "inline-flex items-center gap-1 rounded-full border border-border py-0.5 pl-1 pr-2 text-xs",
         )}
-        title={issue.title}
-        aria-label={`Issue ${issueLabel}: ${issue.title}`}
+        title={labelParts.text}
+        aria-label={labelParts.ariaLabel}
       >
         <button
           type="button"
@@ -316,9 +327,9 @@ function RemovableIssueReferencePill({
         </button>
         {issue.identifier ? (
           <Link
-            to={`/issues/${issueLabel}`}
+            to={`/issues/${issuePathId}`}
             className="inline-flex min-w-0 items-center gap-1 no-underline hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
-            aria-label={`Issue ${issueLabel}: ${issue.title}`}
+            aria-label={labelParts.ariaLabel}
           >
             {content}
           </Link>

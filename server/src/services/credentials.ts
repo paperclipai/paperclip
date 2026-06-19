@@ -3,7 +3,11 @@ import path from "node:path";
 import { and, eq, gt, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentCredentials, agents, costEvents, providerCredentials } from "@paperclipai/db";
-import type { ProviderCredentialUsage, ProviderCredentialUsageWindow } from "@paperclipai/shared";
+import type {
+  ProviderCredentialUsage,
+  ProviderCredentialUsageModel,
+  ProviderCredentialUsageWindow,
+} from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
 import { estimateApiEquivalentCostCents, isSubscriptionBillingType } from "./api-equivalent-cost.js";
@@ -18,7 +22,7 @@ type CredentialRow = typeof providerCredentials.$inferSelect;
 type SafeCredential = Omit<CredentialRow, "credential">;
 type CredentialSelectionRow = Pick<CredentialRow, "id" | "type">;
 type CredentialUsageAggregate = Omit<ProviderCredentialUsageWindow, "label" | "hours">;
-type CredentialUsageWindowSpec = { label: string; hours: number; key: string };
+type CredentialUsageWindowSpec = { label: string; hours: number; key: string; since?: Date };
 
 export type CredentialAssignmentValidationResult =
   | { ok: true; credentials: SafeCredential[] }
@@ -84,7 +88,160 @@ function buildCredentialUsageWindowSpecs(sinceMs: number): {
   return { specs: [...seen.values()], primaryKey: requestedKey };
 }
 
+function buildCredentialUsageMonthToDateWindowSpecs(now = new Date()): {
+  specs: CredentialUsageWindowSpec[];
+  primaryKey: string;
+  since: Date;
+} {
+  const since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const elapsedHours = Math.max(1, Math.ceil((now.getTime() - since.getTime()) / (60 * 60 * 1000)));
+  const base: CredentialUsageWindowSpec[] = [
+    { label: "5h", hours: 5, key: "5" },
+    { label: "24h", hours: 24, key: "24" },
+    { label: "7d", hours: 7 * 24, key: String(7 * 24) },
+    { label: "MTD", hours: elapsedHours, key: "mtd", since },
+  ];
+  return { specs: base, primaryKey: "mtd", since };
+}
+
 export function credentialService(db: Db) {
+  async function usageByCredentialForSpecs(
+    companyId: string,
+    specs: CredentialUsageWindowSpec[],
+    primaryKey: string,
+  ): Promise<ProviderCredentialUsage[]> {
+    async function aggregateWindow(
+      spec: CredentialUsageWindowSpec,
+      includeModels = false,
+    ): Promise<{
+      byCredential: Map<string, CredentialUsageAggregate>;
+      modelsByCredential: Map<string, ProviderCredentialUsageModel[]>;
+    }> {
+      const since = spec.since ?? new Date(Date.now() - spec.hours * 60 * 60 * 1000);
+      const rows = await db
+        .select({
+          credentialId: costEvents.credentialId,
+          provider: costEvents.provider,
+          biller: costEvents.biller,
+          billingType: costEvents.billingType,
+          model: costEvents.model,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::double precision`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::double precision`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::double precision`,
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          events: sql<number>`count(*)::double precision`,
+        })
+        .from(costEvents)
+        .where(
+          and(
+            eq(costEvents.companyId, companyId),
+            gte(costEvents.occurredAt, since),
+            isNotNull(costEvents.credentialId),
+          ),
+        )
+        .groupBy(
+          costEvents.credentialId,
+          costEvents.provider,
+          costEvents.biller,
+          costEvents.billingType,
+          costEvents.model,
+        );
+
+      const byCredential = new Map<string, CredentialUsageAggregate>();
+      const modelsByCredential = new Map<string, ProviderCredentialUsageModel[]>();
+      for (const row of rows) {
+        if (!row.credentialId) continue;
+        const aggregate = byCredential.get(row.credentialId) ?? emptyCredentialUsageAggregate();
+        const inputTokens = Number(row.inputTokens);
+        const outputTokens = Number(row.outputTokens);
+        const cachedInputTokens = Number(row.cachedInputTokens);
+        const costCents = Number(row.costCents);
+        const events = Number(row.events);
+        const apiEquivalent = estimateApiEquivalentCostCents({
+          provider: row.provider,
+          biller: row.biller,
+          model: row.model,
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          fallbackCostCents: costCents,
+        });
+
+        aggregate.inputTokens += inputTokens;
+        aggregate.outputTokens += outputTokens;
+        aggregate.cachedInputTokens += cachedInputTokens;
+        aggregate.costCents += costCents;
+        aggregate.apiEquivalentCostCents += apiEquivalent.costCents;
+        if (isSubscriptionBillingType(row.billingType)) {
+          aggregate.subscriptionApiEquivalentCostCents += apiEquivalent.costCents;
+        }
+        aggregate.events += events;
+        byCredential.set(row.credentialId, aggregate);
+
+        if (includeModels) {
+          const models = modelsByCredential.get(row.credentialId) ?? [];
+          models.push({
+            provider: row.provider,
+            biller: row.biller,
+            billingType: row.billingType,
+            model: row.model,
+            inputTokens,
+            cachedInputTokens,
+            outputTokens,
+            costCents,
+            apiEquivalentCostCents: apiEquivalent.costCents,
+            subscriptionApiEquivalentCostCents: isSubscriptionBillingType(row.billingType)
+              ? apiEquivalent.costCents
+              : 0,
+            events,
+            pricingLabel: apiEquivalent.pricingLabel,
+          });
+          modelsByCredential.set(row.credentialId, models);
+        }
+      }
+      for (const models of modelsByCredential.values()) {
+        models.sort((a, b) =>
+          b.apiEquivalentCostCents - a.apiEquivalentCostCents
+          || b.costCents - a.costCents
+          || b.inputTokens + b.cachedInputTokens + b.outputTokens - (a.inputTokens + a.cachedInputTokens + a.outputTokens),
+        );
+      }
+      return { byCredential, modelsByCredential };
+    }
+
+    const windowPairs = await Promise.all(
+      specs.map(async (spec) => [spec, await aggregateWindow(spec, spec.key === primaryKey)] as const),
+    );
+    const primary = windowPairs.find(([spec]) => spec.key === primaryKey)?.[1] ?? {
+      byCredential: new Map<string, CredentialUsageAggregate>(),
+      modelsByCredential: new Map<string, ProviderCredentialUsageModel[]>(),
+    };
+    const credentialIds = new Set<string>();
+    for (const [, aggregate] of windowPairs) {
+      for (const credentialId of aggregate.byCredential.keys()) credentialIds.add(credentialId);
+    }
+
+    return [...credentialIds].sort().map((credentialId) => {
+      const primaryAggregate = primary.byCredential.get(credentialId) ?? emptyCredentialUsageAggregate();
+      return {
+        credentialId,
+        inputTokens: primaryAggregate.inputTokens,
+        outputTokens: primaryAggregate.outputTokens,
+        cachedInputTokens: primaryAggregate.cachedInputTokens,
+        costCents: primaryAggregate.costCents,
+        apiEquivalentCostCents: primaryAggregate.apiEquivalentCostCents,
+        subscriptionApiEquivalentCostCents: primaryAggregate.subscriptionApiEquivalentCostCents,
+        events: primaryAggregate.events,
+        windows: windowPairs.map(([spec, aggregate]) => ({
+          label: spec.label,
+          hours: spec.hours,
+          ...(aggregate.byCredential.get(credentialId) ?? emptyCredentialUsageAggregate()),
+        })),
+        models: primary.modelsByCredential.get(credentialId) ?? [],
+      };
+    });
+  }
+
   const svc = {
     async list(companyId: string): Promise<SafeCredential[]> {
       const rows = await db
@@ -355,108 +512,17 @@ export function credentialService(db: Db) {
       return { ok: true, credentials: creds.map(stripCredential) };
     },
 
-    /**
-     * Aggregate token/cost usage per managed credential for a company over a
-     * trailing window, from cost_events.credentialId. Used by the Credentials
-     * UI to show how much each credential (and each pool member) has spent.
-     */
-    async usageByCredential(
-      companyId: string,
-      sinceMs: number,
-    ): Promise<ProviderCredentialUsage[]> {
+    async usageByCredential(companyId: string, sinceMs: number): Promise<ProviderCredentialUsage[]> {
       const { specs, primaryKey } = buildCredentialUsageWindowSpecs(sinceMs);
+      return usageByCredentialForSpecs(companyId, specs, primaryKey);
+    },
 
-      async function aggregateWindow(hours: number): Promise<Map<string, CredentialUsageAggregate>> {
-        const since = new Date(Date.now() - hours * 60 * 60 * 1000);
-        const rows = await db
-          .select({
-            credentialId: costEvents.credentialId,
-            provider: costEvents.provider,
-            biller: costEvents.biller,
-            billingType: costEvents.billingType,
-            model: costEvents.model,
-            inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::double precision`,
-            outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::double precision`,
-            cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::double precision`,
-            costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
-            events: sql<number>`count(*)::double precision`,
-          })
-          .from(costEvents)
-          .where(
-            and(
-              eq(costEvents.companyId, companyId),
-              gte(costEvents.occurredAt, since),
-              isNotNull(costEvents.credentialId),
-            ),
-          )
-          .groupBy(
-            costEvents.credentialId,
-            costEvents.provider,
-            costEvents.biller,
-            costEvents.billingType,
-            costEvents.model,
-          );
-
-        const byCredential = new Map<string, CredentialUsageAggregate>();
-        for (const row of rows) {
-          if (!row.credentialId) continue;
-          const aggregate = byCredential.get(row.credentialId) ?? emptyCredentialUsageAggregate();
-          const inputTokens = Number(row.inputTokens);
-          const outputTokens = Number(row.outputTokens);
-          const cachedInputTokens = Number(row.cachedInputTokens);
-          const costCents = Number(row.costCents);
-          const events = Number(row.events);
-          const apiEquivalent = estimateApiEquivalentCostCents({
-            provider: row.provider,
-            biller: row.biller,
-            model: row.model,
-            inputTokens,
-            cachedInputTokens,
-            outputTokens,
-            fallbackCostCents: costCents,
-          });
-
-          aggregate.inputTokens += inputTokens;
-          aggregate.outputTokens += outputTokens;
-          aggregate.cachedInputTokens += cachedInputTokens;
-          aggregate.costCents += costCents;
-          aggregate.apiEquivalentCostCents += apiEquivalent.costCents;
-          if (isSubscriptionBillingType(row.billingType)) {
-            aggregate.subscriptionApiEquivalentCostCents += apiEquivalent.costCents;
-          }
-          aggregate.events += events;
-          byCredential.set(row.credentialId, aggregate);
-        }
-        return byCredential;
-      }
-
-      const windowPairs = await Promise.all(
-        specs.map(async (spec) => [spec, await aggregateWindow(spec.hours)] as const),
-      );
-      const primaryMap = windowPairs.find(([spec]) => spec.key === primaryKey)?.[1] ?? new Map();
-      const credentialIds = new Set<string>();
-      for (const [, map] of windowPairs) {
-        for (const credentialId of map.keys()) credentialIds.add(credentialId);
-      }
-
-      return [...credentialIds].sort().map((credentialId) => {
-        const primary = primaryMap.get(credentialId) ?? emptyCredentialUsageAggregate();
-        return {
-          credentialId,
-          inputTokens: primary.inputTokens,
-          outputTokens: primary.outputTokens,
-          cachedInputTokens: primary.cachedInputTokens,
-          costCents: primary.costCents,
-          apiEquivalentCostCents: primary.apiEquivalentCostCents,
-          subscriptionApiEquivalentCostCents: primary.subscriptionApiEquivalentCostCents,
-          events: primary.events,
-          windows: windowPairs.map(([spec, map]) => ({
-            label: spec.label,
-            hours: spec.hours,
-            ...(map.get(credentialId) ?? emptyCredentialUsageAggregate()),
-          })),
-        };
-      });
+    async usageByCredentialMonthToDate(companyId: string): Promise<{
+      since: Date;
+      usage: ProviderCredentialUsage[];
+    }> {
+      const { specs, primaryKey, since } = buildCredentialUsageMonthToDateWindowSpecs();
+      return { since, usage: await usageByCredentialForSpecs(companyId, specs, primaryKey) };
     },
   };
 

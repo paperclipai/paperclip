@@ -338,6 +338,7 @@ export type {
   ProviderCredential,
   ProviderCredentialQuota,
   ProviderCredentialUsage,
+  ProviderCredentialUsageModel,
   ProviderCredentialUsageWindow,
 } from "./provider-credential.js";
 export type {

@@ -218,6 +218,11 @@ export const agentsApi = {
     ),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
   resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
+  cancelActiveHeartbeats: (id: string, companyId?: string, options?: { force?: boolean }) =>
+    api.post<{ cancelled: number }>(
+      agentPath(id, companyId, "/heartbeat-runs/cancel-active"),
+      options?.force ? { force: true } : {},
+    ),
   approve: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/approve"), {}),
   terminate: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/terminate"), {}),
   remove: (id: string, companyId?: string) => api.delete<{ ok: true }>(agentPath(id, companyId)),

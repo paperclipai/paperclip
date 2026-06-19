@@ -2979,6 +2979,36 @@ export function agentRoutes(
     res.json(agent);
   });
 
+  router.post("/agents/:id/heartbeat-runs/cancel-active", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleAgent(req, res, id);
+    if (!agent) {
+      return;
+    }
+
+    const force = (req.body && (req.body as Record<string, unknown>).force) === true;
+    const cancelled = await heartbeat.cancelActiveForAgent(
+      agent.id,
+      "Cancelled by board from agent page",
+      { force },
+    );
+
+    if (cancelled > 0) {
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "heartbeat.bulk_cancelled",
+        entityType: "agent",
+        entityId: agent.id,
+        details: { agentId: agent.id, cancelled, force, source: "agent_detail" },
+      });
+    }
+
+    res.json({ cancelled });
+  });
+
   router.post("/agents/:id/approve", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;

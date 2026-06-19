@@ -94,6 +94,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - Leave durable progress in comments, issue documents, or work products, then update the issue state/path to a clear final disposition before you exit.
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
 - Use direct child execution lanes only from main parent issues. A parent may have at most 10 direct children. If the current issue already has `parentId`, do not create child issues or grandchildren; keep engineer, QA, fix, and review loops inside the same issue thread.
+- For parent/task budget caps, use `budgetLimits` on issue create/update: `issueTreeCents` caps the parent plus all direct execution lanes; `childIssuesCents` caps execution lanes only. Defaults to lifetime windows unless `windowKind` is supplied.
 - Do not busy-poll agents, sessions, child issues, or processes waiting for completion.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
 - If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
@@ -142,6 +143,18 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `cancelled` — intentionally abandoned, not to be resumed.
 
 **Step 9 — Delegate if needed.** If the current issue is a main parent, create direct child execution lanes with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Do not create child issues from an execution lane that already has `parentId`. When a sibling lane needs to stay on the same code change, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
+
+Optional parent budget guard:
+
+```json
+{
+  "budgetLimits": {
+    "issueTreeCents": 2500,
+    "childIssuesCents": 2000,
+    "windowKind": "lifetime"
+  }
+}
+```
 
 ## Issue Dependencies (Blockers)
 

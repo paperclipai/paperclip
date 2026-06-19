@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { Issue, Project } from "@paperclipai/shared";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +27,9 @@ const mockAssetsApi = vi.hoisted(() => ({ uploadImage: vi.fn() }));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockIssuesList = vi.hoisted(() => vi.fn());
+const mockLocationState = vi.hoisted(() => ({
+  pathname: "/projects/project-1/plugin-operations",
+}));
 
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
@@ -40,7 +43,7 @@ vi.mock("../api/assets", () => ({ assetsApi: mockAssetsApi }));
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to }: { children?: ReactNode; to: string }) => <a href={to}>{children}</a>,
   Navigate: ({ to }: { to: string }) => <div data-testid="navigate">{to}</div>,
-  useLocation: () => ({ pathname: "/projects/project-1/plugin-operations", search: "", hash: "", state: null }),
+  useLocation: () => ({ pathname: mockLocationState.pathname, search: "", hash: "", state: null }),
   useNavigate: () => mockNavigate,
   useParams: () => ({ projectId: "project-1" }),
 }));
@@ -137,6 +140,55 @@ function project(overrides: Partial<Project> = {}): Project {
   };
 }
 
+function issue(overrides: Partial<Issue> = {}): Issue {
+  return {
+    id: overrides.id ?? "issue-1",
+    identifier: overrides.identifier ?? "PAP-1",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: null,
+    goalId: null,
+    parentId: null,
+    title: overrides.title ?? "Issue title",
+    description: null,
+    status: "todo",
+    priority: "medium",
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    issueNumber: 1,
+    requestDepth: 0,
+    billingCode: null,
+    assigneeAdapterOverrides: null,
+    executionWorkspaceId: null,
+    executionWorkspacePreference: null,
+    executionWorkspaceSettings: null,
+    checkoutRunId: null,
+    executionRunId: null,
+    executionAgentNameKey: null,
+    executionLockedAt: null,
+    startedAt: null,
+    completedAt: null,
+    cancelledAt: null,
+    hiddenAt: null,
+    visibility: "company",
+    dueDate: null,
+    workLeadDays: null,
+    createdAt: new Date("2026-05-01T00:00:00Z"),
+    updatedAt: new Date("2026-05-01T00:00:00Z"),
+    labels: [],
+    labelIds: [],
+    myLastTouchAt: null,
+    lastExternalCommentAt: null,
+    lastActivityAt: null,
+    isUnreadForMe: false,
+    workMode: "standard",
+    workItemType: "ai_task",
+    ...overrides,
+  } as Issue;
+}
+
 describe("ProjectDetail", () => {
   let root: Root | null = null;
   let container: HTMLDivElement;
@@ -144,6 +196,7 @@ describe("ProjectDetail", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockLocationState.pathname = "/projects/project-1/plugin-operations";
     mockProjectsApi.get.mockResolvedValue(project());
     mockProjectsApi.list.mockResolvedValue([project()]);
     mockIssuesApi.list.mockResolvedValue([]);
@@ -183,5 +236,64 @@ describe("ProjectDetail", () => {
       projectId: "project-1",
       originKindPrefix: "plugin:paperclip.missions",
     });
+  });
+
+  it("separates human-owned work on the project issues tab", async () => {
+    mockLocationState.pathname = "/projects/project-1/issues";
+    const humanIssue = issue({
+      id: "issue-human",
+      identifier: "PAP-10",
+      title: "Approve product brief",
+      assigneeUserId: "user-1",
+      workItemType: "human_task",
+    });
+    const agentIssue = issue({
+      id: "issue-agent",
+      identifier: "PAP-11",
+      title: "Build execution lane",
+      assigneeAgentId: "agent-1",
+      workItemType: "ai_task",
+    });
+    const initiativeIssue = issue({
+      id: "issue-initiative",
+      identifier: "PAP-12",
+      title: "Launch work hub",
+      workItemType: "initiative",
+    });
+    mockIssuesApi.list.mockResolvedValue([humanIssue, agentIssue, initiativeIssue]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("Project work lanes");
+    expect(container.textContent).toContain("Human-owned");
+    expect((mockIssuesList.mock.calls.at(-1)?.[0] as { issues: Issue[] }).issues.map((item) => item.id))
+      .toEqual(["issue-human", "issue-agent", "issue-initiative"]);
+
+    const humanLaneButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Human-owned"));
+    expect(humanLaneButton).not.toBeUndefined();
+
+    await act(async () => {
+      humanLaneButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const latestProps = mockIssuesList.mock.calls.at(-1)?.[0] as {
+      issues: Issue[];
+      baseCreateIssueDefaults?: Record<string, unknown>;
+    };
+    expect(latestProps.issues.map((item) => item.id)).toEqual(["issue-human"]);
+    expect(latestProps.baseCreateIssueDefaults).toEqual({ workItemType: "human_task" });
   });
 });

@@ -23,6 +23,8 @@ export interface ProviderCredentialQuota {
   cooldownReason?: string | null;
   disabledAt?: string | null;
   error?: string;
+  stale?: boolean;
+  cachedAt?: string | null;
   sampledAt: string;
 }
 
@@ -38,6 +40,21 @@ export interface ProviderCredentialUsageWindow {
   events: number;
 }
 
+export interface ProviderCredentialUsageModel {
+  provider: string;
+  biller: string;
+  billingType: string;
+  model: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  costCents: number;
+  apiEquivalentCostCents: number;
+  subscriptionApiEquivalentCostCents: number;
+  events: number;
+  pricingLabel: string | null;
+}
+
 export interface ProviderCredentialUsage {
   credentialId: string;
   inputTokens: number;
@@ -48,4 +65,5 @@ export interface ProviderCredentialUsage {
   subscriptionApiEquivalentCostCents: number;
   events: number;
   windows: ProviderCredentialUsageWindow[];
+  models: ProviderCredentialUsageModel[];
 }

@@ -563,7 +563,7 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    const removeButton = container.querySelector('button[aria-label="Remove PAP-2 as blocker"]');
+    const removeButton = container.querySelector('button[aria-label="Remove Existing blocker PAP-2 as blocker"]');
     expect(removeButton).not.toBeNull();
 
     await act(async () => {
@@ -571,7 +571,7 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(document.body.textContent).toContain("Remove PAP-2: Existing blocker as a blocker for this issue.");
+    expect(document.body.textContent).toContain("Remove Existing blocker (PAP-2) as a blocker for this issue.");
     const confirmButton = Array.from(document.body.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Remove blocker"));
     expect(confirmButton).not.toBeUndefined();

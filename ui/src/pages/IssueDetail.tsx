@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
+import { budgetsApi } from "../api/budgets";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
@@ -78,6 +79,7 @@ import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
+import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -145,6 +147,7 @@ import {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  type BudgetPolicySummary,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
   type ActivityEvent,
@@ -1133,6 +1136,40 @@ type IssueDetailActivityTabProps = {
   handoffFocusSignal?: number;
 };
 
+function fallbackIssueBudgetSummary(input: {
+  companyId: string;
+  issue: Issue;
+  scopeType: "issue_tree" | "issue_children";
+  observedAmount: number;
+}): BudgetPolicySummary {
+  const now = new Date();
+  const issueRef = input.issue.identifier ?? input.issue.id.slice(0, 8);
+  return {
+    policyId: "",
+    companyId: input.companyId,
+    scopeType: input.scopeType,
+    scopeId: input.issue.id,
+    scopeName: input.scopeType === "issue_tree"
+      ? `${input.issue.title} (${issueRef})`
+      : `Execution lanes for ${input.issue.title} (${issueRef})`,
+    metric: "billed_cents",
+    windowKind: "lifetime",
+    amount: 0,
+    observedAmount: input.observedAmount,
+    remainingAmount: 0,
+    utilizationPercent: 0,
+    warnPercent: 80,
+    hardStopEnabled: true,
+    notifyEnabled: true,
+    isActive: false,
+    status: "ok",
+    paused: false,
+    pauseReason: null,
+    windowStart: now,
+    windowEnd: now,
+  };
+}
+
 function IssueDetailActivityTab({
   issue,
   issueId,
@@ -1149,6 +1186,7 @@ function IssueDetailActivityTab({
   checkingMonitorNow,
   handoffFocusSignal = 0,
 }: IssueDetailActivityTabProps) {
+  const queryClient = useQueryClient();
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1183,6 +1221,34 @@ function IssueDetailActivityTab({
     queryKey: queryKeys.issues.costSummary(issueId),
     queryFn: () => issuesApi.getCostSummary(issueId),
     placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getCostSummary>>>(issueId),
+  });
+  const { data: childIssueCostSummary } = useQuery({
+    queryKey: queryKeys.issues.costSummary(issueId, { excludeRoot: true }),
+    queryFn: () => issuesApi.getCostSummary(issueId, { excludeRoot: true }),
+    placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getCostSummary>>>(
+      issueId,
+    ),
+  });
+  const { data: budgetOverview } = useQuery({
+    queryKey: queryKeys.budgets.overview(companyId),
+    queryFn: () => budgetsApi.overview(companyId),
+  });
+  const issueBudgetMutation = useMutation({
+    mutationFn: (input: { scopeType: "issue_tree" | "issue_children"; amountCents: number }) =>
+      budgetsApi.upsertPolicy(companyId, {
+        scopeType: input.scopeType,
+        scopeId: issueId,
+        amount: input.amountCents,
+        windowKind: "lifetime",
+      }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(companyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.costSummary(issueId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.costSummary(issueId, { excludeRoot: true }) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) }),
+      ]);
+    },
   });
   const initialLoading =
     (activityLoading && activity === undefined)
@@ -1251,6 +1317,26 @@ function IssueDetailActivityTab({
       || issueTreeCostSummary.issueCount > 1);
   const shouldShowCostSummary =
     (linkedRuns && linkedRuns.length > 0) || hasIssueTreeCost;
+  const treeBudgetSummary = useMemo(() => {
+    return budgetOverview?.policies.find(
+      (policy) => policy.scopeType === "issue_tree" && policy.scopeId === issueId,
+    ) ?? fallbackIssueBudgetSummary({
+      companyId,
+      issue,
+      scopeType: "issue_tree",
+      observedAmount: issueTreeCostSummary?.costCents ?? 0,
+    });
+  }, [budgetOverview?.policies, companyId, issue, issueId, issueTreeCostSummary?.costCents]);
+  const childBudgetSummary = useMemo(() => {
+    return budgetOverview?.policies.find(
+      (policy) => policy.scopeType === "issue_children" && policy.scopeId === issueId,
+    ) ?? fallbackIssueBudgetSummary({
+      companyId,
+      issue,
+      scopeType: "issue_children",
+      observedAmount: childIssueCostSummary?.costCents ?? 0,
+    });
+  }, [budgetOverview?.policies, childIssueCostSummary?.costCents, companyId, issue, issueId]);
 
   if (initialLoading) {
     return <IssueSectionSkeleton titleWidth="w-20" rows={4} />;
@@ -1319,6 +1405,35 @@ function IssueDetailActivityTab({
           )}
         </div>
       )}
+      <div className="mb-3 grid gap-3 xl:grid-cols-2">
+        <BudgetPolicyCard
+          summary={treeBudgetSummary}
+          compact
+          isSaving={
+            issueBudgetMutation.isPending
+            && issueBudgetMutation.variables?.scopeType === "issue_tree"
+          }
+          onSave={(amountCents) =>
+            issueBudgetMutation.mutate({ scopeType: "issue_tree", amountCents })}
+        />
+        <BudgetPolicyCard
+          summary={childBudgetSummary}
+          compact
+          isSaving={
+            issueBudgetMutation.isPending
+            && issueBudgetMutation.variables?.scopeType === "issue_children"
+          }
+          onSave={(amountCents) =>
+            issueBudgetMutation.mutate({ scopeType: "issue_children", amountCents })}
+        />
+      </div>
+      {issueBudgetMutation.isError ? (
+        <p className="mb-3 text-xs text-destructive">
+          {issueBudgetMutation.error instanceof Error
+            ? issueBudgetMutation.error.message
+            : "Unable to save issue budget."}
+        </p>
+      ) : null}
       <div className="mb-3">
         <IssueRunLedger
           issueId={issueId}

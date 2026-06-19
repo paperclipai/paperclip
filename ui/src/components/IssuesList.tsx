@@ -16,6 +16,7 @@ import {
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
+import { buildIssueLabelParts } from "../lib/issue-labels";
 import {
   buildSubIssueProgressSummary,
   shouldRenderSubIssueProgressSummary,
@@ -68,7 +69,7 @@ import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
-import { ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
+import { ISSUE_STATUSES, type Issue, type IssueStatus, type IssueWorkItemType, type Project } from "@paperclipai/shared";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
@@ -106,6 +107,14 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
   done: "bg-green-500",
   blocked: "bg-red-500",
   cancelled: "bg-neutral-400",
+};
+const workItemTypeBadgeClasses: Partial<Record<IssueWorkItemType, string>> = {
+  initiative: "border-violet-500/35 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+  human_task: "border-blue-500/35 bg-blue-500/10 text-blue-700 dark:text-blue-300",
+};
+const workItemTypeLabels: Partial<Record<IssueWorkItemType, string>> = {
+  initiative: "Initiative",
+  human_task: "Human task",
 };
 
 /* ── View state ── */
@@ -1531,6 +1540,12 @@ export function IssuesList({
                     currentUserId,
                     companyUserLabelMap,
                   ) ?? assigneeUserProfile?.label ?? null;
+                  const workItemTypeLabel = isHumanControlIssue
+                    ? workItemTypeLabels[issue.workItemType ?? "ai_task"] ?? null
+                    : null;
+                  const workItemTypeOwnerLabel = issue.workItemType === "human_task" && assigneeUserLabel
+                    ? `${workItemTypeLabel} · ${assigneeUserLabel}`
+                    : workItemTypeLabel;
                   const toggleCollapse = (e: { preventDefault: () => void; stopPropagation: () => void }) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1551,7 +1566,7 @@ export function IssuesList({
                     .map((blockerId) => {
                       const blockerIssue = issueById.get(blockerId);
                       if (!blockerIssue) return null;
-                      const label = blockerIssue.identifier ?? blockerIssue.id.slice(0, 8);
+                      const label = buildIssueLabelParts(blockerIssue).text;
                       const blockerStep = checklistMeta?.stepNumberByIssueId.get(blockerId);
                       const blockerStepSuffix = blockerStep ? ` \u00b7 step ${blockerStep}` : "";
                       return { blockerId, chipLabel: `blocked by ${label}${blockerStepSuffix}` };
@@ -1615,6 +1630,17 @@ export function IssuesList({
                         titleClassName={doneRowTitleClass}
                         titleSuffix={(
                           <>
+                            {workItemTypeOwnerLabel ? (
+                              <span
+                                className={cn(
+                                  "ml-1.5 inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+                                  workItemTypeBadgeClasses[issue.workItemType ?? "ai_task"],
+                                )}
+                                title={issue.assigneeUserId ? `Human owner: ${assigneeUserLabel ?? issue.assigneeUserId}` : workItemTypeLabel ?? undefined}
+                              >
+                                {workItemTypeOwnerLabel}
+                              </span>
+                            ) : null}
                             {hasChildren && !isExpanded ? (
                               <span className="ml-1.5 text-xs text-muted-foreground">
                                 ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
