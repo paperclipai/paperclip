@@ -35,6 +35,8 @@ vi.mock("../home-paths.js", () => ({
   resolveDefaultLogsDir: vi.fn(() => "/tmp/paperclip-test-logs"),
 }));
 
+import { readConfigFile } from "../config-file.js";
+
 function loadedTargets(): Array<{ target: string; level: string }> {
   return (mockTransport.mock.calls[0][0] as {
     targets: Array<{ target: string; level: string }>;
@@ -47,6 +49,8 @@ describe("logger format selection (PAPERCLIP_LOG_FORMAT)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    // Default: no config file (env-driven tests). Individual tests override.
+    vi.mocked(readConfigFile).mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -75,6 +79,30 @@ describe("logger format selection (PAPERCLIP_LOG_FORMAT)", () => {
 
   it("falls back to pino-pretty for an unrecognised value", async () => {
     process.env.PAPERCLIP_LOG_FORMAT = "garbage";
+    await import("../middleware/logger.js");
+
+    const targets = loadedTargets();
+    expect(targets.every((t) => t.target === "pino-pretty")).toBe(true);
+  });
+
+  it("honours config.json logging.format=json when the env var is unset", async () => {
+    delete process.env.PAPERCLIP_LOG_FORMAT;
+    vi.mocked(readConfigFile).mockReturnValue({
+      logging: { mode: "file", format: "json", logDir: "/tmp/paperclip-test-logs" },
+    } as ReturnType<typeof readConfigFile>);
+
+    await import("../middleware/logger.js");
+
+    const targets = loadedTargets();
+    expect(targets.every((t) => t.target === "pino/file")).toBe(true);
+  });
+
+  it("env var wins over config.json (env pretty overrides file json)", async () => {
+    process.env.PAPERCLIP_LOG_FORMAT = "pretty";
+    vi.mocked(readConfigFile).mockReturnValue({
+      logging: { mode: "file", format: "json", logDir: "/tmp/paperclip-test-logs" },
+    } as ReturnType<typeof readConfigFile>);
+
     await import("../middleware/logger.js");
 
     const targets = loadedTargets();

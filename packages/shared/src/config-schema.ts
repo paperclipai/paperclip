@@ -42,10 +42,11 @@ export const databaseConfigSchema = z.object({
 
 export const loggingConfigSchema = z.object({
   mode: z.enum(["file", "cloud"]),
-  // Output rendering for both the stdout and file log streams.
-  //   "pretty" — human-readable pino-pretty (default; back-compatible)
+  // Output rendering for both the stdout and file log streams. Optional;
+  // the logger treats an absent value as "pretty" (back-compatible default).
+  //   "pretty" — human-readable pino-pretty
   //   "json"   — one JSON object per line (machine-parseable for Loki/ELK/etc.)
-  format: z.enum(["pretty", "json"]).default("pretty"),
+  format: z.enum(["pretty", "json"]).optional(),
   logDir: z.string().default("~/.paperclip/instances/default/logs"),
 });
 

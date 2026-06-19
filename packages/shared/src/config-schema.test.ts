@@ -25,7 +25,7 @@ describe("paperclip config schema", () => {
     expect(parsed.secrets.localEncrypted.keyFilePath).toBe("~/.paperclip/instances/default/secrets/master.key");
   });
 
-  it("defaults logging.format to pretty and accepts json", () => {
+  it("leaves logging.format optional, accepts json, and rejects unknown values", () => {
     const base = {
       $meta: {
         version: 1,
@@ -36,8 +36,9 @@ describe("paperclip config schema", () => {
       server: {},
     } as const;
 
-    const pretty = paperclipConfigSchema.parse({ ...base, logging: { mode: "file" } });
-    expect(pretty.logging.format).toBe("pretty");
+    // Omitted → undefined (the logger applies the "pretty" default).
+    const omitted = paperclipConfigSchema.parse({ ...base, logging: { mode: "file" } });
+    expect(omitted.logging.format).toBeUndefined();
 
     const json = paperclipConfigSchema.parse({ ...base, logging: { mode: "file", format: "json" } });
     expect(json.logging.format).toBe("json");

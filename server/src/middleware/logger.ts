@@ -7,11 +7,14 @@ import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 import { redactSensitive } from "./redact-sensitive.js";
 
+// Read the on-disk config once at module load; shared by the resolvers below.
+const fileConfig = readConfigFile();
+
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
   if (envOverride) return resolveHomeAwarePath(envOverride);
 
-  const fileLogDir = readConfigFile()?.logging.logDir?.trim();
+  const fileLogDir = fileConfig?.logging.logDir?.trim();
   if (fileLogDir) return resolveHomeAwarePath(fileLogDir);
 
   return resolveDefaultLogsDir();
@@ -25,7 +28,7 @@ function resolveLogFormat(): "pretty" | "json" {
   const envOverride = process.env.PAPERCLIP_LOG_FORMAT?.trim().toLowerCase();
   if (envOverride === "pretty" || envOverride === "json") return envOverride;
 
-  const fileFormat = readConfigFile()?.logging.format;
+  const fileFormat = fileConfig?.logging.format;
   if (fileFormat === "pretty" || fileFormat === "json") return fileFormat;
 
   return "pretty";
