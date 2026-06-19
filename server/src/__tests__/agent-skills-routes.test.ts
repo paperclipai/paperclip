@@ -818,44 +818,6 @@ describe.sequential("agent skill routes", () => {
     );
   });
 
-  it("syncs pending-hire secret bindings before persisting the approval-backed agent", async () => {
-    const db = createDb(true);
-
-    const res = await request(await createApp(db))
-      .post("/api/companies/company-1/agent-hires")
-      .send({
-        name: "Secretive Agent",
-        role: "engineer",
-        adapterType: "claude_local",
-        adapterConfig: {
-          env: {
-            OPENAI_API_KEY: {
-              type: "secret_ref",
-              secretId: "33333333-3333-4333-8333-333333333333",
-              version: "latest",
-            },
-          },
-        },
-      });
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    const approvalInput = mockApprovalService.create.mock.calls.at(-1)?.[1] as
-      | { payload?: { agentId?: string } }
-      | undefined;
-    const hiredAgentId = expectResponseId(approvalInput?.payload?.agentId);
-    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
-      "company-1",
-      { targetType: "agent", targetId: hiredAgentId },
-      {
-        OPENAI_API_KEY: {
-          type: "secret_ref",
-          secretId: "33333333-3333-4333-8333-333333333333",
-          version: "latest",
-        },
-      },
-    );
-  });
-
   it("uses managed AGENTS config in hire approval payloads", async () => {
     const res = await request(await createApp(createDb(true)))
       .post("/api/companies/company-1/agent-hires")

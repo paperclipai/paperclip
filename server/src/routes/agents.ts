@@ -82,7 +82,6 @@ import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { syncAgentAdapterEnvBindings } from "../services/agent-secret-bindings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
@@ -2280,12 +2279,6 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
-    await syncAgentAdapterEnvBindings({
-      secretsSvc,
-      companyId,
-      agentId: agent.id,
-      adapterConfig: agent.adapterConfig,
-    });
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -2469,12 +2462,6 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
-    await syncAgentAdapterEnvBindings({
-      secretsSvc,
-      companyId,
-      agentId: agent.id,
-      adapterConfig: agent.adapterConfig,
-    });
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2956,14 +2943,6 @@ export function agentRoutes(
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
-    }
-    if (touchesAdapterConfiguration) {
-      await syncAgentAdapterEnvBindings({
-        secretsSvc,
-        companyId: agent.companyId,
-        agentId: agent.id,
-        adapterConfig: agent.adapterConfig,
-      });
     }
 
     await logActivity(db, {
