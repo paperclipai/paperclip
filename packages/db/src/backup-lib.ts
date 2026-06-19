@@ -496,9 +496,12 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       if (closed) return;
       closed = true;
       flushBufferedLines();
-      await pendingWrite;
       const file = await filePromise;
-      await file.close();
+      try {
+        await pendingWrite;
+      } finally {
+        await file.close();
+      }
     },
     async abort() {
       if (closed) return;

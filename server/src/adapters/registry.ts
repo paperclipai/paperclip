@@ -138,6 +138,9 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import os from "node:os";
+import path from "node:path";
+import { createRequire } from "node:module";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -456,11 +459,69 @@ const piLocalAdapter: ServerAdapterModule = {
 // intentional until hermes ships a matching AdapterExecutionContext type.
 const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
 
+interface HermesStateDbRow {
+  cost_cents: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+}
+
+function readHermesStateDbUsageSince(afterIso: string): HermesStateDbRow | null {
+  try {
+    // node:sqlite is available in Node 22.5+; falls back gracefully on older Node.
+    const _require = createRequire(import.meta.url);
+    const { DatabaseSync } = _require("node:sqlite") as typeof import("node:sqlite");
+    const dbPath = path.join(os.homedir(), ".hermes", "state.db");
+    const db = new DatabaseSync(dbPath, { open: true });
+    const row = db
+      .prepare(
+        "SELECT COALESCE(SUM(cost_cents),0) AS cost_cents, COALESCE(SUM(prompt_tokens),0) AS prompt_tokens, COALESCE(SUM(completion_tokens),0) AS completion_tokens FROM usage WHERE timestamp > ?",
+      )
+      .get(afterIso) as HermesStateDbRow | undefined;
+    db.close();
+    if (!row) return null;
+    const { cost_cents, prompt_tokens, completion_tokens } = row;
+    if (!cost_cents && !prompt_tokens && !completion_tokens) return null;
+    return { cost_cents, prompt_tokens, completion_tokens };
+  } catch {
+    return null;
+  }
+}
+
+async function executeHermesWithStateDb(
+  normalizedCtx: Parameters<ServerAdapterModule["execute"]>[0],
+): Promise<Awaited<ReturnType<ServerAdapterModule["execute"]>>> {
+  // Snapshot time just before the run so we can query new state.db rows after.
+  const beforeRunIso = new Date().toISOString().replace("T", " ").replace("Z", "");
+  const result = await executeHermesLocal(normalizedCtx);
+  if (!result) return result;
+
+  // If the adapter already returned non-zero usage, trust it; only fill gaps.
+  const hasUsage = result.usage && (result.usage.inputTokens > 0 || result.usage.outputTokens > 0);
+  const hasCost = typeof result.costUsd === "number" && result.costUsd > 0;
+  if (hasUsage && hasCost) return result;
+
+  const dbRow = readHermesStateDbUsageSince(beforeRunIso);
+  if (!dbRow) return result;
+
+  const patched = { ...result };
+  if (!hasUsage && (dbRow.prompt_tokens > 0 || dbRow.completion_tokens > 0)) {
+    patched.usage = {
+      ...(patched.usage ?? {}),
+      inputTokens: dbRow.prompt_tokens,
+      outputTokens: dbRow.completion_tokens,
+    };
+  }
+  if (!hasCost && dbRow.cost_cents > 0) {
+    patched.costUsd = dbRow.cost_cents / 100;
+  }
+  return patched;
+}
+
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: async (ctx) => {
     const normalizedCtx = normalizeHermesConfig(ctx);
-    if (!normalizedCtx.authToken) return executeHermesLocal(normalizedCtx);
+    if (!normalizedCtx.authToken) return executeHermesWithStateDb(normalizedCtx);
 
     const existingConfig = (normalizedCtx.agent.adapterConfig ?? {}) as Record<string, unknown>;
     const existingEnv =
@@ -505,7 +566,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
-    return executeHermesLocal(patchedCtx);
+    return executeHermesWithStateDb(patchedCtx);
   },
   testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
   sessionCodec: hermesSessionCodec,
