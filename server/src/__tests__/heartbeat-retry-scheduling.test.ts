@@ -1445,4 +1445,169 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       retryNotBefore.toISOString(),
     );
   });
+
+  it("cancelRun on a scheduled_retry run with a retry reason re-schedules a new retry", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const originalRunId = randomUUID();
+    const now = new Date(2026, 3, 22, 10, 0, 0);
+
+    // Seed agent and company
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    // Create a scheduled_retry run with a retry reason
+    await db.insert(heartbeatRuns).values({
+      id: originalRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "scheduled_retry",
+      scheduledRetryAt: now,
+      scheduledRetryAttempt: 0,
+      scheduledRetryReason: "transient_failure",
+      contextSnapshot: { issueId: randomUUID(), wakeReason: "issue_assigned" },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    // Cancel the scheduled_retry run
+    await heartbeat.cancelRun(originalRunId);
+
+    // Verify original run is cancelled
+    const cancelledRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, originalRunId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(cancelledRun?.status).toBe("cancelled");
+
+    // Verify a new scheduled_retry run was created
+    const newRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+        ),
+      );
+
+    expect(newRuns.length).toBe(1);
+    expect(newRuns[0].status).toBe("scheduled_retry");
+    expect(newRuns[0].scheduledRetryAttempt).toBe(1);
+    expect(newRuns[0].scheduledRetryReason).toBe("transient_failure");
+    expect(newRuns[0].retryOfRunId).toBe(originalRunId);
+    expect(newRuns[0].wakeupRequestId).not.toBeNull();
+  });
+
+  it("cancelRun on a scheduled_retry run with max_turns_continuation re-schedules with the continuation wake reason", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const originalRunId = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date(2026, 3, 22, 10, 0, 0);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ClaudeCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    // Create a scheduled_retry run with max_turns_continuation reason
+    await db.insert(heartbeatRuns).values({
+      id: originalRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "scheduled_retry",
+      scheduledRetryAt: now,
+      scheduledRetryAttempt: 0,
+      scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    // Cancel the scheduled_retry run
+    await heartbeat.cancelRun(originalRunId);
+
+    // Verify original run is cancelled
+    const cancelledRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, originalRunId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(cancelledRun?.status).toBe("cancelled");
+
+    // Verify a new scheduled_retry run was created with the continuation wake reason
+    const newRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+        ),
+      );
+
+    expect(newRuns.length).toBe(1);
+    expect(newRuns[0].scheduledRetryAttempt).toBe(1);
+    expect(newRuns[0].scheduledRetryReason).toBe(MAX_TURN_CONTINUATION_RETRY_REASON);
+
+    // Verify the wakeup request has the continuation wake reason
+    const wakeupRequest = await db
+      .select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, newRuns[0].wakeupRequestId!))
+      .then((rows) => rows[0] ?? null);
+
+    expect(wakeupRequest?.reason).toBe(MAX_TURN_CONTINUATION_WAKE_REASON);
+  });
 });

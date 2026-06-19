@@ -11313,8 +11313,81 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     await finalizeAgentStatus(run.agentId, "cancelled");
+
+    // If cancelling a scheduled_retry run that has a retry reason, re-schedule
+    // a new retry so the agent is not left wedged.
+    if (cancelled && run.scheduledRetryReason) {
+      await rescheduleRetryOnCancel(cancelled, run);
+    }
+
     await startNextQueuedRunForAgent(run.agentId);
     return cancelled;
+  }
+
+  async function rescheduleRetryOnCancel(cancelled: typeof heartbeatRuns.$inferSelect, originalRun: typeof heartbeatRuns.$inferSelect) {
+    const agent = await getAgent(originalRun.agentId);
+    if (!agent) return;
+
+    const nextAttempt = (originalRun.scheduledRetryAttempt ?? 0) + 1;
+    const now = new Date();
+
+    const wakeReason = originalRun.scheduledRetryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+      ? MAX_TURN_CONTINUATION_WAKE_REASON
+      : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+
+    const wakeupRequest = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId: originalRun.companyId,
+        agentId: originalRun.agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: wakeReason,
+        payload: withRecoveryModelProfileHint({
+          retryOfRunId: cancelled.id,
+          retryReason: originalRun.scheduledRetryReason,
+          scheduledRetryAttempt: nextAttempt,
+          scheduledRetryAt: now.toISOString(),
+        }, "normal_model"),
+        status: "queued",
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        idempotencyKey: `cancel-retry-reschedule-${cancelled.id}-${nextAttempt}`,
+        updatedAt: now,
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    const retryRun = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: originalRun.companyId,
+        agentId: originalRun.agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "scheduled_retry",
+        wakeupRequestId: wakeupRequest.id,
+        contextSnapshot: originalRun.contextSnapshot,
+        sessionIdBefore: originalRun.sessionIdBefore,
+        retryOfRunId: cancelled.id,
+        scheduledRetryAt: now,
+        scheduledRetryAttempt: nextAttempt,
+        scheduledRetryReason: originalRun.scheduledRetryReason,
+        continuationAttempt: originalRun.continuationAttempt,
+        updatedAt: now,
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    if (retryRun) {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          runId: retryRun.id,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+    }
   }
 
   async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause") {
