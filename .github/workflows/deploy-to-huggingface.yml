@@ -10,29 +10,60 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Hugging Face uploader
         run: |
           python -m pip install --upgrade pip
           python -m pip install --upgrade huggingface_hub hf_xet
 
-      - name: Prepare Space upload folder
+      - name: Prepare complete Space upload folder
         run: |
-          rm -rf hf_space_upload
-          mkdir -p hf_space_upload
-          cp -R Dockerfile package.json package-lock.json server scripts hf_space_upload/
-          if [ -d client ]; then cp -R client hf_space_upload/; fi
-          if [ -d shared ]; then cp -R shared hf_space_upload/; fi
-          cat > hf_space_upload/README.md <<'EOF'
-          ---
-          title: Paperclip AI Company
-          emoji: 🧠
-          colorFrom: blue
-          colorTo: purple
-          sdk: docker
-          app_port: 8080
-          ---
-          EOF
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          root = Path.cwd()
+          out = root / "hf_space_upload"
+          if out.exists():
+              shutil.rmtree(out)
+
+          blocked_names = {
+              ".git",
+              "node_modules",
+              "hf_space_upload",
+              ".next",
+              ".cache",
+              ".turbo",
+              "coverage",
+              "playwright-report",
+              "test-results",
+          }
+
+          def ignore(_dir, names):
+              ignored = set()
+              for name in names:
+                  if name in blocked_names:
+                      ignored.add(name)
+                  if name.endswith(".log"):
+                      ignored.add(name)
+              return ignored
+
+          shutil.copytree(root, out, ignore=ignore)
+          (out / "README.md").write_text(
+              "---\n"
+              "title: Paperclip AI Company\n"
+              "emoji: 🧠\n"
+              "colorFrom: blue\n"
+              "colorTo: purple\n"
+              "sdk: docker\n"
+              "app_port: 8080\n"
+              "---\n",
+              encoding="utf-8",
+          )
+          print("Prepared complete Space upload folder")
+          PY
 
       - name: Upload folder to Hugging Face Space
         env:
@@ -58,5 +89,5 @@ jobs:
               delete_patterns=["*"],
               commit_message="Deploy Paperclip control room from GitHub Actions",
           )
-          print(f"Uploaded Paperclip Space files to {repo_id}")
+          print(f"Uploaded complete Paperclip Space files to {repo_id}")
           PY
