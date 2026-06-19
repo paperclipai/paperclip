@@ -44,6 +44,7 @@ const mockAgentService = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
+  terminate: vi.fn(),
   update: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
@@ -63,6 +64,9 @@ const mockAccessService = vi.hoisted(() => ({
 const mockApprovalService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
+  findOpenHireApprovalForAgent: vi.fn(),
+  approve: vi.fn(),
+  reject: vi.fn(),
 }));
 
 const mockBudgetService = vi.hoisted(() => ({
@@ -74,6 +78,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
+  cancelInvocationsForAgents: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -299,6 +304,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.list.mockReset();
     mockAgentService.create.mockReset();
     mockAgentService.activatePendingApproval.mockReset();
+    mockAgentService.terminate.mockReset();
     mockAgentService.update.mockReset();
     mockAgentService.updatePermissions.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
@@ -312,11 +318,15 @@ describe.sequential("agent permission routes", () => {
     mockAccessService.setPrincipalPermission.mockReset();
     mockApprovalService.create.mockReset();
     mockApprovalService.getById.mockReset();
+    mockApprovalService.findOpenHireApprovalForAgent.mockReset();
+    mockApprovalService.approve.mockReset();
+    mockApprovalService.reject.mockReset();
     mockBudgetService.upsertPolicy.mockReset();
     mockHeartbeatService.listTaskSessions.mockReset();
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.cancelInvocationsForAgents.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
@@ -1117,6 +1127,7 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith(agentId);
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       companyId,
       actorType: "user",
@@ -1124,8 +1135,134 @@ describe.sequential("agent permission routes", () => {
       action: "agent.approved",
       entityType: "agent",
       entityId: agentId,
-      details: { source: "agent_detail" },
+      details: { source: "agent_detail", approvalId: null },
     }));
+  });
+
+  it("resolves the linked hire approval when approving from the agent detail page", async () => {
+    const pendingAgent = {
+      ...baseAgent,
+      status: "pending_approval",
+    };
+    const approvedAgent = {
+      ...baseAgent,
+      status: "idle",
+    };
+    // First getById (getAccessibleAgent) sees the pending agent; the second
+    // (after the approval resolves) sees the activated agent.
+    mockAgentService.getById
+      .mockResolvedValueOnce(pendingAgent)
+      .mockResolvedValue(approvedAgent);
+    mockApprovalService.findOpenHireApprovalForAgent.mockResolvedValue({
+      id: "approval-1",
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      payload: { agentId },
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: { id: "approval-1", status: "approved" },
+      applied: true,
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/approve`)
+      .send({}));
+
+    expect(res.status).toBe(200);
+    // The shared approval flow handles activation; we must not double-activate.
+    expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-1", "board-user");
+    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "agent.approved",
+      details: { source: "agent_detail", approvalId: "approval-1" },
+    }));
+  });
+
+  it("rejects the linked hire approval when terminating a still-pending agent without double-terminating", async () => {
+    const pendingAgent = {
+      ...baseAgent,
+      status: "pending_approval",
+    };
+    const terminatedAgent = {
+      ...baseAgent,
+      status: "terminated",
+    };
+    // getAccessibleAgent sees the pending agent; after the rejection resolves
+    // (which terminates internally) the route re-reads the terminated agent.
+    mockAgentService.getById
+      .mockResolvedValueOnce(pendingAgent)
+      .mockResolvedValue(terminatedAgent);
+    mockApprovalService.findOpenHireApprovalForAgent.mockResolvedValue({
+      id: "approval-1",
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      payload: { agentId },
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: { id: "approval-1", status: "rejected" },
+      applied: true,
+    });
+    mockHeartbeatService.cancelInvocationsForAgents.mockResolvedValue({
+      agentIds: [agentId],
+      runsCancelled: 0,
+      wakeupsCancelled: 0,
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/terminate`)
+      .send({}));
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-1", "board-user");
+    // reject() terminates the agent internally; the route must not terminate again.
+    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+  });
+
+  it("terminates directly when no open hire approval is linked", async () => {
+    const idleAgent = { ...baseAgent, status: "idle" };
+    const terminatedAgent = { ...baseAgent, status: "terminated" };
+    mockAgentService.getById.mockResolvedValue(idleAgent);
+    mockAgentService.terminate.mockResolvedValue(terminatedAgent);
+    mockHeartbeatService.cancelInvocationsForAgents.mockResolvedValue({
+      agentIds: [agentId],
+      runsCancelled: 0,
+      wakeupsCancelled: 0,
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/terminate`)
+      .send({}));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.terminate).toHaveBeenCalledWith(agentId);
+    expect(mockApprovalService.findOpenHireApprovalForAgent).not.toHaveBeenCalled();
+    expect(mockApprovalService.reject).not.toHaveBeenCalled();
   });
 
   it("rejects direct approval for agents that are not pending approval", async () => {
