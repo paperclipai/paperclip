@@ -4978,6 +4978,35 @@ export function issueRoutes(
     ) {
       updateFields.status = "todo";
     }
+    // ALAA-965: reject agent PATCH whose net effect would leave the issue at
+    // status='blocked' with no first-class blockers. Board users keep the
+    // explicit override; system actors write through the service layer, not
+    // this route. The check has to run after the comment-driven status
+    // coercion above, so we evaluate the *effective* status the route is
+    // about to write.
+    if (req.actor.type === "agent") {
+      const effectiveStatus = (updateFields.status as string | undefined) ?? existing.status;
+      if (effectiveStatus === "blocked") {
+        const incomingBlockerIds = Array.isArray(req.body.blockedByIssueIds)
+          ? (req.body.blockedByIssueIds as unknown[]).filter(
+              (value): value is string => typeof value === "string",
+            )
+          : null;
+        const existingBlockerIds =
+          existingRelations
+            ? existingRelations.blockedBy.map((relation) => relation.id)
+            : (await svc.getRelationSummaries(existing.id)).blockedBy.map((relation) => relation.id);
+        const effectiveBlockerIds = incomingBlockerIds ?? existingBlockerIds;
+        if (effectiveBlockerIds.length === 0) {
+          res.status(400).json({
+            error: "blocked_requires_blocker",
+            message:
+              "Agent PATCH may not leave status='blocked' with no first-class blockers. Either include blockedByIssueIds, or move the issue to a different status.",
+          });
+          return;
+        }
+      }
+    }
     let cancelledScheduledRetryRunId: string | null = null;
     if (
       commentBody &&

@@ -1147,4 +1147,78 @@ describe("agent issue mutation checkout ownership", () => {
     }));
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
+
+  // ALAA-965: an agent PATCH that would leave the issue at status='blocked'
+  // with no first-class blockers produces a Board UI footer that misleads
+  // operators ("Work blocked until moved back to todo"). The route must
+  // reject the write so that only well-formed `blocked` writes reach the
+  // service layer.
+  it("rejects agent PATCH that would leave status=blocked with no first-class blockers", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }),
+    );
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("blocked_requires_blocker");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("accepts agent PATCH to status=blocked when the request names first-class blockers", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }),
+    );
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [recoveryActionId] });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "blocked" }),
+    );
+  });
+
+  it("accepts agent PATCH to status=blocked when the issue already has first-class blockers", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }),
+    );
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [{ id: recoveryActionId }],
+      blocks: [],
+    });
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "blocked" }),
+    );
+  });
+
+  it("allows board users to PATCH status=blocked with no first-class blockers", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }),
+    );
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+
+    const res = await request(await createApp(boardActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "blocked" }),
+    );
+  });
 });
