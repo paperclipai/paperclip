@@ -525,6 +525,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
+  const [testActionError, setTestActionError] = useState<string | null>(null);
   const testActionLabel = getAgentConfigTestActionLabel({ isCreate, isDirty });
   const isSavePending = !isCreate && Boolean(props.isSaving);
   const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId;
@@ -533,6 +534,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       throw new Error("Select a company to test adapter environment");
     }
     setTestActionPending(true);
+    setTestActionError(null);
+    testEnvironment.reset();
     try {
       return await runAgentConfigEnvironmentTest({
         isCreate,
@@ -540,13 +543,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         saveDraft: !isCreate ? handleSave : undefined,
         runTest: () => testEnvironment.mutateAsync(),
       });
+    } catch (error) {
+      setTestActionError(error instanceof Error ? error.message : "Environment test failed");
+      throw error;
     } finally {
       setTestActionPending(false);
     }
   }, [selectedCompanyId, isCreate, isDirty, handleSave, testEnvironment]);
   const triggerTestEnvironment = useCallback(() => {
     if (testEnvironmentDisabled) return;
-    void runEnvironmentTest();
+    void runEnvironmentTest().catch(() => undefined);
   }, [runEnvironmentTest, testEnvironmentDisabled]);
 
   useEffect(() => {
@@ -576,17 +582,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   useEffect(() => {
     if (!props.onTestFeedbackChange) return;
     props.onTestFeedbackChange({
-      errorMessage: testEnvironment.error instanceof Error
-        ? testEnvironment.error.message
-        : testEnvironment.error
-          ? "Environment test failed"
-          : null,
+      errorMessage: testActionError
+        ?? (testEnvironment.error instanceof Error
+          ? testEnvironment.error.message
+          : testEnvironment.error
+            ? "Environment test failed"
+            : null),
       result: testEnvironment.data ?? null,
     });
     return () => {
       props.onTestFeedbackChange?.({ errorMessage: null, result: null });
     };
-  }, [props.onTestFeedbackChange, testEnvironment.data, testEnvironment.error]);
+  }, [props.onTestFeedbackChange, testActionError, testEnvironment.data, testEnvironment.error]);
 
   // Current model for display
   const currentModelId = isCreate
@@ -990,11 +997,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {showInlineAdapterTestEnvironmentFeedback && testEnvironment.error && (
+          {showInlineAdapterTestEnvironmentFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {testEnvironment.error instanceof Error
-                ? testEnvironment.error.message
-                : "Environment test failed"}
+              {testActionError
+                ?? (testEnvironment.error instanceof Error
+                  ? testEnvironment.error.message
+                  : "Environment test failed")}
             </div>
           )}
 

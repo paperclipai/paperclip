@@ -224,4 +224,108 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       configPath: "env.ANTHROPIC_API_KEY",
     });
   });
+
+  it("rolls back create when binding sync fails", async () => {
+    const companyId = await seedCompany();
+    const missingSecretId = randomUUID();
+
+    await expect(
+      agentService(db).create(companyId, {
+        name: "Broken Create",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {
+          env: {
+            ANTHROPIC_API_KEY: { type: "secret_ref", secretId: missingSecretId, version: "latest" },
+          },
+        },
+        runtimeConfig: {},
+        spentMonthlyCents: 0,
+        lastHeartbeatAt: null,
+      }),
+    ).rejects.toBeTruthy();
+
+    const persistedAgents = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    expect(persistedAgents).toHaveLength(0);
+  });
+
+  it("rolls back adapterConfig updates when binding sync fails", async () => {
+    const companyId = await seedCompany();
+    const secrets = secretService(db);
+    const validSecret = await secrets.create(companyId, {
+      name: `valid-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "valid-value",
+    });
+    const created = await agentService(db).create(companyId, {
+      name: "Transactional Update",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          API_KEY: { type: "secret_ref", secretId: validSecret.id, version: "latest" },
+        },
+      },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+
+    await expect(
+      agentService(db).update(created.id, {
+        adapterConfig: {
+          env: {
+            API_KEY: { type: "secret_ref", secretId: randomUUID(), version: "latest" },
+          },
+        },
+      }),
+    ).rejects.toBeTruthy();
+
+    const reloaded = await agentService(db).getById(created.id);
+    expect(reloaded?.adapterConfig).toMatchObject({
+      env: {
+        API_KEY: { type: "secret_ref", secretId: validSecret.id, version: "latest" },
+      },
+    });
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.companyId, companyId),
+        eq(companySecretBindings.targetType, "agent"),
+        eq(companySecretBindings.targetId, created.id),
+      ));
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]?.secretId).toBe(validSecret.id);
+  });
+
+  it("keeps pending approval status when activation binding sync fails", async () => {
+    const companyId = await seedCompany();
+    const agentId = randomUUID();
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Broken Pending Agent",
+      role: "engineer",
+      status: "pending_approval",
+      adapterType: "claude_local",
+      adapterConfig: {
+        env: {
+          ANTHROPIC_API_KEY: { type: "secret_ref", secretId: randomUUID(), version: "latest" },
+        },
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(agentService(db).activatePendingApproval(agentId)).rejects.toBeTruthy();
+
+    const reloaded = await agentService(db).getById(agentId);
+    expect(reloaded?.status).toBe("pending_approval");
+  });
 });

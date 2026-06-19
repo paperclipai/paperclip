@@ -2372,33 +2372,47 @@ export function secretService(db: Db) {
     ): Promise<MissingRuntimeBinding[]> => {
       const record = asRecord(envValue);
       if (!record) return [];
-      const missing: MissingRuntimeBinding[] = [];
-      for (const [key, rawBinding] of Object.entries(record)) {
-        if (!ENV_KEY_RE.test(key)) continue;
+      const secretRefs = Object.entries(record).flatMap(([key, rawBinding]) => {
+        if (!ENV_KEY_RE.test(key)) return [];
         const parsed = envBindingSchema.safeParse(rawBinding);
-        if (!parsed.success) continue;
+        if (!parsed.success) return [];
         const binding = canonicalizeBinding(parsed.data as EnvBinding);
-        if (binding.type !== "secret_ref") continue;
-        const configPath = `env.${key}`;
-        const found = await getBinding({
+        if (binding.type !== "secret_ref") return [];
+        return [{ key, configPath: `env.${key}`, secretId: binding.secretId }];
+      });
+      if (secretRefs.length === 0) return [];
+
+      const bindingChecks = await Promise.all(secretRefs.map(async (entry) => ({
+        entry,
+        found: await getBinding({
           companyId,
-          secretId: binding.secretId,
+          secretId: entry.secretId,
           consumerType: context.consumerType,
           consumerId: context.consumerId,
-          configPath,
-        });
-        if (found) continue;
-        const secret = await getById(binding.secretId).catch(() => null);
-        missing.push({
+          configPath: entry.configPath,
+        }),
+      })));
+      const missingEntries = bindingChecks
+        .filter((check) => !check.found)
+        .map((check) => check.entry);
+      if (missingEntries.length === 0) return [];
+
+      const secretRows = await Promise.all(
+        [...new Set(missingEntries.map((entry) => entry.secretId))].map(async (secretId) => [
+          secretId,
+          await getById(secretId).catch(() => null),
+        ] as const),
+      );
+      const secretsById = new Map(secretRows);
+
+      return missingEntries.map((entry) => ({
           consumerType: context.consumerType,
           consumerId: context.consumerId,
-          configPath,
-          envKey: key,
-          secretId: binding.secretId,
-          secretName: secret?.name ?? null,
-        });
-      }
-      return missing;
+          configPath: entry.configPath,
+          envKey: entry.key,
+          secretId: entry.secretId,
+          secretName: secretsById.get(entry.secretId)?.name ?? null,
+        }));
     },
 
     resolveAdapterConfigForRuntime: async (
