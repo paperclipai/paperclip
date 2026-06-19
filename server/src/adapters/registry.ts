@@ -248,7 +248,39 @@ async function listAcpxModels(): Promise<AdapterModel[]> {
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
-  execute: claudeExecute,
+  // Stamp the agent id onto the spawned Claude Code via ANTHROPIC_CUSTOM_HEADERS so
+  // the proxy (better-ccflare) can attribute each request per agent for downstream
+  // telemetry (X-Anthropic-Agent-Id). Passthrough when no agent id is available.
+  execute: (ctx) => {
+    const a = (
+      ctx as {
+        agent?: {
+          id?: string;
+          agentId?: string;
+          adapterConfig?: { env?: Record<string, string> };
+        };
+      }
+    )?.agent;
+    const agentId =
+      a?.id ?? a?.agentId ?? (ctx as { agentId?: string })?.agentId;
+    if (!agentId || !a) return claudeExecute(ctx);
+    const cfg = (a.adapterConfig ?? {}) as Record<string, unknown>;
+    const env = (cfg.env ?? {}) as Record<string, string>;
+    const hdr = `X-Anthropic-Agent-Id: ${agentId}`;
+    const merged = env.ANTHROPIC_CUSTOM_HEADERS
+      ? `${env.ANTHROPIC_CUSTOM_HEADERS}\n${hdr}`
+      : hdr;
+    return claudeExecute({
+      ...ctx,
+      agent: {
+        ...a,
+        adapterConfig: {
+          ...cfg,
+          env: { ...env, ANTHROPIC_CUSTOM_HEADERS: merged },
+        },
+      },
+    } as Parameters<typeof claudeExecute>[0]);
+  },
   testEnvironment: claudeTestEnvironment,
   listSkills: listClaudeSkills,
   syncSkills: syncClaudeSkills,
