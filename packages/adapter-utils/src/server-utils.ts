@@ -424,6 +424,75 @@ type PaperclipWakeTreeHoldSummary = {
   reason: string | null;
 };
 
+type PaperclipColdWakeRecentCommit = {
+  sha: string;
+  subject: string;
+  author: string;
+  date: string;
+  touchedReferencedPath: boolean;
+};
+
+type PaperclipColdWakeClosedIssue = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  closedAt: string;
+};
+
+type PaperclipColdWakeSiblingIssue = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  assigneeAgentId: string | null;
+  updatedAt: string;
+};
+
+type PaperclipColdWakePlanDocument = {
+  key: string;
+  revisionId: string;
+  updatedAt: string;
+};
+
+type PaperclipColdWakePendingRequestConfirmation = {
+  interactionId: string;
+  revisionId: string | null;
+  createdAt: string;
+};
+
+type PaperclipColdWakeRelatedComment = {
+  issueId: string;
+  issueIdentifier: string | null;
+  commentId: string;
+  authorType: string;
+  createdAt: string;
+  bodyPreview: string;
+  bodyTruncated: boolean;
+};
+
+type PaperclipColdWakeBriefingError = {
+  code: string;
+  message: string;
+};
+
+type PaperclipColdWakeBriefing = {
+  thresholdHours: number;
+  hoursSinceLastRun: number | null;
+  lastRunFinishedAt: string | null;
+  recentCommits: PaperclipColdWakeRecentCommit[];
+  recentCommitsTruncated: boolean;
+  recentlyClosedReferencedIssues: PaperclipColdWakeClosedIssue[];
+  siblingInProgressIssues: PaperclipColdWakeSiblingIssue[];
+  planDocument: PaperclipColdWakePlanDocument | null;
+  pendingRequestConfirmation: PaperclipColdWakePendingRequestConfirmation | null;
+  recentRelatedComments: PaperclipColdWakeRelatedComment[];
+  sourcesIncluded: string[];
+  budgetTokens: number;
+  budgetTokenCap: number;
+  truncated: boolean;
+  briefingError: PaperclipColdWakeBriefingError | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -448,6 +517,7 @@ type PaperclipWakePayload = {
   missingCount: number;
   truncated: boolean;
   fallbackFetchNeeded: boolean;
+  coldWakeBriefing: PaperclipColdWakeBriefing | null;
 };
 
 function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null {
@@ -598,6 +668,174 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
   };
 }
 
+function normalizePaperclipColdWakeRecentCommit(value: unknown): PaperclipColdWakeRecentCommit | null {
+  const commit = parseObject(value);
+  const sha = asString(commit.sha, "").trim();
+  const subject = asString(commit.subject, "").trim();
+  if (!sha && !subject) return null;
+  return {
+    sha,
+    subject,
+    author: asString(commit.author, "").trim(),
+    date: asString(commit.date, "").trim(),
+    touchedReferencedPath: asBoolean(commit.touchedReferencedPath, false),
+  };
+}
+
+function normalizePaperclipColdWakeClosedIssue(value: unknown): PaperclipColdWakeClosedIssue | null {
+  const issue = parseObject(value);
+  const id = asString(issue.id, "").trim();
+  const title = asString(issue.title, "").trim();
+  if (!id && !title) return null;
+  return {
+    id,
+    identifier: asString(issue.identifier, "").trim() || null,
+    title,
+    status: asString(issue.status, "").trim(),
+    closedAt: asString(issue.closedAt, "").trim(),
+  };
+}
+
+function normalizePaperclipColdWakeSiblingIssue(value: unknown): PaperclipColdWakeSiblingIssue | null {
+  const issue = parseObject(value);
+  const id = asString(issue.id, "").trim();
+  const title = asString(issue.title, "").trim();
+  if (!id && !title) return null;
+  return {
+    id,
+    identifier: asString(issue.identifier, "").trim() || null,
+    title,
+    assigneeAgentId: asString(issue.assigneeAgentId, "").trim() || null,
+    updatedAt: asString(issue.updatedAt, "").trim(),
+  };
+}
+
+function normalizePaperclipColdWakePlanDocument(value: unknown): PaperclipColdWakePlanDocument | null {
+  const doc = parseObject(value);
+  const key = asString(doc.key, "").trim();
+  const revisionId = asString(doc.revisionId, "").trim();
+  if (!key && !revisionId) return null;
+  return {
+    key,
+    revisionId,
+    updatedAt: asString(doc.updatedAt, "").trim(),
+  };
+}
+
+function normalizePaperclipColdWakePendingRequestConfirmation(
+  value: unknown,
+): PaperclipColdWakePendingRequestConfirmation | null {
+  const interaction = parseObject(value);
+  const interactionId = asString(interaction.interactionId, "").trim();
+  if (!interactionId) return null;
+  return {
+    interactionId,
+    revisionId: asString(interaction.revisionId, "").trim() || null,
+    createdAt: asString(interaction.createdAt, "").trim(),
+  };
+}
+
+function normalizePaperclipColdWakeRelatedComment(value: unknown): PaperclipColdWakeRelatedComment | null {
+  const comment = parseObject(value);
+  const issueId = asString(comment.issueId, "").trim();
+  const commentId = asString(comment.commentId, "").trim();
+  const bodyPreview = asString(comment.bodyPreview, "");
+  if (!issueId && !commentId && !bodyPreview.trim()) return null;
+  return {
+    issueId,
+    issueIdentifier: asString(comment.issueIdentifier, "").trim() || null,
+    commentId,
+    authorType: asString(comment.authorType, "").trim(),
+    createdAt: asString(comment.createdAt, "").trim(),
+    bodyPreview,
+    bodyTruncated: asBoolean(comment.bodyTruncated, false),
+  };
+}
+
+function normalizePaperclipColdWakeBriefingError(value: unknown): PaperclipColdWakeBriefingError | null {
+  const error = parseObject(value);
+  const code = asString(error.code, "").trim();
+  const message = asString(error.message, "").trim();
+  if (!code && !message) return null;
+  return { code, message };
+}
+
+function normalizePaperclipColdWakeBriefing(value: unknown): PaperclipColdWakeBriefing | null {
+  if (value === null || value === undefined) return null;
+  const briefing = parseObject(value);
+  const recentCommits = Array.isArray(briefing.recentCommits)
+    ? briefing.recentCommits
+        .map((entry) => normalizePaperclipColdWakeRecentCommit(entry))
+        .filter((entry): entry is PaperclipColdWakeRecentCommit => Boolean(entry))
+    : [];
+  const recentlyClosedReferencedIssues = Array.isArray(briefing.recentlyClosedReferencedIssues)
+    ? briefing.recentlyClosedReferencedIssues
+        .map((entry) => normalizePaperclipColdWakeClosedIssue(entry))
+        .filter((entry): entry is PaperclipColdWakeClosedIssue => Boolean(entry))
+    : [];
+  const siblingInProgressIssues = Array.isArray(briefing.siblingInProgressIssues)
+    ? briefing.siblingInProgressIssues
+        .map((entry) => normalizePaperclipColdWakeSiblingIssue(entry))
+        .filter((entry): entry is PaperclipColdWakeSiblingIssue => Boolean(entry))
+    : [];
+  const recentRelatedComments = Array.isArray(briefing.recentRelatedComments)
+    ? briefing.recentRelatedComments
+        .map((entry) => normalizePaperclipColdWakeRelatedComment(entry))
+        .filter((entry): entry is PaperclipColdWakeRelatedComment => Boolean(entry))
+    : [];
+  const sourcesIncluded = Array.isArray(briefing.sourcesIncluded)
+    ? briefing.sourcesIncluded
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+  const briefingError = normalizePaperclipColdWakeBriefingError(briefing.briefingError);
+  const planDocument = normalizePaperclipColdWakePlanDocument(briefing.planDocument);
+  const pendingRequestConfirmation = normalizePaperclipColdWakePendingRequestConfirmation(
+    briefing.pendingRequestConfirmation,
+  );
+
+  // A briefing that is entirely empty AND has no error is treated as absent so the field
+  // stays null on the wire instead of emitting an empty banner-less section.
+  if (
+    recentCommits.length === 0 &&
+    recentlyClosedReferencedIssues.length === 0 &&
+    siblingInProgressIssues.length === 0 &&
+    recentRelatedComments.length === 0 &&
+    sourcesIncluded.length === 0 &&
+    !planDocument &&
+    !pendingRequestConfirmation &&
+    !briefingError &&
+    asNumber(briefing.thresholdHours, 0) === 0 &&
+    briefing.hoursSinceLastRun === undefined &&
+    briefing.lastRunFinishedAt === undefined &&
+    asNumber(briefing.budgetTokens, 0) === 0 &&
+    asNumber(briefing.budgetTokenCap, 0) === 0
+  ) {
+    return null;
+  }
+
+  return {
+    thresholdHours: asNumber(briefing.thresholdHours, 0),
+    hoursSinceLastRun:
+      briefing.hoursSinceLastRun === null || briefing.hoursSinceLastRun === undefined
+        ? null
+        : asNumber(briefing.hoursSinceLastRun, 0),
+    lastRunFinishedAt: asString(briefing.lastRunFinishedAt, "").trim() || null,
+    recentCommits,
+    recentCommitsTruncated: asBoolean(briefing.recentCommitsTruncated, false),
+    recentlyClosedReferencedIssues,
+    siblingInProgressIssues,
+    planDocument,
+    pendingRequestConfirmation,
+    recentRelatedComments,
+    sourcesIncluded,
+    budgetTokens: asNumber(briefing.budgetTokens, 0),
+    budgetTokenCap: asNumber(briefing.budgetTokenCap, 0),
+    truncated: asBoolean(briefing.truncated, false),
+    briefingError,
+  };
+}
+
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
   const comments = Array.isArray(payload.comments)
@@ -631,7 +869,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  const coldWakeBriefing = normalizePaperclipColdWakeBriefing(payload.coldWakeBriefing);
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !coldWakeBriefing && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -659,6 +898,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     missingCount: asNumber(commentWindow.missingCount, 0),
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
+    coldWakeBriefing,
   };
 }
 
@@ -754,6 +994,78 @@ export function renderPaperclipWakePrompt(
       );
     }
   }
+
+  if (normalized.coldWakeBriefing) {
+    const briefing = normalized.coldWakeBriefing;
+    const hoursLabel =
+      briefing.hoursSinceLastRun === null ? "unknown" : `${briefing.hoursSinceLastRun}h`;
+    lines.push(
+      "",
+      "## Cold-wake briefing",
+      "",
+      `You are waking from hibernation. Last successful run by this agent: ${briefing.lastRunFinishedAt ?? "unknown"} (${hoursLabel} ago; threshold ${briefing.thresholdHours}h).`,
+      "Treat the sections below as authoritative context that landed while you were idle. Do not start work until you have reconciled the wake issue against this briefing.",
+    );
+    if (briefing.pendingRequestConfirmation) {
+      const pending = briefing.pendingRequestConfirmation;
+      lines.push(
+        "",
+        `- pending request_confirmation: interaction ${pending.interactionId}${pending.revisionId ? ` revision ${pending.revisionId}` : ""}${pending.createdAt ? ` opened ${pending.createdAt}` : ""}`,
+      );
+    }
+    if (briefing.planDocument) {
+      lines.push(
+        `- plan document: key=${briefing.planDocument.key} revision ${briefing.planDocument.revisionId}${briefing.planDocument.updatedAt ? ` updated ${briefing.planDocument.updatedAt}` : ""}`,
+      );
+    }
+    if (briefing.recentCommits.length > 0) {
+      lines.push("", "Recent commits:");
+      for (const commit of briefing.recentCommits) {
+        const flag = commit.touchedReferencedPath ? " [touches referenced path]" : "";
+        lines.push(`- ${commit.sha} ${commit.date} ${commit.author}: ${commit.subject}${flag}`);
+      }
+      if (briefing.recentCommitsTruncated) {
+        lines.push("[recent commits truncated]");
+      }
+    }
+    if (briefing.recentlyClosedReferencedIssues.length > 0) {
+      lines.push("", "Recently closed referenced issues:");
+      for (const issue of briefing.recentlyClosedReferencedIssues) {
+        const label = issue.identifier ?? issue.id;
+        lines.push(`- ${label} ${issue.title} (${issue.status}; closed ${issue.closedAt})`);
+      }
+    }
+    if (briefing.siblingInProgressIssues.length > 0) {
+      lines.push("", "Sibling issues currently in progress:");
+      for (const issue of briefing.siblingInProgressIssues) {
+        const label = issue.identifier ?? issue.id;
+        const owner = issue.assigneeAgentId ? ` agent ${issue.assigneeAgentId}` : "";
+        lines.push(`- ${label} ${issue.title}${owner} (updated ${issue.updatedAt})`);
+      }
+    }
+    if (briefing.recentRelatedComments.length > 0) {
+      lines.push("", "Recent comments across related-work graph (newest first):");
+      for (const comment of briefing.recentRelatedComments) {
+        const label = comment.issueIdentifier ?? comment.issueId;
+        lines.push(
+          `- ${label} comment ${comment.commentId} at ${comment.createdAt} by ${comment.authorType || "unknown"}: ${comment.bodyPreview}${comment.bodyTruncated ? " [truncated]" : ""}`,
+        );
+      }
+    }
+    const budgetLine = `- briefing budget: ${briefing.budgetTokens}/${briefing.budgetTokenCap} tokens`;
+    const sourcesLine =
+      briefing.sourcesIncluded.length > 0
+        ? `- sources included: ${briefing.sourcesIncluded.join(", ")}`
+        : null;
+    lines.push("", budgetLine);
+    if (sourcesLine) {
+      lines.push(sourcesLine);
+    }
+    if (briefing.truncated) {
+      lines.push("- briefing truncated to fit the token budget");
+    }
+  }
+
   if (normalized.checkedOutByHarness) {
     lines.push("- checkout: already claimed by the harness for this run");
   }
@@ -891,6 +1203,15 @@ export function renderPaperclipWakePrompt(
       lines.push("[comment body truncated]");
     }
     lines.push("");
+  }
+
+  const briefingError = normalized.coldWakeBriefing?.briefingError ?? null;
+  if (briefingError) {
+    const banner = [
+      `> [!WARNING] BRIEFING FAILED — agent is operating without context: ${briefingError.code}${briefingError.message ? ` — ${briefingError.message}` : ""}`,
+      "",
+    ];
+    return banner.concat(lines).join("\n").trim();
   }
 
   return lines.join("\n").trim();
