@@ -40,6 +40,7 @@ const apiPrefixes: Record<string, string> = {
   "linear-auth.ts": "/api/auth/linear",
   "llms.ts": "/api",
   "metrics-ingest.ts": "/api",
+  "milestones.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",

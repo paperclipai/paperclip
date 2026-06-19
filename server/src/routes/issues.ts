@@ -2898,6 +2898,8 @@ export function issueRoutes(
         priority: issue.priority,
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
+        milestoneId: issue.milestoneId,
+        targetDate: issue.targetDate,
         parentId: issue.parentId,
         blockedBy: relationsWithRecoveryActions.blockedBy,
         blocks: relationsWithRecoveryActions.blocks,

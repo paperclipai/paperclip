@@ -2344,6 +2344,13 @@ const plugin = definePlugin({
       if (payload?.description !== undefined) changes.description = payload.description as string;
       if (payload?.estimate !== undefined) changes.estimate = payload.estimate as number | null;
       if (payload?.dueDate !== undefined) changes.dueDate = payload.dueDate as string | null;
+      // targetDate on the issue maps to dueDate in Linear (dueDate takes precedence if both present)
+      if (payload?.targetDate !== undefined && payload?.dueDate === undefined) {
+        changes.dueDate = payload.targetDate as string | null;
+      }
+      if (Object.prototype.hasOwnProperty.call(payload ?? {}, "milestoneId")) {
+        changes.milestoneId = (payload?.milestoneId as string | null | undefined) ?? null;
+      }
       const patch = payload?.patch as Record<string, unknown> | undefined;
       const hasProjectIdChange =
         Object.prototype.hasOwnProperty.call(payload ?? {}, "projectId") ||

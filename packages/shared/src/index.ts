@@ -436,6 +436,7 @@ export type {
   ProjectCodebase,
   ProjectCodebaseOrigin,
   ProjectGoalRef,
+  LinearProjectLink,
   ProjectManagedByPlugin,
   ProjectWorkspace,
   CompanySearchHighlight,
@@ -1126,6 +1127,13 @@ export {
   updateGoalSchema,
   type CreateGoal,
   type UpdateGoal,
+  createMilestoneSchema,
+  updateMilestoneSchema,
+  type CreateMilestone,
+  type UpdateMilestone,
+} from "./validators/index.js";
+export type { Milestone, CreateMilestoneInput, UpdateMilestoneInput } from "./types/milestone.js";
+export {
   createApprovalSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,

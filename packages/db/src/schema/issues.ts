@@ -5,6 +5,7 @@ import {
   uuid,
   text,
   timestamp,
+  date,
   integer,
   jsonb,
   index,
@@ -17,6 +18,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
+import { milestones } from "./milestones.js";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
 
 export const issues = pgTable(
@@ -28,6 +30,8 @@ export const issues = pgTable(
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
+    milestoneId: uuid("milestone_id").references(() => milestones.id, { onDelete: "set null" }),
+    targetDate: date("target_date"),
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
@@ -116,6 +120,7 @@ export const issues = pgTable(
     ),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
+    milestoneIdx: index("issues_company_milestone_idx").on(table.companyId, table.milestoneId).where(sql`milestone_id IS NOT NULL`),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),

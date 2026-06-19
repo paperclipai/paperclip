@@ -577,3 +577,5 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export { createMilestoneSchema, updateMilestoneSchema, type CreateMilestone, type UpdateMilestone } from "./milestone.js";

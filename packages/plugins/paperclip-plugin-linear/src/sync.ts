@@ -501,6 +501,9 @@ export interface SyncChanges {
   dueDate?: string | null;
   projectId?: string | null;
   labelIds?: string[];
+  // milestoneId (Paperclip) → Linear projectMilestoneId sync is a follow-up:
+  // requires a milestone state-key map (paperclipMilestoneId → linearMilestoneId).
+  milestoneId?: string | null;
 }
 
 export interface SyncToLinearOptions {

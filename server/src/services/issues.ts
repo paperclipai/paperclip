@@ -2176,6 +2176,8 @@ const issueListSelect = {
   projectId: issues.projectId,
   projectWorkspaceId: issues.projectWorkspaceId,
   goalId: issues.goalId,
+  milestoneId: issues.milestoneId,
+  targetDate: issues.targetDate,
   parentId: issues.parentId,
   title: issues.title,
   // Slice the description prefix server-side to bound payload size. Using
