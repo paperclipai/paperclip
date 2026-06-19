@@ -485,6 +485,7 @@ export interface CreateConfigValues {
   dangerouslySkipPermissions: boolean;
   search: boolean;
   fastMode: boolean;
+  maxContextTokens?: number;
   dangerouslyBypassSandbox: boolean;
   command: string;
   args: string;

@@ -53,6 +53,29 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+const DEFAULT_MAX_CONTEXT_TOKENS = 200_000;
+const TOKENS_PER_MILLION = 1_000_000;
+
+type CodexModelPricing = {
+  inputUsdPerMillion: number;
+  cachedInputUsdPerMillion: number;
+  outputUsdPerMillion: number;
+};
+
+const CODEX_MODEL_PRICING: Record<string, CodexModelPricing> = {
+  "gpt-5.5": { inputUsdPerMillion: 5, cachedInputUsdPerMillion: 0.5, outputUsdPerMillion: 30 },
+  "gpt-5.4": { inputUsdPerMillion: 2.5, cachedInputUsdPerMillion: 0.25, outputUsdPerMillion: 15 },
+  "gpt-5.4-mini": { inputUsdPerMillion: 0.75, cachedInputUsdPerMillion: 0.075, outputUsdPerMillion: 4.5 },
+  "gpt-5.4-nano": { inputUsdPerMillion: 0.2, cachedInputUsdPerMillion: 0.02, outputUsdPerMillion: 1.25 },
+  "gpt-5.3-codex": { inputUsdPerMillion: 1.75, cachedInputUsdPerMillion: 0.175, outputUsdPerMillion: 14 },
+  "gpt-5.3-codex-spark": { inputUsdPerMillion: 1.75, cachedInputUsdPerMillion: 0.175, outputUsdPerMillion: 14 },
+  "gpt-5": { inputUsdPerMillion: 1.25, cachedInputUsdPerMillion: 0.125, outputUsdPerMillion: 10 },
+  "gpt-5-mini": { inputUsdPerMillion: 0.25, cachedInputUsdPerMillion: 0.025, outputUsdPerMillion: 2 },
+  "gpt-5-nano": { inputUsdPerMillion: 0.05, cachedInputUsdPerMillion: 0.005, outputUsdPerMillion: 0.4 },
+  o3: { inputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.5, outputUsdPerMillion: 8 },
+  "o4-mini": { inputUsdPerMillion: 1.1, cachedInputUsdPerMillion: 0.275, outputUsdPerMillion: 4.4 },
+  "codex-mini-latest": { inputUsdPerMillion: 1.5, cachedInputUsdPerMillion: 0.375, outputUsdPerMillion: 6 },
+};
 
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
@@ -78,6 +101,11 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
+function formatCount(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "0";
+  return value.toLocaleString("en-US");
+}
+
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
@@ -92,6 +120,55 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   const openAiCompatibleBiller = inferOpenAiCompatibleBiller(env, "openai");
   if (openAiCompatibleBiller === "openrouter") return "openrouter";
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
+}
+
+function normalizeCodexModelForPricing(model: string | null | undefined): string {
+  const normalized = typeof model === "string" ? model.trim().toLowerCase() : "";
+  return normalized || "gpt-5.5";
+}
+
+export function estimateCodexCostUsd(input: {
+  model: string | null | undefined;
+  inputTokens: number;
+  cachedInputTokens?: number;
+  outputTokens: number;
+}): number | null {
+  const pricing = CODEX_MODEL_PRICING[normalizeCodexModelForPricing(input.model)];
+  if (!pricing) return null;
+
+  const inputTokens = Math.max(0, Math.floor(input.inputTokens));
+  const cachedInputTokens = Math.max(0, Math.floor(input.cachedInputTokens ?? 0));
+  const outputTokens = Math.max(0, Math.floor(input.outputTokens));
+  const total =
+    (inputTokens * pricing.inputUsdPerMillion +
+      cachedInputTokens * pricing.cachedInputUsdPerMillion +
+      outputTokens * pricing.outputUsdPerMillion) /
+    TOKENS_PER_MILLION;
+
+  return Number(total.toFixed(8));
+}
+
+function resolveMaxContextTokens(config: Record<string, unknown>): number {
+  const configured = Math.floor(asNumber(config.maxContextTokens, DEFAULT_MAX_CONTEXT_TOKENS));
+  return configured > 0 ? configured : 0;
+}
+
+function buildContextTokenWarning(input: {
+  usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
+  maxContextTokens: number;
+}) {
+  if (input.maxContextTokens <= 0) return null;
+  const inputContextTokens = Math.max(0, input.usage.inputTokens + input.usage.cachedInputTokens);
+  const totalTokens = inputContextTokens + Math.max(0, input.usage.outputTokens);
+  if (inputContextTokens < input.maxContextTokens && totalTokens < input.maxContextTokens) return null;
+
+  return {
+    type: "codex_context_tokens_exceeded",
+    maxContextTokens: input.maxContextTokens,
+    inputContextTokens,
+    totalTokens,
+    message: `Codex context usage reached ${formatCount(inputContextTokens)} input/context tokens (${formatCount(totalTokens)} total), meeting or exceeding the configured ${formatCount(input.maxContextTokens)} token warning threshold.`,
+  };
 }
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
@@ -292,6 +369,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "codex");
   const model = asString(config.model, "");
+  const maxContextTokens = resolveMaxContextTokens(config);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -756,11 +834,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
-    const toResult = (
+    const toResult = async (
       attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
       clearSessionOnMissingSession = false,
       isRetry = false,
-    ): AdapterExecutionResult => {
+    ): Promise<AdapterExecutionResult> => {
       if (attempt.proc.timedOut) {
         return {
           exitCode: attempt.proc.exitCode,
@@ -810,6 +888,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: attempt.proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
+      const contextTokenWarning = buildContextTokenWarning({
+        usage: attempt.parsed.usage,
+        maxContextTokens,
+      });
+      if (contextTokenWarning) {
+        await onLog("stdout", `[paperclip] Warning: ${contextTokenWarning.message}\n`);
+      }
+      const effectiveModel = normalizeCodexModelForPricing(model);
+      const costUsd = estimateCodexCostUsd({
+        model: effectiveModel,
+        inputTokens: attempt.parsed.usage.inputTokens,
+        cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
+        outputTokens: attempt.parsed.usage.outputTokens,
+      });
 
       return {
         exitCode: attempt.proc.exitCode,
@@ -831,12 +923,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionDisplayId: resolvedSessionId,
         provider: "openai",
         biller: resolveCodexBiller(effectiveEnv, billingType),
-        model,
+        model: effectiveModel,
         billingType,
-        costUsd: null,
+        costUsd,
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
+          ...(costUsd !== null ? { total_cost_usd: costUsd, cost_usd: costUsd } : {}),
+          ...(contextTokenWarning ? { contextTokenWarning } : {}),
           ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
           ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
           ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
@@ -859,10 +953,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
-        return toResult(retry, true, true);
+        return await toResult(retry, true, true);
       }
 
-      return toResult(initial, false, false);
+      return await toResult(initial, false, false);
     } finally {
       if (paperclipBridge) {
         await paperclipBridge.stop();

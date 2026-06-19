@@ -14,6 +14,7 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
     dangerouslySkipPermissions: true,
     search: false,
     fastMode: false,
+    maxContextTokens: 200000,
     dangerouslyBypassSandbox: true,
     command: "",
     args: "",
@@ -48,7 +49,16 @@ describe("buildCodexLocalConfig", () => {
       model: "gpt-5.4",
       search: true,
       fastMode: true,
+      maxContextTokens: 200000,
       dangerouslyBypassApprovalsAndSandbox: true,
+    });
+  });
+
+  it("persists maxContextTokens into adapter config", () => {
+    const config = buildCodexLocalConfig(makeValues({ maxContextTokens: 150000 }));
+
+    expect(config).toMatchObject({
+      maxContextTokens: 150000,
     });
   });
 

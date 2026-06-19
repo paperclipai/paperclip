@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isCodexUnknownSessionError, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
+import { estimateCodexCostUsd, isCodexUnknownSessionError, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
 import { parseCodexStdoutLine } from "@paperclipai/adapter-codex-local/ui";
 import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
 
@@ -21,6 +21,19 @@ describe("codex_local parser", () => {
       outputTokens: 4,
     });
     expect(parsed.errorMessage).toBe("model access denied");
+  });
+});
+
+describe("codex_local cost estimator", () => {
+  it("estimates gpt-5.5 usage with cached input tokens", () => {
+    expect(
+      estimateCodexCostUsd({
+        model: "gpt-5.5",
+        inputTokens: 100000,
+        cachedInputTokens: 50000,
+        outputTokens: 1000,
+      }),
+    ).toBe(0.555);
   });
 });
 

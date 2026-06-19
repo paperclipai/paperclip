@@ -122,6 +122,29 @@ export function CodexLocalConfigFields({
           {fastModeMessage}
         </div>
       )}
+      <Field
+        label="Max context tokens"
+        hint="Warn when a Codex run reports input/context tokens at or above this threshold. Set to 0 to disable warnings."
+      >
+        <DraftInput
+          type="number"
+          min={0}
+          step={1000}
+          value={String(
+            isCreate
+              ? values!.maxContextTokens ?? 200000
+              : eff("adapterConfig", "maxContextTokens", Number(config.maxContextTokens ?? 200000))
+          )}
+          onCommit={(v) => {
+            const parsed = Math.max(0, Math.floor(Number(v) || 0));
+            return isCreate
+              ? set!({ maxContextTokens: parsed })
+              : mark("adapterConfig", "maxContextTokens", parsed);
+          }}
+          immediate
+          className={inputClass}
+        />
+      </Field>
       <LocalWorkspaceRuntimeFields
         isCreate={isCreate}
         values={values}

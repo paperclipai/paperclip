@@ -81,6 +81,9 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (Object.keys(env).length > 0) ac.env = env;
   ac.search = v.search;
   ac.fastMode = v.fastMode;
+  if (typeof v.maxContextTokens === "number" && Number.isFinite(v.maxContextTokens)) {
+    ac.maxContextTokens = Math.max(0, Math.floor(v.maxContextTokens));
+  }
   ac.dangerouslyBypassApprovalsAndSandbox =
     typeof v.dangerouslyBypassSandbox === "boolean"
       ? v.dangerouslyBypassSandbox

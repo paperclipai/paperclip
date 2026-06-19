@@ -11,6 +11,7 @@ export const defaultCreateValues: CreateConfigValues = {
   dangerouslySkipPermissions: true,
   search: false,
   fastMode: false,
+  maxContextTokens: 200000,
   dangerouslyBypassSandbox: false,
   command: "",
   args: "",

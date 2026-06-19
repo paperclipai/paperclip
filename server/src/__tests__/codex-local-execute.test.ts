@@ -5,7 +5,14 @@ import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { execute } from "@paperclipai/adapter-codex-local/server";
 
-async function writeFakeCodexCommand(commandPath: string): Promise<void> {
+async function writeFakeCodexCommand(
+  commandPath: string,
+  usage: { input_tokens: number; cached_input_tokens: number; output_tokens: number } = {
+    input_tokens: 1,
+    cached_input_tokens: 0,
+    output_tokens: 1,
+  },
+): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 
@@ -27,7 +34,7 @@ if (capturePath) {
 }
 console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-1" }));
 console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
-console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: ${JSON.stringify(usage)} }));
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -187,6 +194,75 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("estimates default gpt-5.5 cost and emits context warning metadata", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-cost-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath, {
+      input_tokens: 200000,
+      cached_input_tokens: 0,
+      output_tokens: 1000,
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-cost",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.model).toBe("gpt-5.5");
+      expect(result.costUsd).toBe(1.03);
+      expect(result.resultJson).toMatchObject({
+        total_cost_usd: 1.03,
+        cost_usd: 1.03,
+        contextTokenWarning: {
+          type: "codex_context_tokens_exceeded",
+          maxContextTokens: 200000,
+          inputContextTokens: 200000,
+          totalTokens: 201000,
+        },
+      });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("Codex context usage reached 200,000"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

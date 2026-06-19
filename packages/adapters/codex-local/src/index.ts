@@ -40,6 +40,8 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 export const models = [
   { id: "gpt-5.5", label: "gpt-5.5" },
   { id: "gpt-5.4", label: "gpt-5.4" },
+  { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
+  { id: "gpt-5.4-nano", label: "gpt-5.4-nano" },
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
   { id: "gpt-5", label: "gpt-5" },
@@ -77,6 +79,7 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.5, GPT-5.4 and passed through for manual model IDs
+- maxContextTokens (number, optional): context warning threshold in tokens; defaults to 200000, set 0 to disable warnings
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -96,5 +99,7 @@ Notes:
 - Unless explicitly overridden in adapter config, Paperclip runs Codex with a per-company managed CODEX_HOME under the active Paperclip instance and seeds auth/config from the shared Codex home (the CODEX_HOME env var, when set, or ~/.codex).
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - Fast mode is supported on GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- Cost estimates use Codex JSONL token usage and a local OpenAI/Codex pricing table. Empty model config is treated as the Codex CLI subscription default, currently \`gpt-5.5\`, so those runs produce non-zero estimated cost when usage is reported.
+- Context warnings are emitted in run logs and result metadata when reported input/context tokens or total tokens meet or exceed \`maxContextTokens\`; 200000 is the recommended default for normal T2/T3 coding agents.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 `;
