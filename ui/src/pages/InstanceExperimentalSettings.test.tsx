@@ -3,6 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { InstanceExperimentalSettings as InstanceExperimentalSettingsPayload } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InstanceExperimentalSettings } from "./InstanceExperimentalSettings";
 
@@ -21,6 +22,14 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 async function flushReact() {
   for (let index = 0; index < 5; index += 1) {
     await Promise.resolve();
@@ -31,10 +40,29 @@ async function flushReact() {
 
 const CONFERENCE_TOGGLE_SELECTOR =
   'button[aria-label="Toggle conference room chat experimental setting"]';
+const TASK_WATCHDOGS_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle task watchdogs experimental setting"]';
+
+function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
+  return {
+    enableEnvironments: false,
+    enableIsolatedWorkspaces: false,
+    enableStreamlinedLeftNavigation: false,
+    enableConferenceRoomChat: false,
+    enableIssuePlanDecompositions: false,
+    enableExperimentalFileViewer: false,
+    enableTaskWatchdogs: false,
+    enableCloudSync: false,
+    autoRestartDevServerWhenIdle: false,
+    enableIssueGraphLivenessAutoRecovery: false,
+    issueGraphLivenessAutoRecoveryLookbackHours: 24,
+  };
+}
 
 describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
+  let currentExperimentalSettings: InstanceExperimentalSettingsPayload;
 
   async function renderPage() {
     root = createRoot(container);
@@ -54,11 +82,14 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableConferenceRoomChat: false,
-      issueGraphLivenessAutoRecoveryLookbackHours: 24,
+    currentExperimentalSettings = defaultExperimentalSettings();
+    mockInstanceSettingsApi.getExperimental.mockImplementation(async () => ({
+      ...currentExperimentalSettings,
+    }));
+    mockInstanceSettingsApi.updateExperimental.mockImplementation(async (patch) => {
+      currentExperimentalSettings = { ...currentExperimentalSettings, ...patch };
+      return { ...currentExperimentalSettings };
     });
-    mockInstanceSettingsApi.updateExperimental.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -80,14 +111,55 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
   });
 
   it("does not render the toggle even when the stored flag is currently enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
       enableConferenceRoomChat: true,
-      issueGraphLivenessAutoRecoveryLookbackHours: 24,
-    });
+    };
     await renderPage();
 
     const toggle = container.querySelector(CONFERENCE_TOGGLE_SELECTOR);
     expect(toggle).toBeNull();
     expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("renders and patches the Task Watchdogs experimental toggle on and off", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Task Watchdogs");
+    expect(container.textContent).toContain(
+      "Show task detail controls for configuring watchdog agents that verify stopped task subtrees and restore live paths when work should continue.",
+    );
+
+    const toggle = container.querySelector<HTMLButtonElement>(TASK_WATCHDOGS_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableTaskWatchdogs: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+
+    flushSync(() => {
+      root?.unmount();
+    });
+    root = null;
+    container.textContent = "";
+    await renderPage();
+
+    const enabledToggle = container.querySelector<HTMLButtonElement>(TASK_WATCHDOGS_TOGGLE_SELECTOR);
+    expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      enabledToggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
+      enableTaskWatchdogs: false,
+    });
   });
 });

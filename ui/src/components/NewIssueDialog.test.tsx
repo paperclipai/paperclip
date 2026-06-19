@@ -993,6 +993,86 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("reveals the watchdog editor from the overflow menu", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableTaskWatchdogs: true,
+    });
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    // The watchdog row is hidden until the menu item is toggled on.
+    expect(container.querySelector('textarea[placeholder^="What should the watchdog"]')).toBeNull();
+
+    const watchdogMenuItem = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Watchdog");
+    expect(watchdogMenuItem).not.toBeUndefined();
+
+    await act(async () => {
+      watchdogMenuItem!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Set watchdog");
+    expect(container.querySelector('textarea[placeholder^="What should the watchdog"]')).not.toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("submits the configured watchdog from a restored draft", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableTaskWatchdogs: true,
+    });
+    localStorage.setItem(
+      "paperclip:issue-draft",
+      JSON.stringify({
+        title: "Watched task",
+        description: "",
+        status: "todo",
+        priority: "medium",
+        assigneeValue: "",
+        reviewerValue: "",
+        approverValue: "",
+        watchdogAgentId: "agent-9",
+        watchdogInstructions: "Keep it moving",
+        projectId: "",
+        assigneeModelOverride: "",
+        assigneeThinkingEffort: "",
+        assigneeChrome: false,
+        workMode: "standard",
+      }),
+    );
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    expect(container.textContent).toContain("Keep it moving");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Watched task",
+        watchdog: { agentId: "agent-9", instructions: "Keep it moving" },
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
   // PAP-139/PAP-140: work-mode labels and status hues branch on the Conference
   // Room Chat experimental flag — OFF (default) must match master exactly.
   describe("Conference Room Chat flag parity (PAP-140)", () => {
@@ -1030,10 +1110,15 @@ describe("NewIssueDialog", () => {
     });
 
     it("uses NUX work-mode labels and brand status hues when the flag is on", async () => {
-      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableConferenceRoomChat: true,
+        enableIsolatedWorkspaces: false,
+      });
 
       const { root } = renderDialog(container);
-      await flush();
+      await waitForAssertion(() => {
+        expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+      });
 
       expect(workModeOption("standard")?.textContent).toContain("Agent mode");
       expect(workModeOption("ask")?.textContent).toContain("Ask mode");

@@ -295,6 +295,7 @@ export {
   issueDocumentKeySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
+  upsertIssueWatchdogSchema,
   type CreateIssue,
   type CreateChildIssue,
   type CreateAcceptedPlanDecomposition,
@@ -315,6 +316,7 @@ export {
   type IssueDocumentFormat,
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
+  type UpsertIssueWatchdog,
 } from "./issue.js";
 
 export {

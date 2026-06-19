@@ -488,7 +488,87 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
-## 11. Silent Active-Run Watchdog
+## 11. Task Watchdog for Issue Trees
+
+A task watchdog watches a configured issue subtree after that subtree has stopped moving. It is a product-level verification and recovery mechanism for selected work, not a process monitor.
+
+Keep the three watchdog/recovery concepts separate:
+
+- task watchdog: watches a configured source issue plus non-watchdog descendants and asks whether the stopped subtree is legitimate
+- silent active-run watchdog: watches a still-running process that has stopped producing output
+- liveness recovery: repairs stranded control-plane paths when a non-terminal issue has no live, waiting, or recovery path
+
+### Configuration and scan scope
+
+A source issue may have at most one active task watchdog configuration. The configuration names a same-company, invokable watchdog agent and optional custom instructions.
+
+The scan scope is:
+
+- the source issue
+- descendants reached through `parentId`
+- excluding every issue whose `originKind` is `task_watchdog`
+- excluding every descendant below an excluded task-watchdog issue
+
+The reusable watchdog issue is a child of the watched source issue for audit and navigation, but it is excluded from the watched work subtree. This prevents recursive watchdog loops.
+
+### Stopped-subtree evaluation
+
+Task watchdog evaluation is conservative. If any included issue has a live run, queued wake, or scheduled retry that should fire without intervention, the subtree is live and the task watchdog does not run.
+
+If no included issue has a live path, Paperclip computes a stop fingerprint from durable subtree state, including at least:
+
+- included leaf issue ids, statuses, assignees, and latest durable update timestamps
+- first-class blockers and unresolved blocker leaf summaries
+- pending interactions and approvals that define waiting paths
+- active monitors and scheduled retries
+- terminal or cancelled leaf evidence
+- the watchdog configuration revision, including watchdog agent and instructions changes
+
+If the fingerprint equals the watchdog's last reviewed fingerprint, Paperclip suppresses another watchdog wake. If the fingerprint is new, Paperclip creates or reopens the reusable watchdog issue and wakes the configured watchdog agent with the source issue, watchdog config, stop fingerprint, leaf summary, default mandate, custom instructions, and server-derived capability metadata that names the allowed operations, denied operations, reusable watchdog issue, and non-watchdog target scope.
+
+Changing the watchdog agent or custom instructions invalidates the reviewed fingerprint and forces a fresh evaluation even if the subtree state did not otherwise change.
+
+### Live path created by watchdog work
+
+An active watchdog issue or queued watchdog wake can be the visible recovery path for a stopped watched subtree, but it is not proof that the original deliverable work is complete. It means the next action is watchdog verification.
+
+When the source issue is non-terminal and has no other live path, the product should expose the watchdog issue or source-scoped recovery action as the reason the subtree is covered. When correctness requires the source issue to wait on watchdog review, the source issue should be blocked on the reusable watchdog issue or an equivalent explicit recovery action. Do not rely on parent/child structure alone.
+
+### Watchdog authority during execution
+
+The watchdog agent acts in a scoped capacity, not as the original deliverable worker and not as the board. The server must enforce the authority contract in `doc/SPEC-implementation.md` from persisted watchdog context. Prompt text and custom instructions may guide the watchdog's judgment, but they cannot grant authority outside the watched subtree or beyond the allowed mutation and interaction list.
+
+Watchdogs must not create visible probe issues, comments, or throwaway tasks to discover capability boundaries. They should rely on the wake capability metadata and explicit API denials, then record any denied operation as evidence in the reusable watchdog issue.
+
+The watchdog should verify stopped leaves against comments, documents, work products, tests, screenshots, blockers, review state, and run context. It should not accept "I could not" or "waiting for approval" as sufficient by itself.
+
+When work should continue, the watchdog restores a live path inside the watched subtree: reopen or reassign stuck work, create follow-up issues, repair blockers, set a monitor, or resolve an eligible plan confirmation. When the stopped state is legitimate, the watchdog records why and leaves the subtree with a valid terminal, waiting, blocked, review, or explicit recovery path.
+
+### Eligible interaction decisions
+
+A task watchdog may resolve only eligible `request_confirmation` plan confirmations. Eligibility is defined in `doc/SPEC-implementation.md` and must be checked by the server at decision time. The critical constraints are:
+
+- the interaction is pending, targeted at the current `plan` document revision for an included subtree issue, and explicitly marked as a plan-approval confirmation
+- accepting it authorizes only decomposition or task-level continuation inside the watched subtree
+- the plan is not asking for board-only governance, spend, hiring, security, deployment, secret, destructive data, legal/compliance, cross-company, or other sensitive approval
+- no newer durable source activity or policy reserves the decision for a human, CTO, Security, or the board
+
+The watchdog cannot resolve `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`, linked approvals, execution-policy decisions unless it is the typed participant outside watchdog capacity, or document comments written as freeform approval.
+
+### Completion and fingerprint updates
+
+The watchdog's reviewed fingerprint should update only after the watchdog issue reaches a valid disposition:
+
+- `done` with evidence that the stopped state is acceptable
+- `in_review` with a real reviewer, approval, interaction, user owner, monitor, or recovery path
+- `blocked` with first-class blockers or a named external owner/action
+- a watchdog mutation that restores live work, where the subsequent source-subtree mutation naturally changes the stop fingerprint
+
+If the watchdog moved work forward, Paperclip should not mark the old fingerprint as permanently acceptable just because the watchdog issue completed. The next scan should observe the changed subtree state and either suppress because work is live or compute a new stopped fingerprint later.
+
+Task watchdogs must not silently mark source work done from prose comments, must not duplicate child trees for the same accepted plan revision, and must not create another task-watchdog issue for the same source issue.
+
+## 12. Silent Active-Run Watchdog
 
 An active run can still be unhealthy even when its process is `running`. Paperclip treats prolonged output silence as a watchdog signal, not as proof that the run is failed.
 
@@ -540,7 +620,7 @@ This is distinct from productivity review. Productivity review asks whether an a
 
 Detached process cleanup is operational hygiene, not source issue liveness. Cleanup should be best-effort and auditable. If cleanup fails but the source issue is already terminal with same-run durable evidence, Paperclip should preserve the cleanup failure on the run/watchdog audit trail and route only the cleanup concern to bounded recovery when a real owner/action remains.
 
-## 12. Auto-Recover vs Explicit Recovery vs Human Escalation
+## 13. Auto-Recover vs Explicit Recovery vs Human Escalation
 
 Paperclip uses three different recovery outcomes, depending on how much it can safely infer.
 
@@ -584,7 +664,7 @@ Examples:
 
 In these cases Paperclip should leave a visible issue/comment trail instead of silently retrying.
 
-## 13. What This Does Not Mean
+## 14. What This Does Not Mean
 
 These semantics do not change V1 into an auto-reassignment system.
 
@@ -601,7 +681,7 @@ The recovery model is intentionally conservative:
 - open an explicit recovery action when the system can identify a bounded recovery owner/action
 - escalate visibly when the system cannot safely keep going
 
-## 14. Practical Interpretation
+## 15. Practical Interpretation
 
 For a board operator, the intended meaning is:
 

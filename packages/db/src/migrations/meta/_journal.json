@@ -729,6 +729,13 @@
       "when": 1781490200000,
       "tag": "0103_agent_error_reason",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1781733000000,
+      "tag": "0104_issue_watchdogs",
+      "breakpoints": true
     }
   ]
 }

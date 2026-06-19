@@ -140,6 +140,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  ScanEye,
   Flag,
   FileCode2,
   Hexagon,
@@ -3666,6 +3667,16 @@ export function IssueDetail() {
             >
               <Eye className="h-3 w-3" />
               Productivity review
+            </span>
+          ) : null}
+
+          {issue.originKind === "task_watchdog" ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300 shrink-0"
+              title="This task is a generated watchdog task. It verifies whether stopped work in the watched task tree is legitimate."
+            >
+              <ScanEye className="h-3 w-3" />
+              Watchdog
             </span>
           ) : null}
 
