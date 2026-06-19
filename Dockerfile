@@ -153,14 +153,13 @@ ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98
 # (exit 1)" self-explains instead of needing a kubectl trip. PR
 # kkroo/paperclip-adapter-opencode-k8s#27; the pin was 2 behind tip so this
 # also picks up #26 (5d43c07 was the pre-merge sha; #26 merged at 09083e1).
-# Bumped 2026-06-17 to cac7d0b (master tip): BLO-10699 — redirect Chrome's
-# BrowserMetrics spool off the shared CephFS HOME to the per-pod /tmp (opencode
-# pods have no /runtime-cache emptyDir). The agent-browser designer tool's
-# headless Chrome leaked 42GiB of un-reaped *.pma metrics buffers onto
-# /paperclip, filling its byte quota and walling the whole agent fleet at
-# workspace setup with EDQUOT. PR kkroo/paperclip-adapter-opencode-k8s#28;
-# verified 4b19530 is an ancestor of cac7d0b (no regress).
-ARG OPENCODE_K8S_REF=cac7d0b53fa420beb756919561004f1b5b709fa2
+# Bumped 2026-06-19 to 861227d (master tip): PEN-389 — mount a per-agent
+# /runtime-cache emptyDir in opencode_k8s Jobs and keep regenerable XDG/Go/npm/
+# Bun/pip/Playwright/TMPDIR caches there instead of on the shared /paperclip
+# PVC. Also redirects Chrome BrowserMetrics to that emptyDir. PR
+# kkroo/paperclip-adapter-opencode-k8s#29; local adapter verification passed
+# job-manifest tests, typecheck, and build.
+ARG OPENCODE_K8S_REF=861227d3d0726b43bf7e4a5421d076e3ab8de0af
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
