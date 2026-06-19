@@ -389,7 +389,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues"
     "parentId": "{parent-issue-id}"
   }'
 
-# Update a task
+# Update a task (Note: For guarded projects, done transitions require pre-existing PR/No Mistakes proof or a waiver/disposition comment)
 curl -sS -X PATCH "$PAPERCLIP_API_URL/api/issues/{issueId}" \
   -H "Content-Type: application/json" \
   -d '{"status": "done", "comment": "Completed"}'

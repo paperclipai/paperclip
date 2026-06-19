@@ -64,7 +64,7 @@ Headers: X-Paperclip-Run-Id: {runId}
 
 The optional `comment` field adds a comment in the same call.
 
-Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Updatable fields (by board/users): `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `labelIds`.
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
 
