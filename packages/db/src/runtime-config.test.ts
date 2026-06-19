@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveDatabaseTarget } from "./runtime-config.js";
 
 const ORIGINAL_CWD = process.cwd();
@@ -29,8 +29,21 @@ afterEach(() => {
 });
 
 describe("resolveDatabaseTarget", () => {
-  it("uses DATABASE_URL from process env first", () => {
+  it("uses PAPERCLIP_DATABASE_URL from process env first", () => {
+    process.env.PAPERCLIP_DATABASE_URL = "postgres://env-user:env-pass@db.example.com:5432/paperclip";
+
+    const target = resolveDatabaseTarget();
+
+    expect(target).toMatchObject({
+      mode: "postgres",
+      connectionString: "postgres://env-user:env-pass@db.example.com:5432/paperclip",
+      source: "PAPERCLIP_DATABASE_URL",
+    });
+  });
+
+  it("falls back to DATABASE_URL from process env with deprecation warning", () => {
     process.env.DATABASE_URL = "postgres://env-user:env-pass@db.example.com:5432/paperclip";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const target = resolveDatabaseTarget();
 
@@ -39,6 +52,8 @@ describe("resolveDatabaseTarget", () => {
       connectionString: "postgres://env-user:env-pass@db.example.com:5432/paperclip",
       source: "DATABASE_URL",
     });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("PAPERCLIP_DATABASE_URL"));
+    warnSpy.mockRestore();
   });
 
   it("uses DATABASE_URL from repo-local .paperclip/.env", () => {

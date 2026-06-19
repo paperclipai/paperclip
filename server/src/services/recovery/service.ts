@@ -3194,6 +3194,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  async function findRecentlyClosedLivenessEscalation(companyId: string, incidentKey: string) {
+    const cooldownHours = asNumber(process.env.LIVENESS_ESCALATION_COOLDOWN_HOURS, 24);
+    if (cooldownHours <= 0) return null;
+    const cutoff = new Date(Date.now() - cooldownHours * 60 * 60 * 1000);
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          eq(issues.originId, incidentKey),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          gt(issues.updatedAt, cutoff),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function findOpenLivenessRecoveryIssueForLeaf(finding: IssueLivenessFinding) {
     const byFingerprint = await db
       .select()
@@ -3614,6 +3636,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
       return { kind: "existing" as const, escalationIssueId: existing.id };
     }
+
+    const recentlyClosed = await findRecentlyClosedLivenessEscalation(
+      issue.companyId,
+      input.finding.incidentKey,
+    );
+    if (recentlyClosed) return { kind: "skipped" as const };
 
     const ownerSelection = await resolveEscalationOwnerAgentId(input.finding, recoveryIssue);
     if (!ownerSelection) return { kind: "skipped" as const };
