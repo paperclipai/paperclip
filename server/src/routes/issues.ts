@@ -116,6 +116,11 @@ import {
   type CompanySearchRateLimiter,
 } from "../services/company-search-rate-limit.js";
 import {
+  createUploadRateLimiter,
+  type UploadRateLimiter,
+  type UploadRateLimitActor,
+} from "../services/upload-rate-limit.js";
+import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -588,6 +593,7 @@ function summarizeIssueRelationForActivity(relation: {
 }
 
 const defaultCompanySearchRateLimiter = createCompanySearchRateLimiter();
+const defaultUploadRateLimiter = createUploadRateLimiter();
 
 function companySearchRateLimitActor(req: Request, companyId: string) {
   if (req.actor.type === "agent") {
@@ -600,6 +606,21 @@ function companySearchRateLimitActor(req: Request, companyId: string) {
   return {
     companyId,
     actorType: "board" as const,
+    actorId: req.actor.userId ?? req.actor.source ?? "board",
+  };
+}
+
+function uploadRateLimitActor(req: Request, companyId: string): UploadRateLimitActor {
+  if (req.actor.type === "agent") {
+    return {
+      companyId,
+      actorType: "agent",
+      actorId: req.actor.agentId ?? req.actor.keyId ?? "unknown-agent",
+    };
+  }
+  return {
+    companyId,
+    actorType: "board",
     actorId: req.actor.userId ?? req.actor.source ?? "board",
   };
 }
@@ -933,6 +954,7 @@ export function issueRoutes(
     };
     searchService?: CompanySearchService;
     searchRateLimiter?: CompanySearchRateLimiter;
+    uploadRateLimiter?: UploadRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
   } = {},
 ) {
@@ -950,6 +972,7 @@ export function issueRoutes(
     return searchSvc;
   };
   const searchRateLimiter = opts.searchRateLimiter ?? defaultCompanySearchRateLimiter;
+  const uploadRateLimiter = opts.uploadRateLimiter ?? defaultUploadRateLimiter;
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
@@ -6960,6 +6983,18 @@ export function issueRoutes(
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+
+    const uploadRateLimit = uploadRateLimiter.consume(uploadRateLimitActor(req, companyId));
+    res.setHeader("X-RateLimit-Limit", String(uploadRateLimit.limit));
+    res.setHeader("X-RateLimit-Remaining", String(uploadRateLimit.remaining));
+    if (!uploadRateLimit.allowed) {
+      res.setHeader("Retry-After", String(uploadRateLimit.retryAfterSeconds));
+      res.status(429).json({
+        error: "Upload rate limit exceeded",
+        retryAfterSeconds: uploadRateLimit.retryAfterSeconds,
+      });
+      return;
+    }
 
     const company = await companiesSvc.getById(companyId);
     const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(company?.attachmentMaxBytes);
