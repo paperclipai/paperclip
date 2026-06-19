@@ -88,6 +88,7 @@
 - [ ] I have searched GitHub for duplicate or related PRs and linked them above
 - [ ] I have either (a) linked existing issues with `Fixes: #` / `Closes #` / `Refs #` OR (b) described the issue in-PR following the relevant issue template
 - [ ] I have not referenced internal/instance-local Paperclip issues or links (only public GitHub `#NNN` / `github.com/paperclipai/paperclip` URLs)
+- [ ] My branch name describes the change (e.g. `docs/...`, `fix/...`) and contains no internal Paperclip ticket id or instance-derived details
 - [ ] I have run tests locally and they pass
 - [ ] I have added or updated tests where applicable
 - [ ] If this change affects the UI, I have included before/after screenshots
