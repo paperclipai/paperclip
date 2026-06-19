@@ -46,6 +46,7 @@ export type AuthorizationAction =
   | "agent:wake"
   | "company_scope:read"
   | "issue:mutate"
+  | "issue:comment"
   | "issue:read"
   | "project:read"
   | "runtime:manage"
@@ -64,6 +65,13 @@ export type AuthorizationResource =
       assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
       status?: string | null;
+      /**
+       * Agents who participate in the issue thread (comment authors) or were
+       * @-mentioned anywhere on it. Used only by `issue:comment` decisions so
+       * coordination participants may comment without `issue:mutate` rights.
+       * Resolved by the route layer via the issues service.
+       */
+      threadParticipantAgentIds?: string[] | null;
     };
 
 export type AuthorizationDecision = {
@@ -81,6 +89,8 @@ export type AuthorizationDecision = {
     | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
+    | "allow_parent_assignee"
+    | "allow_thread_participant"
     | "deny_unauthenticated"
     | "deny_company_boundary"
     | "deny_missing_membership"
@@ -118,7 +128,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
   ) {
     return null;
   }
-  if (action === "issue:mutate") return null;
+  if (action === "issue:mutate" || action === "issue:comment") return null;
   return action;
 }
 
@@ -753,7 +763,11 @@ export function authorizationService(db: Db) {
         : lowTrustDeny("Project is outside this low-trust boundary.");
     }
 
-    if (input.action === "issue:read" || input.action === "issue:mutate") {
+    if (
+      input.action === "issue:read" ||
+      input.action === "issue:mutate" ||
+      input.action === "issue:comment"
+    ) {
       if (input.resource.type !== "issue") {
         return lowTrustDeny("Low-trust issue access is missing an issue resource.");
       }
@@ -1168,6 +1182,54 @@ export function authorizationService(db: Db) {
           action: input.action,
           reason: "allow_company_agent",
           explanation: "Allowed because the issue has no agent assignee.",
+        });
+      }
+    }
+    if (input.action === "issue:comment") {
+      const resource = input.resource.type === "issue" ? input.resource : null;
+      // 1. The actor is the assignee of the issue being commented on.
+      if (resource?.assigneeAgentId === actorAgentId) {
+        return allow({
+          action: input.action,
+          reason: "allow_self",
+          explanation: "Allowed because the actor owns the assigned issue.",
+        });
+      }
+      // 2. The issue has no agent assignee (company-wide coordination surface).
+      if (resource && !resource.assigneeAgentId) {
+        return allow({
+          action: input.action,
+          reason: "allow_company_agent",
+          explanation: "Allowed because the issue has no agent assignee.",
+        });
+      }
+      if (resource?.assigneeAgentId) {
+        // 3. The actor manages the assignee in the reporting chain.
+        if (await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId)) {
+          return allow({
+            action: input.action,
+            reason: "allow_manager_chain",
+            explanation: "Allowed because the actor manages the issue assignee in the reporting chain.",
+          });
+        }
+      }
+      // 4. The actor is the assignee of the parent issue.
+      if (resource?.parentIssueId) {
+        const parent = await loadIssue(resource.parentIssueId);
+        if (parent && parent.assigneeAgentId === actorAgentId) {
+          return allow({
+            action: input.action,
+            reason: "allow_parent_assignee",
+            explanation: "Allowed because the actor is assigned the parent issue.",
+          });
+        }
+      }
+      // 5. The actor was @-mentioned on the thread or authored a comment on it.
+      if (resource?.threadParticipantAgentIds?.includes(actorAgentId)) {
+        return allow({
+          action: input.action,
+          reason: "allow_thread_participant",
+          explanation: "Allowed because the actor participates in or was mentioned on the issue thread.",
         });
       }
     }

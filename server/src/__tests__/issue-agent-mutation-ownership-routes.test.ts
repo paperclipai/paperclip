@@ -27,6 +27,7 @@ const mockIssueService = vi.hoisted(() => ({
   removeAttachment: vi.fn(),
   update: vi.fn(),
   findMentionedAgents: vi.fn(),
+  findThreadParticipantAgentIds: vi.fn(async () => []),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -318,12 +319,14 @@ describe("agent issue mutation checkout ownership", () => {
         input.action === "tasks:assign" ||
         input.action === "issue:read" ||
         input.action === "issue:mutate" ||
+        input.action === "issue:comment" ||
         input.action === "company_scope:read",
       action: input.action,
       reason:
         input.action === "tasks:assign" ||
           input.action === "issue:read" ||
           input.action === "issue:mutate" ||
+          input.action === "issue:comment" ||
           input.action === "company_scope:read"
           ? "allow_explicit_grant"
           : "deny_missing_grant",
@@ -331,6 +334,7 @@ describe("agent issue mutation checkout ownership", () => {
         input.action === "tasks:assign" ||
           input.action === "issue:read" ||
           input.action === "issue:mutate" ||
+          input.action === "issue:comment" ||
           input.action === "company_scope:read"
           ? "Allowed by test default."
           : "Missing permission.",
@@ -568,7 +572,9 @@ describe("agent issue mutation checkout ownership", () => {
   it.each([
     ["patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked" })],
     ["delete", (app: express.Express) => request(app).delete(`/api/issues/${issueId}`)],
-    ["comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "blocked" })],
+    // NOTE: "comment" intentionally omitted here — WKP-118 decoupled commenting
+    // from issue:mutate, so comments are NOT blocked by another agent's active
+    // checkout. That behavior is covered by the dedicated comment test below.
     [
       "document upsert",
       (app: express.Express) =>
@@ -606,6 +612,24 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it("allows a boundary-authorized peer agent to comment on another agent's active checkout", async () => {
+    // WKP-118: commenting is a coordination primitive (issue:comment), decoupled
+    // from issue:mutate. A peer who passes the issue:comment boundary (e.g. a
+    // manager, parent-issue assignee, or thread participant) may comment even
+    // though another agent holds the in_progress checkout — no 409 checkout gate.
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "coordination note" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "issue:comment" }),
+    );
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("rejects the checked-out owner without a run id on attachment upload (401)", async () => {
@@ -975,7 +999,7 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
-    ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],
+    // "comment" omitted — comments are decoupled from issue:mutate (WKP-118).
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
   ])("rejects peer agent %s issue %s mutations outside active checkout ownership", async (status, _kind, sendRequest) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as "todo" | "blocked", assigneeAgentId: ownerAgentId }));
