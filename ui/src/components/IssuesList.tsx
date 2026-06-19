@@ -103,6 +103,8 @@ const issueStatusLabels: Record<IssueStatus, string> = {
   done: "Done",
   blocked: "Blocked",
   cancelled: "Cancelled",
+  verification_missing: "Verification missing",
+  test_failed: "Test failed",
 };
 const progressSegmentClasses: Record<IssueStatus, string> = {
   backlog: "bg-muted-foreground/40",
@@ -112,6 +114,8 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
   done: "bg-green-500",
   blocked: "bg-red-500",
   cancelled: "bg-neutral-400",
+  verification_missing: "bg-amber-500",
+  test_failed: "bg-rose-500",
 };
 
 /* ── View state ── */

@@ -5,9 +5,12 @@ import {
   RECOVERY_KEY_PREFIXES,
   RECOVERY_ORIGIN_KINDS,
   RECOVERY_REASON_KINDS,
+  STORM_CAP_MAX_FAILS,
+  STORM_CAP_WINDOW_MS,
   buildIssueGraphLivenessIncidentKey,
   buildIssueGraphLivenessLeafKey,
   buildRunLivenessContinuationIdempotencyKey,
+  classifyAdapterErrorClass,
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
   isStrandedIssueRecoveryOriginKind,
@@ -244,5 +247,61 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+});
+
+describe("adapter error class classifier (GOV-4)", () => {
+  it("exports stable storm cap constants", () => {
+    expect(STORM_CAP_WINDOW_MS).toBe(60 * 60 * 1000);
+    expect(STORM_CAP_MAX_FAILS).toBe(2);
+  });
+
+  it("falls back to adapter_failed for null, undefined, and empty codes", () => {
+    expect(classifyAdapterErrorClass(null)).toBe("adapter_failed");
+    expect(classifyAdapterErrorClass(undefined)).toBe("adapter_failed");
+    expect(classifyAdapterErrorClass("")).toBe("adapter_failed");
+    expect(classifyAdapterErrorClass("UNKNOWN_CODE_XYZ")).toBe("adapter_failed");
+    expect(classifyAdapterErrorClass("adapter_failed")).toBe("adapter_failed");
+  });
+
+  it("classifies command_line_too_long variants", () => {
+    expect(classifyAdapterErrorClass("command_line_too_long")).toBe("command_line_too_long");
+    expect(classifyAdapterErrorClass("COMMAND_LINE_TOO_LONG")).toBe("command_line_too_long");
+    expect(classifyAdapterErrorClass("E2BIG")).toBe("command_line_too_long");
+    expect(classifyAdapterErrorClass("e2big")).toBe("command_line_too_long");
+    expect(classifyAdapterErrorClass("arg_too_long")).toBe("command_line_too_long");
+    expect(classifyAdapterErrorClass("argument_too_long")).toBe("command_line_too_long");
+    expect(classifyAdapterErrorClass("cmdline_overflow")).toBe("command_line_too_long");
+  });
+
+  it("classifies auth_quota variants", () => {
+    expect(classifyAdapterErrorClass("auth_error")).toBe("auth_quota");
+    expect(classifyAdapterErrorClass("quota_exceeded")).toBe("auth_quota");
+    expect(classifyAdapterErrorClass("rate_limit")).toBe("auth_quota");
+    expect(classifyAdapterErrorClass("rate_limit_exceeded")).toBe("auth_quota");
+    expect(classifyAdapterErrorClass("permission_denied")).toBe("auth_quota");
+    expect(classifyAdapterErrorClass("unauthorized")).toBe("auth_quota");
+    expect(classifyAdapterErrorClass("forbidden")).toBe("auth_quota");
+  });
+
+  it("classifies timeout variants", () => {
+    expect(classifyAdapterErrorClass("timeout")).toBe("timeout");
+    expect(classifyAdapterErrorClass("TIMEOUT")).toBe("timeout");
+    expect(classifyAdapterErrorClass("timed_out")).toBe("timeout");
+    expect(classifyAdapterErrorClass("request_timed_out")).toBe("timeout");
+  });
+
+  it("classifies test_failure variants", () => {
+    expect(classifyAdapterErrorClass("test_failure")).toBe("test_failure");
+    expect(classifyAdapterErrorClass("test_failed")).toBe("test_failure");
+    expect(classifyAdapterErrorClass("assertion_failed")).toBe("test_failure");
+    expect(classifyAdapterErrorClass("assert_error")).toBe("test_failure");
+  });
+
+  it("classifies deploy_mismatch variants", () => {
+    expect(classifyAdapterErrorClass("deploy_mismatch")).toBe("deploy_mismatch");
+    expect(classifyAdapterErrorClass("version_mismatch")).toBe("deploy_mismatch");
+    expect(classifyAdapterErrorClass("deploy_error")).toBe("deploy_mismatch");
+    expect(classifyAdapterErrorClass("deploy_failed")).toBe("deploy_mismatch");
   });
 });

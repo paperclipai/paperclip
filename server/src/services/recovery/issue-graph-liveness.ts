@@ -1,6 +1,94 @@
 import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
+// ---------------------------------------------------------------------------
+// Adapter error class fingerprint (GOV-4)
+// ---------------------------------------------------------------------------
+
+export type AdapterErrorClass =
+  | "adapter_failed"
+  | "command_line_too_long"
+  | "auth_quota"
+  | "timeout"
+  | "test_failure"
+  | "deploy_mismatch";
+
+export const STORM_CAP_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+export const STORM_CAP_MAX_FAILS = 2;
+
+export const ADAPTER_ERROR_CLASS_RECOMMENDED_ACTIONS: Record<AdapterErrorClass, string> = {
+  adapter_failed:
+    "Check adapter configuration and logs, then reassign or restart the agent.",
+  command_line_too_long:
+    "Reduce command-line arguments or switch to a prompt-based adapter. Bulk adapter swap is disabled for this class.",
+  auth_quota:
+    "Verify credentials and quota limits, clear the block, then resume the agent.",
+  timeout:
+    "Increase the adapter timeout limit or reduce workload per heartbeat.",
+  test_failure:
+    "Review and fix the failing test suite before resuming.",
+  deploy_mismatch:
+    "Align deployment versions between adapter and target, then retry.",
+};
+
+/**
+ * Classify a raw errorCode string into one of the six AdapterErrorClass
+ * buckets.  Falls back to "adapter_failed" for unknown codes.
+ */
+export function classifyAdapterErrorClass(
+  errorCode: string | null | undefined,
+): AdapterErrorClass {
+  if (!errorCode) return "adapter_failed";
+  const code = errorCode.toLowerCase();
+
+  if (
+    code.includes("command_line_too_long") ||
+    code.includes("e2big") ||
+    code.includes("arg_too_long") ||
+    code.includes("argument_too_long") ||
+    code.includes("cmdline_overflow")
+  ) {
+    return "command_line_too_long";
+  }
+
+  if (
+    code.includes("auth") ||
+    code.includes("quota") ||
+    code.includes("rate_limit") ||
+    code.includes("permission_denied") ||
+    code.includes("unauthorized") ||
+    code.includes("forbidden")
+  ) {
+    return "auth_quota";
+  }
+
+  if (code === "timeout" || code.includes("timed_out")) {
+    return "timeout";
+  }
+
+  if (
+    code.includes("test_failure") ||
+    code.includes("test_failed") ||
+    code.includes("assertion_failed") ||
+    code.includes("assert_error")
+  ) {
+    return "test_failure";
+  }
+
+  if (
+    code.includes("deploy_mismatch") ||
+    code.includes("version_mismatch") ||
+    code.includes("deploy_error") ||
+    code.includes("deploy_failed")
+  ) {
+    return "deploy_mismatch";
+  }
+
+  return "adapter_failed";
+}
+
+// ---------------------------------------------------------------------------
+
 export type IssueLivenessSeverity = "warning" | "critical";
 
 export type IssueLivenessState =
