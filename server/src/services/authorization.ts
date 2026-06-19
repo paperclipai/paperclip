@@ -77,6 +77,7 @@ export type AuthorizationDecision = {
     | "allow_explicit_grant"
     | "allow_legacy_agent_creator"
     | "allow_self"
+    | "allow_ancestor_owner"
     | "allow_company_agent"
     | "allow_company_member"
     | "allow_simple_company_member"
@@ -642,6 +643,36 @@ export function authorizationService(db: Db) {
     );
   }
 
+  async function actorIsAncestorAssignee(
+    companyId: string,
+    parentIssueId: string,
+    actorAgentId: string,
+  ): Promise<boolean> {
+    const rows = await db.execute(sql`
+      WITH RECURSIVE ancestors(id, parent_id, assignee_agent_id, depth) AS (
+        SELECT id, parent_id, assignee_agent_id, 0
+        FROM issues
+        WHERE company_id = ${companyId}
+          AND id = ${parentIssueId}
+        UNION ALL
+        SELECT parent.id, parent.parent_id, parent.assignee_agent_id, ancestors.depth + 1
+        FROM issues parent
+        JOIN ancestors ON parent.id = ancestors.parent_id
+        WHERE parent.company_id = ${companyId}
+          AND ancestors.depth < ${LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH - 1}
+      )
+      SELECT EXISTS(
+        SELECT 1 FROM ancestors WHERE assignee_agent_id = ${actorAgentId}
+      ) AS is_ancestor_owner
+    `);
+    const first = Array.isArray(rows) ? rows[0] : null;
+    return Boolean(
+      first &&
+        typeof first === "object" &&
+        (first as Record<string, unknown>).is_ancestor_owner === true,
+    );
+  }
+
   async function issueResourceWithinLowTrustBoundary(
     boundary: LowTrustBoundaryWithCompany,
     resource: Extract<AuthorizationResource, { type: "issue" }>,
@@ -1169,6 +1200,18 @@ export function authorizationService(db: Db) {
           reason: "allow_company_agent",
           explanation: "Allowed because the issue has no agent assignee.",
         });
+      }
+      // An agent assigned to an ancestor issue is the subtree owner and may
+      // mutate any descendant, even if that descendant has a different assignee.
+      if (resource?.parentIssueId) {
+        const isSubtreeOwner = await actorIsAncestorAssignee(resource.companyId, resource.parentIssueId, actorAgentId);
+        if (isSubtreeOwner) {
+          return allow({
+            action: input.action,
+            reason: "allow_ancestor_owner",
+            explanation: "Allowed because the actor is assigned to an ancestor issue and is the subtree owner.",
+          });
+        }
       }
     }
     if (
