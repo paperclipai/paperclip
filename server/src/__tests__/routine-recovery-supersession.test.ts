@@ -9,6 +9,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issueRelations,
   issues,
   routineRuns,
@@ -39,6 +40,7 @@ describeEmbeddedPostgres("routine recovery supersession", () => {
   }, 30_000);
 
   afterEach(async () => {
+    await db.delete(issueRecoveryActions);
     await db.delete(issueRelations);
     await db.delete(issueComments);
     await db.delete(activityLog);
@@ -290,7 +292,25 @@ describeEmbeddedPostgres("routine recovery supersession", () => {
     expect(updatedIssue?.companyId).toBe(companyId);
     expect(updatedIssue?.status).toBe("blocked");
     const issueRows = await db.select().from(issues);
-    expect(issueRows.length).toBeGreaterThan(2);
+    expect(issueRows).toHaveLength(2);
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(recoveryActions).toHaveLength(1);
+    expect(recoveryActions[0]).toMatchObject({
+      companyId,
+      sourceIssueId,
+      recoveryIssueId: null,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue",
+      attemptCount: 1,
+    });
     expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.any(Object));
   });
 });
