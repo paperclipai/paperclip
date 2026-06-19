@@ -21,6 +21,7 @@ export {
   runDatabaseBackup,
   runDatabaseRestore,
   formatDatabaseBackupResult,
+  cleanupOrphanBackupSqlFiles,
   type BackupRetentionPolicy,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,

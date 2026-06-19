@@ -28,6 +28,7 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  backupTimeoutMs?: number;
 };
 
 export type RunDatabaseBackupResult = {
@@ -288,6 +289,7 @@ async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
+  signal?: AbortSignal;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
@@ -313,10 +315,16 @@ async function runPgDumpBackup(opts: {
     throw new Error("pg_dump did not expose stdout");
   }
 
-  await Promise.all([
-    pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
-    waitForChildExit(child, pgDumpBin),
-  ]);
+  const onAbort = () => { child.kill("SIGKILL"); };
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    await Promise.all([
+      pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
+      waitForChildExit(child, pgDumpBin),
+    ]);
+  } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -492,6 +500,10 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
 }
 
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
+  const backupTimeoutMs = opts.backupTimeoutMs ?? 30 * 60 * 1000;
+  const abortController = new AbortController();
+  const { signal } = abortController;
+
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
@@ -511,6 +523,18 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const backupFile = `${sqlFile}.gz`;
   const writer = createBufferedTextFileWriter(sqlFile);
 
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(() => {
+      const err = new Error(`Backup timed out after ${backupTimeoutMs}ms`);
+      abortController.abort(err);
+      writer.abort().catch(() => {});
+      closeSql().catch(() => {});
+      reject(err);
+    }, backupTimeoutMs);
+  });
+
+  const workPromise = (async () => {
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
@@ -520,6 +544,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           connectionString: opts.connectionString,
           backupFile,
           connectTimeout,
+          signal,
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
@@ -877,6 +902,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
             .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
             .readable();
           for await (const chunk of copyStream) {
+            if (signal.aborted) throw signal.reason ?? new Error("Backup aborted");
             await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
           }
         } finally {
@@ -893,6 +919,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         .values()
         .cursor(BACKUP_DATA_CURSOR_ROWS) as AsyncIterable<unknown[][]>;
       for await (const rows of rowCursor) {
+        if (signal.aborted) throw signal.reason ?? new Error("Backup aborted");
         for (const row of rows) {
           const values = row.map((rawValue, index) =>
             formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns),
@@ -953,6 +980,34 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   } finally {
     await closeSql();
   }
+  })();
+
+  try {
+    return await Promise.race([workPromise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+export async function cleanupOrphanBackupSqlFiles(backupDir: string): Promise<string[]> {
+  if (!existsSync(backupDir)) return [];
+  const entries = readdirSync(backupDir);
+  const gzFiles = new Set(entries.filter((f) => f.endsWith(".sql.gz")));
+  const sqlFiles = entries.filter((f) => f.endsWith(".sql") && !f.endsWith(".sql.gz"));
+  const removed: string[] = [];
+  for (const sqlFile of sqlFiles) {
+    const gzCounterpart = `${sqlFile}.gz`;
+    if (!gzFiles.has(gzCounterpart)) {
+      const fullPath = resolve(backupDir, sqlFile);
+      try {
+        unlinkSync(fullPath);
+        removed.push(fullPath);
+      } catch {
+        // Ignore removal errors (file may have been cleaned up concurrently)
+      }
+    }
+  }
+  return removed;
 }
 
 export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promise<void> {

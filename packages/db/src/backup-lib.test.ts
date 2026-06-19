@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import { cleanupOrphanBackupSqlFiles, createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -353,4 +353,61 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     },
     20_000,
   );
+});
+
+describe("cleanupOrphanBackupSqlFiles", () => {
+  it("returns empty array when directory does not exist", async () => {
+    const result = await cleanupOrphanBackupSqlFiles("/nonexistent/path/that/does/not/exist");
+    expect(result).toEqual([]);
+  });
+
+  it("removes orphan .sql files that have no .sql.gz counterpart", async () => {
+    const tempDir = createTempDir("paperclip-orphan-cleanup-");
+    // Create an orphan .sql file (no .gz)
+    const orphanSql = path.join(tempDir, "paperclip-20240101T000000.sql");
+    fs.writeFileSync(orphanSql, "-- orphan");
+    const result = await cleanupOrphanBackupSqlFiles(tempDir);
+    expect(result).toEqual([orphanSql]);
+    expect(fs.existsSync(orphanSql)).toBe(false);
+  });
+
+  it("does not remove .sql files that have a .sql.gz counterpart", async () => {
+    const tempDir = createTempDir("paperclip-orphan-cleanup-paired-");
+    const sqlFile = path.join(tempDir, "paperclip-20240101T000000.sql");
+    const gzFile = path.join(tempDir, "paperclip-20240101T000000.sql.gz");
+    fs.writeFileSync(sqlFile, "-- sql");
+    fs.writeFileSync(gzFile, "gz content");
+    const result = await cleanupOrphanBackupSqlFiles(tempDir);
+    expect(result).toEqual([]);
+    expect(fs.existsSync(sqlFile)).toBe(true);
+  });
+
+  it("removes only orphan .sql files when mixed with paired files", async () => {
+    const tempDir = createTempDir("paperclip-orphan-cleanup-mixed-");
+    const orphanSql = path.join(tempDir, "paperclip-20240101T000000.sql");
+    const pairedSql = path.join(tempDir, "paperclip-20240102T000000.sql");
+    const pairedGz = path.join(tempDir, "paperclip-20240102T000000.sql.gz");
+    fs.writeFileSync(orphanSql, "-- orphan");
+    fs.writeFileSync(pairedSql, "-- paired");
+    fs.writeFileSync(pairedGz, "gz content");
+    const result = await cleanupOrphanBackupSqlFiles(tempDir);
+    expect(result).toEqual([orphanSql]);
+    expect(fs.existsSync(orphanSql)).toBe(false);
+    expect(fs.existsSync(pairedSql)).toBe(true);
+  });
+});
+
+describeEmbeddedPostgres("runDatabaseBackup timeout", () => {
+  it("rejects with a timeout error when backupTimeoutMs is exceeded", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-backup-timeout-");
+    await expect(
+      runDatabaseBackup({
+        connectionString,
+        backupDir,
+        retention: { dailyDays: 1, weeklyWeeks: 1, monthlyMonths: 1 },
+        backupTimeoutMs: 1, // 1ms — fires before backup can complete
+      }),
+    ).rejects.toThrow(/timed out/i);
+  }, 15_000);
 });

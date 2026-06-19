@@ -18,6 +18,7 @@ import {
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
+  cleanupOrphanBackupSqlFiles,
   authUsers,
   companies,
   companyMemberships,
@@ -533,14 +534,35 @@ export async function startServer(): Promise<StartedServer> {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
   const backupSettingsSvc = instanceSettingsService(db);
+  if (config.databaseBackupDir) {
+    const orphans = await cleanupOrphanBackupSqlFiles(config.databaseBackupDir);
+    if (orphans.length > 0) {
+      logger.warn({ orphans }, `Cleaned up ${orphans.length} orphan .sql backup file(s) left by a previous crash`);
+    }
+  }
   let databaseBackupInFlight = false;
+  let databaseBackupConsecutiveSkipCount = 0;
+  const DATABASE_BACKUP_CONSECUTIVE_SKIP_ALERT_THRESHOLD = 3;
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
   ): Promise<InstanceDatabaseBackupRunResult | null> => {
     if (databaseBackupInFlight) {
       const message = "Database backup already in progress";
       if (trigger === "scheduled") {
-        logger.warn("Skipping scheduled database backup because a previous backup is still running");
+        databaseBackupConsecutiveSkipCount++;
+        logger.warn(
+          { consecutiveSkips: databaseBackupConsecutiveSkipCount },
+          "Skipping scheduled database backup because a previous backup is still running",
+        );
+        if (databaseBackupConsecutiveSkipCount >= DATABASE_BACKUP_CONSECUTIVE_SKIP_ALERT_THRESHOLD) {
+          logger.error(
+            {
+              consecutiveSkips: databaseBackupConsecutiveSkipCount,
+              backupDir: config.databaseBackupDir,
+            },
+            `DATABASE BACKUP ALERT: backup appears stuck — ${databaseBackupConsecutiveSkipCount} consecutive scheduled backups skipped. The backup lock may be wedged. Consider restarting the server.`,
+          );
+        }
         return null;
       }
       throw conflict(message);
@@ -584,6 +606,7 @@ export async function startServer(): Promise<StartedServer> {
         },
         `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
       );
+      databaseBackupConsecutiveSkipCount = 0;
       return response;
     } catch (err) {
       logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
