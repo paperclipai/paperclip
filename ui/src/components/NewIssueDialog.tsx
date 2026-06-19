@@ -20,6 +20,7 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
+import { isIssueWorkMode, nextWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { useToastActions } from "../context/ToastContext";
 import {
   assigneeValueFromSelection,
@@ -43,9 +44,8 @@ import {
   MoreHorizontal,
   ChevronRight,
   ChevronDown,
+  Check,
   CircleDot,
-  ClipboardList,
-  Hammer,
   Minus,
   ArrowUp,
   ArrowDown,
@@ -138,23 +138,6 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "max", label: "Max" },
   ],
 } as const;
-
-function isIssueWorkMode(value: unknown): value is IssueWorkMode {
-  return value === "standard" || value === "planning";
-}
-
-// "Agent mode"/"Plan mode" relabels ship behind the Conference Room Chat flag
-// (PAP-132/PAP-139); OFF keeps master's "Standard"/"Planning".
-function issueWorkModeOptions(conferenceRoomChat: boolean): ReadonlyArray<{
-  value: IssueWorkMode;
-  label: string;
-  icon: typeof Hammer;
-}> {
-  return [
-    { value: "standard", label: conferenceRoomChat ? "Agent mode" : "Standard", icon: Hammer },
-    { value: "planning", label: conferenceRoomChat ? "Plan mode" : "Planning", icon: ClipboardList },
-  ];
-}
 
 function loadDraft(): IssueDraft | null {
   try {
@@ -420,7 +403,7 @@ export function NewIssueDialog() {
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
   // Conference Room Chat flag (PAP-139): selects work-mode labels + status hues.
   const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
-  const workModeOptions = useMemo(() => issueWorkModeOptions(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
+  const workModeOptions = useMemo(() => workModeMetaList(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
   const statuses = useMemo(() => buildStatusOptions(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -1018,6 +1001,11 @@ export function NewIssueDialog() {
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
+    if ((e.metaKey || e.ctrlKey) && e.code === "Period") {
+      e.preventDefault();
+      setWorkMode((current) => nextWorkMode(current, conferenceRoomChatEnabled));
+      return;
+    }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       handleSubmit();
@@ -1209,7 +1197,7 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
-  const currentWorkMode = workModeOptions[workMode === "planning" ? 1 : 0]!;
+  const currentWorkMode = workModeMetaFor(workMode, conferenceRoomChatEnabled);
   const CurrentWorkModeIcon = currentWorkMode.icon;
 
   return (
@@ -1956,15 +1944,14 @@ export function NewIssueDialog() {
               <button
                 type="button"
                 data-issue-work-mode-chip={workMode}
+                aria-keyshortcuts="Meta+Period Control+Period"
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
-                  workMode === "planning"
-                    ? "border-amber-500/60 bg-amber-500/15 text-amber-800 hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
-                    : "border-border text-muted-foreground hover:bg-accent/50",
+                  currentWorkMode.classes.chip,
                 )}
               >
                 <CurrentWorkModeIcon className="h-3 w-3" />
-                {currentWorkMode.label}
+                {currentWorkMode.shortLabel}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-36 p-1" align="start">
@@ -1977,7 +1964,7 @@ export function NewIssueDialog() {
                     className={cn(
                       "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
                       option.value === workMode && "bg-accent",
-                      option.value === "planning" && "text-amber-700 dark:text-amber-300",
+                      option.classes.menuItem,
                     )}
                     onClick={() => {
                       setWorkMode(option.value);
@@ -1986,6 +1973,7 @@ export function NewIssueDialog() {
                   >
                     <Icon className="h-3 w-3" />
                     {option.label}
+                    {option.value === workMode ? <Check className="ml-auto h-3 w-3" aria-hidden /> : null}
                   </button>
                 );
               })}

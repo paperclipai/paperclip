@@ -227,10 +227,17 @@ describe("issue validators", () => {
     }).status).toBe("backlog");
   });
 
-  it("defaults issue work mode to standard and accepts planning", () => {
+  it("defaults issue work mode to standard and accepts ask and planning", () => {
     expect(createIssueSchema.parse({ title: "Plan first" }).workMode).toBe("standard");
+    expect(createIssueSchema.parse({ title: "Ask first", workMode: "ask" }).workMode).toBe("ask");
     expect(createIssueSchema.parse({ title: "Plan first", workMode: "planning" }).workMode).toBe("planning");
+    expect(updateIssueSchema.parse({ workMode: "ask" }).workMode).toBe("ask");
     expect(updateIssueSchema.parse({ workMode: "planning" }).workMode).toBe("planning");
+    expect(suggestedTaskDraftSchema.parse({
+      clientKey: "ask-child",
+      title: "Ask child",
+      workMode: "ask",
+    }).workMode).toBe("ask");
     expect(suggestedTaskDraftSchema.parse({
       clientKey: "planning-child",
       title: "Plan child",

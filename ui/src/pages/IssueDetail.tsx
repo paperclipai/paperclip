@@ -70,6 +70,7 @@ import {
 } from "../components/IssueChatThread";
 import { IssueChatThreadClassic } from "../components/IssueChatThreadClassic";
 import { useConferenceRoomChatEnabled } from "../hooks/useConferenceRoomChatEnabled";
+import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
@@ -3668,14 +3669,19 @@ export function IssueDetail() {
             </span>
           ) : null}
 
-          {issue.workMode === "planning" ? (
-            <span
-              className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 shrink-0"
-              title={conferenceRoomChatEnabled ? "This task is in plan mode." : "This task is in planning mode."}
-            >
-              {conferenceRoomChatEnabled ? "Plan mode" : "Planning"}
-            </span>
-          ) : null}
+          {issue.workMode === "ask" || issue.workMode === "planning" ? (() => {
+            const workModeMeta = workModeMetaFor(issue.workMode, conferenceRoomChatEnabled);
+            const WorkModeIcon = workModeMeta.icon;
+            return (
+              <span
+                className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium shrink-0", workModeMeta.classes.badge)}
+                title={`This task is in ${workModeMeta.label.toLowerCase()}.`}
+              >
+                <WorkModeIcon className="h-3 w-3" aria-hidden />
+                {workModeMeta.label}
+              </span>
+            );
+          })() : null}
 
           {hasAssignedBacklogBlocker(issue.blockedBy) ? (
             <span

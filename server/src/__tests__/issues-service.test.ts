@@ -36,7 +36,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
-import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
+import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, type IssueWorkMode } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -4578,7 +4578,7 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     assigneeAgentId?: string;
     sourceIssueId?: string;
     issueTitle?: string;
-    workMode?: "planning" | "standard";
+    workMode?: IssueWorkMode;
   }) {
     const companyId = args?.companyId ?? randomUUID();
     const goalId = args?.goalId ?? randomUUID();
