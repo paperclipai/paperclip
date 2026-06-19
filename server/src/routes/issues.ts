@@ -1870,6 +1870,12 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
+      if (
+        boundaryDecision.reason === "allow_explicit_grant" &&
+        issue.status !== "in_progress"
+      ) {
+        return true;
+      }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
