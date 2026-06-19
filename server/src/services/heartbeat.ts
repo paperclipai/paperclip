@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, not, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -6954,6 +6954,72 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "claimQueuedRun: cancelled stale queued run",
         );
         return null;
+      }
+
+      // Guard: if the issue's execution workspace is currently held by another
+      // active run, keep this run queued instead of starting. Direct wakes
+      // (issue_assigned, board-comment continuations, review resumes) can arrive
+      // while a sibling or child run still owns the same worktree, which would
+      // produce an adapter_failed loop with "worktree ... already held".
+      // Returning null here leaves the run queued; when the holding run completes,
+      // releaseIssueExecutionAndPromote calls startNextQueuedRunForAgent and
+      // naturally picks up this deferred run (FUL-11100).
+      const issueWorkspaceId = await db
+        .select({ executionWorkspaceId: issues.executionWorkspaceId })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0]?.executionWorkspaceId ?? null);
+      if (issueWorkspaceId) {
+        const holdingRun = await db
+          .select({ issueId: issues.id, runId: heartbeatRuns.id })
+          .from(issues)
+          .innerJoin(
+            heartbeatRuns,
+            and(
+              eq(heartbeatRuns.id, issues.executionRunId),
+              eq(heartbeatRuns.companyId, issues.companyId),
+            ),
+          )
+          .where(
+            and(
+              eq(issues.companyId, run.companyId),
+              eq(issues.executionWorkspaceId, issueWorkspaceId),
+              isNull(issues.hiddenAt),
+              not(eq(issues.id, issueId)),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (holdingRun) {
+          logger.info(
+            {
+              runId: run.id,
+              issueId,
+              executionWorkspaceId: issueWorkspaceId,
+              heldByIssueId: holdingRun.issueId,
+              heldByRunId: holdingRun.runId,
+            },
+            "claimQueuedRun: deferring queued run because execution workspace is held by another active run",
+          );
+          await logActivity(db, {
+            companyId: run.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: run.agentId,
+            runId: run.id,
+            action: "issue.direct_wake.workspace_held_defer",
+            entityType: "heartbeat_run",
+            entityId: run.id,
+            details: {
+              issueId,
+              executionWorkspaceId: issueWorkspaceId,
+              heldByIssueId: holdingRun.issueId,
+              heldByRunId: holdingRun.runId,
+            },
+          });
+          return null;
+        }
       }
     }
 
