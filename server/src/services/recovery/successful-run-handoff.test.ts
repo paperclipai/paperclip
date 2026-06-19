@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
-  SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
+  SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_REVIEW_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildFinishSuccessfulRunHandoffIdempotencyKey,
@@ -306,15 +306,16 @@ describe("successful run handoff decision", () => {
       } as any,
       recoveryActionId: "77777777-7777-4777-8777-777777777777",
       recoveryOwner: { id: "66666666-6666-4666-8666-666666666666", name: "CTO" } as any,
-      latestIssueStatus: "in_progress",
+      latestIssueStatus: "in_review",
       latestHandoffRunStatus: "failed",
       missingDisposition: "clear_next_step",
     });
 
-    expect(notice.body).toBe(SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY);
+    expect(notice.body).toBe(SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_REVIEW_NOTICE_BODY);
     expect(notice.presentation).toMatchObject({
       kind: "system_notice",
-      tone: "danger",
+      tone: "warning",
+      title: "Missing disposition recovery needs review",
       detailsDefaultOpen: false,
     });
     expect(notice.metadata.sourceRunId).toBe("22222222-2222-4222-8222-222222222222");

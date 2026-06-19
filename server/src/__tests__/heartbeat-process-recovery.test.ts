@@ -101,6 +101,7 @@ import {
 import { secretService } from "../services/secrets.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
+  SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_REVIEW_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
 } from "../services/recovery/index.ts";
@@ -754,6 +755,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | null;
     cause?: string;
     kind?: string;
+    expectedSourceStatus?: "blocked" | "in_review";
+    expectedWakeReason?: "source_scoped_recovery_action" | "issue_dependencies_blocked";
+    expectRecoveryRun?: boolean;
   }) {
     const action = await waitForValue(async () =>
       db.select().from(issueRecoveryActions).where(
@@ -814,7 +818,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(recoveryWakeup).toMatchObject({
       companyId: input.companyId,
-      reason: "source_scoped_recovery_action",
+      reason: input.expectedWakeReason ?? "source_scoped_recovery_action",
       source: "assignment",
       payload: expect.objectContaining({
         modelProfile: "cheap",
@@ -824,32 +828,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }),
     });
 
-    const recoveryRun = recoveryWakeup?.runId
-      ? await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, recoveryWakeup.runId))
-        .then((rows) => rows[0] ?? null)
-      : null;
-    expect(recoveryRun?.contextSnapshot).toMatchObject({
-      issueId: input.issueId,
-      taskId: input.issueId,
-      source: "issue_recovery_action",
-      recoveryActionId: action.id,
-      sourceIssueId: input.issueId,
-      strandedRunId: input.runId,
-      modelProfile: "cheap",
-      allowDeliverableWork: false,
-      allowDocumentUpdates: false,
-      resumeRequiresNormalModel: true,
-    });
+    if (input.expectRecoveryRun ?? true) {
+      const recoveryRun = recoveryWakeup?.runId
+        ? await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, recoveryWakeup.runId))
+          .then((rows) => rows[0] ?? null)
+        : null;
+      expect(recoveryRun?.contextSnapshot).toMatchObject({
+        issueId: input.issueId,
+        taskId: input.issueId,
+        source: "issue_recovery_action",
+        recoveryActionId: action.id,
+        sourceIssueId: input.issueId,
+        strandedRunId: input.runId,
+        modelProfile: "cheap",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      });
+    }
     await waitForHeartbeatIdle(db);
     const sourceIssue = await db
       .select()
       .from(issues)
       .where(eq(issues.id, input.issueId))
       .then((rows) => rows[0] ?? null);
-    expect(sourceIssue?.status).toBe("blocked");
+    expect(sourceIssue?.status).toBe(input.expectedSourceStatus ?? "blocked");
 
     return action;
   }
@@ -1884,6 +1890,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: null,
       cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       kind: "missing_disposition",
+      expectedSourceStatus: "in_review",
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,
@@ -1895,15 +1902,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain("sk-test-successful-handoff-secret");
 
     const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(sourceIssue?.status).toBe("blocked");
+    expect(sourceIssue?.status).toBe("in_review");
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments[0]?.body).toBe(SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY);
+    expect(comments[0]?.body).toBe(SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_REVIEW_NOTICE_BODY);
     expect(comments[0]?.authorType).toBe("system");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
-      tone: "danger",
+      tone: "warning",
+      title: "Missing disposition recovery needs review",
       detailsDefaultOpen: false,
     });
     expect(comments[0]?.metadata).toMatchObject({
@@ -1929,6 +1937,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(JSON.stringify(comments[0]?.metadata ?? {})).not.toContain("sk-test-successful-handoff-secret");
 
     const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          status: "in_review",
+          previousStatus: "in_progress",
+          blockerIssueIds: [],
+        }),
+      }),
+    ]));
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_escalated")).toBe(true);
   });
 
@@ -1972,12 +1990,94 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: null,
       cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       kind: "missing_disposition",
+      expectedSourceStatus: "in_review",
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,
       latestRunStatus: "succeeded",
       missingDisposition: "clear_next_step",
     });
+  });
+
+  it("preserves blocked status when exhausted successful-run handoff has unresolved blockers", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const blockerId = randomUUID();
+    const sourceRunId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Resolve upstream blocker",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: "T-BLOCKER",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.successfulRunHandoffEscalated).toBe(1);
+
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: null,
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      kind: "missing_disposition",
+      expectedSourceStatus: "blocked",
+      expectedWakeReason: "issue_dependencies_blocked",
+      expectRecoveryRun: false,
+    });
+
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([blockerId]);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments[0]?.body).toBe(SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY);
+    expect(comments[0]?.presentation).toMatchObject({
+      kind: "system_notice",
+      tone: "danger",
+      title: "Missing disposition recovery blocked",
+    });
+
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          status: "blocked",
+          previousStatus: "in_progress",
+          blockerIssueIds: [blockerId],
+        }),
+      }),
+    ]));
   });
 
   it("clears the detached warning when the run reports activity again", async () => {

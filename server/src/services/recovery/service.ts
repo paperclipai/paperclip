@@ -2506,8 +2506,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const nextStatus =
+      input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON && blockerIds.length === 0
+        ? "in_review"
+        : "blocked";
     const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
+      status: nextStatus,
       blockedByIssueIds: blockerIds,
       assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
@@ -2528,7 +2532,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         recoveryIssue: null,
         recoveryActionId: recoveryAction.id,
         recoveryOwner,
-        latestIssueStatus: input.issue.status,
+        latestIssueStatus: nextStatus,
         latestHandoffRunStatus: input.latestRun?.status ?? "unknown",
         missingDisposition: input.successfulRunHandoffEvidence.missingDisposition,
       });
@@ -2585,6 +2589,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
     }
 
+    if (input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON) {
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          identifier: input.issue.identifier,
+          status: nextStatus,
+          previousStatus: input.previousStatus,
+          source: "recovery.reconcile_successful_run_handoff_missing_state",
+          recoveryCause: input.recoveryCause,
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+          latestRunErrorCode: input.latestRun?.errorCode ?? null,
+          recoveryActionId: recoveryAction.id,
+          recoveryOwnerAgentId: recoveryAction.ownerAgentId,
+          previousOwnerAgentId: recoveryAction.previousOwnerAgentId,
+          returnOwnerAgentId: recoveryAction.returnOwnerAgentId,
+          blockerIssueIds: blockerIds,
+        },
+      });
+    }
+
     await logActivity(db, {
       companyId: input.issue.companyId,
       actorType: "system",
@@ -2598,7 +2630,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       entityId: input.issue.id,
       details: {
         identifier: input.issue.identifier,
-        status: "blocked",
+        status: nextStatus,
         previousStatus: input.previousStatus,
         source: input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "recovery.reconcile_successful_run_handoff_missing_state"
@@ -2637,11 +2669,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(1);
       if (
         currentIssue &&
-        (currentIssue.status !== "blocked" ||
+        (currentIssue.status !== nextStatus ||
           currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
       ) {
         const reblocked = await issuesSvc.update(input.issue.id, {
-          status: "blocked",
+          status: nextStatus,
           blockedByIssueIds: blockerIds,
           assigneeAgentId: recoveryAction.ownerAgentId,
         });
