@@ -1915,7 +1915,11 @@ export function issueRoutes(
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
     }
-    return true;
+    return boundaryDecision;
+  }
+
+  function isIssueMentionGrantDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision !== true && decision.reason === "allow_issue_mention_grant";
   }
 
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
@@ -7359,7 +7363,8 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueCommentAllowed(req, res, issue))) return;
+    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
+    if (!commentAccessDecision) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
@@ -7376,19 +7381,30 @@ export function issueRoutes(
     const interruptRequested = req.body.interrupt === true;
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
+    const mentionGrantedPeerAgentCommentOnly =
+      isClosed &&
+      req.actor.type === "agent" &&
+      issue.assigneeAgentId !== null &&
+      issue.assigneeAgentId !== req.actor.agentId &&
+      !reopenRequested &&
+      !resumeRequested &&
+      isIssueMentionGrantDecision(commentAccessDecision);
+    const effectiveReopenRequested = mentionGrantedPeerAgentCommentOnly ? false : reopenRequested;
+    const effectiveResumeRequested = mentionGrantedPeerAgentCommentOnly ? false : resumeRequested;
     if (
       isClosed &&
       req.actor.type === "agent" &&
       issue.assigneeAgentId !== null &&
-      issue.assigneeAgentId !== req.actor.agentId
+      issue.assigneeAgentId !== req.actor.agentId &&
+      !mentionGrantedPeerAgentCommentOnly
     ) {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     }
-    if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
-    if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
+    if (effectiveResumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
+    if (effectiveResumeRequested !== true && effectiveReopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     }
-    const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
+    const explicitMoveToTodoRequested = effectiveReopenRequested || effectiveResumeRequested === true;
     const scheduledRetryForHumanComment =
       shouldHumanCommentResumeInProgressScheduledRetry({
         hasComment: true,
