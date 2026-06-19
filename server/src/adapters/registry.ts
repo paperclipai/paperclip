@@ -5,6 +5,7 @@ import type {
   ServerAdapterModule,
 } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
+import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
@@ -248,44 +249,7 @@ async function listAcpxModels(): Promise<AdapterModel[]> {
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
-  // Stamp the agent id onto the spawned Claude Code via ANTHROPIC_CUSTOM_HEADERS so
-  // the proxy (better-ccflare) can attribute each request per agent for downstream
-  // telemetry (X-Anthropic-Agent-Id). Passthrough when no agent id is available.
-  execute: (ctx) => {
-    const a = (
-      ctx as {
-        agent?: {
-          id?: string;
-          agentId?: string;
-          adapterConfig?: { env?: Record<string, string> };
-        };
-      }
-    )?.agent;
-    const rawAgentId =
-      a?.id ?? a?.agentId ?? (ctx as { agentId?: string })?.agentId;
-    // Strip CR/LF and bound length to prevent HTTP header injection — agentId is
-    // interpolated into ANTHROPIC_CUSTOM_HEADERS which is forwarded as a header.
-    const agentId = rawAgentId
-      ? String(rawAgentId).replace(/[\r\n]/g, "").trim().slice(0, 256)
-      : undefined;
-    if (!agentId || !a) return claudeExecute(ctx);
-    const cfg = (a.adapterConfig ?? {}) as Record<string, unknown>;
-    const env = (cfg.env ?? {}) as Record<string, string>;
-    const hdr = `X-Anthropic-Agent-Id: ${agentId}`;
-    const merged = env.ANTHROPIC_CUSTOM_HEADERS
-      ? `${env.ANTHROPIC_CUSTOM_HEADERS}\n${hdr}`
-      : hdr;
-    return claudeExecute({
-      ...ctx,
-      agent: {
-        ...a,
-        adapterConfig: {
-          ...cfg,
-          env: { ...env, ANTHROPIC_CUSTOM_HEADERS: merged },
-        },
-      },
-    } as Parameters<typeof claudeExecute>[0]);
-  },
+  execute: stampClaudeAgentIdHeader(claudeExecute),
   testEnvironment: claudeTestEnvironment,
   listSkills: listClaudeSkills,
   syncSkills: syncClaudeSkills,
