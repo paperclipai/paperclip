@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
-import type { Environment } from "@paperclipai/shared";
-import { supportsAdapterModelRefresh } from "./AgentConfigForm";
+import { describe, expect, it, vi } from "vitest";
+import type { AdapterEnvironmentTestResult, Environment } from "@paperclipai/shared";
+import {
+  getAgentConfigTestActionLabel,
+  runAgentConfigEnvironmentTest,
+  supportsAdapterModelRefresh,
+} from "./AgentConfigForm";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 
 describe("supportsAdapterModelRefresh", () => {
@@ -13,6 +17,61 @@ describe("supportsAdapterModelRefresh", () => {
   it("keeps the refresh action hidden for adapters without a live refresh hook", () => {
     expect(supportsAdapterModelRefresh("opencode_local")).toBe(false);
     expect(supportsAdapterModelRefresh("process")).toBe(false);
+  });
+});
+
+describe("agent config test action", () => {
+  it("labels dirty edit-mode tests as save-and-test", () => {
+    expect(getAgentConfigTestActionLabel({ isCreate: false, isDirty: true })).toBe("Save + Test");
+    expect(getAgentConfigTestActionLabel({ isCreate: false, isDirty: false })).toBe("Test");
+    expect(getAgentConfigTestActionLabel({ isCreate: true, isDirty: true })).toBe("Test");
+  });
+
+  it("saves a dirty edit draft before running the environment test", async () => {
+    const callOrder: string[] = [];
+    const saveDraft = vi.fn(async () => {
+      callOrder.push("save");
+    });
+    const runTest = vi.fn(async (): Promise<AdapterEnvironmentTestResult> => {
+      callOrder.push("test");
+      return {
+        adapterType: "claude_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      };
+    });
+
+    await runAgentConfigEnvironmentTest({
+      isCreate: false,
+      isDirty: true,
+      saveDraft,
+      runTest,
+    });
+
+    expect(saveDraft).toHaveBeenCalledTimes(1);
+    expect(runTest).toHaveBeenCalledTimes(1);
+    expect(callOrder).toEqual(["save", "test"]);
+  });
+
+  it("runs create-mode tests without saving first", async () => {
+    const saveDraft = vi.fn(async () => {});
+    const runTest = vi.fn(async (): Promise<AdapterEnvironmentTestResult> => ({
+      adapterType: "claude_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date(0).toISOString(),
+    }));
+
+    await runAgentConfigEnvironmentTest({
+      isCreate: true,
+      isDirty: true,
+      saveDraft,
+      runTest,
+    });
+
+    expect(saveDraft).not.toHaveBeenCalled();
+    expect(runTest).toHaveBeenCalledTimes(1);
   });
 });
 

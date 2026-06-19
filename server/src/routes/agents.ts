@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
@@ -29,6 +30,7 @@ import {
   LOW_TRUST_REVIEW_PRESET,
 } from "@paperclipai/shared";
 import {
+  resolvePaperclipInstanceRootForAdapter,
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -957,6 +959,14 @@ export function agentRoutes(
     return trimmed.length > 0 ? trimmed : null;
   }
 
+  function asEnvBindingString(value: unknown): string | null {
+    const direct = asNonEmptyString(value);
+    if (direct) return direct;
+    const record = asRecord(value);
+    if (record?.type !== "plain") return null;
+    return asNonEmptyString(record.value);
+  }
+
   function preserveInstructionsBundleConfig(
     existingAdapterConfig: Record<string, unknown>,
     nextAdapterConfig: Record<string, unknown>,
@@ -1131,6 +1141,64 @@ export function agentRoutes(
     if (disableDeviceAuth) return adapterConfig;
     if (asNonEmptyString(adapterConfig.devicePrivateKeyPem)) return adapterConfig;
     return { ...adapterConfig, devicePrivateKeyPem: generateEd25519PrivateKeyPem() };
+  }
+
+  function codexLocalAgentHome(companyId: string, agentId: string): string {
+    const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+      homeDir: asNonEmptyString(process.env.PAPERCLIP_HOME) ?? undefined,
+      instanceId: asNonEmptyString(process.env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+      env: process.env,
+    });
+    return path.resolve(instanceRoot, "companies", companyId, "agents", agentId, "codex-home");
+  }
+
+  function normalizeCodexLocalHomePath(rawHome: string): string {
+    if (rawHome === "~") return path.resolve(os.homedir());
+    if (rawHome.startsWith("~/") || rawHome.startsWith("~\\")) {
+      return path.resolve(path.join(os.homedir(), rawHome.slice(2)));
+    }
+    return path.resolve(rawHome);
+  }
+
+  function assertCodexLocalHomeIsNotShared(companyId: string, configuredHome: string) {
+    const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+      homeDir: asNonEmptyString(process.env.PAPERCLIP_HOME) ?? undefined,
+      instanceId: asNonEmptyString(process.env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+      env: process.env,
+    });
+    const normalizedHome = normalizeCodexLocalHomePath(configuredHome);
+    const sharedHomes = [
+      path.resolve(instanceRoot, "companies", companyId, "codex-home"),
+      path.resolve(path.join(os.homedir(), ".codex")),
+    ];
+    const hostCodexHome = asNonEmptyString(process.env.CODEX_HOME);
+    if (hostCodexHome) {
+      sharedHomes.push(normalizeCodexLocalHomePath(hostCodexHome));
+    }
+    if (!sharedHomes.some((sharedHome) => sharedHome === normalizedHome)) return;
+    throw unprocessable(
+      "codex_local agents must use an isolated adapterConfig.env.CODEX_HOME; shared company codex-home or host Codex auth home is not allowed",
+    );
+  }
+
+  function applyCodexLocalIsolationGuard(
+    companyId: string,
+    agentId: string,
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (adapterType !== "codex_local") return adapterConfig;
+    const env = asRecord(adapterConfig.env) ? { ...(adapterConfig.env as Record<string, unknown>) } : {};
+    const configuredHome = asEnvBindingString(env.CODEX_HOME);
+    if (configuredHome) {
+      assertCodexLocalHomeIsNotShared(companyId, configuredHome);
+    } else {
+      env.CODEX_HOME = codexLocalAgentHome(companyId, agentId);
+    }
+    if (!Object.prototype.hasOwnProperty.call(env, "OPENAI_API_KEY")) {
+      env.OPENAI_API_KEY = "";
+    }
+    return { ...adapterConfig, env };
   }
 
   function applyCreateDefaultsByAdapterType(
@@ -2158,9 +2226,15 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
-    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+    const hiredAgentId = randomUUID();
+    const requestedAdapterConfig = applyCodexLocalIsolationGuard(
+      companyId,
+      hiredAgentId,
       hireInput.adapterType,
-      rawHireAdapterConfig,
+      applyCreateDefaultsByAdapterType(
+        hireInput.adapterType,
+        rawHireAdapterConfig,
+      ),
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -2198,6 +2272,7 @@ export function agentRoutes(
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
     const createdAgent = await svc.create(companyId, {
+      id: hiredAgentId,
       ...normalizedHireInput,
       status,
       spentMonthlyCents: 0,
@@ -2344,9 +2419,15 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
-    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+    const agentId = randomUUID();
+    const requestedAdapterConfig = applyCodexLocalIsolationGuard(
+      companyId,
+      agentId,
       createInput.adapterType,
-      rawCreateAdapterConfig,
+      applyCreateDefaultsByAdapterType(
+        createInput.adapterType,
+        rawCreateAdapterConfig,
+      ),
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -2372,6 +2453,7 @@ export function agentRoutes(
     });
 
     const createdAgent = await svc.create(companyId, {
+      id: agentId,
       ...createInput,
       adapterConfig: normalizedAdapterConfig,
       runtimeConfig: normalizedRuntimeConfig,
@@ -2380,14 +2462,6 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
-    const agentEnv = asRecord(agent.adapterConfig)?.env;
-    if (agentEnv) {
-      await secretsSvc.syncEnvBindingsForTarget?.(
-        companyId,
-        { targetType: "agent", targetId: agent.id },
-        agentEnv,
-      );
-    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2820,9 +2894,14 @@ export function agentRoutes(
           rawEffectiveAdapterConfig,
         );
       }
-      const effectiveAdapterConfig = applyCreateDefaultsByAdapterType(
+      const effectiveAdapterConfig = applyCodexLocalIsolationGuard(
+        existing.companyId,
+        existing.id,
         requestedAdapterType,
-        rawEffectiveAdapterConfig,
+        applyCreateDefaultsByAdapterType(
+          requestedAdapterType,
+          rawEffectiveAdapterConfig,
+        ),
       );
       const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
         companyId: existing.companyId,
@@ -2864,14 +2943,6 @@ export function agentRoutes(
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
-    }
-    if (touchesAdapterConfiguration) {
-      const agentEnv = asRecord(agent.adapterConfig)?.env;
-      await secretsSvc.syncEnvBindingsForTarget?.(
-        agent.companyId,
-        { targetType: "agent", targetId: agent.id },
-        agentEnv,
-      );
     }
 
     await logActivity(db, {
