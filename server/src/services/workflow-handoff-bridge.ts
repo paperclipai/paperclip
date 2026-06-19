@@ -934,10 +934,40 @@ export function workflowHandoffBridgeService(db: Db) {
     return getBridgeForHandoff(workflowHandoffId);
   }
 
+  async function closeTerminalRunHandoffs(
+    workflowRunId: string,
+    outcome: TerminalBridgeCloseOutcome,
+  ) {
+    const bridges = await db
+      .select()
+      .from(workflowHandoffBridges)
+      .where(and(
+        eq(workflowHandoffBridges.workflowRunId, workflowRunId),
+        inArray(workflowHandoffBridges.status, ["pending_delivery", "waiting_for_human"]),
+      ))
+      .orderBy(asc(workflowHandoffBridges.createdAt));
+    if (bridges.length === 0) return [];
+
+    const config = await settings.resolveClickUpRuntimeConfig(bridges[0]!.companyId);
+    const overrides = {
+      personalToken: config.personalToken,
+      workspaceId: config.workspaceId,
+      channelId: config.channelId,
+      attachmentTaskId: config.attachmentTaskId,
+    };
+
+    for (const bridge of bridges) {
+      await closeBridgeRow(db, bridge, outcome, overrides);
+    }
+
+    return Promise.all(bridges.map((bridge) => getBridgeForHandoff(bridge.workflowHandoffId)));
+  }
+
   return {
     openForHandoff,
     pollActiveBridges,
     closeResolvedHandoff,
+    closeTerminalRunHandoffs,
     getActiveBridge,
     getBridgeForHandoff,
   };

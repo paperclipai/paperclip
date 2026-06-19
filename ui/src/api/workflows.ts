@@ -31,6 +31,7 @@ export const workflowsApi = {
   run: (id: string, data: { inputMarkdown: string }) =>
     api.post<WorkflowRun>(`/workflows/${id}/run`, data),
   getRun: (id: string) => api.get<WorkflowRunDetail>(`/workflow-runs/${id}`),
+  cancelRun: (id: string) => api.post<WorkflowRun>(`/workflow-runs/${id}/cancel`, {}),
   approveHandoff: (id: string, data?: ResolveWorkflowHandoffInput) =>
     api.post<WorkflowHandoff>(`/workflow-handoffs/${id}/approve`, data ?? {}),
   rejectHandoff: (id: string, data?: ResolveWorkflowHandoffInput) =>

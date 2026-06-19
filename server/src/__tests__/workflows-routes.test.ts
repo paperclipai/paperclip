@@ -14,6 +14,7 @@ const mockWorkflowService = vi.hoisted(() => ({
   update: vi.fn(),
   runManual: vi.fn(),
   getRunDetail: vi.fn(),
+  cancelRun: vi.fn(),
   getHandoff: vi.fn(),
   resolveHandoff: vi.fn(),
   verifyRuntimeToken: vi.fn(),
@@ -70,5 +71,30 @@ describe("workflow routes", () => {
       phaseKey: "missing-phase",
       status: "running",
     });
+  });
+
+  it("cancels a workflow run", async () => {
+    mockWorkflowService.getRunDetail.mockResolvedValue({
+      id: runId,
+      companyId,
+      status: "running",
+      workflow: { id: "workflow-1", title: "Social", status: "active", runnerType: "google_adk" },
+      phases: [],
+      handoffs: [],
+      deliverables: [],
+    });
+    mockWorkflowService.cancelRun.mockResolvedValue({
+      id: runId,
+      companyId,
+      status: "cancelled",
+    });
+
+    const res = await request(createApp())
+      .post(`/api/workflow-runs/${runId}/cancel`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: runId, status: "cancelled" });
+    expect(mockWorkflowService.cancelRun).toHaveBeenCalledWith(runId, { userId: "board-user" });
   });
 });

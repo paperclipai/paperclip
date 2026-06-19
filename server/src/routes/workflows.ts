@@ -130,6 +130,30 @@ export function workflowRoutes(db: Db) {
     res.json(detail);
   });
 
+  router.post("/workflow-runs/:id/cancel", async (req, res) => {
+    assertBoard(req);
+    const detail = await svc.getRunDetail(req.params.id as string);
+    if (!detail) {
+      res.status(404).json({ error: "Workflow run not found" });
+      return;
+    }
+    assertCompanyAccess(req, detail.companyId);
+    const actor = getActorInfo(req);
+    const cancelled = await svc.cancelRun(detail.id, { userId: req.actor.userId ?? "board" });
+    if (cancelled) {
+      await logActivity(db, {
+        companyId: detail.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        action: "workflow.run_cancelled",
+        entityType: "workflow_run",
+        entityId: detail.id,
+        details: { workflowId: detail.workflow.id },
+      });
+    }
+    res.json(cancelled);
+  });
+
   router.post("/workflow-handoffs/:id/approve", validate(resolveWorkflowHandoffSchema), async (req, res) => {
     assertBoard(req);
     const handoff = await svc.getHandoff(req.params.id as string);
