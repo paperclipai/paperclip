@@ -1301,9 +1301,16 @@ async function resolveSpawnTarget(
     // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
     const shell = resolveWindowsCmdShell(env);
     const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
+    // cmd.exe /s strips the outermost quote pair from the /c argument. When the
+    // executable path contains spaces it is already wrapped in quotes by
+    // quoteForCmd; those inner quotes would be stripped, leaving the path
+    // broken at the first space. Wrapping the entire commandLine in an extra
+    // pair of quotes ensures the inner executable quotes survive cmd.exe's
+    // quote-stripping pass (GH#6805).
+    const wrappedCommandLine = commandLine.startsWith('"') ? `"${commandLine}"` : commandLine;
     return {
       command: shell,
-      args: ["/d", "/s", "/c", commandLine],
+      args: ["/d", "/s", "/c", wrappedCommandLine],
     };
   }
 
@@ -1878,6 +1885,10 @@ export async function ensurePaperclipSkillSymlink(
     return "skipped";
   }
 
+  // Only repair broken symlinks — if the linked path still exists it is a
+  // valid custom symlink or an already-cleaned-up catalog dir; leave it alone.
+  // Stale catalog dirs are cleaned before this point by deleteSkill /
+  // upsertImportedSkills, so a missing linkedPath is the broken-symlink case.
   const linkedPathExists = await fs.stat(resolvedLinkedPath).then(() => true).catch(() => false);
   if (linkedPathExists) {
     return "skipped";
@@ -2123,10 +2134,12 @@ export async function ensureCommandResolvable(
     if (resolvedSsh) return;
     throw new Error('Command not found in PATH: "ssh"');
   }
-  const resolved = await resolveCommandPath(command, cwd, env);
+  // Extract only the executable (first token) — the rest are arguments.
+  const executable = command.trimStart().split(/\s+/)[0] ?? command;
+  const resolved = await resolveCommandPath(executable, cwd, env);
   if (resolved) return;
-  if (command.includes("/") || command.includes("\\")) {
-    const absolute = path.isAbsolute(command) ? command : path.resolve(cwd, command);
+  if (executable.includes("/") || executable.includes("\\")) {
+    const absolute = path.isAbsolute(executable) ? executable : path.resolve(cwd, executable);
     throw new Error(`Command is not executable: "${command}" (resolved: "${absolute}")`);
   }
   throw new Error(`Command not found in PATH: "${command}"`);

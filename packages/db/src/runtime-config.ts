@@ -24,7 +24,7 @@ export type ResolvedDatabaseTarget =
   | {
       mode: "postgres";
       connectionString: string;
-      source: "DATABASE_URL" | "paperclip-env" | "config.database.connectionString";
+      source: "PAPERCLIP_DATABASE_URL" | "DATABASE_URL" | "paperclip-env" | "config.database.connectionString";
       configPath: string;
       envPath: string;
     }
@@ -186,12 +186,18 @@ export function resolveDatabaseTarget(): ResolvedDatabaseTarget {
   const envPath = resolvePaperclipEnvPath(configPath);
   const envEntries = readEnvEntries(envPath);
 
-  const envUrl = process.env.DATABASE_URL?.trim();
+  const envUrl = (process.env.PAPERCLIP_DATABASE_URL ?? process.env.DATABASE_URL)?.trim();
   if (envUrl) {
+    const envSource = process.env.PAPERCLIP_DATABASE_URL ? "PAPERCLIP_DATABASE_URL" : "DATABASE_URL";
+    if (envSource === "DATABASE_URL") {
+      console.warn(
+        "[paperclip] DATABASE_URL is deprecated — rename it to PAPERCLIP_DATABASE_URL to avoid conflicts with other tools. DATABASE_URL will be removed in a future release.",
+      );
+    }
     return {
       mode: "postgres",
       connectionString: envUrl,
-      source: "DATABASE_URL",
+      source: envSource,
       configPath,
       envPath,
     };
