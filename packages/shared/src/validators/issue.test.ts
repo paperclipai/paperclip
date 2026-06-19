@@ -327,6 +327,28 @@ describe("issue validators", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it("rejects a bare monitorNextCheckAt and points at executionPolicy.monitor.nextCheckAt", () => {
+    const parsed = updateIssueSchema.safeParse({
+      monitorNextCheckAt: "2026-06-23T13:00:00.000Z",
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      const issue = parsed.error.issues.find((i) => i.path[0] === "monitorNextCheckAt");
+      expect(issue?.message).toContain("executionPolicy.monitor.nextCheckAt");
+    }
+  });
+
+  it("accepts the supported monitor wake-point via executionPolicy.monitor.nextCheckAt", () => {
+    const parsed = updateIssueSchema.parse({
+      executionPolicy: {
+        monitor: { nextCheckAt: "2026-06-23T13:00:00.000Z", notes: "Jun 23 gate" },
+      },
+    });
+
+    expect(parsed.executionPolicy?.monitor?.nextCheckAt).toBe("2026-06-23T13:00:00.000Z");
+  });
+
   it("validates agent runtime cheap model profile config without rejecting other runtime fields", () => {
     const parsed = createAgentSchema.parse({
       name: "Coder",
