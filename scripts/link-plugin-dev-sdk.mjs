@@ -11,6 +11,14 @@ const sdkDir = join(repoRoot, "packages", "plugins", "sdk");
 const scopeDir = join(packageDir, "node_modules", "@paperclipai");
 const linkTarget = join(scopeDir, "plugin-sdk");
 
+// This is a monorepo-only dev convenience (wired as `postinstall`). If the
+// resolved monorepo SDK source isn't present, we're being installed outside
+// the repo (e.g. from a registry/git URL) and `../../../scripts/` would escape
+// the package directory — so bail out as a no-op instead of executing anything.
+if (!existsSync(join(sdkDir, "package.json"))) {
+  process.exit(0);
+}
+
 if (!existsSync(join(packageDir, "package.json"))) {
   throw new Error(`No package.json found in plugin directory: ${packageDir}`);
 }
