@@ -1195,6 +1195,53 @@ export async function deleteProjectMilestone(
   `, { id });
 }
 
+export interface LinearIssueWithMilestone {
+  id: string;
+  identifier: string;
+  projectMilestone: { id: string; name: string };
+}
+
+export async function listProjectIssuesWithMilestone(
+  fetch: LinearFetch,
+  token: string,
+  projectId: string,
+  cursor?: string,
+): Promise<{ issues: LinearIssueWithMilestone[]; hasNextPage: boolean; endCursor: string | null }> {
+  const data = await gql<{
+    project: {
+      issues: {
+        nodes: Array<{ id: string; identifier: string; projectMilestone: { id: string; name: string } | null }>;
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      };
+    } | null;
+  }>(fetch, token, `
+    query ListProjectIssuesWithMilestone($projectId: String!, $after: String) {
+      project(id: $projectId) {
+        issues(
+          filter: { projectMilestone: { id: { neq: null } } }
+          first: 50
+          after: $after
+        ) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id identifier projectMilestone { id name } }
+        }
+      }
+    }
+  `, { projectId, after: cursor ?? null });
+
+  if (!data.project) {
+    return { issues: [], hasNextPage: false, endCursor: null };
+  }
+  const issues = data.project.issues.nodes.filter(
+    (n): n is LinearIssueWithMilestone => n.projectMilestone !== null && n.projectMilestone !== undefined,
+  );
+  return {
+    issues,
+    hasNextPage: data.project.issues.pageInfo.hasNextPage,
+    endCursor: data.project.issues.pageInfo.endCursor,
+  };
+}
+
 export function parseLinearIssueRef(
   ref: string,
 ): { identifier: string } | null {

@@ -1252,6 +1252,79 @@ const plugin = definePlugin({
         }
       }
 
+      // Phase 1.5: Linear → Paperclip issue-membership backfill.
+      // For each project link, fetch Linear issues that have a projectMilestone set
+      // and stamp the corresponding PC milestoneId where it is currently null.
+      // Idempotent: skips issues whose milestoneId is already set.
+      let membershipBackfilled = 0;
+      let membershipSkipped = 0;
+      projectLinkOffset = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const page = await ctx.state.list({
+          scopeKind: "instance",
+          namespace: "default",
+          stateKeyPrefix: STATE_KEYS.projectLinkPrefix,
+          limit: 50,
+          offset: projectLinkOffset,
+        });
+        if (page.entries.length === 0) break;
+        projectLinkOffset += page.entries.length;
+
+        for (const entry of page.entries) {
+          if (!isProjectLink(entry.value)) continue;
+          if (entry.value.paperclipCompanyId !== companyId) continue;
+
+          let cursor: string | null = null;
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            const { issues: linearIssues, hasNextPage, endCursor } =
+              await linear.listProjectIssuesWithMilestone(
+                ctx.http.fetch.bind(ctx.http), token, entry.value.linearProjectId, cursor ?? undefined,
+              );
+            for (const li of linearIssues) {
+              const milestoneLink = await sync.getMilestoneLinkByLinear(ctx, li.projectMilestone.id);
+              if (!milestoneLink) {
+                ctx.logger.warn(
+                  `reconcile-milestones phase 1.5: skipping ${li.identifier} — Linear milestone ${li.projectMilestone.id} (${li.projectMilestone.name}) has no PC mapping`,
+                );
+                membershipSkipped++;
+                continue;
+              }
+              const issueLink = await sync.getLinkByLinear(ctx, li.id);
+              if (!issueLink) {
+                ctx.logger.debug(`reconcile-milestones phase 1.5: skipping ${li.identifier} — no PC issue link`);
+                membershipSkipped++;
+                continue;
+              }
+              const pcIssue = await ctx.issues.get(issueLink.paperclipIssueId, companyId);
+              if (!pcIssue) {
+                ctx.logger.debug(`reconcile-milestones phase 1.5: skipping ${li.identifier} — PC issue ${issueLink.paperclipIssueId} not found`);
+                membershipSkipped++;
+                continue;
+              }
+              if (pcIssue.milestoneId) {
+                // Already set — idempotent skip.
+                membershipSkipped++;
+                continue;
+              }
+              await ctx.issues.update(
+                issueLink.paperclipIssueId,
+                { milestoneId: milestoneLink.paperclipMilestoneId } as Parameters<typeof ctx.issues.update>[1],
+                companyId,
+              );
+              membershipBackfilled++;
+            }
+            if (!hasNextPage || !endCursor) break;
+            cursor = endCursor;
+            await new Promise((r) => setTimeout(r, 150));
+          }
+
+          await new Promise((r) => setTimeout(r, 150));
+        }
+      }
+      ctx.logger.info(`Milestone reconcile phase 1.5 done: ${membershipBackfilled} PC issues stamped, ${membershipSkipped} skipped`);
+
       // Phase 2: Paperclip → Linear sync.
       // Walk all Paperclip milestones and create any that are missing in Linear.
       const pcMilestones = await ctx.milestones.list({ companyId });
@@ -1299,8 +1372,8 @@ const plugin = definePlugin({
         }
       }
 
-      ctx.logger.info(`Milestone reconcile done: ${reconciled} reconciled, ${imported} imported from Linear, ${created} pushed to Linear`);
-      return { reconciled, created, imported };
+      ctx.logger.info(`Milestone reconcile done: ${reconciled} reconciled, ${imported} imported from Linear, ${created} pushed to Linear, ${membershipBackfilled} issue memberships backfilled`);
+      return { reconciled, created, imported, membershipBackfilled };
     });
 
     // One-time bounded backfill: write Paperclip back-links for already-mirrored
