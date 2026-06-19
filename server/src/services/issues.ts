@@ -5005,11 +5005,15 @@ export function issueService(db: Db) {
         watchdogActorRunId,
         ...issueData
       } = data;
-      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      const experimentalSettings = await instanceSettings.getExperimental();
+      const isolatedWorkspacesEnabled = experimentalSettings.enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
+      }
+      if (!experimentalSettings.enablePrLinks && issueData.prLinks !== undefined) {
+        throw unprocessable("PR links are not enabled");
       }
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
@@ -5274,11 +5278,15 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
-      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      const experimentalSettings = await instanceSettings.getExperimental();
+      const isolatedWorkspacesEnabled = experimentalSettings.enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
+      }
+      if (!experimentalSettings.enablePrLinks && issueData.prLinks !== undefined) {
+        throw unprocessable("PR links are not enabled");
       }
 
       if (issueData.status) {

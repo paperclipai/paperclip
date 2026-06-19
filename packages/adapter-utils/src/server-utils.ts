@@ -507,6 +507,7 @@ type PaperclipWakePayload = {
   missingCount: number;
   truncated: boolean;
   fallbackFetchNeeded: boolean;
+  prLinksEnabled: boolean;
 };
 
 function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null {
@@ -816,6 +817,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     missingCount: asNumber(commentWindow.missingCount, 0),
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
+    prLinksEnabled: asBoolean(payload.prLinksEnabled, false),
   };
 }
 
@@ -891,6 +893,11 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.prLinksEnabled && normalized.issue) {
+    lines.push(
+      "- pr links: this company has the **PR links** experimental feature enabled. Whenever you open a pull request while working this task, you MUST also add it to the task's `prLinks` so it shows in the right-hand PRs panel — don't rely on pasting the URL in a comment. `prLinks` is a full-list replace: read the issue's current `prLinks` first (`GET /api/issues/{issueId}` or heartbeat context), append `{ \"url\": \"<pr-url>\", \"title\": \"<short title>\" }`, then `PATCH /api/issues/{issueId}` with the complete array (existing entries + the new one) so earlier PRs are not dropped. The server preserves each link's fetched status by URL. Do this in the same heartbeat you create the PR, and include the `X-Paperclip-Run-Id` header.",
+    );
   }
   if (normalized.issue?.workMode === "planning" && !normalized.taskWatchdog) {
     const hasWakeComments = normalized.comments.length > 0;

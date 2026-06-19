@@ -280,6 +280,38 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(persisted?.assigneeAgentId).toBe(activeAgentId);
   });
 
+  it("rejects PR links on create when the experimental flag is disabled", async () => {
+    const companyId = await seedAssignableAgentCompany();
+
+    await expect(svc.create(companyId, {
+      title: "Flag-gated PR links",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      prLinks: [{ url: "https://github.com/acme/repo/pull/42", title: "PR 42" }],
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "PR links are not enabled",
+    });
+  });
+
+  it("rejects PR link updates when the experimental flag is disabled", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Flag-gated PR link updates",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.update(issue.id, {
+      prLinks: [{ url: "https://github.com/acme/repo/pull/43", title: "PR 43" }],
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "PR links are not enabled",
+    });
+  });
+
   it("rejects checkout by a terminated agent before assigning the issue", async () => {
     const companyId = await seedAssignableAgentCompany();
     const terminatedAgentId = randomUUID();

@@ -2751,7 +2751,12 @@ export async function buildPaperclipWakePayload(input: {
       })))
     : [];
 
+  const prLinksEnabled = issueSummary
+    ? (await instanceSettingsService(input.db).getExperimental()).enablePrLinks === true
+    : false;
+
   return {
+    prLinksEnabled,
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     issue: issueSummary
       ? {

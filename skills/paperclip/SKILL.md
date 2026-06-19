@@ -314,7 +314,7 @@ For commands, response fields, and MCP tools, read:
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
 - **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
-- **Auto-link PRs to the task**: whenever you open a pull request as part of working on a task, you MUST also add it to that task's `prLinks` so it shows in the right-hand **PRs** panel — don't rely on just pasting the URL in a comment. `prLinks` is a full-list replace, so read the issue's current `prLinks` first (`GET /api/issues/{issueId}` or heartbeat-context), append `{ "url": "<pr-url>", "title": "<short title>" }`, then `PATCH /api/issues/{issueId}` with the **complete** array (existing entries + the new one) so earlier PRs are not dropped. The server preserves each link's fetched status by URL. Do this in the same heartbeat you create the PR, and include the `X-Paperclip-Run-Id` header.
+- **Auto-link PRs to the task** (only when the **PR links** experimental feature is enabled): this is gated per-company and surfaced as a `pr links:` directive in the wake payload — follow it only when that line is present. Companies without the feature must not maintain `prLinks`. The directive tells you to append each PR you open to the task's `prLinks` (full-list replace) so it shows in the right-hand **PRs** panel.
 
 This is rule #1:
 

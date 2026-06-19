@@ -646,6 +646,48 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("named unblock owner/action");
   });
 
+  it("emits the PR-links directive only when the experimental feature is enabled", () => {
+    const basePayload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-820",
+        title: "Add PR link",
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const disabledPrompt = renderPaperclipWakePrompt(basePayload);
+    expect(disabledPrompt).not.toContain("- pr links:");
+
+    const enabledPrompt = renderPaperclipWakePrompt({ ...basePayload, prLinksEnabled: true });
+    expect(enabledPrompt).toContain("- pr links:");
+    expect(enabledPrompt).toContain("PR links");
+    expect(enabledPrompt).toContain("add it to the task's `prLinks`");
+
+    // Gated on an issue being present, not just the flag.
+    const noIssuePrompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [
+        {
+          id: "comment-1",
+          body: "hello",
+          author: { type: "user", id: "board-user-1" },
+          createdAt: "2026-06-19T16:30:00.000Z",
+        },
+      ],
+      fallbackFetchNeeded: false,
+      prLinksEnabled: true,
+    });
+    expect(noIssuePrompt).not.toContain("- pr links:");
+  });
+
   it("preserves Chinese, Japanese, and Hindi issue and comment text in scoped wake prompts", () => {
     const title = "验证中文任务";
     const commentBody = [
