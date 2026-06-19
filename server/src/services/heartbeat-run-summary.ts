@@ -92,6 +92,20 @@ export function summarizeHeartbeatRunResultJson(
   return Object.keys(summary).length > 0 ? summary : null;
 }
 
+// SAG-722 regression guard: suppress a comment that is pure JSON (leaked tool-call payload).
+function isLeakedToolCallJson(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 2) return false;
+  const first = t[0];
+  if (first !== "{" && first !== "[") return false;
+  try {
+    JSON.parse(t);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function buildHeartbeatRunIssueComment(
   resultJson: Record<string, unknown> | null | undefined,
 ): string | null {
@@ -99,10 +113,18 @@ export function buildHeartbeatRunIssueComment(
     return null;
   }
 
-  return (
+  const candidate =
     readCommentText(resultJson.summary)
     ?? readCommentText(resultJson.result)
     ?? readCommentText(resultJson.message)
-    ?? null
-  );
+    ?? null;
+
+  if (candidate && isLeakedToolCallJson(candidate)) {
+    console.error(
+      `[paperclip] SAG-722: Suppressed comment that is pure JSON (likely leaked tool-call). First 200 chars: ${candidate.slice(0, 200)}`,
+    );
+    return null;
+  }
+
+  return candidate;
 }
