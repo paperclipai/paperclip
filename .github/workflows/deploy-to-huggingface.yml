@@ -1,7 +1,14 @@
 name: Deploy Paperclip to Hugging Face
 
 on:
+  push:
+    branches:
+      - master
   workflow_dispatch:
+
+concurrency:
+  group: paperclip-hf-space-deploy
+  cancel-in-progress: true
 
 jobs:
   deploy:
