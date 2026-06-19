@@ -62,7 +62,7 @@ function redactConnectionString(raw: string): string {
     const auth = `${user}:***@`;
     return `${u.protocol}//${auth}${u.host}${u.pathname}`;
   } catch {
-    return "<invalid DATABASE_URL>";
+    return "<invalid PAPERCLIP_DATABASE_URL>";
   }
 }
 
