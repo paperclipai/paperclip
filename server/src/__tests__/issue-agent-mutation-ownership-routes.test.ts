@@ -988,6 +988,20 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.body.error).toBe("Issue is checked out by another agent");
   });
 
+  it("rejects agent PATCH on a user-assigned issue (assigneeUserId set, assigneeAgentId null)", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "todo", assigneeAgentId: null, assigneeUserId: "some-user-id" }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Unauthorized update" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Cannot mutate a user-assigned issue as an agent");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("rejects peer-agent status updates that would clear a recovery action they do not own", async () => {
     mockIssueService.getById.mockResolvedValue(
       makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),
@@ -1000,7 +1014,7 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "todo" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agent cannot resolve another owner's recovery action");
+    expect(res.body.error).toBe("Cannot mutate a user-assigned issue as an agent");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
@@ -1022,16 +1036,16 @@ describe("agent issue mutation checkout ownership", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agent cannot resolve another owner's recovery action");
+    expect(res.body.error).toBe("Cannot mutate a user-assigned issue as an agent");
     expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
   });
 
-  it("allows the named recovery owner to resolve a board-owned source issue", async () => {
+  it("allows the named recovery owner to resolve an unassigned source issue", async () => {
     mockIssueService.getById.mockResolvedValue(
-      makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),
+      makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: null }),
     );
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),
+      ...makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: null }),
       ...patch,
     }));
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({

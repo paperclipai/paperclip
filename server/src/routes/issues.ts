@@ -1765,6 +1765,25 @@ export function issueRoutes(
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
     }
+    // Named recovery owners may resolve board-owned issues even when
+    // assigneeUserId is set (the issue is technically "user-assigned").
+    // Check for an active recovery action where this agent is the owner.
+    // Errors are silently ignored for graceful degradation — if we cannot
+    // read recovery state we fall through to the normal assignee checks.
+    if (actorAgentId) {
+      try {
+        const activeRecovery = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+        if (activeRecovery && activeRecovery.ownerType === "agent" && activeRecovery.ownerAgentId === actorAgentId) {
+          return true;
+        }
+      } catch {
+        // Graceful degradation: proceed with normal checks if recovery state is unreadable.
+      }
+    }
+    if (issue.assigneeUserId != null) {
+      res.status(403).json({ error: "Cannot mutate a user-assigned issue as an agent" });
+      return false;
+    }
     if (issue.assigneeAgentId === null) {
       return true;
     }
