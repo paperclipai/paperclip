@@ -261,8 +261,13 @@ const claudeLocalAdapter: ServerAdapterModule = {
         };
       }
     )?.agent;
-    const agentId =
+    const rawAgentId =
       a?.id ?? a?.agentId ?? (ctx as { agentId?: string })?.agentId;
+    // Strip CR/LF and bound length to prevent HTTP header injection — agentId is
+    // interpolated into ANTHROPIC_CUSTOM_HEADERS which is forwarded as a header.
+    const agentId = rawAgentId
+      ? String(rawAgentId).replace(/[\r\n]/g, "").trim().slice(0, 256)
+      : undefined;
     if (!agentId || !a) return claudeExecute(ctx);
     const cfg = (a.adapterConfig ?? {}) as Record<string, unknown>;
     const env = (cfg.env ?? {}) as Record<string, string>;
