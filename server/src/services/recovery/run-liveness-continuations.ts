@@ -8,6 +8,12 @@ import { RECOVERY_REASON_KINDS } from "./origins.js";
 export const RUN_LIVENESS_CONTINUATION_REASON = RECOVERY_REASON_KINDS.runLivenessContinuation;
 export const DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS = 2;
 
+/** Termination modes that must not enqueue liveness continuations or resume children. */
+export const ABNORMAL_TERMINATION_ERROR_CODES = new Set([
+  "process_detached",
+  "run_reconciler",
+]);
+
 const ACTIONABLE_LIVENESS_STATES = new Set<RunLivenessState>(["plan_only", "empty_response"]);
 const CONTINUATION_ACTIVE_ISSUE_STATUSES = new Set(["todo", "in_progress"]);
 // A prior adapter error should not permanently suppress bounded liveness
@@ -15,7 +21,10 @@ const CONTINUATION_ACTIVE_ISSUE_STATUSES = new Set(["todo", "in_progress"]);
 const CONTINUATION_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
 const IDEMPOTENT_WAKE_STATUSES = ["queued", "deferred_issue_execution", "completed"];
 
-type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
+type HeartbeatRunRow = Pick<
+  typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "agentId" | "continuationAttempt" | "status" | "error" | "errorCode" | "resultJson"
+>;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
   "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "executionState" | "projectId"
@@ -40,6 +49,36 @@ export type RunContinuationDecision =
       kind: "skip";
       reason: string;
     };
+
+function readResultObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/** SIGTERM / exit-143 / detach-before-commit must not spawn resume continuations. */
+export function isAbnormalRunTermination(
+  run: Pick<HeartbeatRunRow, "status" | "error" | "errorCode" | "resultJson">,
+): boolean {
+  if (run.errorCode && ABNORMAL_TERMINATION_ERROR_CODES.has(run.errorCode)) return true;
+
+  const result = readResultObject(run.resultJson);
+  if (result.signal === "SIGTERM") return true;
+  const exitCode = typeof result.exitCode === "number" ? result.exitCode : Number.parseInt(String(result.exitCode ?? ""), 10);
+  if (exitCode === 143) return true;
+
+  const error = (run.error ?? "").toLowerCase();
+  if (
+    run.status === "failed" &&
+    (error.includes("sigterm") ||
+      error.includes("supervisor_sigterm") ||
+      error.includes("process_detached"))
+  ) {
+    return true;
+  }
+
+  return false;
+}
 
 export function readContinuationAttempt(value: unknown): number {
   const numeric = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
@@ -104,6 +143,13 @@ export function decideRunLivenessContinuation(input: {
     idempotentWakeExists,
   } = input;
   const maxAttempts = input.maxAttempts ?? DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS;
+
+  if (isAbnormalRunTermination(run)) {
+    return {
+      kind: "skip",
+      reason: "abnormal termination (SIGTERM/detach-before-commit) is not actionable for continuation",
+    };
+  }
 
   if (!livenessState || !ACTIONABLE_LIVENESS_STATES.has(livenessState)) {
     return { kind: "skip", reason: "liveness state is not actionable for continuation" };

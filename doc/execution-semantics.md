@@ -492,6 +492,23 @@ The stranded-work pass closes the gap where issue state survives a crash but the
 
 An active run can still be unhealthy even when its process is `running`. Paperclip treats prolonged output silence as a watchdog signal, not as proof that the run is failed.
 
+### Automated run-finalization reconciler (Layer A)
+
+When `runReconciler.enabled` is true, Paperclip also runs an automated run-finalization reconciler alongside the existing recovery loop. This is the control-plane fix for leaked checkout locks when a detached child outlives a lost in-memory supervisor handle.
+
+The reconciler:
+
+- writes a re-attachable PID file at spawn (`/var/run/paperclip/run-<runId>.pid`) so a later sweep can rediscover the child after handle loss
+- periodically scans every `running` run without a live in-memory handle
+- finalizes a run when its tracked child PID is dead **or** observable output has been stagnant longer than the configured TTL (default 30 minutes)
+- on finalization: marks the run `failed`, clears checkout/execution locks, posts a system comment, and returns the source issue to `todo` without queueing an automatic re-wake
+- on supervisor `SIGTERM`, finalizes owned in-memory runs before exit so graceful shutdown itself releases locks
+- exports Prometheus gauges consumed by fleet alerting: `paperclip_run_active`, `paperclip_run_last_output_age_seconds`, and `paperclip_run_child_pid_alive`
+
+This automated path is intentionally terminal and idempotent. It does not replace the manual silent-active-run review workflow for ambiguous cases; it closes the lock-leak failure mode where a stale active run row keeps an issue checkout forever.
+
+When `runReconciler.enabled` is false, Paperclip preserves the pre-remediation behavior exactly and relies on the manual watchdog/review path documented below.
+
 The recovery service owns this contract:
 
 - classify active-run output silence as `ok`, `suspicious`, `critical`, `snoozed`, or `not_applicable`

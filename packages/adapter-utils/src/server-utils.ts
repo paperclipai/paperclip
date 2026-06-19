@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
@@ -72,6 +72,49 @@ function signalRunningProcess(
   }
   if (!running.child.killed) {
     running.child.kill(signal);
+  }
+}
+
+/** Maximum ms to block the event loop per git autosave command.
+ * There are up to 4 sequential spawnSync calls; worst-case total = 4 × this value. */
+const WIP_AUTOSAVE_TIMEOUT_MS = 5_000;
+
+export function commitDirtyWorkspaceWipAutosave(input: {
+  cwd: string;
+  runId: string;
+  issueId?: string | null;
+  env?: Record<string, string>;
+}): boolean {
+  const mergedEnv = { ...process.env, ...input.env };
+  const spawnOpts = { cwd: input.cwd, env: mergedEnv, encoding: "utf8" as const, timeout: WIP_AUTOSAVE_TIMEOUT_MS };
+
+  const insideWorkTree = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], spawnOpts);
+  if (insideWorkTree.stdout?.trim() !== "true") return false;
+
+  const status = spawnSync("git", ["status", "--porcelain"], spawnOpts);
+  if (!status.stdout?.trim()) return false;
+
+  const issueId = input.issueId?.trim() || "unknown";
+  const message = `WIP: detach autosave ${issueId} ${input.runId}`;
+  spawnSync("git", ["add", "-A"], spawnOpts);
+  const commit = spawnSync("git", ["commit", "--no-verify", "-m", message], spawnOpts);
+  return commit.status === 0;
+}
+
+function autosaveWorkspaceBeforeSignal(
+  cwd: string,
+  runId: string,
+  env: Record<string, string>,
+) {
+  try {
+    commitDirtyWorkspaceWipAutosave({
+      cwd,
+      runId,
+      issueId: env.PAPERCLIP_ISSUE_ID ?? env.PAPERCLIP_TASK_ID ?? null,
+      env,
+    });
+  } catch {
+    // Best-effort autosave; never block process termination.
   }
 }
 
@@ -2241,6 +2284,7 @@ export async function runChildProcess(
             terminalCleanupTimer = null;
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
+            autosaveWorkspaceBeforeSignal(opts.cwd, runId, mergedEnv as Record<string, string>);
             signalRunningProcess({ child, processGroupId }, "SIGTERM");
             terminalCleanupKillTimer = setTimeout(() => {
               terminalCleanupKillTimer = null;
@@ -2254,6 +2298,7 @@ export async function runChildProcess(
             ? setTimeout(() => {
                 timedOut = true;
                 clearTerminalCleanupTimers();
+                autosaveWorkspaceBeforeSignal(opts.cwd, runId, mergedEnv as Record<string, string>);
                 signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(() => {
                   signalRunningProcess({ child, processGroupId }, "SIGKILL");
