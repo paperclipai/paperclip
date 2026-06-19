@@ -75,7 +75,7 @@ PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=../data/pc \
 
 If you change host port or use a non-local domain, set `PAPERCLIP_PUBLIC_URL` to the external URL you will use in browser/auth flows.
 
-Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs. Note that new/updated `codex_local` agents block host-level `OPENAI_API_KEY` inheritance; operators should configure `OPENAI_API_KEY` directly on the agent's adapter environment or seed the managed Codex home.
+Pass credentials (such as `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`) to enable local adapter runs. Note that for security and company boundary isolation, new/updated `codex_local` agents block host-level `OPENAI_API_KEY` inheritance; operators should configure `OPENAI_API_KEY` directly on the agent's adapter environment or seed the managed Codex home, rather than passing it to the container.
 
 ### Full stack (with PostgreSQL)
 
