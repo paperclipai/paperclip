@@ -190,11 +190,18 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "budget_exhausted",
   "issue_paused",
   "issue_dependencies_blocked",
+  // Anthropic OAuth / claude_local auth failure: non-retryable (host-level, not transient).
+  // Escalates to blocked so a human/board can intervene rather than storm the recovery path.
+  "claude_auth_required",
 ]);
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+
+// After this many consecutive dispatches to the recovery owner, stop re-dispatching and
+// switch to board_escalation. Caps the O(attempts × stranded-issues) storm amplifier.
+export const MAX_SOURCE_SCOPED_RECOVERY_ATTEMPTS = 3;
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
@@ -2339,6 +2346,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     if (input.recoveryCause === "workspace_validation_failed") return;
     if (!input.action.ownerAgentId) return;
+
+    // Fail-closed cap: if the recovery owner has been dispatched too many times consecutively
+    // without resolving the issue, switch to board_escalation to stop the amplifier loop.
+    if (input.action.attemptCount > MAX_SOURCE_SCOPED_RECOVERY_ATTEMPTS) {
+      await db
+        .update(issueRecoveryActions)
+        .set({ wakePolicy: { type: "board_escalation", reason: "max_source_scoped_recovery_attempts_exceeded" } })
+        .where(eq(issueRecoveryActions.id, input.action.id));
+      return;
+    }
+
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",

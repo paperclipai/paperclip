@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
@@ -253,5 +254,67 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+describe("detectClaudeLoginRequired", () => {
+  it("classifies the exact Anthropic OAuth expiry error string from stdout as requiresLogin", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("classifies 'Invalid authentication credentials' in parsed result as requiresLogin", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: { is_error: true, result: "Invalid authentication credentials" },
+        stdout: "",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("classifies 'failed to authenticate' in stderr as requiresLogin", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "",
+        stderr: "failed to authenticate with remote",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("does NOT classify rate_limit_error as requiresLogin", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: { is_error: true, result: "rate_limit_error: too many requests" },
+        stdout: "",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("does NOT classify overloaded_error as requiresLogin", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "overloaded_error: server temporarily unavailable",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("does NOT classify a benign tool-call 401 response body as requiresLogin", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "The resource returned a 401 status from the external API.",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
   });
 });

@@ -24,7 +24,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
-import { recoveryService } from "../services/recovery/service.js";
+import { MAX_SOURCE_SCOPED_RECOVERY_ATTEMPTS, recoveryService } from "../services/recovery/service.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1176,5 +1176,45 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
+  });
+
+  it("stops dispatching recovery owner and switches to board_escalation after MAX_SOURCE_SCOPED_RECOVERY_ATTEMPTS", async () => {
+    const { sourceIssue, managerId } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const failedRunBase = {
+      id: randomUUID(),
+      agentId: sourceIssue.assigneeAgentId!,
+      status: "failed" as const,
+      error: "adapter failed",
+      errorCode: "adapter_failed",
+      contextSnapshot: { retryReason: "assignment_recovery" },
+      livenessState: "needs_followup" as const,
+    };
+
+    // Call escalateStrandedAssignedIssue MAX_SOURCE_SCOPED_RECOVERY_ATTEMPTS + 1 times.
+    // The first MAX calls should dispatch the owner; the final call must NOT dispatch.
+    for (let i = 0; i <= MAX_SOURCE_SCOPED_RECOVERY_ATTEMPTS; i += 1) {
+      await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: { ...failedRunBase, id: randomUUID() },
+        comment: "Continuation recovery failed.",
+      });
+    }
+
+    // Exactly MAX_SOURCE_SCOPED_RECOVERY_ATTEMPTS enqueues should have fired; the +1 call must be suppressed.
+    expect(enqueueWakeup).toHaveBeenCalledTimes(MAX_SOURCE_SCOPED_RECOVERY_ATTEMPTS);
+
+    // The recovery action's wakePolicy should have been switched to board_escalation.
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(action?.wakePolicy).toMatchObject({
+      type: "board_escalation",
+      reason: "max_source_scoped_recovery_attempts_exceeded",
+    });
   });
 });
