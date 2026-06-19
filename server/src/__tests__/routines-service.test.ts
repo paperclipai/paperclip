@@ -495,6 +495,26 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(restoredTrigger?.publicId).not.toBe(created.trigger.publicId);
   });
 
+  it("persists custom schedule cron expressions exactly", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const cronExpression = "0 8-18/2 * * 1-5";
+
+    const created = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "Business hours",
+      cronExpression,
+      timezone: "UTC",
+    }, {});
+
+    expect(created.trigger.cronExpression).toBe(cronExpression);
+
+    const storedTrigger = await svc.getTrigger(created.trigger.id);
+    expect(storedTrigger?.cronExpression).toBe(cronExpression);
+
+    const [listed] = await svc.list(companyId);
+    expect(listed?.triggers[0]?.cronExpression).toBe(cronExpression);
+  });
+
   it("blocks agents from restoring routine revisions assigned to another agent", async () => {
     const { companyId, routine, svc } = await seedFixture();
     const otherAgentId = randomUUID();
