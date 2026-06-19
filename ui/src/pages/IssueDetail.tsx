@@ -1702,8 +1702,9 @@ export function IssueDetail() {
     [issuePanelKey],
   );
   const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(childIssuesLoading, childIssues.length);
+  const canCreateSubIssues = Boolean(issue && !issue.parentId);
   const openNewSubIssue = useCallback(() => {
-    if (!issue) return;
+    if (!issue || issue.parentId) return;
     openNewIssue(buildSubIssueDefaultsForViewer(issue, currentUserId));
   }, [
     currentUserId,
@@ -2785,7 +2786,7 @@ export function IssueDetail() {
       <IssueProperties
         issue={panelIssue}
         childIssues={panelChildIssues}
-        onAddSubIssue={openNewSubIssue}
+        onAddSubIssue={panelIssue.parentId ? undefined : openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
       />
     );
@@ -3841,22 +3842,23 @@ export function IssueDetail() {
             issueLinkState={resolvedIssueDetailState ?? location.state}
             searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
             searchWithinLoadedIssues
-            baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
-            createIssueLabel="Sub-issue"
+            allowCreateIssue={canCreateSubIssues}
+            baseCreateIssueDefaults={canCreateSubIssues ? buildSubIssueDefaultsForViewer(issue, currentUserId) : undefined}
+            createIssueLabel={canCreateSubIssues ? "Sub-issue" : undefined}
             defaultSortField="workflow"
             showProgressSummary
             parentIssueIdForCostSummary={issue.id}
             onUpdateIssue={handleChildIssueUpdate}
           />
         </div>
-      ) : (
+      ) : canCreateSubIssues ? (
         <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
           <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shrink-0 shadow-none">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
             New Sub-issue
           </Button>
         </div>
-      )}
+      ) : null}
 
       <IssueDocumentsSection
         issue={issue}
@@ -4330,7 +4332,7 @@ export function IssueDetail() {
               <IssueProperties
                 issue={issue}
                 childIssues={childIssues}
-                onAddSubIssue={openNewSubIssue}
+                onAddSubIssue={issue.parentId ? undefined : openNewSubIssue}
                 onUpdate={(data) => updateIssue.mutate(data)}
                 inline
               />

@@ -78,7 +78,7 @@ const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
-export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
+export const MAX_DIRECT_CHILD_ISSUES_PER_PARENT = 10;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
@@ -264,6 +264,40 @@ function isHumanControlWorkItemType(value: unknown) {
 function assertAgentAssignmentAllowedForWorkItem(workItemType: unknown, assigneeAgentId: string | null | undefined) {
   if (!assigneeAgentId || !isHumanControlWorkItemType(workItemType)) return;
   throw unprocessable("Initiatives and human tasks cannot be assigned to AI agents. Create a linked AI execution issue instead.");
+}
+
+async function assertChildIssueCreationAllowed(
+  dbOrTx: DbReader,
+  companyId: string,
+  parentIssueId: string,
+) {
+  const parent = await dbOrTx
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      parentId: issues.parentId,
+    })
+    .from(issues)
+    .where(and(eq(issues.id, parentIssueId), eq(issues.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!parent) throw notFound("Parent issue not found");
+  if (parent.parentId) {
+    throw unprocessable(
+      "Execution lanes cannot create sub-issues. Paperclip supports only one child level under a main parent issue.",
+    );
+  }
+
+  const [{ childCount }] = await dbOrTx
+    .select({ childCount: sql<number>`count(*)::int` })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.parentId, parent.id)));
+  if (childCount >= MAX_DIRECT_CHILD_ISSUES_PER_PARENT) {
+    throw unprocessable(
+      `Parent issue already has the maximum ${MAX_DIRECT_CHILD_ISSUES_PER_PARENT} direct execution lanes.`,
+    );
+  }
+
+  return parent;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -3117,14 +3151,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
-
-      const [{ childCount }] = await db
-        .select({ childCount: sql<number>`count(*)::int` })
-        .from(issues)
-        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parent.id)));
-      if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
-        throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
-      }
+      await assertChildIssueCreationAllowed(db, parent.companyId, parent.id);
 
       const {
         acceptanceCriteria,
@@ -3194,6 +3221,9 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        if (issueData.parentId) {
+          await assertChildIssueCreationAllowed(tx, companyId, issueData.parentId);
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;

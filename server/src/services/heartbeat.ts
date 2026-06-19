@@ -2281,7 +2281,7 @@ export function buildPaperclipTaskMarkdown(input: {
         directive = "Update the plan only. Do not write code or perform implementation work.";
       }
       if (acceptedPlanContinuation) {
-        directive = "Create child issues from the approved plan only. Do not write code or perform implementation work on the planning issue.";
+        directive = "Create direct child execution lanes from the approved plan only. Do not write code or perform implementation work on the planning issue, and never create grandchildren.";
       }
       lines.push(
         `- Work mode: ${quoteTaskScalar("planning")}`,
