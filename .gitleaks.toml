@@ -1,0 +1,17 @@
+title = "Gitleaks config for paperclip"
+
+[allowlist]
+description = "Allow test fixtures and documentation examples that contain JWT/secret-shaped values that are not real credentials"
+paths = [
+  # Test fixtures contain intentional JWT-shaped strings for redaction testing
+  '''server/src/__tests__/redaction\.test\.ts''',
+  '''server/src/__tests__/heartbeat-active-run-output-watchdog\.test\.ts''',
+  # Canonical AWS example account IDs (123456789012) used throughout AWS docs
+  '''server/src/__tests__/secrets-service\.test\.ts''',
+  # Documentation examples
+  '''docs/deploy/secrets\.md''',
+  # Kubernetes adapter test fixtures
+  '''packages/adapters/kubernetes-execution/test/''',
+  # Storybook static build artifacts (minified bundles; not source)
+  '''ui/storybook-static/''',
+]
