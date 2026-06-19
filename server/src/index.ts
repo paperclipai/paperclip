@@ -27,6 +27,7 @@ import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import { dispatchUnassignedTodo, dispatcherLiteConfigFromEnv } from "./services/dispatcher-lite.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
@@ -652,6 +653,23 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
+      // Dispatcher-Lite (ROC P0): assign un-owned todo to healthy idle agents (flag-gated, default off).
+      void (async () => {
+        const dispatcherLiteConfig = dispatcherLiteConfigFromEnv();
+        if (!dispatcherLiteConfig.enabled) return;
+        try {
+          const dispatched = await dispatchUnassignedTodo(
+            db as any,
+            { wakeup: heartbeat.wakeup },
+            dispatcherLiteConfig,
+          );
+          if (dispatched.assigned > 0 || dispatched.skipped > 0) {
+            logger.info({ ...dispatched }, "dispatcher-lite pass");
+          }
+        } catch (err) {
+          logger.error({ err }, "dispatcher-lite pass failed");
+        }
+      })();
     }, config.heartbeatSchedulerIntervalMs);
 
     // ROCAA-25 Slice 3: daily Tier mix digest -> OPS Slack webhook.
