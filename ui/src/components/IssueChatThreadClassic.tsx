@@ -107,6 +107,7 @@ import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { IssueThreadInteractionCardClassic } from "./IssueThreadInteractionCardClassic";
 import { AgentIcon } from "./AgentIconPicker";
+import { RunStatusBadge } from "./interrupt-handoff/InterruptHandoffViews";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import {
   captureComposerViewportSnapshot,
@@ -791,36 +792,6 @@ export function resolveIssueChatHumanAuthor(args: {
     authorName: resolvedAuthorName,
     avatarUrl: profile?.image ?? null,
   };
-}
-
-function formatRunStatusLabel(status: string) {
-  switch (status) {
-    case "timed_out":
-      return "timed out";
-    default:
-      return status.replace(/_/g, " ");
-  }
-}
-
-function runStatusClass(status: string) {
-  switch (status) {
-    case "succeeded":
-      return "text-green-700 dark:text-green-300";
-    case "failed":
-    case "error":
-      return "text-red-700 dark:text-red-300";
-    case "timed_out":
-      return "text-orange-700 dark:text-orange-300";
-    case "running":
-      return "text-cyan-700 dark:text-cyan-300";
-    case "queued":
-    case "pending":
-      return "text-amber-700 dark:text-amber-300";
-    case "cancelled":
-      return "text-muted-foreground";
-    default:
-      return "text-foreground";
-  }
 }
 
 function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
@@ -2717,9 +2688,10 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
               >
                 {runId.slice(0, 8)}
               </Link>
-              <span className={cn("font-medium", runStatusClass(runStatus))}>
-                {formatRunStatusLabel(runStatus)}
-              </span>
+              <RunStatusBadge
+                status={runStatus}
+                operatorInterrupted={custom.runOperatorInterrupted === true}
+              />
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
                 className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"

@@ -353,6 +353,57 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("labels operator-interrupted cancelled runs as interrupted while preserving plain cancelled runs", () => {
+    const root = createRoot(container);
+    const linkedRuns: IssueChatLinkedRun[] = [
+      {
+        runId: "run-interrupted",
+        status: "cancelled",
+        agentId: "agent-1",
+        agentName: "CodexCoder",
+        createdAt: new Date("2026-04-06T12:00:00.000Z"),
+        startedAt: new Date("2026-04-06T12:00:00.000Z"),
+        finishedAt: new Date("2026-04-06T12:01:00.000Z"),
+        errorCode: "operator_interrupted",
+        resultJson: { operatorInterrupted: true, interruptionSource: "issue_comment_interrupt" },
+      },
+      {
+        runId: "run-cancelled",
+        status: "cancelled",
+        agentId: "agent-1",
+        agentName: "CodexCoder",
+        createdAt: new Date("2026-04-06T12:02:00.000Z"),
+        startedAt: new Date("2026-04-06T12:02:00.000Z"),
+        finishedAt: new Date("2026-04-06T12:03:00.000Z"),
+        resultJson: { stopReason: "cancelled" },
+      },
+    ];
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={linkedRuns}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("interrupted by board after 1 minute");
+    expect(container.textContent).toContain("cancelled after 1 minute");
+    expect(container.textContent).not.toContain("run interrupted");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("falls back to execCommand for comment copy actions in insecure contexts", async () => {
     const clipboardWrite = vi.fn(async () => {
       throw new Error("Clipboard API blocked");
