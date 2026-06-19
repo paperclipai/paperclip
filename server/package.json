@@ -34,6 +34,11 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
+    "generate:build-info": "node ../scripts/generate-build-info.mjs",
+    "predev": "pnpm run generate:build-info",
+    "predev:watch": "pnpm run generate:build-info",
+    "prebuild": "pnpm run generate:build-info",
+    "pretypecheck": "pnpm run generate:build-info",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
     "build": "tsc && mkdir -p dist/onboarding-assets && cp -R src/onboarding-assets/. dist/onboarding-assets/",
     "prepack": "pnpm run prepare:ui-dist",
