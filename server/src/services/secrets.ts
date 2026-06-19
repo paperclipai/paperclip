@@ -203,6 +203,15 @@ export type RuntimeSecretManifestEntry = {
   errorCode?: string | null;
 };
 
+export type MissingRuntimeBinding = {
+  consumerType: SecretBindingTargetType;
+  consumerId: string;
+  configPath: string;
+  envKey: string;
+  secretId: string;
+  secretName: string | null;
+};
+
 type RuntimeSecretResolution = {
   value: string;
   manifestEntry: RuntimeSecretManifestEntry;
@@ -2350,6 +2359,46 @@ export function secretService(db: Db) {
         }
       }
       return { env: resolved, secretKeys, manifest };
+    },
+
+    // Pre-dispatch validation: list declared secret refs in an env-like config
+    // that have no binding for the given consumer, WITHOUT resolving any secret
+    // values. Callers use this to surface a configuration-incomplete blocker
+    // before a run is dispatched instead of letting resolution throw mid-setup.
+    collectMissingRuntimeBindings: async (
+      companyId: string,
+      envValue: unknown,
+      context: Omit<SecretConsumerContext, "configPath">,
+    ): Promise<MissingRuntimeBinding[]> => {
+      const record = asRecord(envValue);
+      if (!record) return [];
+      const missing: MissingRuntimeBinding[] = [];
+      for (const [key, rawBinding] of Object.entries(record)) {
+        if (!ENV_KEY_RE.test(key)) continue;
+        const parsed = envBindingSchema.safeParse(rawBinding);
+        if (!parsed.success) continue;
+        const binding = canonicalizeBinding(parsed.data as EnvBinding);
+        if (binding.type !== "secret_ref") continue;
+        const configPath = `env.${key}`;
+        const found = await getBinding({
+          companyId,
+          secretId: binding.secretId,
+          consumerType: context.consumerType,
+          consumerId: context.consumerId,
+          configPath,
+        });
+        if (found) continue;
+        const secret = await getById(binding.secretId).catch(() => null);
+        missing.push({
+          consumerType: context.consumerType,
+          consumerId: context.consumerId,
+          configPath,
+          envKey: key,
+          secretId: binding.secretId,
+          secretName: secret?.name ?? null,
+        });
+      }
+      return missing;
     },
 
     resolveAdapterConfigForRuntime: async (

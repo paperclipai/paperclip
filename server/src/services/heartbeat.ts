@@ -71,7 +71,7 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
-import { secretService } from "./secrets.js";
+import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
@@ -254,6 +254,8 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
+const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
+const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
 // Keep this in sync with local adapters that require a git workspace before launch.
 const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "acpx_local",
@@ -292,6 +294,20 @@ export class WorkspaceValidationFailure extends Error {
   constructor(message: string, resultJson: Record<string, unknown>) {
     super(message);
     this.name = "WorkspaceValidationFailure";
+    this.resultJson = resultJson;
+  }
+}
+
+// Pre-dispatch gate outcome: required secret/env bindings are missing, so the
+// run must not be dispatched. Surfaced as a configuration-incomplete blocker
+// routed to a human owner instead of N opaque dispatched-then-failed runs.
+export class ConfigurationIncompleteFailure extends Error {
+  code = CONFIGURATION_INCOMPLETE_FAILURE_CODE;
+  resultJson: Record<string, unknown>;
+
+  constructor(message: string, resultJson: Record<string, unknown>) {
+    super(message);
+    this.name = "ConfigurationIncompleteFailure";
     this.resultJson = resultJson;
   }
 }
@@ -381,8 +397,15 @@ const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64",
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
-  "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
+  "resolveAdapterConfigForRuntime" | "resolveEnvBindings" | "collectMissingRuntimeBindings"
 >;
+
+function formatMissingBindingForOperator(missing: MissingRuntimeBinding): string {
+  const secretLabel = missing.secretName
+    ? `"${missing.secretName}"`
+    : missing.secretId;
+  return `secret ${secretLabel} not bound at ${missing.consumerType} ${missing.configPath}`;
+}
 
 const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
@@ -448,6 +471,54 @@ export async function resolveExecutionRunAdapterConfig(input: {
     assertLowTrustEnvConfigAllowed(executionRunConfig.env, "agent.env");
     assertLowTrustEnvConfigAllowed(projectEnv, "project.env");
     assertLowTrustEnvConfigAllowed(routineEnv, "routine.env");
+  }
+  // Pre-dispatch binding-validation gate: detect declared secret refs that have
+  // no binding before resolving any secret value. Missing bindings short-circuit
+  // to a configuration-incomplete blocker routed to a human owner instead of a
+  // dispatched-then-failed run (which previously surfaced as opaque setup_failed).
+  if (typeof input.secretsSvc.collectMissingRuntimeBindings === "function") {
+    const missingBindings: MissingRuntimeBinding[] = [];
+    if (input.agentId) {
+      missingBindings.push(
+        ...(await input.secretsSvc.collectMissingRuntimeBindings(
+          input.companyId,
+          parseObject(executionRunConfig.env),
+          { consumerType: "agent", consumerId: input.agentId },
+        )),
+      );
+    }
+    if (projectEnv && input.projectId) {
+      missingBindings.push(
+        ...(await input.secretsSvc.collectMissingRuntimeBindings(
+          input.companyId,
+          projectEnv,
+          { consumerType: "project", consumerId: input.projectId },
+        )),
+      );
+    }
+    if (routineEnv && input.routineId) {
+      missingBindings.push(
+        ...(await input.secretsSvc.collectMissingRuntimeBindings(
+          input.companyId,
+          routineEnv,
+          { consumerType: "routine", consumerId: input.routineId },
+        )),
+      );
+    }
+    if (missingBindings.length > 0) {
+      const detail = missingBindings.map(formatMissingBindingForOperator).join("; ");
+      throw new ConfigurationIncompleteFailure(`configuration incomplete: ${detail}`, {
+        configurationIncomplete: {
+          reason: "secret_binding_missing",
+          companyId: input.companyId,
+          agentId: input.agentId ?? null,
+          issueId: input.issueId ?? null,
+          projectId: input.projectId ?? null,
+          routineId: input.routineId ?? null,
+          missingBindings,
+        },
+      });
+    }
   }
   const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
@@ -937,6 +1008,16 @@ function isWorkspaceValidationFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
   return run?.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
+}
+
+function isConfigurationIncompleteFailure(error: unknown): error is ConfigurationIncompleteFailure {
+  return error instanceof ConfigurationIncompleteFailure;
+}
+
+function isConfigurationIncompleteFailedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
+) {
+  return run?.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE;
 }
 
 async function hasGitMetadata(cwd: string | null | undefined) {
@@ -9446,7 +9527,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await getCurrentUserRedactionOptions(),
       );
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
-      const failureErrorCode = workspaceValidationFailure?.code ?? "adapter_failed";
+      const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
+      const failureErrorCode =
+        workspaceValidationFailure?.code ?? configurationIncompleteFailure?.code ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -9472,7 +9555,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
           errorCode: failureErrorCode,
           errorMessage: message,
-          resultJson: workspaceValidationFailure?.resultJson ?? null,
+          resultJson: workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
         }),
         stdoutExcerpt,
         stderrExcerpt,
@@ -9507,7 +9590,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
-        if (!isWorkspaceValidationFailedRun(livenessRun)) {
+        if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
           await finalizeIssueCommentPolicy(livenessRun, agent);
         }
         await releaseIssueExecutionAndPromote(livenessRun);
@@ -9541,16 +9624,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          // A missing secret/env binding is a known pre-dispatch configuration gap,
+          // not an opaque setup crash. Surface it with its own errorCode so the
+          // recovery path routes it to a human owner instead of looping retries.
+          const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+          const setupFailureErrorCode = configurationIncompleteSetupFailure?.code ?? "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
             error: message,
-            errorCode: "setup_failed",
+            errorCode: setupFailureErrorCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "setup_failed",
+                errorCode: setupFailureErrorCode,
                 errorMessage: message,
+                resultJson: configurationIncompleteSetupFailure?.resultJson ?? null,
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));
@@ -9583,7 +9672,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
-              if (!isWorkspaceValidationFailedRun(livenessRun)) {
+              if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
                 await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
               }
             }
@@ -9638,6 +9727,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       "Paperclip stopped before launching the local adapter because the issue workspace failed validation. " +
       `This prevents git-sensitive adapters from running in an unrelated fallback cwd.${failureSummary ?? ""} ` +
       "Moving it to `blocked` with a source-scoped recovery action so the workspace link, cwd, or git checkout can be repaired before resuming."
+    );
+  }
+
+  function buildConfigurationIncompleteRecoveryComment(input: {
+    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
+  }) {
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    return (
+      "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
+      `Resolving them as a runtime failure would only produce repeated opaque setup failures.${failureSummary ?? ""} ` +
+      "Moving it to `blocked` with a source-scoped recovery action so an operator can bind the missing secret(s) before resuming."
     );
   }
 
@@ -9761,17 +9861,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // Sibling lock cleanup is already done above; only the primary issue carries
       // the recovery surface because the comment is attached to a single issue.
       if (
-        isWorkspaceValidationFailedRun(run) &&
+        (isWorkspaceValidationFailedRun(run) || isConfigurationIncompleteFailedRun(run)) &&
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId
       ) {
+        const configurationIncomplete = isConfigurationIncompleteFailedRun(run);
         return {
           kind: "blocked" as const,
           issue,
           previousStatus: issue.status,
-          comment: buildWorkspaceValidationRecoveryComment({ latestRun: run }),
-          recoveryCause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
+          comment: configurationIncomplete
+            ? buildConfigurationIncompleteRecoveryComment({ latestRun: run })
+            : buildWorkspaceValidationRecoveryComment({ latestRun: run }),
+          recoveryCause: configurationIncomplete
+            ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+            : WORKSPACE_VALIDATION_RECOVERY_CAUSE,
         };
       }
 
@@ -10057,21 +10162,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !recoveryAgentInvokable ||
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
+        isConfigurationIncompleteFailedRun(run) ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
+        const configurationIncompleteFailure = isConfigurationIncompleteFailedRun(run);
         const comment = workspaceValidationFailure
           ? buildWorkspaceValidationRecoveryComment({ latestRun: run })
-          : buildImmediateExecutionPathRecoveryComment({
-              status: issue.status as "todo" | "in_progress",
-              latestRun: run,
-            });
+          : configurationIncompleteFailure
+            ? buildConfigurationIncompleteRecoveryComment({ latestRun: run })
+            : buildImmediateExecutionPathRecoveryComment({
+                status: issue.status as "todo" | "in_progress",
+                latestRun: run,
+              });
         return {
           kind: "blocked" as const,
           issue,
           previousStatus: issue.status,
           comment,
-          recoveryCause: workspaceValidationFailure ? WORKSPACE_VALIDATION_RECOVERY_CAUSE : undefined,
+          recoveryCause: workspaceValidationFailure
+            ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
+            : configurationIncompleteFailure
+              ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              : undefined,
         };
       }
 
@@ -10157,7 +10270,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         recoveryCause:
           promotionResult.recoveryCause === WORKSPACE_VALIDATION_RECOVERY_CAUSE
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
-            : undefined,
+            : promotionResult.recoveryCause === CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              : undefined,
       });
       return;
     }
