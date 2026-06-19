@@ -117,12 +117,12 @@ function cursorSkillsHome(): string {
   return path.join(os.homedir(), ".cursor", "skills");
 }
 
-async function buildCursorSkillsDir(config: Record<string, unknown>): Promise<string> {
+async function buildCursorSkillsDir(config: Record<string, unknown>, agentRole: string | null = null): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-skills-"));
   const target = path.join(tmp, "skills");
   await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredNames = new Set(resolvePaperclipDesiredSkillNames(config, availableEntries));
+  const desiredNames = new Set(resolvePaperclipDesiredSkillNames(config, availableEntries, agentRole));
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
     await fs.symlink(entry.source, path.join(target, entry.runtimeName));
@@ -228,7 +228,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const cursorSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredCursorSkillNames = resolvePaperclipDesiredSkillNames(config, cursorSkillEntries);
+  const desiredCursorSkillNames = resolvePaperclipDesiredSkillNames(config, cursorSkillEntries, agent.role ?? null);
   if (!executionTargetIsRemote) {
     await ensureCursorSkillsInjected(onLog, {
       skillsEntries: cursorSkillEntries.filter((entry) => desiredCursorSkillNames.includes(entry.key)),
@@ -351,7 +351,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (executionTargetIsRemote) {
     try {
-      localSkillsDir = await buildCursorSkillsDir(config);
+      localSkillsDir = await buildCursorSkillsDir(config, agent.role ?? null);
       await onLog(
         "stdout",
         `[paperclip] Syncing workspace and Cursor runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,

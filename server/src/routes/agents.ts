@@ -3419,6 +3419,7 @@ export function agentRoutes(
         id: agent.id,
         companyId: agent.companyId,
         name: agent.name,
+        role: agent.role,
         adapterType: agent.adapterType,
         adapterConfig: agent.adapterConfig,
       },

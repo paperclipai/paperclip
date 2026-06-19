@@ -129,6 +129,29 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
 ].join("\n");
 
+const MANAGER_ONLY_SKILL_KEYS = new Set([
+  "paperclipai/paperclip/paperclip-create-agent",
+  "paperclipai/paperclip/paperclip-create-plugin",
+  "paperclipai/paperclip/para-memory-files",
+  "paperclipai/paperclip/plan-ceo-review",
+  "paperclipai/paperclip/office-hours",
+  "paperclipai/paperclip/autoplan",
+]);
+
+const IC_ONLY_ROLES = new Set(["engineer", "qa"]);
+
+function isICOnlyRole(role: string | null | undefined): boolean {
+  if (!role) return false;
+  return IC_ONLY_ROLES.has(role.trim().toLowerCase());
+}
+
+function isManagerOnlyEntry(entry: { key: string; runtimeName?: string | null }): boolean {
+  if (MANAGER_ONLY_SKILL_KEYS.has(entry.key)) return true;
+  const rn = entry.runtimeName?.trim();
+  if (!rn) return false;
+  return MANAGER_ONLY_SKILL_KEYS.has(`paperclipai/paperclip/${rn}`);
+}
+
 export interface PaperclipSkillEntry {
   key: string;
   runtimeName: string;
@@ -139,6 +162,7 @@ export interface PaperclipSkillEntry {
   missingDetail?: string | null;
   required?: boolean;
   requiredReason?: string | null;
+  managerOnly?: boolean;
 }
 
 export interface PaperclipDesiredSkillEntry {
@@ -1400,14 +1424,16 @@ export async function listPaperclipSkillEntries(
     return Promise.all(dirs.map(async (entry) => {
       const skillDir = path.join(root, entry.name);
       const required = await readSkillRequired(skillDir);
+      const key = `paperclipai/paperclip/${entry.name}`;
       return {
-        key: `paperclipai/paperclip/${entry.name}`,
+        key,
         runtimeName: entry.name,
         source: skillDir,
         required,
         requiredReason: required
           ? "Bundled Paperclip skills are always available for local adapters."
           : null,
+        managerOnly: MANAGER_ONLY_SKILL_KEYS.has(key),
       };
     }));
   } catch {
@@ -1709,6 +1735,7 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
         typeof entry.requiredReason === "string" && entry.requiredReason.trim().length > 0
           ? entry.requiredReason.trim()
           : null,
+      managerOnly: asBoolean(entry.managerOnly, MANAGER_ONLY_SKILL_KEYS.has(key)),
     });
   }
   return out;
@@ -1808,11 +1835,19 @@ function canonicalizeDesiredPaperclipSkillReference(
 
 export function resolvePaperclipDesiredSkillNames(
   config: Record<string, unknown>,
-  availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean }>,
+  availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean; managerOnly?: boolean }>,
+  agentRole: string | null = null,
 ): string[] {
   const preference = readPaperclipSkillSyncPreference(config);
+  const stripManagerOnly = isICOnlyRole(agentRole);
   const requiredSkills = availableEntries
-    .filter((entry) => entry.required)
+    .filter((entry) => {
+      if (!entry.required) return false;
+      if (!stripManagerOnly) return true;
+      if (entry.managerOnly === false) return true;
+      if (entry.managerOnly === true) return false;
+      return !isManagerOnlyEntry(entry);
+    })
     .map((entry) => entry.key);
   if (!preference.explicit) {
     return Array.from(new Set(requiredSkills));
