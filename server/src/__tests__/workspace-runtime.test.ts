@@ -866,6 +866,94 @@ describe("realizeExecutionWorkspace", () => {
     expect(canonicalRealized.branchName).toBe("feature/rollout-apr-3-api-2");
   });
 
+  it("keeps untitled issue fallbacks unique to the issue identifier", async () => {
+    const repoRoot = await createTempRepo();
+
+    const nullTitleRealized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "feature/{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-template-untitled-null",
+        identifier: "PAP-996",
+        title: null,
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    const blankTitleRealized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "feature/{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-template-untitled-blank",
+        identifier: "PAP-997",
+        title: "   ",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    const defaultTemplateRealized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+        },
+      },
+      issue: {
+        id: "issue-template-untitled-default",
+        identifier: "PAP-998",
+        title: "",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(nullTitleRealized.branchName).toBe("feature/pap-996");
+    expect(blankTitleRealized.branchName).toBe("feature/pap-997");
+    expect(defaultTemplateRealized.branchName).toBe("pap-998");
+  });
+
   it("runs a configured provision command inside the derived worktree", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });

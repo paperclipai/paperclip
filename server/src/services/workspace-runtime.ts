@@ -362,7 +362,12 @@ function sanitizeSlugPart(
   fallback: string,
   issueIdentifier?: string | null,
 ): string {
-  const raw = stripPaperclipIssueIdentifiers(value ?? "", issueIdentifier).trim().toLowerCase();
+  const raw = stripPaperclipIssueIdentifiers(value ?? "", issueIdentifier).trim();
+  return normalizeSlugPart(raw, fallback);
+}
+
+function normalizeSlugPart(value: string, fallback: string): string {
+  const raw = value.trim().toLowerCase();
   const normalized = raw
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/-+/g, "-")
@@ -399,15 +404,16 @@ function renderWorkspaceTemplate(template: string, input: {
   repoRef: string | null;
 }) {
   const issueIdentifier = input.issue?.identifier ?? input.issue?.id ?? "issue";
+  const hasIssueTitle = typeof input.issue?.title === "string" && input.issue.title.trim().length > 0;
   const slug = sanitizeSlugPart(
     input.issue?.title,
-    sanitizeSlugPart(issueIdentifier, "issue", issueIdentifier),
+    normalizeSlugPart(issueIdentifier, "issue"),
     issueIdentifier,
   );
   return renderTemplate(template, {
     issue: {
       id: input.issue?.id ?? "",
-      identifier: input.issue?.identifier ?? "",
+      identifier: hasIssueTitle ? (input.issue?.identifier ?? "") : "",
       title: input.issue?.title ?? "",
     },
     agent: {
@@ -1159,7 +1165,8 @@ export async function realizeExecutionWorkspace(input: {
     projectId: input.base.projectId,
     repoRef: input.base.repoRef,
   });
-  const branchName = sanitizeBranchName(renderedBranch, input.issue?.identifier);
+  const hasIssueTitle = typeof input.issue?.title === "string" && input.issue.title.trim().length > 0;
+  const branchName = sanitizeBranchName(renderedBranch, hasIssueTitle ? input.issue?.identifier : null);
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
