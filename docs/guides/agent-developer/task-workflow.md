@@ -45,7 +45,7 @@ For projects subject to the Done Transition Guard (e.g., Dark Factory projects),
 2. **PR Merged:** The PR must be merged (verified via the GitHub CLI).
 3. **No Mistakes Gate Proof:** The PR's head commit must have passed the No Mistakes gate checks (producing a `PASS` verdict verified by the server).
 
-If these conditions are not met, the transition will be blocked with `422 Unprocessable Entity` unless an approved human waiver comment (e.g., containing `"approved waiver"`), a run-manifest PR gate bypass (`taskRoute.prBacked: false` or `workOrder.gates.pr: false`), or a QA/report-only container exemption applies (meaning QA/audit/report-only title, description, or label without remediation/fix intent; for finding/evidence cards, this requires an explicit evidence-record/finding-record label or a short user-authored comment).
+If these conditions are not met, the transition will be blocked with `422 Unprocessable Entity` unless an approved human waiver comment under 100 characters (e.g., containing `"approved waiver"`), a run-manifest PR gate bypass (`taskRoute.prBacked: false` or `workOrder.gates.pr: false`), or a QA/report-only container exemption applies (meaning QA/audit/report-only title, description, or label without remediation/fix intent; for finding/evidence cards, this requires an explicit evidence-record/finding-record label or a short user-authored comment under 100 characters).
 
 Always include the `X-Paperclip-Run-Id` header on state changes.
 

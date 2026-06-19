@@ -501,11 +501,11 @@ For any issue in a Dark Factory project:
 
 #### Exceptions and Bypasses
 The PR and No Mistakes requirements are bypassed in the following scenarios:
-1. **Approved Waiver**: A comment by a human user containing `approved waiver` or `waiver approved`.
+1. **Approved Waiver**: A comment by a human user containing `approved waiver` or `waiver approved` (must be under 100 characters).
 2. **QA or Report-Only Container**: Tasks that are purely for QA or reporting and do not involve code changes are identified by:
    - Having the `evidence-record` or `finding-record` label.
    - An issue title or description matching QA/audit/report-only keywords (e.g., `qa`, `audit`, `report-only`) AND not matching remediation keywords (e.g., `fix`, `remediat`, `resolve`, `patch`, etc.).
-   - A human-authored comment explicitly stating bypass keywords (e.g., `not new implementation`, `evidence record`, etc.).
+   - A human-authored comment explicitly stating bypass keywords (e.g., `not new implementation`, `evidence record`, etc., and must be under 100 characters).
    - Note: Issues containing active plans (`plan` document), Foreman runs, or agent comments indicating a fix is complete are treated as completed fixes and **cannot** bypass the Done Guard as QA containers.
 3. **True Review/Recovery Tasks**: Tasks with a review or recovery origin kind (specifically `issue_productivity_review`, `harness_liveness_escalation`, `stranded_issue_recovery`, or `stale_active_run_evaluation`) are bypassed, provided they have a manager (user-authored) disposition comment recorded on the issue.
 4. **Manifest-Driven Bypass**: Tasks where the latest run manifest has `taskRoute.prBacked === false` or `workOrder.gates.pr === false` are bypassed from PR and No Mistakes requirements.

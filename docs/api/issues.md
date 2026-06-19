@@ -84,7 +84,7 @@ For projects subject to the Done Transition Guard (configured via `PAPERCLIP_DON
 
 **Exceptions & Bypasses:**
 * **Human Waiver:** A board/user comment under 100 characters containing `"approved waiver"` or `"waiver approved"` bypasses the gate.
-* **QA/Report-Only Containers:** Tasks marked with QA/audit/report labels/titles/descriptions (without remediation intent), or explicitly commented/labeled as an `"evidence record"` or `"finding record"` by a board user, are exempt and can be marked Done directly.
+* **QA/Report-Only Containers:** Tasks marked with QA/audit/report labels/titles/descriptions (without remediation intent), or explicitly commented/labeled as an `"evidence record"` or `"finding record"` by a board user (the comment must be under 100 characters), are exempt and can be marked Done directly.
 * **Review/Recovery Tasks:** Review, escalation, or recovery tasks can close to Done without a PR if a board user leaves a disposition comment (e.g., matching `disposition`, `approved closure`, `verdict`).
 * **Manifest-Driven Bypass:** Tasks where the latest run manifest has `taskRoute.prBacked: false` or `workOrder.gates.pr: false` are bypassed from PR and No Mistakes requirements.
 

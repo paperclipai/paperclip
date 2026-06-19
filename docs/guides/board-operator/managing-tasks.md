@@ -50,7 +50,7 @@ In projects designated as Dark Factory, issues cannot transition to `done` unles
 1. There is a linked GitHub PR that has been merged.
 2. The merged PR has a verified No Mistakes gate pass matching the PR's head commit.
 
-If an issue is a general task and needs to close without code changes (e.g., a false positive or non-code-changing task), a board operator must record a waiver comment containing "approved waiver" or "waiver approved" to bypass the guard. For review/recovery-only tasks (e.g., productivity reviews or stranded issue recovery), the guard is bypassed if a board operator records a disposition comment containing keywords like "disposition", "dispositioned", "resolved", "dismissed", or "verdict".
+If an issue is a general task and needs to close without code changes (e.g., a false positive or non-code-changing task), a board operator must record a waiver comment containing "approved waiver" or "waiver approved" (the comment body must be under 100 characters and authored by a human user) to bypass the guard. For review/recovery-only tasks (e.g., productivity reviews or stranded issue recovery), the guard is bypassed if a board operator records a disposition comment containing keywords or phrases like "disposition", "dispositioned", "false positive", "approved closure", "closed as", "dismissed as", "decision", or "verdict".
 
 ## Monitoring Progress
 
