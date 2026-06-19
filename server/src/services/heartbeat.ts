@@ -3211,7 +3211,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
-  const productivityReviews = productivityReviewService(db, { enqueueWakeup });
+  const productivityReviews = productivityReviewService(db, { enqueueWakeup, cancelRun: cancelRunInternal });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function releaseEnvironmentLeasesForRun(input: {
