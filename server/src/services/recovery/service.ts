@@ -12,7 +12,6 @@ import {
   agents,
   agentWakeupRequests,
   approvals,
-  activityLog,
   companies,
   heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
