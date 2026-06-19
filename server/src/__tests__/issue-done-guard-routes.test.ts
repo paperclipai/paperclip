@@ -370,6 +370,31 @@ describe("Done transition guard", () => {
     expect(res.body.status).toBe("done");
   });
 
+  it("allows transition to done for QA/report-only wording with common defect terms", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      title: "QA report: verify no issue, error, failure, missing state, or incorrect label",
+      description: "Report-only QA pass; record observations without code changes.",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listComments.mockResolvedValue([]);
+    mockIssueService.update.mockResolvedValue({
+      ...issue,
+      status: "done"
+    });
+    mockReaddirSync.mockReturnValue([]);
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("done");
+  });
+
   it("allows transition to done when waiver is present", async () => {
     const issue = makeIssue("in_progress");
     mockIssueService.getById.mockResolvedValue(issue);
@@ -888,6 +913,28 @@ describe("Done transition guard", () => {
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.listComments.mockResolvedValue([
       { body: "this is done", authorType: "user" }
+    ]);
+
+    const app = createApp();
+    await installActor(app);
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Linked implementation PR/work product is required");
+  });
+
+  it("blocks transition to done for productivity review tasks when manager comment only says reviewed", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      title: "Review productivity for OPE-573",
+      originKind: "issue_productivity_review",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "reviewed the PR diff", authorType: "user" }
     ]);
 
     const app = createApp();

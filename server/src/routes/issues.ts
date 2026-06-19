@@ -1752,8 +1752,9 @@ export function issueRoutes(
       /\b(finding|evidence)\b/i.test(existing.title || "") ||
       /\b(finding|evidence)\b/i.test(existing.description || "");
 
-    const isRemediationTitleOrDesc = /fix\b|remediat|resolve|patch|bug\b|issue\b|error\b|fail|miss|broken|correct/i.test(existing.title || "") ||
-      /fix\b|remediat|resolve|patch|bug\b|issue\b|error\b|fail|miss|broken|correct/i.test(existing.description || "");
+    const remediationIntentPattern = /\b(fix(?:e[sd]|ing)?|remediat\w*|resolv(?:e[sd]?|ing)|patch(?:e[sd]|ing)?|bug(?:fix)?|broken|repair(?:e[sd]|ing)?|implement(?:ed|ing|ation)?)\b/i;
+    const isRemediationTitleOrDesc = remediationIntentPattern.test(existing.title || "") ||
+      remediationIntentPattern.test(existing.description || "");
 
     const hasEvidenceRecordLabel = labelNames.some((name: string) => /evidence-record|finding-record/i.test(name));
     const hasEvidenceRecordComment = comments.some((c: any) =>
@@ -1770,9 +1771,10 @@ export function issueRoutes(
 
     const isCompletedFix = (hasPlan || hasForemanRun || hasAgentFixComment) && !isExplicitEvidenceRecord;
 
+    const managerDispositionPattern = /\b(disposition(?:ed)?|decision|verdict|false positive|no action (?:needed|required)|approved (?:to close|closure|done)|manager approved|closed as|dismissed as|reassigned to)\b/i;
     const hasManagerDispositionComment = comments.some((c: any) =>
       c.authorType === "user" &&
-      /\b(disposition|dispositioned|approved|false positive|resolved|closed|dismissed|reassigned|no action|reviewed|verdict)\b/i.test(c.body || "")
+      managerDispositionPattern.test(c.body || "")
     );
 
     const reviewOrRecoveryOriginKinds = new Set([
