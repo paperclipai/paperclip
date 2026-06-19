@@ -15,7 +15,21 @@ import {
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
+import { logActivity } from "./activity-log.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+
+// On-read reconciliation of orphaned `running` agent status (ATLA-1225).
+// An agent is pinned `running` only while a heartbeat run backs the flag. If that run's
+// process dies without finalizing the agent (e.g. the box is killed), the flag is left
+// orphaned: status === "running" with no queued/running run anywhere in the company. Any
+// read of the agent self-heals the flag to `idle` and writes an audit row, so no agent-driven
+// reaper routine (and no CEO-or-creator-only cross-agent PATCH) is needed to reset it.
+//
+// We only reconcile once the orphan has persisted past one reconciliation window since the
+// `running` flag was last written, so we never race a legitimately-starting run. Agents that
+// have never finished a heartbeat (lastHeartbeatAt == null) are reconciled immediately when no
+// run backs them, matching the historical first-run orphans.
+const ORPHAN_RUNNING_RECONCILE_GRACE_MS = 60_000;
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -206,6 +220,76 @@ export function agentService(db: Db) {
     });
   }
 
+  // Count heartbeat runs that back a `running` agent flag. Both `queued` (a run about to
+  // start) and `running` count, so a legitimately-starting agent is never treated as orphaned.
+  async function countBackingRunsForAgent(agentId: string): Promise<number> {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+        ),
+      );
+    return Number(row?.count ?? 0);
+  }
+
+  // On-read reconciliation: heal an orphaned `running` flag to `idle` when no run backs it.
+  // Returns the (possibly healed) row so the read reflects the reconciled status.
+  async function reconcileOrphanedRunningStatus<T extends typeof agents.$inferSelect>(
+    row: T,
+    now: Date = new Date(),
+  ): Promise<T> {
+    if (row.status !== "running") return row;
+
+    // Require the orphan to persist past one reconciliation window since the `running` flag
+    // was written (row.updatedAt), unless the agent has never finished a heartbeat — that
+    // first-run-stuck case is reconciled immediately once we confirm no run backs it.
+    const flagWrittenAt = row.updatedAt ? new Date(row.updatedAt).getTime() : 0;
+    const observedAcrossWindow = now.getTime() - flagWrittenAt >= ORPHAN_RUNNING_RECONCILE_GRACE_MS;
+    if (row.lastHeartbeatAt != null && !observedAcrossWindow) return row;
+
+    if ((await countBackingRunsForAgent(row.id)) > 0) return row;
+
+    // Atomic heal: the NOT EXISTS guard makes the flip safe against a run starting between the
+    // count above and this update. If any queued/running run backs the agent at write time the
+    // row will not match and the `running` flag is left untouched.
+    const healed = await db
+      .update(agents)
+      .set({ status: "idle", updatedAt: new Date() })
+      .where(
+        and(
+          eq(agents.id, row.id),
+          eq(agents.status, "running"),
+          sql`not exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${agents.id} and ${heartbeatRuns.status} in ('queued', 'running'))`,
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!healed) return row;
+
+    await logActivity(db, {
+      companyId: row.companyId,
+      actorType: "system",
+      actorId: "agent-status-reconciler",
+      action: "agent.status.reconciled",
+      entityType: "agent",
+      entityId: row.id,
+      agentId: row.id,
+      details: {
+        reason: "orphaned_running_no_backing_run",
+        priorStatus: row.status,
+        // No `currentRunId` column exists on agents; runs are tracked in heartbeat_runs.
+        priorCurrentRunId: null,
+        priorLastHeartbeatAt: row.lastHeartbeatAt ? new Date(row.lastHeartbeatAt).toISOString() : null,
+        reconciledAt: new Date().toISOString(),
+      },
+    });
+
+    return { ...row, status: healed.status, updatedAt: healed.updatedAt };
+  }
+
   async function getMonthlySpendByAgentIds(companyId: string, agentIds: string[]) {
     if (agentIds.length === 0) return new Map<string, number>();
     const { start, end } = currentUtcMonthWindow();
@@ -246,7 +330,8 @@ export function agentService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [hydrated] = await hydrateAgentSpend([row]);
-    return normalizeAgentRow(hydrated);
+    const reconciled = await reconcileOrphanedRunningStatus(hydrated);
+    return normalizeAgentRow(reconciled);
   }
 
   async function ensureManager(companyId: string, managerId: string) {
@@ -376,10 +461,15 @@ export function agentService(db: Db) {
       }
       const rows = await db.select().from(agents).where(and(...conditions));
       const hydrated = await hydrateAgentSpend(rows);
-      return hydrated.map(normalizeAgentRow);
+      const reconciled = await Promise.all(
+        hydrated.map((row) => reconcileOrphanedRunningStatus(row)),
+      );
+      return reconciled.map(normalizeAgentRow);
     },
 
     getById,
+
+    reconcileOrphanedRunningStatus,
 
     create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">) => {
       if (data.reportsTo) {
