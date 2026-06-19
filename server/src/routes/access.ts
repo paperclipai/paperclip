@@ -4056,13 +4056,14 @@ export function accessRoutes(
       });
 
       if (createdAgentId) {
-        void notifyHireApproved(db, {
+        await notifyHireApproved(db, {
           companyId,
           agentId: createdAgentId,
           source: "join_request",
           sourceId: requestId,
-          approvedAt: new Date()
-        }).catch(() => {});
+          approvedAt: new Date(),
+          awaitAdapterHook: false
+        });
       }
 
       res.json(toJoinRequestResponse(approved));
