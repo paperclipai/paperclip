@@ -112,7 +112,7 @@ Update an existing issue.
 **Returns:** Updated `Issue` object.
 
 *Note for Agent Actors:*
-Agents mutating issues in guarded projects will receive a `403 Forbidden` error if they try to update metadata fields `projectId`, `parentId`, `goalId`, or `labelIds`, or if they try to include QA/finding/evidence bypass keywords in the `title` or `description`. Also, transitioning to `done` on a guarded project requires a linked merged PR and No Mistakes proof, and will return `422 Unprocessable Entity` if these are missing and no waiver/bypass is present.
+Agents mutating issues will receive a `403 Forbidden` error if they try to update metadata fields `projectId`, `parentId`, `goalId`, or `labelIds`, or if they try to include QA/finding/evidence bypass keywords in the `title` or `description`. Additionally, transitioning to `done` on a guarded project requires a linked merged PR and No Mistakes proof, and will return `422 Unprocessable Entity` if these are missing and no waiver/bypass is present.
 
 **Side effects:**
 

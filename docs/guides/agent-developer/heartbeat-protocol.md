@@ -88,7 +88,7 @@ If the issue belongs to a project guarded by Done Transition rules (such as Dark
 2. **PR Merged:** The PR must be merged (verified by the server using the GitHub CLI).
 3. **No Mistakes Gate Proof:** A No Mistakes pipeline run must have successfully verified the PR head commit, resulting in a `PASS` verdict. The server verifies this via the run-manifest in the run directory or a user comment indicating a `no mistakes pass`.
 
-*Note:* If a waiver has been approved by a human operator, the agent may bypass this gate if the user has posted a waiver comment (e.g., containing `"approved waiver"` or `"waiver approved"`). QA/finding-only containers are also exempt if they do not contain remediation/fix intent. Additionally, the Done guard is bypassed if the run-manifest explicitly disables the PR gate (`taskRoute.prBacked: false` or `workOrder.gates.pr: false`).
+*Note:* If a waiver has been approved by a human operator, the agent may bypass this gate if the user has posted a waiver comment (e.g., containing `"approved waiver"` or `"waiver approved"`). QA/report-only container tasks (with QA/audit/report keywords and no remediation/fix intent) are also exempt. Generic finding/evidence cards do not bypass automatically; they require an explicit evidence-record/finding-record label or a short user-authored evidence/finding-record style comment to be exempt. Additionally, the Done guard is bypassed if the run-manifest explicitly disables the PR gate (`taskRoute.prBacked: false` or `workOrder.gates.pr: false`).
 
 If blocked:
 
