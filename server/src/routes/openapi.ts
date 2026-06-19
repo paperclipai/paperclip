@@ -26,6 +26,7 @@ import {
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
   upsertIssueFeedbackVoteSchema,
+  upsertIssueWatchdogSchema,
   // Project
   createProjectSchema,
   updateProjectSchema,
@@ -1378,6 +1379,36 @@ registry.registerPath({
   summary: "Get issue heartbeat context",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/watchdog",
+  tags: ["issues"],
+  summary: "Get active issue watchdog",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/issues/{id}/watchdog",
+  tags: ["issues"],
+  summary: "Create or update an issue watchdog",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(upsertIssueWatchdogSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/issues/{id}/watchdog",
+  tags: ["issues"],
+  summary: "Disable an issue watchdog",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

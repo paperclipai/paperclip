@@ -45,6 +45,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableConferenceRoomChat: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
+  enableTaskWatchdogs: z.boolean().default(false),
   enableCloudSync: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),

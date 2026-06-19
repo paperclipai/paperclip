@@ -61,7 +61,9 @@ import {
   Eye,
   ShieldAlert,
   ShieldCheck,
+  ScanEye,
 } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextClassic, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
@@ -84,6 +86,8 @@ interface IssueDraft {
   assigneeValue: string;
   reviewerValue: string;
   approverValue: string;
+  watchdogAgentId?: string;
+  watchdogInstructions?: string;
   assigneeId?: string;
   projectId: string;
   projectWorkspaceId?: string;
@@ -420,6 +424,10 @@ export function NewIssueDialog() {
   const [approverValue, setApproverValue] = useState("");
   const [showReviewerRow, setShowReviewerRow] = useState(false);
   const [showApproverRow, setShowApproverRow] = useState(false);
+  const [watchdogAgentId, setWatchdogAgentId] = useState("");
+  const [watchdogInstructions, setWatchdogInstructions] = useState("");
+  const [showWatchdogRow, setShowWatchdogRow] = useState(false);
+  const [watchdogEditorOpen, setWatchdogEditorOpen] = useState(false);
   const [participantMenuOpen, setParticipantMenuOpen] = useState(false);
   const [projectId, setProjectId] = useState("");
   const [projectWorkspaceId, setProjectWorkspaceId] = useState("");
@@ -650,6 +658,8 @@ export function NewIssueDialog() {
       assigneeValue,
       reviewerValue,
       approverValue,
+      watchdogAgentId,
+      watchdogInstructions,
       projectId,
       projectWorkspaceId,
       assigneeModelLane,
@@ -668,6 +678,8 @@ export function NewIssueDialog() {
     assigneeValue,
     reviewerValue,
     approverValue,
+    watchdogAgentId,
+    watchdogInstructions,
     projectId,
     projectWorkspaceId,
     assigneeModelOverride,
@@ -704,6 +716,8 @@ export function NewIssueDialog() {
     assigneeValue,
     reviewerValue,
     approverValue,
+    watchdogAgentId,
+    watchdogInstructions,
     projectId,
     projectWorkspaceId,
     assigneeModelLane,
@@ -769,6 +783,9 @@ export function NewIssueDialog() {
       setApproverValue("");
       setShowReviewerRow(false);
       setShowApproverRow(false);
+      setWatchdogAgentId("");
+      setWatchdogInstructions("");
+      setShowWatchdogRow(false);
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -797,6 +814,9 @@ export function NewIssueDialog() {
       setApproverValue(draft.approverValue ?? "");
       setShowReviewerRow(!!(draft.reviewerValue));
       setShowApproverRow(!!(draft.approverValue));
+      setWatchdogAgentId(draft.watchdogAgentId ?? "");
+      setWatchdogInstructions(draft.watchdogInstructions ?? "");
+      setShowWatchdogRow(!!(draft.watchdogAgentId));
       setProjectId(restoredProjectId);
       setProjectWorkspaceId(
         hasExplicitProjectWorkspaceId
@@ -839,6 +859,9 @@ export function NewIssueDialog() {
       setApproverValue("");
       setShowReviewerRow(false);
       setShowApproverRow(false);
+      setWatchdogAgentId("");
+      setWatchdogInstructions("");
+      setShowWatchdogRow(false);
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -896,6 +919,9 @@ export function NewIssueDialog() {
     setApproverValue("");
     setShowReviewerRow(false);
     setShowApproverRow(false);
+    setWatchdogAgentId("");
+    setWatchdogInstructions("");
+    setShowWatchdogRow(false);
     setProjectId("");
     setProjectWorkspaceId("");
     setAssigneeOptionsOpen(false);
@@ -924,6 +950,9 @@ export function NewIssueDialog() {
     setApproverValue("");
     setShowReviewerRow(false);
     setShowApproverRow(false);
+    setWatchdogAgentId("");
+    setWatchdogInstructions("");
+    setShowWatchdogRow(false);
     setProjectId("");
     setProjectWorkspaceId("");
     setAssigneeModelLane("primary");
@@ -997,6 +1026,9 @@ export function NewIssueDialog() {
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
+      ...(taskWatchdogsEnabled && watchdogAgentId
+        ? { watchdog: { agentId: watchdogAgentId, instructions: watchdogInstructions.trim() || null } }
+        : {}),
     });
   }
 
@@ -1088,6 +1120,7 @@ export function NewIssueDialog() {
       ? currentProject?.executionWorkspacePolicy ?? null
       : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
+  const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
   const deduplicatedReusableWorkspaces = useMemo(() => {
     return orderReusableExecutionWorkspaces(reusableExecutionWorkspaces ?? []);
   }, [reusableExecutionWorkspaces]);
@@ -1135,6 +1168,19 @@ export function NewIssueDialog() {
       })),
     ],
     [agents, companyMembers?.users, currentUserId, recentAssigneeIds],
+  );
+  const watchdogAgentOptions = useMemo<InlineEntityOption[]>(
+    () =>
+      sortAgentsByRecency((agents ?? []).filter(isAgentTaskTarget), recentAssigneeIds).map((agent) => ({
+        id: agent.id,
+        label: agent.name,
+        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+      })),
+    [agents, recentAssigneeIds],
+  );
+  const selectedWatchdogAgent = useMemo(
+    () => (watchdogAgentId ? (agents ?? []).find((agent) => agent.id === watchdogAgentId) ?? null : null),
+    [agents, watchdogAgentId],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
@@ -1448,7 +1494,7 @@ export function NewIssueDialog() {
                   <button
                     type="button"
                     className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-accent/50 transition-colors"
-                    title="Add reviewer or approver"
+                    title={taskWatchdogsEnabled ? "Add reviewer, approver, or watchdog" : "Add reviewer or approver"}
                   >
                     <MoreHorizontal className="h-4 w-4" />
                   </button>
@@ -1482,6 +1528,29 @@ export function NewIssueDialog() {
                     <ShieldCheck className="h-3 w-3" />
                     Approver
                   </button>
+                  {taskWatchdogsEnabled && (
+                    <button
+                      className={cn(
+                        "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                        showWatchdogRow && "bg-accent",
+                      )}
+                      onClick={() => {
+                        if (showWatchdogRow) {
+                          setShowWatchdogRow(false);
+                          setWatchdogAgentId("");
+                          setWatchdogInstructions("");
+                          setWatchdogEditorOpen(false);
+                        } else {
+                          setShowWatchdogRow(true);
+                          setWatchdogEditorOpen(true);
+                        }
+                        setParticipantMenuOpen(false);
+                      }}
+                    >
+                      <ScanEye className="h-3 w-3" />
+                      Watchdog
+                    </button>
+                  )}
                 </PopoverContent>
               </Popover>
               </div>
@@ -1574,6 +1643,96 @@ export function NewIssueDialog() {
                   );
                 }}
                 />
+              </div>
+            )}
+
+            {/* Watchdog row */}
+            {taskWatchdogsEnabled && showWatchdogRow && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
+                <span className="w-6 shrink-0 flex items-center justify-center"><ScanEye className="h-3.5 w-3.5" /></span>
+                <Popover open={watchdogEditorOpen} onOpenChange={setWatchdogEditorOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors min-w-0"
+                      title="Configure watchdog"
+                    >
+                      {selectedWatchdogAgent ? (
+                        <>
+                          <AgentIcon icon={selectedWatchdogAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="truncate text-foreground">{selectedWatchdogAgent.name}</span>
+                          {watchdogInstructions.trim() ? (
+                            <span className="truncate text-muted-foreground">· {watchdogInstructions.trim()}</span>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">Set watchdog</span>
+                      )}
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80 p-3 space-y-3" align="start">
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-medium text-foreground">Watchdog agent</div>
+                      <InlineEntitySelector
+                        value={watchdogAgentId}
+                        options={watchdogAgentOptions}
+                        placeholder="Select agent"
+                        noneLabel="No watchdog agent"
+                        searchPlaceholder="Search agents..."
+                        emptyMessage="No agents found."
+                        onChange={setWatchdogAgentId}
+                        renderTriggerValue={(option) =>
+                          option ? (
+                            <>
+                              {selectedWatchdogAgent ? (
+                                <AgentIcon icon={selectedWatchdogAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              ) : null}
+                              <span className="truncate">{option.label}</span>
+                            </>
+                          ) : (
+                            <span className="text-muted-foreground">Select agent</span>
+                          )
+                        }
+                        renderOption={(option) => {
+                          const agent = (agents ?? []).find((a) => a.id === option.id);
+                          return (
+                            <>
+                              {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                              <span className="truncate">{option.label}</span>
+                            </>
+                          );
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-medium text-foreground">Instructions <span className="font-normal text-muted-foreground">(optional)</span></div>
+                      <Textarea
+                        value={watchdogInstructions}
+                        onChange={(event) => setWatchdogInstructions(event.target.value)}
+                        placeholder="What should the watchdog watch for and how should it keep work moving?"
+                        rows={4}
+                        className="text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <button
+                        type="button"
+                        className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+                        onClick={() => {
+                          setWatchdogAgentId("");
+                          setWatchdogInstructions("");
+                          setShowWatchdogRow(false);
+                          setWatchdogEditorOpen(false);
+                        }}
+                      >
+                        Remove
+                      </button>
+                      <Button type="button" size="sm" className="h-7 text-xs" onClick={() => setWatchdogEditorOpen(false)}>
+                        Done
+                      </Button>
+                    </div>
+                  </PopoverContent>
+                </Popover>
               </div>
             )}
           </div>

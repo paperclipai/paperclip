@@ -19,6 +19,7 @@ import {
   issueAttachments,
   issueInboxArchives,
   issueLabels,
+  issueWatchdogs,
   issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
@@ -44,6 +45,7 @@ import type {
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
+  IssueWatchdogSummary,
   LowTrustBoundary,
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
@@ -76,6 +78,10 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import {
+  summarizeIssueWatchdog,
+  upsertIssueWatchdogForIssue,
+} from "./task-watchdogs.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -302,7 +308,11 @@ type IssueScheduledRetryRow = {
   error?: string | null;
   errorCode?: string | null;
 };
-type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
+type IssueWithLabels = IssueRow & {
+  labels: IssueLabelRow[];
+  labelIds: string[];
+  watchdog?: IssueWatchdogSummary | null;
+};
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
 type IssueUserCommentStats = {
   issueId: string;
@@ -354,6 +364,8 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  watchdog?: { agentId: string; instructions?: string | null } | null;
+  watchdogActorRunId?: string | null;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -1143,15 +1155,47 @@ async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<s
 
 async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWithLabels[]> {
   if (rows.length === 0) return [];
-  const labelsByIssueId = await labelMapForIssues(dbOrTx, rows.map((row) => row.id));
+  const issueIds = rows.map((row) => row.id);
+  const [labelsByIssueId, watchdogByIssueId] = await Promise.all([
+    labelMapForIssues(dbOrTx, issueIds),
+    watchdogMapForIssues(dbOrTx, rows),
+  ]);
   return rows.map((row) => {
     const issueLabels = labelsByIssueId.get(row.id) ?? [];
     return {
       ...row,
       labels: issueLabels,
       labelIds: issueLabels.map((label) => label.id),
+      watchdog: watchdogByIssueId.get(row.id) ?? null,
     };
   });
+}
+
+async function watchdogMapForIssues(dbOrTx: any, rows: IssueRow[]): Promise<Map<string, IssueWatchdogSummary>> {
+  const map = new Map<string, IssueWatchdogSummary>();
+  if (rows.length === 0) return map;
+  const byCompany = new Map<string, string[]>();
+  for (const row of rows) {
+    const ids = byCompany.get(row.companyId) ?? [];
+    ids.push(row.id);
+    byCompany.set(row.companyId, ids);
+  }
+  for (const [companyId, issueIds] of byCompany.entries()) {
+    for (const issueIdChunk of chunkList([...new Set(issueIds)], ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      const watchdogRows = await dbOrTx
+        .select()
+        .from(issueWatchdogs)
+        .where(and(
+          eq(issueWatchdogs.companyId, companyId),
+          inArray(issueWatchdogs.issueId, issueIdChunk),
+          eq(issueWatchdogs.status, "active"),
+        ));
+      for (const row of watchdogRows) {
+        map.set(row.issueId, summarizeIssueWatchdog(row));
+      }
+    }
+  }
+  return map;
 }
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
@@ -4857,6 +4901,8 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        watchdog,
+        watchdogActorRunId,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -5073,6 +5119,17 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (watchdog) {
+          await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
+            agentId: watchdog.agentId,
+            instructions: watchdog.instructions,
+            actor: {
+              agentId: issueData.createdByAgentId ?? null,
+              userId: issueData.createdByUserId ?? null,
+              runId: watchdogActorRunId ?? null,
+            },
+          });
+        }
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
