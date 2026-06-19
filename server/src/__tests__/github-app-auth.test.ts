@@ -128,6 +128,7 @@ describe("githubHasReviewerEvidenceForPr", () => {
     reviews?: unknown[];
     reviewsStatus?: number;
     comments?: unknown[];
+    prHead?: string;
   }) {
     vi.stubGlobal(
       "fetch",
@@ -139,6 +140,10 @@ describe("githubHasReviewerEvidenceForPr", () => {
             return jsonResponse([], false, routes.reviewsStatus);
           }
           return jsonResponse(routes.reviews ?? []);
+        }
+        // BLO-10878: bare PR fetch used to resolve a missing head SHA.
+        if (u.includes("/pulls/")) {
+          return jsonResponse(routes.prHead !== undefined ? { head: { sha: routes.prHead } } : {});
         }
         if (u.includes("/issues/") && u.includes("/comments")) return jsonResponse(routes.comments ?? []);
         throw new Error(`unexpected url ${u}`);
@@ -170,6 +175,42 @@ describe("githubHasReviewerEvidenceForPr", () => {
     await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
       found: true,
       via: "comment",
+    });
+  });
+
+  it("BLO-10878: falls back to the PR head when the wake carried no head SHA, then matches a comment-mode review", async () => {
+    setCreds();
+    stubGithub({
+      prHead: headSha,
+      reviews: [],
+      comments: [{ user: { login: "allyblockcast[bot]" }, body: `## Ally — Consolidated PR Review  _reviewed head: ${headSha}` }],
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha: null })).resolves.toEqual({
+      found: true,
+      via: "comment",
+    });
+  });
+
+  it("BLO-10878: keeps the lenient any-bot-review fallback when the head SHA can't be resolved", async () => {
+    setCreds();
+    // No head SHA on the wake and the PR fetch yields no head → the formal-review
+    // loop still rescues on any bot review (unchanged pre-existing leniency).
+    stubGithub({ reviews: [{ user: { login: "allyblockcast[bot]" }, commit_id: null }] });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha: null })).resolves.toEqual({
+      found: true,
+      via: "review",
+    });
+  });
+
+  it("BLO-10878: returns not-found when the resolved PR head has no bot review or comment", async () => {
+    setCreds();
+    stubGithub({
+      prHead: headSha,
+      reviews: [],
+      comments: [{ user: { login: "someone-else" }, body: headSha }],
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha: null })).resolves.toEqual({
+      found: false,
     });
   });
 

@@ -11808,6 +11808,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 },
               });
               prReviewCompletionEvidence = { status: "posted_review" as const };
+            } else {
+              // BLO-10878: the non-rescue path used to be silent, making residual
+              // false `pr_review_output_missing` unclassifiable. Record why the
+              // GitHub check did not rescue (a specific `{error}` code, or genuine
+              // not-found) so the remaining residual is diagnosable from events.
+              await appendRunEvent(run, await nextRunEventSeq(run.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "info",
+                message: `GitHub reviewer-evidence check kept pr_review_output_missing on ${prReview.repoFullName}#${prReview.prNumber}: ${"error" in verified ? verified.error : "no_evidence_found"}`,
+                payload: {
+                  repoFullName: prReview.repoFullName,
+                  prNumber: prReview.prNumber,
+                  headSha: prReview.headSha,
+                  outcome: "error" in verified ? verified.error : "not_found",
+                },
+              });
             }
           }
         } catch {

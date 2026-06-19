@@ -129,6 +129,30 @@ function headShaHex(headSha: string | null | undefined): string | null {
 }
 
 /**
+ * Fetch the PR's current head SHA. Used only as a fallback when the wake didn't
+ * carry one (BLO-10878): a null head SHA used to disable the comment-mode check
+ * entirely (`headPrefix` null), so comment-mode reviews on PRs whose wake lacked
+ * a head SHA were never recognized → false `pr_review_output_missing`. Returns
+ * null on any non-OK / failed fetch so the caller keeps its lenient fallback.
+ */
+async function fetchPrHeadSha(
+  apiBase: string,
+  repoFullName: string,
+  prNumber: number,
+  headers: Record<string, string>,
+): Promise<string | null> {
+  try {
+    const res = await ghFetch(`${apiBase}/repos/${repoFullName}/pulls/${prNumber}`, { headers });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as { head?: { sha?: string } } | null;
+    const sha = body?.head?.sha;
+    return typeof sha === "string" ? headShaHex(sha) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Authoritatively check whether the reviewer bot left a review or comment for
  * THIS PR head on GitHub. Used to rescue a false `pr_review_output_missing`.
  *
@@ -157,8 +181,13 @@ export async function githubHasReviewerEvidenceForPr(input: {
 
   const headers = { ...GITHUB_API_HEADERS, authorization: `Bearer ${token}` };
   const apiBase = gitHubApiBase(GITHUB_HOST);
-  const headSha = input.headSha?.toLowerCase() ?? null;
-  const headPrefix = headShaHex(input.headSha);
+  // BLO-10878: when the wake didn't carry a head SHA, fall back to the PR's
+  // current head so the comment-mode check (keyed on `headPrefix`) still runs.
+  // Previously a null head SHA skipped comments entirely and only the formal-
+  // review loop ran, missing Ally's frequent comment-mode reviews.
+  const headSha =
+    headShaHex(input.headSha) ?? (await fetchPrHeadSha(apiBase, input.repoFullName, input.prNumber, headers));
+  const headPrefix = headShaHex(headSha);
 
   // 1) Formal reviews — match the bot author at this exact head commit.
   try {
