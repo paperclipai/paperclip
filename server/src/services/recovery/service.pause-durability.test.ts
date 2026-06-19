@@ -27,7 +27,7 @@ describe("pause durability: continuation retry classification", () => {
   });
 
   it("generic cancelled (non-pause cancellation) is NOT non-retryable", () => {
-    // termination/budget/non-invokable callers keep errorCode "cancelled" -> default branch
+    // non-pause cancellations (the internal invokability cancel and budget pause) keep errorCode "cancelled" -> default branch
     expect(classifyContinuationFailure(run("cancelled")).kind).toBe("default");
   });
 

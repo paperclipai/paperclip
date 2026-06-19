@@ -11644,6 +11644,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
 
+    /**
+     * Pause-only. Emits errorCode "agent_paused" unconditionally; its sole caller is the
+     * agent pause route. For non-pause cancellations use cancelRun, or call the internal
+     * cancelActiveForAgentInternal(agentId, reason, errorCode) with an explicit errorCode.
+     */
     cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason, "agent_paused"),
 
     cancelInvocationsForAgents: (agentIds: string[], reason: string) =>
