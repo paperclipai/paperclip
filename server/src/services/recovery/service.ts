@@ -1344,6 +1344,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     sourceIssue: typeof issues.$inferSelect | null;
   }) {
     const candidateIds: string[] = [];
+    // Route to the source issue's assignee first; fall back up the reportsTo chain.
+    if (input.sourceIssue?.assigneeAgentId) candidateIds.push(input.sourceIssue.assigneeAgentId);
     if (input.sourceIssue?.assigneeAgentId) {
       const sourceAssignee = await getAgent(input.sourceIssue.assigneeAgentId);
       if (sourceAssignee?.reportsTo) candidateIds.push(sourceAssignee.reportsTo);
@@ -2035,6 +2037,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function resolveStrandedIssueRecoveryOwnerAgentId(issue: typeof issues.$inferSelect) {
     const candidateIds: string[] = [];
+    // Route to the assignee first so recovery lands on the responsible agent,
+    // not the supervisor. Fall back to the reportsTo chain on later cycles.
+    if (issue.assigneeAgentId) candidateIds.push(issue.assigneeAgentId);
     if (issue.assigneeAgentId) {
       const assignee = await getAgent(issue.assigneeAgentId);
       if (assignee?.reportsTo) candidateIds.push(assignee.reportsTo);
@@ -2051,7 +2056,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(and(eq(agents.companyId, issue.companyId), inArray(agents.role, ["cto", "ceo"])))
       .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt));
     candidateIds.push(...roleCandidates.map((agent) => agent.id));
-    if (issue.assigneeAgentId) candidateIds.push(issue.assigneeAgentId);
 
     const seen = new Set<string>();
     for (const agentId of candidateIds) {
@@ -2702,6 +2706,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // standing-loop issues are designed to stay in_progress indefinitely; skip
+      // all escalation paths that would block them for missing disposition.
+      if (issue.status === "in_progress" && issue.workMode === "standing-loop") {
         result.skipped += 1;
         continue;
       }
