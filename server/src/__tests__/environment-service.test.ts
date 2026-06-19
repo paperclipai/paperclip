@@ -285,8 +285,9 @@ describeEmbeddedPostgres("environmentService leases", () => {
       updatedAt: new Date(),
     });
 
-    // No partial unique index covers sandbox drivers yet, so dedup is
-    // post-insert convergence (prefer the oldest row, delete the loser).
+    // The managed sandbox row is serialized by an advisory lock and guarded by
+    // a partial unique index; concurrent callers should still converge on one
+    // surviving row and one shared result id.
     const results = await Promise.all(
       Array.from({ length: 8 }, () =>
         svc.ensureKubernetesEnvironment(companyId, { inCluster: true, backend: "job" }),

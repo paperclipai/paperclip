@@ -234,9 +234,10 @@ export function environmentService(db: Db) {
 
     /**
      * Idempotently ensure a managed Kubernetes sandbox environment exists for a
-     * instance, configured from instance/operator-supplied config. Mirrors
-     * `ensureLocalEnvironment`, but there is no DB unique index for sandbox
-     * drivers, so idempotency is by metadata marker + driver lookup.
+     * company/instance, configured from operator-supplied config. Mirrors
+     * `ensureLocalEnvironment`, with a DB-level partial unique index for the
+     * canonical managed row plus a cleanup path for legacy duplicate rows that
+     * predate that invariant.
      *
      * The environment is `driver: "sandbox"` with `config.provider:
      * "kubernetes"` so it resolves to the first-party Kubernetes sandbox
