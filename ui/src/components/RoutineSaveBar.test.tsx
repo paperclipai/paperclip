@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import type React from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutineSaveBar } from "./RoutineSaveBar";
 import type { RoutineHistoryDirtyFieldDescriptor } from "./RoutineHistoryTab";
+
+function act(callback: () => void) {
+  flushSync(callback);
+}
 
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;

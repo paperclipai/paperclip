@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   ArrowRight,
   Braces,
@@ -6,6 +6,8 @@ import {
   Edit3,
   KeyRound,
   Play,
+  Plus,
+  X,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,6 +22,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RadioCardGroup } from "@/components/ui/radio-card";
+import { cn } from "@/lib/utils";
+import { nextCronFires, previewFirePolicies } from "../../lib/cron-fires";
 import { timeAgo } from "../../lib/timeAgo";
 import { EmptyState } from "../EmptyState";
 import { InlineEntitySelector } from "../InlineEntitySelector";
@@ -30,7 +34,7 @@ import { RoutineVariablesEditor, RoutineVariablesHint } from "../RoutineVariable
 import { RoutineTriggerCard } from "../RoutineTriggerCard";
 import { EnvVarEditor } from "../EnvVarEditor";
 import { useRoutineDetail } from "./context";
-import type { EnvBinding } from "@paperclipai/shared";
+import type { EnvBinding, RoutineDetail as RoutineDetailType } from "@paperclipai/shared";
 
 const concurrencyPolicyOptions = [
   {
@@ -336,10 +340,39 @@ function SummaryCard({
 export function TriggersSection() {
   const ctx = useRoutineDetail();
   const { routine, newTrigger, setNewTrigger, createTrigger, updateTrigger, deleteTrigger, rotateTrigger } = ctx;
+  const [addOpen, setAddOpen] = useState(false);
 
   return (
     <div className="space-y-4">
-      {/* Add trigger form */}
+      {/* Add-trigger drawer header (§3.2) */}
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium text-muted-foreground">
+          {routine.triggers.length === 0
+            ? "No triggers yet"
+            : `${routine.triggers.length} trigger${routine.triggers.length === 1 ? "" : "s"}`}
+        </p>
+        <Button
+          size="sm"
+          variant={addOpen ? "secondary" : "default"}
+          onClick={() => setAddOpen((open) => !open)}
+          aria-expanded={addOpen}
+        >
+          {addOpen ? (
+            <>
+              <X className="mr-1.5 h-3.5 w-3.5" />
+              Cancel
+            </>
+          ) : (
+            <>
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              New trigger
+            </>
+          )}
+        </Button>
+      </div>
+
+      {/* Add trigger form — expand-on-click drawer */}
+      {addOpen ? (
       <div className="space-y-3 rounded-lg border border-border p-4">
         <p className="text-sm font-medium">Add trigger</p>
         <div className="grid gap-3 md:grid-cols-2">
@@ -412,16 +445,29 @@ export function TriggersSection() {
             </>
           )}
         </div>
-        <div className="flex items-center justify-end">
-          <Button size="sm" onClick={() => createTrigger.mutate()} disabled={createTrigger.isPending}>
+        <div className="flex items-center justify-end gap-2">
+          <Button size="sm" variant="ghost" onClick={() => setAddOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => createTrigger.mutate(undefined, { onSuccess: () => setAddOpen(false) })}
+            disabled={createTrigger.isPending}
+          >
             {createTrigger.isPending ? "Adding..." : "Add trigger"}
           </Button>
         </div>
       </div>
+      ) : null}
 
       {/* Existing triggers */}
       {routine.triggers.length === 0 ? (
-        <EmptyState icon={Clock3} message="No triggers yet." />
+        <EmptyState
+          icon={Clock3}
+          message="No triggers yet."
+          action="Add a schedule"
+          onAction={() => setAddOpen(true)}
+        />
       ) : (
         <div className="space-y-3">
           {routine.triggers.map((trigger) => (
@@ -481,6 +527,21 @@ export function SecretsSection() {
   const ctx = useRoutineDetail();
   const { editDraft, setEditDraft, availableSecrets, createSecret, secretMessage, copySecretValue } = ctx;
 
+  // Project/company-scoped secrets that already see real usage, surfaced as
+  // quick-bind chips (§3.4). Ranked by reference count then recency.
+  const recentlyUsedSecrets = useMemo(
+    () =>
+      [...availableSecrets]
+        .filter((secret) => secret.status === "active")
+        .sort((a, b) => {
+          const refDelta = (b.referenceCount ?? 0) - (a.referenceCount ?? 0);
+          if (refDelta !== 0) return refDelta;
+          return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+        })
+        .slice(0, 8),
+    [availableSecrets],
+  );
+
   return (
     <div className="space-y-4">
       <div className="rounded-md border border-border bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
@@ -520,6 +581,7 @@ export function SecretsSection() {
       <EnvVarEditor
         value={(editDraft.env ?? {}) as Record<string, EnvBinding>}
         secrets={availableSecrets}
+        recentlyUsedSecrets={recentlyUsedSecrets}
         onCreateSecret={async (name, value) => createSecret.mutateAsync({ name, value })}
         onChange={(env) => setEditDraft((current) => ({ ...current, env: env ?? null }))}
       />
@@ -529,7 +591,7 @@ export function SecretsSection() {
 
 export function DeliverySection() {
   const ctx = useRoutineDetail();
-  const { editDraft, setEditDraft } = ctx;
+  const { editDraft, setEditDraft, routine } = ctx;
 
   return (
     <div className="space-y-6">
@@ -559,6 +621,102 @@ export function DeliverySection() {
           options={catchUpPolicyOptions}
         />
       </div>
+      <NextFiresPreview
+        triggers={routine.triggers}
+        concurrencyPolicy={editDraft.concurrencyPolicy}
+      />
     </div>
   );
+}
+
+const dispositionToneClass: Record<string, string> = {
+  queued: "text-emerald-600 dark:text-emerald-400",
+  coalesced: "text-amber-600 dark:text-amber-400",
+  skipped: "text-muted-foreground",
+};
+
+/**
+ * "Next 5 fires" preview (§3.5) — the strongest "what does this policy mean?"
+ * surface. Picks the soonest-firing schedule trigger, computes its next fires
+ * client-side, and annotates each with how the chosen concurrency policy would
+ * treat it.
+ */
+function NextFiresPreview({
+  triggers,
+  concurrencyPolicy,
+}: {
+  triggers: RoutineDetailType["triggers"];
+  concurrencyPolicy: string;
+}) {
+  const preview = useMemo(() => {
+    const schedule = triggers
+      .filter((trigger) => trigger.kind === "schedule" && trigger.enabled && trigger.cronExpression)
+      .map((trigger) => {
+        const fires = nextCronFires(trigger.cronExpression, 5, {
+          timeZone: trigger.timezone ?? "UTC",
+        });
+        return { trigger, fires };
+      })
+      .filter((entry) => entry.fires.length > 0)
+      .sort((a, b) => a.fires[0]!.getTime() - b.fires[0]!.getTime())[0];
+    if (!schedule) return null;
+    return {
+      timeZone: schedule.trigger.timezone ?? "UTC",
+      entries: previewFirePolicies(schedule.fires, concurrencyPolicy),
+    };
+  }, [triggers, concurrencyPolicy]);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        Next 5 fires
+      </p>
+      {preview ? (
+        <>
+          <div className="space-y-1.5 rounded-lg border border-border p-3 font-mono text-xs">
+            {preview.entries.map((entry, index) => (
+              <div key={index} className="flex items-center gap-2">
+                <span className="text-muted-foreground/40">·</span>
+                <span className="tabular-nums">{formatFireTime(entry.at, preview.timeZone)}</span>
+                <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+                <span className={cn("font-medium", dispositionToneClass[entry.disposition])}>
+                  {entry.label}
+                </span>
+                {entry.note ? (
+                  <span className="truncate text-muted-foreground/60">({entry.note})</span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted-foreground/60">
+            Preview assumes the previous run is still in flight when the next fires. Times shown in{" "}
+            {preview.timeZone}.
+          </p>
+        </>
+      ) : (
+        <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
+          No enabled schedule trigger to preview. Add a schedule in Triggers to see how this policy
+          treats upcoming fires.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function formatFireTime(date: Date, timeZone: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .format(date)
+      .replace(",", "");
+  } catch {
+    return date.toISOString();
+  }
 }

@@ -36,7 +36,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
-import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
+import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -343,6 +343,40 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       assigneeAgentId,
       status: "todo",
     });
+  });
+
+  it("resolves only structured same-company agent mentions", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const otherCompanyId = await seedAssignableAgentCompany();
+    const localAgentId = randomUUID();
+    const foreignAgentId = randomUUID();
+
+    await db.insert(agents).values([
+      agentRow(companyId, { id: localAgentId, name: "LocalAgent" }),
+      agentRow(otherCompanyId, { id: foreignAgentId, name: "ForeignAgent" }),
+    ]);
+
+    const mentions = await svc.findMentionedAgents(
+      companyId,
+      [
+        `hello [@LocalAgent](${buildAgentMentionHref(localAgentId)})`,
+        `and [@ForeignAgent](${buildAgentMentionHref(foreignAgentId)})`,
+      ].join(" "),
+    );
+
+    expect(mentions).toEqual([localAgentId]);
+  });
+
+  it("does not wake agents from raw @name text without a structured mention", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const localAgentId = randomUUID();
+
+    await db.insert(agents).values([
+      agentRow(companyId, { id: localAgentId, name: "LocalAgent" }),
+    ]);
+
+    await expect(svc.findMentionedAgents(companyId, "@LocalAgent please inspect this"))
+      .resolves.toEqual([]);
   });
 
   it("returns issues an agent participated in across the supported signals", async () => {

@@ -83,6 +83,8 @@ import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
+import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
+import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
@@ -2833,6 +2835,7 @@ export function IssueDetail() {
         childIssues={panelChildIssues}
         onAddSubIssue={openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
+        hasActiveRun={resolvedHasActiveRun}
       />
     );
     return () => closePanel();
@@ -2844,6 +2847,7 @@ export function IssueDetail() {
     openPanel,
     panelChildIssues,
     panelIssue,
+    resolvedHasActiveRun,
   ]);
 
   const goToInboxShortcutArmedRef = useRef(false);
@@ -3279,6 +3283,11 @@ export function IssueDetail() {
 
   const treePreviewAffectedIssues = useMemo(
     () => (treeControlPreview?.issues ?? []).filter((candidate) => !candidate.skipped),
+    [treeControlPreview],
+  );
+  // "What this affects" buckets for the pause/hold dialog (design surface 4).
+  const pauseAffectsSummary = useMemo(
+    () => computePauseAffectsSummary(treeControlPreview?.issues ?? []),
     [treeControlPreview],
   );
   const treePreviewDisplayIssues = useMemo(
@@ -4328,6 +4337,9 @@ export function IssueDetail() {
                 </div>
               ) : treeControlPreview ? (
                 <div className="space-y-2">
+                  {treeControlMode === "pause" ? (
+                    <PauseAffectsSummaryView summary={pauseAffectsSummary} />
+                  ) : null}
                   {treePreviewWarnings.length > 0 ? (
                     <div className="space-y-1">
                       {treePreviewWarnings.map((warning) => (
@@ -4397,6 +4409,7 @@ export function IssueDetail() {
                 onAddSubIssue={openNewSubIssue}
                 onUpdate={(data) => updateIssue.mutate(data)}
                 inline
+                hasActiveRun={resolvedHasActiveRun}
               />
             </div>
           </ScrollArea>
