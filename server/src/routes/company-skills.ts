@@ -2,13 +2,19 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   catalogSkillListQuerySchema,
+  companySkillCommentCreateSchema,
+  companySkillCommentUpdateSchema,
   companySkillCreateSchema,
   companySkillFileUpdateSchema,
+  companySkillForkSchema,
   companySkillImportSchema,
   companySkillInstallCatalogSchema,
   companySkillInstallUpdateSchema,
+  companySkillListQuerySchema,
   companySkillProjectScanRequestSchema,
   companySkillResetSchema,
+  companySkillUpdateSchema,
+  companySkillVersionCreateSchema,
 } from "@paperclipai/shared";
 import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
@@ -61,6 +67,22 @@ export function companySkillRoutes(db: Db) {
     if (typeof value === "string") return value;
     if (Array.isArray(value) && typeof value[0] === "string") return value[0];
     return undefined;
+  }
+
+  function queryStringArray(value: unknown): string[] {
+    if (typeof value === "string") return [value];
+    if (Array.isArray(value)) return value.filter((entry): entry is string => typeof entry === "string");
+    return [];
+  }
+
+  function skillActor(req: Request) {
+    if (req.actor.type === "agent") {
+      return { type: "agent" as const, agentId: req.actor.agentId ?? null };
+    }
+    if (req.actor.type === "board") {
+      return { type: "user" as const, userId: req.actor.userId ?? null };
+    }
+    return { type: "system" as const };
   }
 
   async function assertCanMutateCompanySkills(req: Request, companyId: string) {
@@ -118,19 +140,227 @@ export function companySkillRoutes(db: Db) {
   router.get("/companies/:companyId/skills", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    const result = await svc.list(companyId, companySkillListQuerySchema.parse({
+      q: firstQueryString(req.query.q),
+      sort: firstQueryString(req.query.sort),
+      categories: [
+        ...queryStringArray(req.query.category),
+        ...queryStringArray(req.query.categories),
+        ...queryStringArray(req.query["categories[]"]),
+      ],
+      scope: firstQueryString(req.query.scope),
+    }));
     res.json(result);
+  });
+
+  router.get("/companies/:companyId/skills/categories", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.categoryCounts(companyId));
   });
 
   router.get("/companies/:companyId/skills/:skillId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.detail(companyId, skillId);
+    const result = await svc.detail(companyId, skillId, skillActor(req));
     if (!result) {
       res.status(404).json({ error: "Skill not found" });
       return;
     }
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/skills/:skillId/versions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.listVersions(companyId, skillId));
+  });
+
+  router.get("/companies/:companyId/skills/:skillId/versions/:versionId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    const versionId = req.params.versionId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.getVersion(companyId, skillId, versionId);
+    if (!result) {
+      res.status(404).json({ error: "Skill version not found" });
+      return;
+    }
+    res.json(result);
+  });
+
+  router.post(
+    "/companies/:companyId/skills/:skillId/versions",
+    validate(companySkillVersionCreateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.createVersion(companyId, skillId, req.body, skillActor(req));
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_version_created",
+        entityType: "company_skill_version",
+        entityId: result.id,
+        details: {
+          skillId,
+          revisionNumber: result.revisionNumber,
+          label: result.label,
+        },
+      });
+      res.status(201).json(result);
+    },
+  );
+
+  router.post("/companies/:companyId/skills/:skillId/star", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.starSkill(companyId, skillId, skillActor(req));
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_starred",
+      entityType: "company_skill",
+      entityId: skillId,
+      details: { starCount: result.starCount },
+    });
+    res.json(result);
+  });
+
+  router.delete("/companies/:companyId/skills/:skillId/star", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.unstarSkill(companyId, skillId, skillActor(req));
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_unstarred",
+      entityType: "company_skill",
+      entityId: skillId,
+      details: { starCount: result.starCount },
+    });
+    res.json(result);
+  });
+
+  router.post(
+    "/companies/:companyId/skills/:skillId/fork",
+    validate(companySkillForkSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.forkSkill(companyId, skillId, req.body, skillActor(req));
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_forked",
+        entityType: "company_skill",
+        entityId: result.id,
+        details: {
+          sourceSkillId: skillId,
+          slug: result.slug,
+          name: result.name,
+        },
+      });
+      res.status(201).json(result);
+    },
+  );
+
+  router.get("/companies/:companyId/skills/:skillId/comments", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.listComments(companyId, skillId));
+  });
+
+  router.post(
+    "/companies/:companyId/skills/:skillId/comments",
+    validate(companySkillCommentCreateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      assertCompanyAccess(req, companyId);
+      const result = await svc.createComment(companyId, skillId, req.body, skillActor(req));
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_comment_created",
+        entityType: "company_skill_comment",
+        entityId: result.id,
+        details: { skillId, parentCommentId: result.parentCommentId },
+      });
+      res.status(201).json(result);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/skills/:skillId/comments/:commentId",
+    validate(companySkillCommentUpdateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      const commentId = req.params.commentId as string;
+      assertCompanyAccess(req, companyId);
+      const result = await svc.updateComment(companyId, skillId, commentId, req.body, skillActor(req));
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_comment_updated",
+        entityType: "company_skill_comment",
+        entityId: result.id,
+        details: { skillId },
+      });
+      res.json(result);
+    },
+  );
+
+  router.delete("/companies/:companyId/skills/:skillId/comments/:commentId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    const commentId = req.params.commentId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.deleteComment(companyId, skillId, commentId, skillActor(req));
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_comment_deleted",
+      entityType: "company_skill_comment",
+      entityId: result.id,
+      details: { skillId },
+    });
     res.json(result);
   });
 
@@ -165,7 +395,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCanMutateCompanySkills(req, companyId);
-      const result = await svc.createLocalSkill(companyId, req.body);
+      const result = await svc.createLocalSkill(companyId, req.body, skillActor(req));
 
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -188,6 +418,35 @@ export function companySkillRoutes(db: Db) {
   );
 
   router.patch(
+    "/companies/:companyId/skills/:skillId",
+    validate(companySkillUpdateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.updateSkill(companyId, skillId, req.body);
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_updated",
+        entityType: "company_skill",
+        entityId: result.id,
+        details: {
+          slug: result.slug,
+          sharingScope: result.sharingScope,
+        },
+      });
+
+      res.json(result);
+    },
+  );
+
+  router.patch(
     "/companies/:companyId/skills/:skillId/files",
     validate(companySkillFileUpdateSchema),
     async (req, res) => {
@@ -199,6 +458,7 @@ export function companySkillRoutes(db: Db) {
         skillId,
         String(req.body.path ?? ""),
         String(req.body.content ?? ""),
+        skillActor(req),
       );
 
       const actor = getActorInfo(req);

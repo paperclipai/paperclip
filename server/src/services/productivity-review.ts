@@ -683,11 +683,21 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       return { kind: "blocked_skip" as const, reviewIssueId: null };
     }
 
-    // Gate: Never spawn on a container epic (has child issues)
+    // Gate: Never spawn on a container epic (has child issues).
+    // Exclude productivity-review children (they are rooted under the source issue
+    // and would otherwise make every reviewed issue look like an epic) and terminal
+    // issues (a real container epic has actionable, non-review children).
     const childCount = await db
       .select({ id: issues.id })
       .from(issues)
-      .where(and(eq(issues.companyId, evidence.sourceIssue.companyId), eq(issues.parentId, evidence.sourceIssue.id)))
+      .where(
+        and(
+          eq(issues.companyId, evidence.sourceIssue.companyId),
+          eq(issues.parentId, evidence.sourceIssue.id),
+          sql`${issues.originKind} <> ${PRODUCTIVITY_REVIEW_ORIGIN_KIND}`,
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
       .limit(1)
       .then((rows) => rows.length);
     if (childCount > 0) {

@@ -36,6 +36,10 @@ interface CompanyJsonOptions extends BaseClientOptions {
   companyId?: string;
   payloadJson?: string;
 }
+interface AgentMeResponse {
+  id: string;
+  companyId: string;
+}
 type CompanyDeleteSelectorMode = "auto" | "id" | "prefix";
 type CompanyImportTargetMode = "new" | "existing";
 type CompanyCollisionMode = "rename" | "skip" | "replace";
@@ -1095,7 +1099,7 @@ export function registerCompanyCommands(program: Command): void {
       .action(async (opts: CompanyCommandOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const rows = (await ctx.api.get<Company[]>("/api/companies")) ?? [];
+          const rows = await listCompaniesForContext(ctx);
           if (ctx.json) {
             printOutput(rows, { json: true });
             return;
@@ -1141,6 +1145,23 @@ export function registerCompanyCommands(program: Command): void {
 
   addCommonClientOptions(
     company
+      .command("current")
+      .description("Get the current scoped company from --company-id, context, env, or agent authentication")
+      .action(async (opts: CompanyCommandOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const companyId = await resolveCurrentCompanyId(ctx);
+          const row = await ctx.api.get<Company>(apiPath`/api/companies/${companyId}`);
+          printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: true },
+  );
+
+  addCommonClientOptions(
+    company
       .command("stats")
       .description("Get company stats")
       .action(async (opts: CompanyCommandOptions) => {
@@ -1161,7 +1182,7 @@ export function registerCompanyCommands(program: Command): void {
       .action(async (opts: CompanyJsonOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          printOutput(await ctx.api.post("/api/companies", parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+          printOutput(await createCompanyForContext(ctx, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -1671,6 +1692,69 @@ export function registerCompanyCommands(program: Command): void {
         }
       }),
   );
+}
+
+async function listCompaniesForContext(ctx: {
+  companyId?: string;
+  api: { get<T>(path: string): Promise<T | null> };
+}): Promise<Company[]> {
+  try {
+    return (await ctx.api.get<Company[]>("/api/companies")) ?? [];
+  } catch (error) {
+    if (!isBoardAccessRequiredError(error)) {
+      throw error;
+    }
+  }
+
+  const companyId = await resolveCurrentCompanyId(ctx);
+  const scopedCompany = await ctx.api.get<Company>(apiPath`/api/companies/${companyId}`);
+  return scopedCompany ? [scopedCompany] : [];
+}
+
+async function createCompanyForContext(ctx: {
+  api: { post<T>(path: string, body?: unknown): Promise<T | null> };
+}, payload: unknown): Promise<unknown> {
+  try {
+    return await ctx.api.post("/api/companies", payload);
+  } catch (error) {
+    if (isBoardAccessRequiredError(error) || isInstanceAdminRequiredError(error)) {
+      throw new Error(
+        "Creating companies requires board/instance-admin authentication. Agent API keys are scoped to one company; use `paperclipai company list --json` or `paperclipai company current --json` to select the scoped company, or rerun create with a board token/login.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function resolveCurrentCompanyId(ctx: { companyId?: string; api: { get<T>(path: string): Promise<T | null> } }): Promise<string> {
+  const fromContext = ctx.companyId?.trim();
+  if (fromContext) return fromContext;
+
+  let agent: AgentMeResponse | null = null;
+  try {
+    agent = await ctx.api.get<AgentMeResponse>("/api/agents/me");
+  } catch (error) {
+    if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
+      throw new Error(
+        "Current company is not available. Pass --company-id, set PAPERCLIP_COMPANY_ID, set a context profile companyId, or authenticate with an agent API key.",
+      );
+    }
+    throw error;
+  }
+
+  const fromAgent = agent?.companyId?.trim();
+  if (fromAgent) return fromAgent;
+  throw new Error(
+    "Current company is not available. Pass --company-id, set PAPERCLIP_COMPANY_ID, set a context profile companyId, or authenticate with an agent API key.",
+  );
+}
+
+function isBoardAccessRequiredError(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError && error.status === 403 && error.message.toLowerCase().includes("board access required");
+}
+
+function isInstanceAdminRequiredError(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError && error.status === 403 && error.message.toLowerCase().includes("instance admin");
 }
 
 function addCompanyJsonPost(parent: Command, name: string, description: string, pathSuffix: string): void {

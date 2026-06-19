@@ -12,12 +12,11 @@ import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
-import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap } from "../lib/company-members";
+import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, isAgentTaskTarget } from "../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../lib/issue-assignee-overrides";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import {
   getRecentAssigneeIds,
-  getRecentAssigneeSelectionIds,
   sortAgentsByRecency,
   trackRecentAssignee,
   trackRecentAssigneeUser,
@@ -53,6 +52,12 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import {
+  AssigneeRunningBanner,
+  InterruptAssignConfirm,
+  type HandoffChipResolvers,
+} from "./interrupt-handoff/InterruptHandoffViews";
+import { describeReassignInterrupt } from "../lib/interrupt-handoff";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
   const [copied, setCopied] = useState(false);
@@ -144,6 +149,9 @@ interface IssuePropertiesProps {
   onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
+  /** Whether an agent run is currently in flight on this issue, so the assignee
+   * picker can warn that reassigning will interrupt it. */
+  hasActiveRun?: boolean;
 }
 
 const ISSUE_BLOCKER_SEARCH_LIMIT = 50;
@@ -269,7 +277,7 @@ function RemovableIssueReferencePill({
           "inline-flex items-center gap-1 rounded-full border border-border py-0.5 pl-1 pr-2 text-xs",
         )}
         title={issue.title}
-        aria-label={`Issue ${issueLabel}: ${issue.title}`}
+        aria-label={`Task ${issueLabel}: ${issue.title}`}
       >
         <button
           type="button"
@@ -284,7 +292,7 @@ function RemovableIssueReferencePill({
           <Link
             to={`/issues/${issueLabel}`}
             className="inline-flex min-w-0 items-center gap-1 no-underline hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
-            aria-label={`Issue ${issueLabel}: ${issue.title}`}
+            aria-label={`Task ${issueLabel}: ${issue.title}`}
           >
             {content}
           </Link>
@@ -297,7 +305,7 @@ function RemovableIssueReferencePill({
           <DialogHeader>
             <DialogTitle>Remove blocker?</DialogTitle>
             <DialogDescription>
-              Remove {confirmLabel} as a blocker for this issue.
+              Remove {confirmLabel} as a blocker for this task.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -382,12 +390,21 @@ export function IssueProperties({
   onAddSubIssue,
   onUpdate,
   inline,
+  hasActiveRun = false,
 }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
+  /** When a run is live, a selection is staged here until the operator confirms
+   * the interrupt rather than applying it immediately. */
+  const [pendingAssignee, setPendingAssignee] = useState<{
+    assigneeAgentId: string | null;
+    assigneeUserId: string | null;
+    label: string;
+    track?: () => void;
+  } | null>(null);
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
   const [blockedByOpen, setBlockedByOpen] = useState(false);
@@ -544,14 +561,9 @@ export function IssueProperties({
   };
 
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [assigneeOpen]);
-  const recentAssigneeSelectionIds = useMemo(() => getRecentAssigneeSelectionIds(), [assigneeOpen]);
   const sortedAgents = useMemo(
-    () => sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
+    () => sortAgentsByRecency((agents ?? []).filter(isAgentTaskTarget), recentAssigneeIds),
     [agents, recentAssigneeIds],
-  );
-  const recentAssigneeValues = useMemo(
-    () => recentAssigneeSelectionIds,
-    [recentAssigneeSelectionIds],
   );
   const recentProjectIds = useMemo(() => getRecentProjectIds(), [projectOpen]);
   const userLabelMap = useMemo(
@@ -767,7 +779,7 @@ export function IssueProperties({
     <div className="w-full space-y-2 p-2">
       <p className="text-xs text-muted-foreground">
         {assignee
-          ? "This assignee's adapter does not expose editable issue overrides."
+          ? "This assignee's adapter does not expose editable task overrides."
           : "Select a compatible agent assignee to edit these overrides."}
       </p>
       <button
@@ -780,8 +792,12 @@ export function IssueProperties({
     </div>
   );
   // When the issue has no project, only C-suite agents can be assigned (server-side
-  // rule — mirrored here so the UI reflects what the API will accept).
-  const issueRequiresProjectExemption = !issue.projectId;
+  // rule — mirrored here so the UI reflects what the API will accept). The block
+  // only applies while the issue is unassigned or already owned by a C-suite agent;
+  // an issue already assigned to a non-exempt agent (legacy/server-permitted state)
+  // can still be reassigned among agents without first setting a project.
+  const issueRequiresProjectExemption =
+    !issue.projectId && (!assignee || isProjectExemptAgentRole(assignee.role));
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
@@ -792,6 +808,51 @@ export function IssueProperties({
     : issue.assigneeUserId
       ? `user:${issue.assigneeUserId}`
       : "";
+
+  // --- Interrupt-handoff clarity for the assignee picker (design surface 2) ---
+  const handoffResolvers: HandoffChipResolvers = useMemo(
+    () => ({
+      agentMap: new Map((agents ?? []).map((agent) => [agent.id, { name: agent.name, icon: agent.icon }])),
+      resolveUserLabel: (id) => userLabel(id),
+    }),
+    // userLabel closes over userLabelMap + currentUserId, both reflected here.
+    [agents, userLabelMap, currentUserId],
+  );
+  const reassignInterruptCopy = useMemo(
+    () => describeReassignInterrupt({ runningAgentName: assignee?.name ?? null }),
+    [assignee?.name],
+  );
+  const closeAssigneePicker = () => {
+    setAssigneeOpen(false);
+    setAssigneeSearch("");
+    setPendingAssignee(null);
+  };
+  const applyAssignee = (next: { assigneeAgentId: string | null; assigneeUserId: string | null }, track?: () => void) => {
+    track?.();
+    onUpdate(next);
+    closeAssigneePicker();
+  };
+  /** Apply a selection immediately, or stage it for confirmation while a run is live. */
+  const selectAssignee = (
+    next: { assigneeAgentId: string | null; assigneeUserId: string | null },
+    label: string,
+    track?: () => void,
+  ) => {
+    const nextValue = next.assigneeAgentId
+      ? `agent:${next.assigneeAgentId}`
+      : next.assigneeUserId
+        ? `user:${next.assigneeUserId}`
+        : "";
+    if (nextValue === selectedAssigneeValue) {
+      closeAssigneePicker();
+      return;
+    }
+    if (hasActiveRun) {
+      setPendingAssignee({ ...next, label, track });
+      return;
+    }
+    applyAssignee(next, track);
+  };
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
     onUpdate({
       executionPolicy: buildExecutionPolicy({
@@ -1291,48 +1352,133 @@ export function IssueProperties({
     </>
   );
 
-  const assigneePickerOptions = orderItemsBySelectedAndRecent(
-    [
-      { id: "", kind: "none" as const, label: "No assignee", searchText: "" },
-      ...(currentUserId
-        ? [{
-            id: `user:${currentUserId}`,
-            kind: "user" as const,
-            userId: currentUserId,
-            label: "Assign to me",
-            searchText: userLabel(currentUserId) ?? "",
-          }]
-        : []),
-      ...(issue.createdByUserId && issue.createdByUserId !== currentUserId
-        ? [{
-            id: `user:${issue.createdByUserId}`,
-            kind: "user" as const,
-            userId: issue.createdByUserId,
-            label: creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester",
-            searchText: creatorUserLabel ?? "requester",
-          }]
-        : []),
-      ...otherUserOptions.map((option) => ({
-        id: option.id,
-        kind: "user" as const,
-        userId: option.id.slice("user:".length),
-        label: option.label,
-        searchText: option.searchText ?? "",
-      })),
-      ...sortedAgents.map((agent) => ({
-        id: `agent:${agent.id}`,
-        kind: "agent" as const,
-        agent,
-        label: agent.name,
-        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
-      })),
-    ],
-    selectedAssigneeValue,
-    recentAssigneeValues,
+  // Grouped picker options (design surface 2): a board-users section and an
+  // agents section, plus the "No assignee" reset. Agents stay recency-sorted
+  // within their group via `sortedAgents`.
+  const userAssigneeOptions = [
+    ...(currentUserId
+      ? [{
+          kind: "user" as const,
+          value: `user:${currentUserId}`,
+          userId: currentUserId,
+          label: "Assign to me",
+          searchText: userLabel(currentUserId) ?? "",
+        }]
+      : []),
+    ...(issue.createdByUserId && issue.createdByUserId !== currentUserId
+      ? [{
+          kind: "user" as const,
+          value: `user:${issue.createdByUserId}`,
+          userId: issue.createdByUserId,
+          label: creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester",
+          searchText: creatorUserLabel ?? "requester",
+        }]
+      : []),
+    ...otherUserOptions.map((option) => ({
+      kind: "user" as const,
+      value: option.id,
+      userId: option.id.slice("user:".length),
+      label: option.label,
+      searchText: option.searchText ?? "",
+    })),
+  ];
+  const agentAssigneeOptions = sortedAgents.map((agent) => ({
+    kind: "agent" as const,
+    value: `agent:${agent.id}`,
+    agent,
+    label: agent.name,
+    searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+  }));
+
+  const matchesAssigneeSearch = (label: string, searchText: string) => {
+    if (!assigneeSearch.trim()) return true;
+    return `${label} ${searchText}`.toLowerCase().includes(assigneeSearch.toLowerCase());
+  };
+
+  type AssigneeOptionLike =
+    | { kind: "none"; value: string; label: string; searchText: string }
+    | { kind: "user"; value: string; userId: string; label: string; searchText: string }
+    | { kind: "agent"; value: string; agent: (typeof agentAssigneeOptions)[number]["agent"]; label: string; searchText: string };
+
+  const renderAssigneeOption = (option: AssigneeOptionLike) => {
+    const agentBlockedByProjectRule =
+      option.kind === "agent" &&
+      issueRequiresProjectExemption &&
+      !isProjectExemptAgentRole(option.agent.role);
+    return (
+      <button
+        key={option.value || "__none__"}
+        className={cn(
+          "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded text-left",
+          !agentBlockedByProjectRule && "hover:bg-accent/50",
+          option.value === selectedAssigneeValue && "bg-accent",
+          agentBlockedByProjectRule && "opacity-50 cursor-not-allowed",
+        )}
+        disabled={agentBlockedByProjectRule}
+        title={agentBlockedByProjectRule ? "Set a project on this issue first" : undefined}
+        onClick={() => {
+          if (agentBlockedByProjectRule) return;
+          if (option.kind === "agent") {
+            selectAssignee({ assigneeAgentId: option.agent.id, assigneeUserId: null }, option.label, () =>
+              trackRecentAssignee(option.agent.id),
+            );
+          } else if (option.kind === "user") {
+            selectAssignee({ assigneeAgentId: null, assigneeUserId: option.userId }, option.label, () =>
+              trackRecentAssigneeUser(option.userId),
+            );
+          } else {
+            selectAssignee({ assigneeAgentId: null, assigneeUserId: null }, option.label);
+          }
+        }}
+      >
+        {option.kind === "agent" ? (
+          <AgentIcon icon={option.agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+        ) : option.kind === "user" ? (
+          <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+        ) : null}
+        <span className="min-w-0 flex-1 truncate">{option.label}</span>
+        {option.value === selectedAssigneeValue ? (
+          <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground" aria-hidden="true" />
+        ) : null}
+      </button>
+    );
+  };
+
+  const visibleUserOptions = userAssigneeOptions.filter((option) =>
+    matchesAssigneeSearch(option.label, option.searchText),
+  );
+  const visibleAgentOptions = agentAssigneeOptions.filter((option) =>
+    matchesAssigneeSearch(option.label, option.searchText),
+  );
+  const showNoAssigneeOption = matchesAssigneeSearch("No assignee", "");
+  const sectionHeader = (text: string) => (
+    <div className="px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+      {text}
+    </div>
   );
 
-  const assigneeContent = (
+  const assigneeContent = pendingAssignee ? (
+    <div className="space-y-2 p-1">
+      <InterruptAssignConfirm
+        copy={reassignInterruptCopy}
+        to={{ agentId: pendingAssignee.assigneeAgentId, userId: pendingAssignee.assigneeUserId }}
+        resolvers={handoffResolvers}
+        onConfirm={() =>
+          applyAssignee(
+            { assigneeAgentId: pendingAssignee.assigneeAgentId, assigneeUserId: pendingAssignee.assigneeUserId },
+            pendingAssignee.track,
+          )
+        }
+        onCancel={() => setPendingAssignee(null)}
+      />
+    </div>
+  ) : (
     <>
+      {hasActiveRun ? (
+        <div className="px-1 pt-1">
+          <AssigneeRunningBanner copy={reassignInterruptCopy} />
+        </div>
+      ) : null}
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
         placeholder="Search assignees..."
@@ -1345,52 +1491,25 @@ export function IssueProperties({
           This issue has no project. Only C-suite agents (CEO/CTO/CMO/CFO) can be assigned until a project is set.
         </div>
       )}
-      <div className="max-h-48 overflow-y-auto overscroll-contain">
-        {assigneePickerOptions
-          .filter((option) => {
-            if (!assigneeSearch.trim()) return true;
-            const q = assigneeSearch.toLowerCase();
-            return `${option.label} ${option.searchText}`.toLowerCase().includes(q);
-          })
-          .map((option) => {
-            const agentBlockedByProjectRule =
-              option.kind === "agent" &&
-              issueRequiresProjectExemption &&
-              !isProjectExemptAgentRole(option.agent.role);
-            return (
-              <button
-                key={option.id || "__none__"}
-                className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded",
-                  !agentBlockedByProjectRule && "hover:bg-accent/50",
-                  option.id === selectedAssigneeValue && "bg-accent",
-                  agentBlockedByProjectRule && "opacity-50 cursor-not-allowed",
-                )}
-                disabled={agentBlockedByProjectRule}
-                title={agentBlockedByProjectRule ? "Set a project on this issue first" : undefined}
-                onClick={() => {
-                  if (agentBlockedByProjectRule) return;
-                  if (option.kind === "agent") {
-                    trackRecentAssignee(option.agent.id);
-                    onUpdate({ assigneeAgentId: option.agent.id, assigneeUserId: null });
-                  } else if (option.kind === "user") {
-                    trackRecentAssigneeUser(option.userId);
-                    onUpdate({ assigneeAgentId: null, assigneeUserId: option.userId });
-                  } else {
-                    onUpdate({ assigneeAgentId: null, assigneeUserId: null });
-                  }
-                  setAssigneeOpen(false);
-                }}
-              >
-                {option.kind === "agent" ? (
-                  <AgentIcon icon={option.agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-                ) : option.kind === "user" ? (
-                  <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-                ) : null}
-                {option.label}
-              </button>
-            );
-          })}
+      <div className="max-h-56 overflow-y-auto overscroll-contain">
+        {showNoAssigneeOption
+          ? renderAssigneeOption({ kind: "none", value: "", label: "No assignee", searchText: "" })
+          : null}
+        {visibleAgentOptions.length > 0 ? (
+          <>
+            {sectionHeader("Agents")}
+            {visibleAgentOptions.map((option) => renderAssigneeOption(option))}
+          </>
+        ) : null}
+        {visibleUserOptions.length > 0 ? (
+          <>
+            {sectionHeader("Board users")}
+            {visibleUserOptions.map((option) => renderAssigneeOption(option))}
+          </>
+        ) : null}
+        {!showNoAssigneeOption && visibleAgentOptions.length === 0 && visibleUserOptions.length === 0 ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">No matches.</div>
+        ) : null}
       </div>
     </>
   );
@@ -1660,7 +1779,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         value={parentSearch}
         onChange={(e) => setParentSearch(e.target.value)}
         autoFocus={!inline}
@@ -1732,11 +1851,11 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
-        aria-label="Search issues to add as blockers"
+        aria-label="Search tasks to add as blockers"
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
         <button
@@ -1773,9 +1892,9 @@ export function IssueProperties({
           );
         })}
         {blockerOptionsLoading ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">Searching issues...</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">Searching tasks...</div>
         ) : blockerOptions.length === 0 ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">No matching issues.</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">No matching tasks.</div>
         ) : null}
       </div>
     </>
@@ -1828,7 +1947,7 @@ export function IssueProperties({
           inline={inline}
           label="Assignee"
           open={assigneeOpen}
-          onOpenChange={(open) => { setAssigneeOpen(open); if (!open) setAssigneeSearch(""); }}
+          onOpenChange={(open) => { setAssigneeOpen(open); if (!open) { setAssigneeSearch(""); setPendingAssignee(null); } }}
           triggerContent={assigneeTrigger}
           popoverClassName="w-52"
           extra={issue.assigneeAgentId ? (
@@ -1952,7 +2071,7 @@ export function IssueProperties({
           ) : null}
         </PropertyRow>
 
-        <PropertyRow label="Sub-issues">
+        <PropertyRow label="Sub-tasks">
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
               ? childIssues.map((child) => (
@@ -1966,7 +2085,7 @@ export function IssueProperties({
                 onClick={onAddSubIssue}
               >
                 <Plus className="h-3 w-3" />
-              Add sub-issue
+              Add sub-task
               </button>
             ) : null}
           </div>

@@ -14,7 +14,7 @@ import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
 import { isProjectExemptAgentRole } from "@paperclipai/shared";
-import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions } from "../lib/company-members";
+import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
 import { useProjectOrder } from "../hooks/useProjectOrder";
@@ -60,14 +60,17 @@ import {
   ListTree,
   X,
   Eye,
+  ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
-import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
+import { issueStatusText, issueStatusTextClassic, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
+import { useConferenceRoomChatEnabled } from "../hooks/useConferenceRoomChatEnabled";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { getTrustPreset } from "../lib/trust-policy-ui";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -141,14 +144,18 @@ function isIssueWorkMode(value: unknown): value is IssueWorkMode {
   return value === "standard" || value === "planning";
 }
 
-const ISSUE_WORK_MODE_OPTIONS: ReadonlyArray<{
+// "Agent mode"/"Plan mode" relabels ship behind the Conference Room Chat flag
+// (PAP-132/PAP-139); OFF keeps master's "Standard"/"Planning".
+function issueWorkModeOptions(conferenceRoomChat: boolean): ReadonlyArray<{
   value: IssueWorkMode;
   label: string;
   icon: typeof Hammer;
-}> = [
-  { value: "standard", label: "Standard", icon: Hammer },
-  { value: "planning", label: "Planning", icon: ClipboardList },
-];
+}> {
+  return [
+    { value: "standard", label: conferenceRoomChat ? "Agent mode" : "Standard", icon: Hammer },
+    { value: "planning", label: conferenceRoomChat ? "Plan mode" : "Planning", icon: ClipboardList },
+  ];
+}
 
 function loadDraft(): IssueDraft | null {
   try {
@@ -221,23 +228,30 @@ function formatFileSize(file: File) {
   return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const statuses: ReadonlyArray<{ value: string; label: string; color: string; description?: string }> = [
-  {
-    value: "backlog",
-    label: "Backlog",
-    color: issueStatusText.backlog ?? issueStatusTextDefault,
-    description: "Parked — assignee will not be woken",
-  },
-  {
-    value: "todo",
-    label: "Todo",
-    color: issueStatusText.todo ?? issueStatusTextDefault,
-    description: "Executable — assignee will be woken",
-  },
-  { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
-  { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
-  { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },
-];
+// PAP-75 brand hues ship behind the Conference Room Chat flag (PAP-139); OFF
+// keeps master's palette (`issueStatusTextClassic`).
+function buildStatusOptions(
+  conferenceRoomChat: boolean,
+): ReadonlyArray<{ value: string; label: string; color: string; description?: string }> {
+  const palette = conferenceRoomChat ? issueStatusText : issueStatusTextClassic;
+  return [
+    {
+      value: "backlog",
+      label: "Backlog",
+      color: palette.backlog ?? issueStatusTextDefault,
+      description: "Parked — assignee will not be woken",
+    },
+    {
+      value: "todo",
+      label: "Todo",
+      color: palette.todo ?? issueStatusTextDefault,
+      description: "Executable — assignee will be woken",
+    },
+    { value: "in_progress", label: "In Progress", color: palette.in_progress ?? issueStatusTextDefault },
+    { value: "in_review", label: "In Review", color: palette.in_review ?? issueStatusTextDefault },
+    { value: "done", label: "Done", color: palette.done ?? issueStatusTextDefault },
+  ];
+}
 
 const priorities = [
   { value: "critical", label: "Critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
@@ -315,7 +329,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   return (
     <textarea
       className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-      placeholder="Issue title"
+      placeholder="Task title"
       rows={1}
       value={draftValue}
       onChange={(e) => {
@@ -405,6 +419,10 @@ function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | u
 export function NewIssueDialog() {
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
+  // Conference Room Chat flag (PAP-139): selects work-mode labels + status hues.
+  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
+  const workModeOptions = useMemo(() => issueWorkModeOptions(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
+  const statuses = useMemo(() => buildStatusOptions(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [title, setTitle] = useState("");
@@ -1076,6 +1094,7 @@ export function NewIssueDialog() {
   const currentAssignee = selectedAssigneeAgentId
     ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId)
     : null;
+  const currentAssigneeLowTrust = getTrustPreset(currentAssignee?.permissions) === "low_trust_review";
   const currentProject = orderedProjects.find((project) => project.id === projectId);
   const currentProjectExecutionWorkspacePolicy =
     experimentalSettings?.enableIsolatedWorkspaces === true
@@ -1124,7 +1143,7 @@ export function NewIssueDialog() {
         // assignees (see services/issues.ts assertAssignableAgent). Filter them out
         // of the picker so users don't pick an agent that can't be saved.
         (agents ?? []).filter((agent) => {
-          if (agent.status === "terminated") return false;
+          if (!isAgentTaskTarget(agent)) return false;
           if (!projectId && !isProjectExemptAgentRole(agent.role)) return false;
           return true;
         }),
@@ -1150,7 +1169,7 @@ export function NewIssueDialog() {
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
-    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create issue. Try again.";
+    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create task. Try again.";
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
 
@@ -1198,7 +1217,7 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
-  const currentWorkMode = ISSUE_WORK_MODE_OPTIONS[workMode === "planning" ? 1 : 0]!;
+  const currentWorkMode = workModeOptions[workMode === "planning" ? 1 : 0]!;
   const CurrentWorkModeIcon = currentWorkMode.icon;
 
   return (
@@ -1299,7 +1318,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{isSubIssueMode ? "New sub-issue" : "New issue"}</span>
+            <span>{isSubIssueMode ? "New sub-task" : "New task"}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1393,6 +1412,9 @@ export function NewIssueDialog() {
                     <>
                       {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
                       <span className="truncate">{option.label}</span>
+                      {assignee && getTrustPreset(assignee.permissions) === "low_trust_review" ? (
+                        <ShieldAlert className="ml-auto h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-label="Low-trust review agent" />
+                      ) : null}
                     </>
                   );
                 }}
@@ -1581,7 +1603,7 @@ export function NewIssueDialog() {
             <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
               <div className="flex items-center gap-1.5">
                 <ListTree className="h-3.5 w-3.5 shrink-0" />
-                <span className="shrink-0">Sub-issue of</span>
+                <span className="shrink-0">Sub-task of</span>
                 <span className="font-medium text-foreground">{parentIssueLabel}</span>
               </div>
               {newIssueDefaults.parentTitle ? (
@@ -1598,7 +1620,7 @@ export function NewIssueDialog() {
             <div className="space-y-1.5">
               <div className="text-xs font-medium">Execution workspace</div>
               <div className="text-[11px] text-muted-foreground">
-                Control whether this issue runs in the shared workspace, a new isolated workspace, or an existing one.
+                Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one.
               </div>
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
@@ -1637,7 +1659,7 @@ export function NewIssueDialog() {
               )}
               {showParentWorkspaceWarning ? (
                 <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
-                  Warning: this sub-issue will no longer use the parent issue workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                  Warning: this sub-task will no longer use the parent task workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
                 </div>
               ) : null}
             </div>
@@ -1696,7 +1718,7 @@ export function NewIssueDialog() {
                     <p className="text-[11px] text-muted-foreground">Runs on the agent's primary model.</p>
                   )}
                   {assigneeModelLane === "custom" && (
-                    <p className="text-[11px] text-muted-foreground">Override the model and effort for this issue only.</p>
+                    <p className="text-[11px] text-muted-foreground">Override the model and effort for this task only.</p>
                   )}
                 </div>
                 {assigneeModelLane === "custom" && (
@@ -1954,7 +1976,7 @@ export function NewIssueDialog() {
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-36 p-1" align="start">
-              {ISSUE_WORK_MODE_OPTIONS.map((option) => {
+              {workModeOptions.map((option) => {
                 const Icon = option.icon;
                 return (
                   <button
@@ -2038,6 +2060,18 @@ export function NewIssueDialog() {
           </div>
         ) : null}
 
+        {currentAssigneeLowTrust ? (
+          <div
+            data-testid="new-issue-low-trust-assignee-note"
+            className="mx-4 mb-2 flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
+          >
+            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
+            <span className="leading-snug">
+              Low-trust review agent. It can only act inside its assigned review boundary; issue, project, or run policy defines the concrete scope.
+            </span>
+          </div>
+        ) : null}
+
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border shrink-0">
           <Button
@@ -2069,7 +2103,7 @@ export function NewIssueDialog() {
             >
               <span className="inline-flex items-center justify-center gap-1.5">
                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Issue" : "Create Issue"}</span>
+                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Task" : "Create Task"}</span>
               </span>
             </Button>
           </div>

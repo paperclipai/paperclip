@@ -12,6 +12,9 @@ const mockSidebarBadgesApi = vi.hoisted(() => ({
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
+const mockPluginsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
 const mockUsePluginSlots = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
@@ -28,6 +31,13 @@ vi.mock("@/lib/router", () => ({
       {children}
     </button>
   ),
+  NavLink: ({
+    children,
+    to,
+  }: {
+    children: React.ReactNode;
+    to: string;
+  }) => <a href={to}>{children}</a>,
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -68,6 +78,10 @@ vi.mock("@/api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
+vi.mock("@/api/plugins", () => ({
+  pluginsApi: mockPluginsApi,
+}));
+
 vi.mock("@/plugins/slots", () => ({
   usePluginSlots: mockUsePluginSlots,
 }));
@@ -103,6 +117,7 @@ describe("CompanySettingsSidebar", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableCloudSync: false,
     });
+    mockPluginsApi.list.mockResolvedValue([]);
     mockUsePluginSlots.mockReturnValue({
       slots: [],
       isLoading: false,
@@ -136,6 +151,8 @@ describe("CompanySettingsSidebar", () => {
 
     expect(container.textContent).toContain("Paperclip");
     expect(container.textContent).toContain("Company Settings");
+    expect(container.textContent).toContain("Company settings");
+    expect(container.textContent).toContain("Instance settings");
     expect(container.textContent).toContain("General");
     expect(container.textContent).toContain("Environments");
     expect(container.textContent).not.toContain("Cloud upstream");
@@ -176,6 +193,64 @@ describe("CompanySettingsSidebar", () => {
       expect.objectContaining({
         to: "/company/settings/secrets",
         label: "Secrets",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/instance/profile",
+        label: "Profile",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/instance/general",
+        label: "General",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/instance/plugins",
+        label: "Plugins",
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/instance/adapters",
+        label: "Adapters",
+      }),
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows cloud upstream only when cloud sync is enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableCloudSync: true,
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Cloud upstream");
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/cloud-upstream",
+        label: "Cloud upstream",
         end: true,
       }),
     );
@@ -289,6 +364,66 @@ describe("CompanySettingsSidebar", () => {
         end: true,
       }),
     );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders instance plugin links while filtering sandbox-provider-only plugins", async () => {
+    mockPluginsApi.list.mockResolvedValue([
+      {
+        id: "linear",
+        packageName: "@example/linear",
+        manifestJson: {
+          displayName: "Linear",
+          environmentDrivers: [],
+        },
+      },
+      {
+        id: "sandbox-only",
+        packageName: "@example/sandbox",
+        manifestJson: {
+          displayName: "Sandbox only",
+          environmentDrivers: [{ kind: "sandbox_provider", driverKey: "e2b" }],
+        },
+      },
+      {
+        id: "hybrid",
+        packageName: "@example/hybrid",
+        manifestJson: {
+          displayName: "Hybrid",
+          environmentDrivers: [
+            { kind: "sandbox_provider", driverKey: "e2b" },
+            { kind: "environment_driver", driverKey: "ssh" },
+          ],
+        },
+      },
+    ]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const pluginLinks = Array.from(
+      container.querySelectorAll<HTMLAnchorElement>('a[href^="/company/settings/instance/plugins/"]'),
+    );
+    expect(pluginLinks.map((link) => link.getAttribute("href"))).toEqual([
+      "/company/settings/instance/plugins/linear",
+      "/company/settings/instance/plugins/hybrid",
+    ]);
+    expect(container.textContent).toContain("Linear");
+    expect(container.textContent).toContain("Hybrid");
+    expect(container.textContent).not.toContain("Sandbox only");
 
     await act(async () => {
       root.unmount();

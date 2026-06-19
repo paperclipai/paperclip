@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import {
   agents,
   companies,
+  companyMemberships,
   companySecretBindings,
   companySecretProviderConfigs,
   companySecretVersions,
@@ -50,6 +51,7 @@ describeEmbeddedPostgres("secretService", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(companySecretProviderConfigs);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -75,6 +77,22 @@ describeEmbeddedPostgres("secretService", () => {
       updatedAt: new Date(),
     });
     return companyId;
+  }
+
+  async function seedCompanyMember(
+    companyId: string,
+    userId: string,
+    membershipRole: "owner" | "member" | "viewer" = "member",
+  ) {
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
   }
 
   it("rejects cross-company secret references during env normalization", async () => {
@@ -203,6 +221,46 @@ describeEmbeddedPostgres("secretService", () => {
     expect(events).toHaveLength(2);
     expect(events.map((event) => event.outcome).sort()).toEqual(["failure", "success"]);
     expect(JSON.stringify(events)).not.toContain("runtime-secret");
+  });
+
+  it("denies runtime secret resolution outside the low-trust binding allowlist", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `low-trust-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    const env = {
+      API_KEY: { type: "secret_ref" as const, secretId: secret.id, version: "latest" as const },
+    };
+
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: "agent-1" }, env);
+    const [binding] = await svc.listBindings(companyId, secret.id);
+    expect(binding?.id).toBeTruthy();
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        allowedBindingIds: ["11111111-1111-4111-8111-111111111111"],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "binding_not_allowed" },
+    });
+
+    const resolved = await svc.resolveEnvBindings(companyId, env, {
+      consumerType: "agent",
+      consumerId: "agent-1",
+      actorType: "agent",
+      actorId: "agent-1",
+      allowedBindingIds: [binding!.id],
+    });
+    expect(resolved.env.API_KEY).toBe("runtime-secret");
+    expect(resolved.manifest[0]?.bindingId).toBe(binding!.id);
   });
 
   it("resolves routine env secret refs through routine bindings and records value-free access metadata", async () => {
@@ -1912,5 +1970,113 @@ describeEmbeddedPostgres("secretService", () => {
     await expect(svc.resolveSecretValue(companyId, secret.id, "latest")).rejects.toThrow(
       /not active/i,
     );
+  });
+
+  it("records audited ephemeral secret access without requiring a persisted binding", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await seedCompanyMember(companyId, "user-1");
+
+    const resolved = await svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "user",
+      actorId: "user-1",
+    });
+
+    expect(resolved).toBe("runtime-secret");
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      secretId: secret.id,
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "user",
+      actorId: "user-1",
+      outcome: "success",
+    });
+    expect(JSON.stringify(events)).not.toContain("runtime-secret");
+  });
+
+  it("preserves local implicit board authorization for ephemeral secret access", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-local-board-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    const resolved = await svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "user",
+      actorId: "local-board",
+      actorSource: "local_implicit",
+    });
+
+    expect(resolved).toBe("runtime-secret");
+  });
+
+  it("preserves agent jwt source for ephemeral secret authorization", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-agent-jwt-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "JWT Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      status: "idle",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const resolved = await svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "agent",
+      actorId: agentId,
+      actorSource: "agent_jwt",
+    });
+
+    expect(resolved).toBe("runtime-secret");
+  });
+
+  it("rejects ephemeral secret access for actors without secret-read authorization", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-denied-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    await expect(
+      svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+        consumerType: "system",
+        consumerId: "environment-probe-config",
+        configPath: "apiKey",
+        actorType: "user",
+        actorId: "user-without-membership",
+      }),
+    ).rejects.toThrow(/active member|secrets:read|forbidden/i);
   });
 });

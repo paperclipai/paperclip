@@ -103,7 +103,7 @@ function MarkdownAttachmentCard({
   });
 
   return (
-    <div className="rounded-lg border border-border p-3">
+    <div id={`attachment-${attachment.id}`} className="scroll-mt-20 rounded-lg border border-border p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
@@ -142,7 +142,7 @@ function VideoAttachmentCard({
 }) {
   const filename = attachmentFilename(attachment);
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-card">
+    <div id={`attachment-${attachment.id}`} className="scroll-mt-20 overflow-hidden rounded-md border border-border bg-card">
       <OutputVideoPlayer src={attachment.contentPath} title={filename} />
       <div className="flex flex-col gap-2 p-3 md:flex-row md:items-center md:justify-between">
         <div className="min-w-0">
@@ -166,7 +166,7 @@ function GenericAttachmentRow({
 }) {
   const filename = attachmentFilename(attachment);
   return (
-    <div className="flex items-center gap-2.5 rounded-md border border-border bg-card p-2">
+    <div id={`attachment-${attachment.id}`} className="flex scroll-mt-20 items-center gap-2.5 rounded-md border border-border bg-card p-2">
       <OutputFileTile contentType={attachment.contentType} />
       <div className="min-w-0 flex-1">
         <a
@@ -257,7 +257,8 @@ export function IssueAttachmentsSection({
           {imageAttachments.map((attachment) => (
             <div
               key={attachment.id}
-              className="group relative aspect-square cursor-pointer overflow-hidden rounded-lg border border-border bg-accent/10"
+              id={`attachment-${attachment.id}`}
+              className="group relative aspect-square cursor-pointer scroll-mt-20 overflow-hidden rounded-lg border border-border bg-accent/10"
               onClick={() => onImageClick(attachment)}
             >
               <img

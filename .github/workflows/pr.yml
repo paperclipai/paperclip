@@ -13,6 +13,8 @@ jobs:
   policy:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      lockfile_regenerated: ${{ steps.regen_lockfile.outputs.regenerated }}
 
     steps:
       - name: Checkout repository
@@ -40,7 +42,7 @@ jobs:
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
 
@@ -63,12 +65,29 @@ jobs:
             node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
 
       - name: Validate dependency resolution when manifests change
+        id: regen_lockfile
         run: |
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
           if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
             pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+            echo "regenerated=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "regenerated=0" >> "$GITHUB_OUTPUT"
           fi
+
+      # Manifest-only PRs (where pnpm-lock.yaml stays at base because the policy
+      # job above blocks committing it) need the regenerated lockfile for the
+      # downstream `pnpm install --frozen-lockfile` steps. Upload it here so
+      # every job consumes the same hash without recomputing.
+      - name: Upload regenerated lockfile for downstream jobs
+        if: steps.regen_lockfile.outputs.regenerated == '1'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-lockfile
+          path: pnpm-lock.yaml
+          retention-days: 1
+          if-no-files-found: error
 
   typecheck_release_registry:
     name: Typecheck + Release Registry
@@ -85,8 +104,15 @@ jobs:
         with:
           version: 9.15.4
 
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -125,8 +151,15 @@ jobs:
         with:
           version: 9.15.4
 
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -171,8 +204,15 @@ jobs:
         with:
           version: 9.15.4
 
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -214,8 +254,15 @@ jobs:
         with:
           version: 9.15.4
 
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -241,8 +288,15 @@ jobs:
         with:
           version: 9.15.4
 
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -251,11 +305,27 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # `release.sh` always executes its Step 2/7 workspace build, even when
-      # `--skip-verify` bypasses the initial verification gate.
+      # `--skip-verify` bypasses the initial verification gate. release.sh
+      # also requires a clean working tree, so any in-place lockfile churn
+      # from `pnpm install --frozen-lockfile` must be reverted first — unless
+      # the policy job uploaded a regenerated lockfile (manifest-changing
+      # PRs), in which case we stage the artifact-restored copy into an
+      # ephemeral local commit so release.sh sees a clean tree and its
+      # workspace build sees a lockfile that matches the manifest.
       - name: Release canary dry run via release.sh internal build
+        env:
+          USED_ARTIFACT_LOCKFILE: ${{ needs.policy.outputs.lockfile_regenerated || '0' }}
         run: |
           git checkout -B master HEAD
-          git checkout -- pnpm-lock.yaml
+          if [ "$USED_ARTIFACT_LOCKFILE" = "1" ]; then
+            git add pnpm-lock.yaml
+            if ! git diff --cached --quiet; then
+              git -c user.email=ci@paperclip.local -c user.name=CI \
+                commit --no-verify -m "ci(canary): stage regenerated lockfile"
+            fi
+          else
+            git checkout -- pnpm-lock.yaml
+          fi
           ./scripts/release.sh canary --skip-verify --dry-run
 
   e2e:
@@ -272,8 +342,15 @@ jobs:
         with:
           version: 9.15.4
 
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm

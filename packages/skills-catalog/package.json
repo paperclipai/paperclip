@@ -45,5 +45,11 @@
     "test": "pnpm -w exec vitest run --root packages/skills-catalog --config vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "validate": "node ../../cli/node_modules/tsx/dist/cli.mjs scripts/validate-catalog.ts"
+  },
+  "dependencies": {
+    "@paperclipai/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.21"
   }
 }

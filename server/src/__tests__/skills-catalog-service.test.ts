@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogSkill } from "@paperclipai/shared";
 
@@ -42,6 +43,10 @@ function catalogSkill(slug: string, name = slug): CatalogSkill {
   };
 }
 
+function sha256(value: string | Buffer) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function manifest(skills: CatalogSkill[], packageVersion = "0.3.1") {
   return JSON.stringify({
     schemaVersion: 1,
@@ -59,6 +64,7 @@ describe("skills catalog service", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     manifestJson = manifest([catalogSkill("old-skill", "Old Skill")]);
     manifestMtimeMs = 1;
     mockExistsSync.mockReturnValue(true);
@@ -108,6 +114,40 @@ describe("skills catalog service", () => {
       status: 415,
       message: "Catalog asset previews are not supported.",
     });
+    expect(mockReadFile).not.toHaveBeenCalled();
+  });
+
+  it("reads referenced GitHub catalog files from pinned raw bytes", async () => {
+    const markdown = "---\nname: remote\n---\n\n# Remote\n";
+    const remoteSkill = catalogSkill("remote-skill", "Remote Skill");
+    remoteSkill.source = {
+      type: "github",
+      hostname: "github.com",
+      owner: "example",
+      repo: "remote-skill",
+      ref: "v1.0.0",
+      commit: "0123456789abcdef0123456789abcdef01234567",
+      path: "skills/remote",
+      url: "https://github.com/example/remote-skill/tree/v1.0.0/skills/remote",
+    };
+    remoteSkill.files = [
+      { path: "SKILL.md", kind: "skill", sizeBytes: Buffer.byteLength(markdown), sha256: sha256(markdown) },
+    ];
+    manifestJson = manifest([remoteSkill]);
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe("https://raw.githubusercontent.com/example/remote-skill/0123456789abcdef0123456789abcdef01234567/skills/remote/SKILL.md");
+      return new Response(markdown, { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const service = await import("../services/skills-catalog.js");
+
+    await expect(service.readCatalogSkillFile(remoteSkill.id, "SKILL.md")).resolves.toMatchObject({
+      catalogSkillId: remoteSkill.id,
+      path: "SKILL.md",
+      content: markdown,
+      markdown: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(mockReadFile).not.toHaveBeenCalled();
   });
 });

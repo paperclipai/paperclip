@@ -4,6 +4,18 @@ Thanks for wanting to contribute!
 
 We really appreciate both small fixes and thoughtful larger changes.
 
+## Before You Start: Search First
+
+Before you start work, **search GitHub** for existing PRs and issues that touch the same area:
+
+- Look for **duplicate or in-flight PRs**. If something close already exists, prefer helping that PR over the line (see [Helping Other Contributors](#helping-other-contributors)) instead of opening a parallel one.
+- Look for **related open issues**. Link them in your PR body.
+- If an older PR is effectively dead (stale, unmaintained, would be painful to rebase/merge), a fresh PR is fine — just call out the prior PR in your description so the reviewer has context.
+
+Duplicate PRs create extra work for reviewers and make merging harder. A 60-second search saves hours later.
+
+Affirm that you did this search by checking the dedup-search box in the PR template (`I have searched GitHub for duplicate or related PRs and linked them above`). Commitperclip checks for this checkbox on non-trivial PRs.
+
 ## Two Paths to Get Your Pull Request Accepted
 
 ### Path 1: Small, Focused Changes (Fastest way to get merged)
@@ -39,6 +51,32 @@ PRs that follow this path are **much** more likely to be accepted, even when the
 
 Every pull request **must** follow the PR template at [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). If you create a PR via the GitHub API or other tooling that bypasses the template, copy its contents into your PR description manually. The template includes required sections: Thinking Path, What Changed, Verification, Risks, Model Used, and a Checklist.
 
+### Link Issues or Describe Them In-PR
+
+We do not gate PRs on a pre-existing issue. Two acceptable paths:
+
+1. **Issue exists** — search the [Issues database](https://github.com/paperclipai/paperclip/issues) for anything this PR addresses and tag each one with `Fixes: #123` / `Closes #123` / `Refs #123` so GitHub auto-links them. If there are **duplicate or closely related issues**, link all of them, not just the one you picked. If there are **related PRs** (prior attempts, dependent work, follow-ups, abandoned predecessors), link those too.
+2. **No issue exists** — describe the problem directly in your PR body, following one of our [issue templates](.github/ISSUE_TEMPLATE/) so a reviewer has the same fields they'd get from a filed issue:
+   - **Bug fix:** what happened, expected behavior, steps to reproduce, Paperclip version/commit, deployment mode. See [`bug_report.yml`](.github/ISSUE_TEMPLATE/bug_report.yml).
+   - **Feature:** problem/motivation, proposed solution, alternatives considered, roadmap alignment. See [`feature_request.yml`](.github/ISSUE_TEMPLATE/feature_request.yml).
+   - **New adapter:** agent or provider, why it's useful, how it's invoked. See [`adapter_request.yml`](.github/ISSUE_TEMPLATE/adapter_request.yml).
+
+Either way, a reviewer should be able to understand the underlying issue without leaving the PR. Commitperclip may check that one of these two paths is satisfied. Only link **public** GitHub issues — see [No Internal Issue References](#no-internal-issue-references) for what to leave out.
+
+### No Internal Issue References
+
+Many contributors run their own Paperclip instance to manage their work. Issue ids and links from *your* instance are private — reviewers and other contributors cannot open them, so they show up as clutter or broken links.
+
+In your PR title, description, commits, and comments, **only reference public GitHub issues and PRs** — `#123`, `Fixes #123` / `Closes #123` / `Refs #123`, or full `https://github.com/paperclipai/paperclip/...` URLs.
+
+Do **not** include references to internal/instance-local Paperclip work, such as:
+
+- Internal ticket ids like `PAPA-123`, `PAP-224`, or any `{PREFIX}-{NUMBER}` identifier that isn't a public GitHub issue number.
+- Instance UI links such as `/PAP/issues/...`, `/PAP/agents/...`, `agent://...`, or document deep links.
+- `localhost`, private IP, or tailnet URLs pointing at your own instance.
+
+If an internal issue captured useful context, restate that context in plain English in the PR body instead of linking to it.
+
 ### Model Used (Required)
 
 Every PR must include a **Model Used** section specifying which AI model produced or assisted with the change. Include the provider, exact model ID/version, context window size, and any relevant capability details (e.g., reasoning mode, tool use). If no AI was used, write "None — human-authored". This applies to all contributors — human and AI alike.
@@ -47,9 +85,31 @@ Every PR must include a **Model Used** section specifying which AI model produce
 
 All tests must pass before a PR can be merged. Run them locally first and verify CI is green after pushing.
 
+### Paperclip Gates Must Pass
+
+All Paperclip CI gates (lint, typecheck, tests, build, and any other required checks) must be satisfied before a PR can be merged. Don't ask for a merge while gates are red — fix them first.
+
 ### Greptile Review
 
-We use [Greptile](https://greptile.com) for automated code review. Your PR must achieve a **5/5 Greptile score** with **all Greptile comments addressed** before it can be merged. If Greptile leaves comments, fix or respond to each one and request a re-review.
+We use [Greptile](https://greptile.com) for automated code review. Your PR must achieve a **5/5 Greptile score** before it can be merged, with:
+
+- **No open P2 (or higher) comments**
+- **No open recommendations**
+- **No open follow-ups**
+
+We hold the bar high here on purpose — we want code quality to be as high as possible. If Greptile leaves comments, fix them (or, if a comment is wrong, reply explaining why) and request a re-review.
+
+## Helping Other Contributors
+
+Fixing up someone else's stalled or almost-there PR is **strongly encouraged**. If a contributor has done most of the work but ran out of time or got stuck, picking up their branch, polishing it, and getting it over the line is one of the most valuable things you can do here.
+
+When you do:
+
+- Give credit. Mention the original author in the PR description and thank them.
+- Preserve their commits where reasonable — don't squash them out of existence.
+- Be kind in comments and reviews. People put real effort into their PRs, even the ones that didn't quite land.
+
+A culture where contributors help each other ship is worth more than any single PR. Be generous with thanks.
 
 ## Feature Contributions
 
@@ -80,7 +140,7 @@ Your PR description must follow the [PR template](.github/PULL_REQUEST_TEMPLATE.
 
 ### Thinking Path Example 1:
 
-> - Paperclip orchestrates ai-agents for zero-human companies
+> - Paperclip is the open source app people use to manage AI agents for work
 > - There are many types of adapters for each LLM model provider
 > - But LLM's have a context limit and not all agents can automatically compact their context
 > - So we need to have an adapter-specific configuration for which adapters can and cannot automatically compact their context
@@ -89,7 +149,7 @@ Your PR description must follow the [PR template](.github/PULL_REQUEST_TEMPLATE.
 
 ### Thinking Path Example 2:
 
-> - Paperclip orchestrates ai-agents for zero-human companies
+> - Paperclip is the open source app people use to manage AI agents for work
 > - But humans want to watch the agents and oversee their work
 > - Human users also operate in teams and so they need their own logins, profiles, views etc.
 > - So we have a multi-user system for humans

@@ -51,8 +51,9 @@ import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
+  isGeminiTransientNetworkError,
   isGeminiTurnLimitResult,
-  isGeminiUnknownSessionError,
+  isGeminiSessionUnrecoverableError,
   parseGeminiJsonl,
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
@@ -355,24 +356,60 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
       remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
       const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
-      if (managedHome && preparedExecutionTargetRuntime.runtimeRootDir) {
-        env.HOME = preparedExecutionTargetRuntime.runtimeRootDir;
+      const managedRemoteHomeDir =
+        managedHome && preparedExecutionTargetRuntime.runtimeRootDir
+          ? preparedExecutionTargetRuntime.runtimeRootDir
+          : null;
+      if (managedRemoteHomeDir) {
+        env.HOME = managedRemoteHomeDir;
       }
-      const remoteHomeDir = managedHome && preparedExecutionTargetRuntime.runtimeRootDir
-        ? preparedExecutionTargetRuntime.runtimeRootDir
-        : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
-            cwd,
-            env,
-            timeoutSec,
-            graceSec,
-            onLog,
-          });
+      const remoteHomeDir =
+        managedRemoteHomeDir ??
+        (await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
+          cwd,
+          env,
+          timeoutSec,
+          graceSec,
+          onLog,
+        }));
       if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
         remoteSkillsDir = path.posix.join(remoteHomeDir, ".gemini", "skills");
         await runAdapterExecutionTargetShellCommand(
           runId,
           executionTarget,
           `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
+          { cwd, env, timeoutSec, graceSec, onLog },
+        );
+      }
+      // Gemini CLI refuses headless runs without an auth selection persisted in
+      // $HOME/.gemini/settings.json ("Invalid auth method selected."); env vars
+      // alone (GEMINI_DEFAULT_AUTH_TYPE) do not satisfy it. With a managed HOME
+      // the runtime root replaces the image home, so any settings baked into the
+      // image are invisible -- pre-select the api-key auth whenever an API key
+      // is provided. Both settings schema generations are written (legacy
+      // selectedAuthType + current security.auth.selectedType). An existing
+      // settings.json (user-shipped via workspace) is left untouched.
+      // Only the managed HOME (the per-run runtime root) is touched: on
+      // non-managed remote targets remoteHomeDir is the user's real home, where
+      // creating files is out of scope and existing settings remain visible.
+      // Key presence check spans the run env AND the host process env: in the
+      // managed sandbox path the key never enters the adapter's run env -- it
+      // reaches the agent pod via the provider's per-run secret (envKeys
+      // passthrough from the host env), so the host env is the signal here.
+      const hasGeminiApiKey = Boolean(
+        env.GEMINI_API_KEY || env.GOOGLE_API_KEY ||
+        process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+      );
+      if (managedRemoteHomeDir && hasGeminiApiKey) {
+        const remoteSettingsPath = path.posix.join(managedRemoteHomeDir, ".gemini", "settings.json");
+        const authSettingsJson = JSON.stringify({
+          selectedAuthType: "gemini-api-key",
+          security: { auth: { selectedType: "gemini-api-key" } },
+        });
+        await runAdapterExecutionTargetShellCommand(
+          runId,
+          executionTarget,
+          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSettingsPath))} && { [ -f ${JSON.stringify(remoteSettingsPath)} ] || printf '%s' ${JSON.stringify(authSettingsJson)} > ${JSON.stringify(remoteSettingsPath)}; }`,
           { cwd, env, timeoutSec, graceSec, onLog },
         );
       }
@@ -571,6 +608,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
     });
+    const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
 
     if (attempt.proc.timedOut) {
       return {
@@ -578,7 +616,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
-        errorCode: authMeta.requiresAuth ? "gemini_auth_required" : null,
+        errorCode: authMeta.requiresAuth
+          ? "gemini_auth_required"
+          : networkUnavailable
+            ? "gemini_network_unavailable"
+            : null,
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -634,6 +676,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? "gemini_auth_required"
         : failed && clearSessionForTurnLimit
         ? "max_turns_exhausted"
+        : failed && networkUnavailable
+        ? "gemini_network_unavailable"
         : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
@@ -657,7 +701,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId &&
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
-      isGeminiUnknownSessionError(initial.proc.stdout, initial.proc.stderr)
+      isGeminiSessionUnrecoverableError(initial.proc.stdout, initial.proc.stderr)
     ) {
       await onLog(
         "stdout",

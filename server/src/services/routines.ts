@@ -52,6 +52,7 @@ import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
+import { assertAssignableAgent } from "./agent-assignability.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { parseCron, validateCron } from "./cron.js";
@@ -89,7 +90,7 @@ function routineWebhookSecretConfigPath(secretId: string) {
 
 function assertTimeZone(timeZone: string) {
   try {
-    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    getZonedMinuteFormatter(timeZone).format(new Date());
   } catch {
     throw unprocessable(`Invalid timezone: ${timeZone}`);
   }
@@ -101,17 +102,33 @@ function floorToMinute(date: Date) {
   return copy;
 }
 
+// Constructing an Intl.DateTimeFormat costs ~1ms of ICU work, and
+// computeNextRun calls getZonedMinuteParts once per minute-step (up to
+// 366*24*60*5 iterations for sparse schedules), which can block the event
+// loop for minutes per scheduler tick. Formatter instances are immutable,
+// so cache one per timezone. See #8033.
+const zonedMinuteFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
+function getZonedMinuteFormatter(timeZone: string) {
+  let formatter = zonedMinuteFormatterCache.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour12: false,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      weekday: "short",
+    });
+    zonedMinuteFormatterCache.set(timeZone, formatter);
+  }
+  return formatter;
+}
+
 function getZonedMinuteParts(date: Date, timeZone: string) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hour12: false,
-    year: "numeric",
-    month: "numeric",
-    day: "numeric",
-    hour: "numeric",
-    minute: "numeric",
-    weekday: "short",
-  });
+  const formatter = getZonedMinuteFormatter(timeZone);
   const parts = formatter.formatToParts(date);
   const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   const weekday = WEEKDAY_INDEX[map.weekday ?? ""];
@@ -140,7 +157,7 @@ function matchesCronMinute(expression: string, timeZone: string, date: Date) {
   );
 }
 
-function nextCronTickInTimeZone(expression: string, timeZone: string, after: Date) {
+export function nextCronTickInTimeZone(expression: string, timeZone: string, after: Date) {
   const trimmed = expression.trim();
   assertTimeZone(timeZone);
   const error = validateCron(trimmed);
@@ -610,25 +627,12 @@ export function routineService(
     return routine;
   }
 
-  async function assertAssignableAgent(companyId: string, agentId: string | null | undefined) {
-    if (!agentId) return;
-    const agent = await db
-      .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0] ?? null);
-    if (!agent) throw notFound("Assignee agent not found");
-    if (agent.companyId !== companyId) throw unprocessable("Assignee must belong to same company");
-    if (agent.status === "pending_approval") throw conflict("Cannot assign routines to pending approval agents");
-    if (agent.status === "terminated") throw conflict("Cannot assign routines to terminated agents");
-  }
-
   async function assertRestorableAssignee(
     companyId: string,
     assigneeAgentId: string | null | undefined,
     actor: Actor,
   ) {
-    await assertAssignableAgent(companyId, assigneeAgentId);
+    await assertAssignableAgent(db, companyId, assigneeAgentId, { kind: "routine" });
     if (actor.agentId && assigneeAgentId !== actor.agentId) {
       throw forbidden("Agents can only restore routine revisions assigned to themselves");
     }
@@ -1170,6 +1174,7 @@ export function routineService(
     if (!assigneeAgentId) {
       throw unprocessable("Default agent required");
     }
+    await assertAssignableAgent(db, input.routine.companyId, assigneeAgentId, { kind: "routine" });
     const automaticVariables: Record<string, string | number | boolean> = {};
     if (input.executionWorkspaceId && routineUsesWorkspaceBranch(input.routine)) {
       const workspace = await db
@@ -1581,7 +1586,7 @@ export function routineService(
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
       await assertProject(companyId, input.projectId ?? null);
-      await assertAssignableAgent(companyId, input.assigneeAgentId ?? null);
+      await assertAssignableAgent(db, companyId, input.assigneeAgentId ?? null, { kind: "routine" });
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
       const env = input.env === undefined || input.env === null
@@ -1663,7 +1668,9 @@ export function routineService(
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
       );
       if (patch.projectId !== undefined) await assertProject(existing.companyId, nextProjectId);
-      if (patch.assigneeAgentId !== undefined) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
+      if (patch.assigneeAgentId !== undefined || patch.status === "active") {
+        await assertAssignableAgent(db, existing.companyId, nextAssigneeAgentId, { kind: "routine" });
+      }
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
       assertRoutineVariableDefinitions(nextVariables);
@@ -2187,7 +2194,8 @@ export function routineService(
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
       await assertProject(routine.companyId, input.projectId ?? null);
-      await assertAssignableAgent(routine.companyId, input.assigneeAgentId ?? null);
+      const assigneeAgentId = input.assigneeAgentId ?? routine.assigneeAgentId ?? null;
+      await assertAssignableAgent(db, routine.companyId, assigneeAgentId, { kind: "routine" });
       const trigger = input.triggerId ? await getTriggerById(input.triggerId) : null;
       if (trigger && trigger.routineId !== routine.id) throw forbidden("Trigger does not belong to routine");
       if (trigger && !trigger.enabled) throw conflict("Routine trigger is not active");

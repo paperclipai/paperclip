@@ -28,6 +28,16 @@ const catalogSkill = {
   tags: ["review"],
   files: [{ path: "SKILL.md", kind: "skill", sizeBytes: 8, sha256: "abc" }],
   contentHash: "sha256:abc",
+  source: {
+    type: "github",
+    hostname: "github.com",
+    owner: "example",
+    repo: "review-skill",
+    ref: "v1.0.0",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    path: "skills/review",
+    url: "https://github.com/example/review-skill/tree/v1.0.0/skills/review",
+  },
 };
 
 const companySkill = {
@@ -44,6 +54,20 @@ const companySkill = {
   trustLevel: "markdown_only",
   compatibility: "compatible",
   fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+  iconUrl: null,
+  color: null,
+  tagline: null,
+  authorName: null,
+  homepageUrl: null,
+  categories: [],
+  sharingScope: "private",
+  publicShareToken: null,
+  forkedFromSkillId: null,
+  forkedFromCompanyId: null,
+  starCount: 0,
+  installCount: 1,
+  forkCount: 0,
+  currentVersionId: null,
   metadata: {
     sourceKind: "catalog",
     catalogId: catalogSkill.id,
@@ -107,6 +131,7 @@ describe("company skill catalog validators", () => {
       },
       catalogSkill: {
         id: catalogSkill.id,
+        source: catalogSkill.source,
       },
     });
   });
