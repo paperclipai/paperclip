@@ -64,3 +64,7 @@ export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
 export { cubeSfReconRun, cubeSfReconEvent } from "./cube_sf_recon.js";
+export { promptVersions } from "./prompt_versions.js";
+export { agentRuns } from "./agent_runs.js";
+export { promptDeltas } from "./prompt_deltas.js";
+export { outcomeWeights } from "./outcome_weights.js";
