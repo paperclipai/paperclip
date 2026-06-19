@@ -5226,6 +5226,28 @@ export function issueRoutes(
         blocks: updatedRelations.blocks,
       };
     }
+
+    const warnings: string[] = [];
+    if (issue.status === "blocked") {
+      const hasBlockersInRequest =
+        Array.isArray(req.body.blockedByIssueIds) && (req.body.blockedByIssueIds as string[]).length > 0;
+      if (!hasBlockersInRequest) {
+        const relations = updatedRelations ?? await svc.getRelationSummaries(issue.id);
+        if (relations.blockedBy.length === 0) {
+          warnings.push(
+            "Issue set to blocked without blockedByIssueIds. " +
+            "This makes the issue invisible to the dependency auto-wake system " +
+            "and may cause it to stall indefinitely. " +
+            "Include blockedByIssueIds to enable automatic unblocking.",
+          );
+          logger.warn(
+            { issueId: issue.id, identifier: issue.identifier, companyId: issue.companyId, actor: actor.actorType },
+            "issue set to blocked without blockedByIssueIds",
+          );
+        }
+      }
+    }
+
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
     if (actor.runId) {
@@ -5799,7 +5821,11 @@ export function issueRoutes(
       }
     })();
 
-    res.json({ ...issueResponse, comment });
+    const response: Record<string, unknown> = { ...issueResponse, comment };
+    if (warnings.length > 0) {
+      response.warnings = warnings;
+    }
+    res.json(response);
   });
 
   router.delete("/issues/:id", async (req, res) => {
