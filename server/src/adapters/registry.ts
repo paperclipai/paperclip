@@ -5,6 +5,7 @@ import type {
   ServerAdapterModule,
 } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
+import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
@@ -266,7 +267,7 @@ async function listAcpxModels(): Promise<AdapterModel[]> {
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
-  execute: claudeExecute,
+  execute: stampClaudeAgentIdHeader(claudeExecute),
   testEnvironment: claudeTestEnvironment,
   listSkills: listClaudeSkills,
   syncSkills: syncClaudeSkills,
