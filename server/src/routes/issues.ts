@@ -97,6 +97,7 @@ import {
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
+import { canAgentMutateOrCheckoutIssue, isIssueUnassigned } from "./issue-agent-mutation-guard.js";
 import {
   isInlineAttachmentContentType,
   isAllowedContentType,
@@ -4799,6 +4800,17 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    const isAgentBlockedByUserAssignment =
+      req.actor.type === "agent" &&
+      !isIssueUnassigned(existing) &&
+      !canAgentMutateOrCheckoutIssue(existing);
+    const userAssignedRecoveryAction = isAgentBlockedByUserAssignment
+      ? await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id)
+      : null;
+    if (isAgentBlockedByUserAssignment && !userAssignedRecoveryAction) {
+      res.status(403).json({ error: "Agents cannot mutate or checkout user-assigned issues" });
+      return;
+    }
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
@@ -4854,7 +4866,7 @@ export function issueRoutes(
       req.body.executionPolicy !== undefined ||
       explicitMoveToTodoRequested;
     const activeRecoveryActionBeforeUpdate = recoveryRelevantSourceMutationRequested
-      ? await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id)
+      ? (userAssignedRecoveryAction ?? await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id))
       : null;
     if (
       recoveryRelevantSourceMutationRequested &&
@@ -5850,6 +5862,11 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type === "agent" && !canAgentMutateOrCheckoutIssue(issue)) {
+      res.status(403).json({ error: "Agents cannot mutate or checkout user-assigned issues" });
+      return;
+    }
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
 
     if (issue.projectId) {
       const project = await projectsSvc.getById(issue.projectId);
