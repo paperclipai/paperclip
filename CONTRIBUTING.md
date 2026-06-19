@@ -77,6 +77,24 @@ Do **not** include references to internal/instance-local Paperclip work, such as
 
 If an internal issue captured useful context, restate that context in plain English in the PR body instead of linking to it.
 
+### Branch Naming
+
+Tooling (including Paperclip) often names a working branch after an internal issue and task — e.g. `PAPA-42-why-did-this-break`. That name leaks instance-local context, isn't meaningful to reviewers, and ends up as the public branch on your PR.
+
+Before you push, **rename the branch to something descriptive of the change itself**, not of your instance:
+
+- Use short, kebab-case names scoped to the change, optionally with a conventional prefix: `docs/no-internal-issue-references`, `fix/sandbox-secret-resolution`, `feat/adapter-retry-backoff`.
+- Do **not** include internal Paperclip ticket ids (`PAPA-123`, `PAP-224`), instance task slugs, or other instance-derived details in the branch name.
+
+To rename and push under the new name:
+
+```bash
+git branch -m <descriptive-name>
+git push -u origin <descriptive-name>
+# If your tooling already pushed the old branch, delete it from origin:
+git push origin --delete <old-name>
+```
+
 ### Model Used (Required)
 
 Every PR must include a **Model Used** section specifying which AI model produced or assisted with the change. Include the provider, exact model ID/version, context window size, and any relevant capability details (e.g., reasoning mode, tool use). If no AI was used, write "None — human-authored". This applies to all contributors — human and AI alike.
