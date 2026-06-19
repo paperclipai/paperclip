@@ -5483,6 +5483,32 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
+  // Refreshes the cached GitHub status for an issue's PR links and returns the
+  // updated link list. Behind the `enablePrLinks` experimental flag. Status is
+  // fetched token-less today (public repos / rate-limited); wiring an
+  // instance-level GitHub token via the secrets service is a follow-up — see
+  // PAPA-820 plan "GitHub token sourcing" open question. Private-repo links
+  // degrade gracefully with a `statusError`.
+  router.post("/issues/:id/pr-links/refresh", async (req, res) => {
+    const experimental = await instanceSettings.getExperimental();
+    if (!experimental.enablePrLinks) {
+      res.status(404).json({ error: "PR links are not enabled" });
+      return;
+    }
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const prLinks = await svc.refreshPrLinkStatuses(issue.id, {
+      resolveToken: async () => null,
+    });
+    res.json({ prLinks });
+  });
+
   router.post("/issues/:id/scheduled-retry/retry-now", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;

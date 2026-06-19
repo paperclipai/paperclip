@@ -123,6 +123,17 @@ export const issueExecutionWorkspaceSettingsSchema = z
   })
   .strict();
 
+// Only the user-settable fields are accepted from clients/agents. Cached status
+// fields (state, checks, statusFetchedAt, statusError) are server-trusted and are
+// written exclusively by the PR status refresh path, so they are intentionally
+// excluded here and stripped from any incoming body via `.strict()`.
+export const issuePrLinkSchema = z
+  .object({
+    url: z.string().trim().url().max(2048),
+    title: z.string().trim().max(200).optional().nullable(),
+  })
+  .strict();
+
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
     modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
@@ -403,6 +414,7 @@ const createIssueBaseSchema = z.object({
     agentId: z.string().uuid(),
     instructions: multilineTextSchema.optional().nullable(),
   }).strict().optional().nullable(),
+  prLinks: z.array(issuePrLinkSchema).max(25).optional(),
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({

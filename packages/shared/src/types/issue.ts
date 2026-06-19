@@ -86,6 +86,20 @@ export interface IssueAssigneeAdapterOverrides {
   useProjectWorkspace?: boolean;
 }
 
+export type IssuePrLinkState = "open" | "draft" | "merged" | "closed";
+
+export type IssuePrLinkChecks = "passing" | "failing" | "pending" | "neutral";
+
+export interface IssuePrLink {
+  url: string;
+  title?: string | null;
+  // Server-populated cached status; clients/agents never set these.
+  state?: IssuePrLinkState | null;
+  checks?: IssuePrLinkChecks | null;
+  statusFetchedAt?: string | null;
+  statusError?: string | null;
+}
+
 export type DocumentFormat = "markdown";
 
 export interface IssueDocumentSummary {
@@ -575,6 +589,7 @@ export interface Issue {
   hiddenAt: Date | null;
   sourceTrust?: SourceTrustMetadata | null;
   labelIds?: string[];
+  prLinks?: IssuePrLink[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];

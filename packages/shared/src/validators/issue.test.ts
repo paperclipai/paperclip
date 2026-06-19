@@ -388,4 +388,50 @@ describe("issue validators", () => {
 
     expect(parsed.success).toBe(false);
   });
+
+  describe("prLinks", () => {
+    it("accepts valid PR links with optional title", () => {
+      const parsed = createIssueSchema.parse({
+        title: "Task",
+        prLinks: [
+          { url: "https://github.com/acme/repo/pull/12", title: "acme/repo#12" },
+          { url: "https://github.com/acme/repo/pull/13" },
+        ],
+      });
+      expect(parsed.prLinks).toHaveLength(2);
+      expect(parsed.prLinks?.[0]?.title).toBe("acme/repo#12");
+      expect(parsed.prLinks?.[1]?.title).toBeUndefined();
+    });
+
+    it("rejects non-URL pr link entries", () => {
+      const parsed = createIssueSchema.safeParse({
+        title: "Task",
+        prLinks: [{ url: "not-a-url" }],
+      });
+      expect(parsed.success).toBe(false);
+    });
+
+    it("strips server-trusted status fields from the public body", () => {
+      const parsed = createIssueSchema.safeParse({
+        title: "Task",
+        prLinks: [{ url: "https://github.com/acme/repo/pull/12", state: "merged" }],
+      });
+      expect(parsed.success).toBe(false);
+    });
+
+    it("enforces a maximum number of pr links", () => {
+      const prLinks = Array.from({ length: 26 }, (_value, index) => ({
+        url: `https://github.com/acme/repo/pull/${index + 1}`,
+      }));
+      const parsed = createIssueSchema.safeParse({ title: "Task", prLinks });
+      expect(parsed.success).toBe(false);
+    });
+
+    it("allows updating prLinks via the update schema", () => {
+      const parsed = updateIssueSchema.parse({
+        prLinks: [{ url: "https://github.com/acme/repo/pull/99" }],
+      });
+      expect(parsed.prLinks?.[0]?.url).toBe("https://github.com/acme/repo/pull/99");
+    });
+  });
 });

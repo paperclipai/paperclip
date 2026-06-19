@@ -44,6 +44,7 @@ import type {
   IssueBlockedInboxIssueRef,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
+  IssuePrLink,
   IssueRelationIssueSummary,
   IssueWatchdogSummary,
   LowTrustBoundary,
@@ -72,6 +73,8 @@ import {
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { mergePrLinkStatus, mapPullRequestState, parseGitHubPrUrl } from "./pr-links.js";
+import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -2002,6 +2005,9 @@ const issueListSelect = {
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
   sourceTrust: issues.sourceTrust,
+  // List views don't surface PR links (the properties panel uses the single-issue
+  // fetch); keep the payload lean while satisfying the not-null row type.
+  prLinks: sql<IssuePrLink[]>`'[]'::jsonb`,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
@@ -4385,6 +4391,100 @@ export function issueService(db: Db) {
       return getIssueByIdentifier(identifier);
     },
 
+    // Refreshes the cached GitHub status for an issue's PR links. Only entries
+    // whose URL parses as a GitHub PR are fetched, and only when their cached
+    // status is older than the TTL. Non-PR URLs and fresh entries are untouched.
+    // Errors (404, rate limit, missing token) set `statusError` while preserving
+    // any previously fetched `state`. Returns the (possibly unchanged) link list.
+    refreshPrLinkStatuses: async (
+      issueId: string,
+      options?: {
+        resolveToken?: (companyId: string) => Promise<string | null>;
+        ttlMs?: number;
+      },
+    ): Promise<IssuePrLink[]> => {
+      const row = await db
+        .select({ id: issues.id, companyId: issues.companyId, prLinks: issues.prLinks })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!row) throw notFound("Issue not found");
+
+      const links = row.prLinks ?? [];
+      const ttlMs = options?.ttlMs ?? 60_000;
+      const now = Date.now();
+      const needsFetch = links.some((link) => {
+        if (!parseGitHubPrUrl(link.url)) return false;
+        if (!link.statusFetchedAt) return true;
+        const fetchedAt = Date.parse(link.statusFetchedAt);
+        return Number.isNaN(fetchedAt) || now - fetchedAt >= ttlMs;
+      });
+      if (!needsFetch) return links;
+
+      let token: string | null = null;
+      let tokenResolved = false;
+      const resolveTokenOnce = async () => {
+        if (tokenResolved) return token;
+        tokenResolved = true;
+        try {
+          token = (await options?.resolveToken?.(row.companyId)) ?? null;
+        } catch {
+          token = null;
+        }
+        return token;
+      };
+
+      const next: IssuePrLink[] = [];
+      for (const link of links) {
+        const parsed = parseGitHubPrUrl(link.url);
+        if (!parsed) {
+          next.push(link);
+          continue;
+        }
+        if (link.statusFetchedAt) {
+          const fetchedAt = Date.parse(link.statusFetchedAt);
+          if (!Number.isNaN(fetchedAt) && now - fetchedAt < ttlMs) {
+            next.push(link);
+            continue;
+          }
+        }
+        const apiUrl = `${gitHubApiBase(parsed.hostname)}/repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.number}`;
+        const headers: Record<string, string> = {
+          accept: "application/vnd.github+json",
+          "user-agent": "paperclip-pr-links",
+        };
+        const resolvedToken = await resolveTokenOnce();
+        if (resolvedToken) headers.authorization = `Bearer ${resolvedToken}`;
+        try {
+          const response = await ghFetch(apiUrl, { headers });
+          if (!response.ok) {
+            next.push({
+              ...link,
+              statusError: `HTTP ${response.status}`,
+              statusFetchedAt: new Date(now).toISOString(),
+            });
+            continue;
+          }
+          const payload = (await response.json()) as Parameters<typeof mapPullRequestState>[0];
+          next.push({
+            ...link,
+            state: mapPullRequestState(payload),
+            statusError: null,
+            statusFetchedAt: new Date(now).toISOString(),
+          });
+        } catch (error) {
+          next.push({
+            ...link,
+            statusError: error instanceof Error ? error.message : "fetch failed",
+            statusFetchedAt: new Date(now).toISOString(),
+          });
+        }
+      }
+
+      await db.update(issues).set({ prLinks: next }).where(eq(issues.id, issueId));
+      return next;
+    },
+
     getCurrentScheduledRetry: async (issueId: string) => {
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
@@ -5191,6 +5291,12 @@ export function issueService(db: Db) {
       };
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
+      }
+      if (issueData.prLinks !== undefined) {
+        // The client/agent only sends the user-settable `{ url, title }` fields.
+        // Preserve any previously fetched status for a URL that survives the edit
+        // so a plain reorder/rename doesn't wipe the cached PR state.
+        patch.prLinks = mergePrLinkStatus(existing.prLinks ?? [], issueData.prLinks ?? []);
       }
 
       const nextAssigneeAgentId =

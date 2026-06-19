@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
+import type { Issue, IssueLabel, IssuePrLink, IssuePrLinkState, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
@@ -9,6 +9,7 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -323,6 +324,90 @@ function RemovableIssueReferencePill({
   );
 }
 
+// Derives a compact label for a PR link: explicit title, else `owner/repo#NN`
+// for a GitHub-style pull URL, else the host + path.
+function prLinkLabel(link: Pick<IssuePrLink, "url" | "title">): string {
+  const title = link.title?.trim();
+  if (title) return title;
+  try {
+    const parsed = new URL(link.url);
+    const match = /^\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(parsed.pathname);
+    if (match) return `${match[1]}/${match[2]}#${match[3]}`;
+    return `${parsed.hostname}${parsed.pathname}`;
+  } catch {
+    return link.url;
+  }
+}
+
+const PR_LINK_STATE_BADGE: Record<IssuePrLinkState, { label: string; className: string }> = {
+  open: { label: "Open", className: "border-green-500/40 bg-green-500/10 text-green-600 dark:text-green-400" },
+  draft: { label: "Draft", className: "border-border bg-muted text-muted-foreground" },
+  merged: { label: "Merged", className: "border-purple-500/40 bg-purple-500/10 text-purple-600 dark:text-purple-400" },
+  closed: { label: "Closed", className: "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400" },
+};
+
+function PrLinkStatusBadge({ link }: { link: IssuePrLink }) {
+  if (link.state) {
+    const badge = PR_LINK_STATE_BADGE[link.state];
+    return (
+      <span className={cn("inline-flex items-center rounded-full border px-1.5 text-[10px] font-medium leading-4", badge.className)}>
+        {badge.label}
+      </span>
+    );
+  }
+  if (link.statusError) {
+    return (
+      <span
+        className="inline-flex items-center rounded-full border border-border bg-muted px-1.5 text-[10px] leading-4 text-muted-foreground"
+        title={`Status unavailable: ${link.statusError}`}
+      >
+        —
+      </span>
+    );
+  }
+  return (
+    <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" aria-label="Loading PR status" />
+  );
+}
+
+function PrLinkPill({ link, onRemove }: { link: IssuePrLink; onRemove: (url: string) => void }) {
+  const label = prLinkLabel(link);
+  const removeLabel = `Remove PR link ${label}`;
+  return (
+    <span
+      className={cn(
+        "group inline-flex items-center gap-1 rounded-full border border-border py-0.5 pl-1 pr-2 text-xs",
+      )}
+      title={link.url}
+    >
+      <button
+        type="button"
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-colors transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring group-hover:opacity-100"
+        aria-label={removeLabel}
+        title={removeLabel}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onRemove(link.url);
+        }}
+      >
+        <X className="h-3 w-3" />
+      </button>
+      <a
+        href={link.url}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex min-w-0 items-center gap-1 no-underline hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
+      >
+        <GitBranch className="h-3 w-3 shrink-0" />
+        <span className="truncate">{label}</span>
+        <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
+      </a>
+      <PrLinkStatusBadge link={link} />
+    </span>
+  );
+}
+
 /** Renders a Popover on desktop, or an inline collapsible section on mobile (inline mode). */
 function PropertyPicker({
   inline,
@@ -472,6 +557,74 @@ export function IssueProperties({
     queryFn: () => issuesApi.listLabels(companyId!),
     enabled: !!companyId,
   });
+
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const prLinksEnabled = experimentalSettings?.enablePrLinks === true;
+  const prLinks = useMemo<IssuePrLink[]>(() => issue.prLinks ?? [], [issue.prLinks]);
+
+  const [addPrOpen, setAddPrOpen] = useState(false);
+  const [newPrUrl, setNewPrUrl] = useState("");
+  const [newPrTitle, setNewPrTitle] = useState("");
+  const [prUrlError, setPrUrlError] = useState<string | null>(null);
+
+  // Live PR status: poll the refresh route while the panel is open so badges
+  // reflect the current GitHub state without a global background poller.
+  const { data: refreshedPrLinks } = useQuery({
+    queryKey: ["issues", issue.id, "pr-link-status"],
+    queryFn: () => issuesApi.refreshPrLinks(issue.id).then((res) => res.prLinks),
+    enabled: prLinksEnabled && prLinks.length > 0,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: false,
+  });
+
+  // Prefer freshly-fetched status for a URL, but keep the stored title/order
+  // from `issue.prLinks` so an in-flight user edit isn't clobbered by a poll.
+  const displayedPrLinks = useMemo<IssuePrLink[]>(() => {
+    if (!refreshedPrLinks) return prLinks;
+    const byUrl = new Map(refreshedPrLinks.map((link) => [link.url, link]));
+    return prLinks.map((link) => {
+      const fresh = byUrl.get(link.url);
+      return fresh ? { ...link, ...fresh, title: link.title } : link;
+    });
+  }, [prLinks, refreshedPrLinks]);
+
+  const submitPrLink = () => {
+    const url = newPrUrl.trim();
+    if (!url) return;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        throw new Error("bad protocol");
+      }
+    } catch {
+      setPrUrlError("Enter a valid http(s) URL.");
+      return;
+    }
+    if (prLinks.some((link) => link.url === url)) {
+      setPrUrlError("That PR is already linked.");
+      return;
+    }
+    const title = newPrTitle.trim();
+    const next = [
+      ...prLinks.map((link) => ({ url: link.url, title: link.title ?? null })),
+      { url, title: title.length > 0 ? title : null },
+    ];
+    onUpdate({ prLinks: next });
+    setNewPrUrl("");
+    setNewPrTitle("");
+    setPrUrlError(null);
+    setAddPrOpen(false);
+  };
+
+  const removePrLink = (url: string) => {
+    const next = prLinks
+      .filter((link) => link.url !== url)
+      .map((link) => ({ url: link.url, title: link.title ?? null }));
+    onUpdate({ prLinks: next });
+  };
 
   const { data: allIssues, isFetching: isFetchingIssuePickerIssues } = useQuery({
     queryKey: queryKeys.issues.list(companyId!),
@@ -2031,6 +2184,44 @@ export function IssueProperties({
     </button>
   );
 
+  const renderAddPrButton = (onClick?: () => void) => (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+      onClick={onClick}
+    >
+      <Plus className="h-3 w-3" />
+      Add PR
+    </button>
+  );
+  const prAddContent = (
+    <div className="space-y-2 p-1">
+      <input
+        className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50 focus-visible:ring-[2px] focus-visible:ring-ring"
+        placeholder="https://github.com/owner/repo/pull/123"
+        value={newPrUrl}
+        onChange={(e) => { setNewPrUrl(e.target.value); setPrUrlError(null); }}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitPrLink(); } }}
+        autoFocus={!inline}
+        aria-label="PR URL"
+      />
+      <input
+        className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50 focus-visible:ring-[2px] focus-visible:ring-ring"
+        placeholder="Label (optional)"
+        value={newPrTitle}
+        onChange={(e) => setNewPrTitle(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitPrLink(); } }}
+        aria-label="PR label (optional)"
+      />
+      {prUrlError ? <div className="text-[11px] text-destructive">{prUrlError}</div> : null}
+      <div className="flex justify-end">
+        <Button type="button" size="sm" onClick={submitPrLink} disabled={newPrUrl.trim().length === 0}>
+          Add PR
+        </Button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-4">
       <div className="space-y-1">
@@ -2181,6 +2372,44 @@ export function IssueProperties({
             </Popover>
           </PropertyRow>
         )}
+
+        {prLinksEnabled ? (
+          inline ? (
+            <div>
+              <PropertyRow label="PRs">
+                {displayedPrLinks.map((link) => (
+                  <PrLinkPill key={link.url} link={link} onRemove={removePrLink} />
+                ))}
+                {renderAddPrButton(() => setAddPrOpen((open) => !open))}
+              </PropertyRow>
+              {addPrOpen && (
+                <div className="rounded-md border border-border bg-popover p-1 mb-2">
+                  {prAddContent}
+                </div>
+              )}
+            </div>
+          ) : (
+            <PropertyRow label="PRs">
+              {displayedPrLinks.map((link) => (
+                <PrLinkPill key={link.url} link={link} onRemove={removePrLink} />
+              ))}
+              <Popover
+                open={addPrOpen}
+                onOpenChange={(open) => {
+                  setAddPrOpen(open);
+                  if (!open) { setPrUrlError(null); }
+                }}
+              >
+                <PopoverTrigger asChild>
+                  {renderAddPrButton()}
+                </PopoverTrigger>
+                <PopoverContent className="w-72 p-1" align="end" collisionPadding={16}>
+                  {prAddContent}
+                </PopoverContent>
+              </Popover>
+            </PropertyRow>
+          )
+        ) : null}
 
         <PropertyRow label="Blocking">
           {blockingIssues.length > 0 ? (

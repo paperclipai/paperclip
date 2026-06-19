@@ -241,6 +241,7 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enableExperimentalFileViewer === true;
   const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
+  const enablePrLinks = experimentalQuery.data?.enablePrLinks === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
@@ -460,6 +461,24 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableCloudSync: !enableCloudSync })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle cloud sync experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">PR Links on Tasks</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Add a PRs property to the task properties panel for quick links to the pull request(s) a task produced.
+              Supports multiple PRs per task and shows each PR's live status (open, draft, merged, closed).
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enablePrLinks}
+            onCheckedChange={() => toggleMutation.mutate({ enablePrLinks: !enablePrLinks })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle PR links experimental setting"
           />
         </div>
       </section>

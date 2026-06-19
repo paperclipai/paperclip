@@ -267,6 +267,9 @@ export type {
 } from "./artifact.js";
 export type {
   Issue,
+  IssuePrLink,
+  IssuePrLinkState,
+  IssuePrLinkChecks,
   IssueWorkMode,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,
