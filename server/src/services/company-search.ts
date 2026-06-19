@@ -6,6 +6,10 @@ import {
   COMPANY_SEARCH_MAX_LIMIT,
   COMPANY_SEARCH_MAX_OFFSET,
   COMPANY_SEARCH_MAX_TOKENS,
+  COMPANY_ARTIFACTS_MAX_LIMIT,
+  COMPANY_ARTIFACTS_MAX_QUERY_LENGTH,
+  type CompanyArtifact,
+  type CompanySearchArtifactSummary,
   type CompanySearchIssueSummary,
   type CompanySearchQuery,
   type CompanySearchResponse,
@@ -14,6 +18,7 @@ import {
   type CompanySearchScope,
   type CompanySearchSnippet,
 } from "@paperclipai/shared";
+import { companyArtifactsService } from "./company-artifacts.js";
 
 const MIN_TOKEN_LENGTH = 2;
 const MIN_FUZZY_QUERY_LENGTH = 4;
@@ -188,7 +193,7 @@ function matchTerms(normalizedQuery: string, tokens: string[]) {
 }
 
 function makeCounts(results: CompanySearchResult[]) {
-  const counts: Record<CompanySearchResultType, number> = { issue: 0, agent: 0, project: 0 };
+  const counts: Record<CompanySearchResultType, number> = { issue: 0, artifact: 0, agent: 0, project: 0 };
   for (const result of results) counts[result.type] += 1;
   return counts;
 }
@@ -199,6 +204,10 @@ function scopeIncludesIssues(scope: CompanySearchScope) {
 
 function scopeIncludesAgents(scope: CompanySearchScope) {
   return scope === "all" || scope === "agents";
+}
+
+function scopeIncludesArtifacts(scope: CompanySearchScope) {
+  return scope === "all" || scope === "artifacts";
 }
 
 function scopeIncludesProjects(scope: CompanySearchScope) {
@@ -286,6 +295,49 @@ function scoreSimpleRow(row: SimpleSearchRow, normalizedQuery: string, tokens: s
   return score;
 }
 
+function artifactResult(artifact: CompanyArtifact, normalizedQuery: string, tokens: string[]): CompanySearchResult {
+  const terms = matchTerms(normalizedQuery, tokens);
+  const snippet = createSnippet(
+    "artifact",
+    "Artifact",
+    artifact.previewText ?? artifact.title,
+    terms,
+  );
+  const summary: CompanySearchArtifactSummary = {
+    id: artifact.id,
+    source: artifact.source,
+    mediaKind: artifact.mediaKind,
+    issueId: artifact.issue.id,
+    issueIdentifier: artifact.issue.identifier,
+    issueTitle: artifact.issue.title,
+    projectId: artifact.project?.id ?? null,
+    projectName: artifact.project?.name ?? null,
+    updatedAt: artifact.updatedAt,
+  };
+  const score = scoreSimpleRow({
+    id: artifact.id,
+    title: artifact.title,
+    description: [artifact.previewText, artifact.issue.identifier, artifact.issue.title, artifact.project?.name]
+      .filter(Boolean)
+      .join(" "),
+    updatedAt: new Date(artifact.updatedAt),
+  }, normalizedQuery, tokens);
+  return {
+    id: artifact.id,
+    type: "artifact",
+    score,
+    title: artifact.title,
+    href: artifact.href,
+    matchedFields: ["artifact"],
+    sourceLabel: snippet?.label ?? "Artifact",
+    snippet: snippet?.text ?? artifact.previewText,
+    snippets: snippet ? [snippet] : [],
+    artifact: summary,
+    updatedAt: artifact.updatedAt,
+    previewImageUrl: artifact.mediaKind === "image" ? artifact.contentPath : null,
+  };
+}
+
 function simpleTextCondition(fields: SQL[], containsPattern: string, tokenArray: SQL) {
   const phraseConditions = fields.map((field) => sql<boolean>`lower(coalesce(${field}, '')) LIKE ${containsPattern} ESCAPE '\\'`);
   const tokenConditions = fields.map((field) => tokenMatchExpression(field, tokenArray));
@@ -306,7 +358,7 @@ export function companySearchService(db: Db) {
       const scope = query.scope;
       const limit = query.limit;
       const offset = query.offset;
-      const emptyCounts: Record<CompanySearchResultType, number> = { issue: 0, agent: 0, project: 0 };
+      const emptyCounts: Record<CompanySearchResultType, number> = { issue: 0, artifact: 0, agent: 0, project: 0 };
       if (normalizedQuery.length === 0) {
         return {
           query: query.q,
@@ -359,6 +411,7 @@ export function companySearchService(db: Db) {
           FROM issue_comments search_comments
           WHERE search_comments.company_id = ${companyId}
             AND search_comments.issue_id = issues.id
+            AND search_comments.deleted_at IS NULL
             AND (
               lower(search_comments.body) LIKE ${containsPattern} ESCAPE '\\'
               OR ${tokenMatchExpression(sql`search_comments.body`, tokenArray)}
@@ -428,6 +481,7 @@ export function companySearchService(db: Db) {
               FROM issue_comments coverage_comments
               WHERE coverage_comments.company_id = ${companyId}
                 AND coverage_comments.issue_id = issues.id
+                AND coverage_comments.deleted_at IS NULL
                 AND lower(coverage_comments.body) LIKE '%' || search_token.value || '%' ESCAPE '\\'
             )
             OR EXISTS (
@@ -497,6 +551,7 @@ export function companySearchService(db: Db) {
                 FROM issue_comments search_comments
                 WHERE search_comments.company_id = ${companyId}
                   AND search_comments.issue_id = issues.id
+                  AND search_comments.deleted_at IS NULL
                   AND (
                     lower(search_comments.body) LIKE ${containsPattern} ESCAPE '\\'
                     OR ${tokenMatchExpression(sql`search_comments.body`, tokenArray)}
@@ -514,6 +569,7 @@ export function companySearchService(db: Db) {
                 FROM issue_comments search_comments
                 WHERE search_comments.company_id = ${companyId}
                   AND search_comments.issue_id = issues.id
+                  AND search_comments.deleted_at IS NULL
                   AND (
                     lower(search_comments.body) LIKE ${containsPattern} ESCAPE '\\'
                     OR ${tokenMatchExpression(sql`search_comments.body`, tokenArray)}
@@ -639,8 +695,16 @@ export function companySearchService(db: Db) {
           .limit(fetchLimit)
         : [];
 
+      const artifactRows = scopeIncludesArtifacts(scope)
+        ? await companyArtifactsService(db).list(companyId, {
+          q: normalizedQuery.slice(0, COMPANY_ARTIFACTS_MAX_QUERY_LENGTH),
+          limit: Math.min(fetchLimit, COMPANY_ARTIFACTS_MAX_LIMIT),
+        }).then((result) => result.artifacts)
+        : [];
+
       const results: CompanySearchResult[] = [
         ...(issueRows as IssueSearchRow[]).map((row) => issueResult(row, prefix, normalizedQuery, tokens)),
+        ...artifactRows.map((artifact) => artifactResult(artifact, normalizedQuery, tokens)),
         ...(agentRows as SimpleSearchRow[]).map((row) => {
           const terms = matchTerms(normalizedQuery, tokens);
           const snippet = createSnippet("capabilities", "Agent", row.description ?? row.role ?? row.title, terms);

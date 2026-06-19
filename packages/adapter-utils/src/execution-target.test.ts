@@ -45,7 +45,7 @@ describe("runAdapterExecutionTargetShellCommand", () => {
       },
     );
 
-    // runSshCommand owns profile sourcing and the outer `sh -lc` wrapper —
+    // runSshCommand owns profile sourcing and the outer shell wrapper —
     // the caller passes the raw command string. Wrapping it here would
     // double-nest the login shell and re-source profiles after the explicit
     // env override, silently undoing identity-var preservation.
@@ -317,7 +317,7 @@ describe("ensureAdapterExecutionTargetRuntimeCommandInstalled", () => {
 
     expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
       command: "sh",
-      args: ["-lc", "npm install -g @google/gemini-cli"],
+      args: ["-c", "npm install -g @google/gemini-cli"],
       cwd: "/remote/workspace",
       env: { PATH: "/usr/bin" },
       timeoutMs: 30_000,

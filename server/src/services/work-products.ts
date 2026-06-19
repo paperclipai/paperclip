@@ -24,6 +24,7 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
     healthStatus: row.healthStatus as IssueWorkProduct["healthStatus"],
     summary: row.summary ?? null,
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    sourceTrust: row.sourceTrust ?? null,
     createdByRunId: row.createdByRunId ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
@@ -78,6 +79,8 @@ export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
+const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
+const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const REDACTED_LOG_VALUE = "***REDACTED***";
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
@@ -87,6 +90,25 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
 const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
 const MATERIALIZED_SKILL_LOCK_OWNER = "owner.json";
 const MATERIALIZED_SKILL_LOCK_STALE_MS = 30_000;
+
+function expandHomePrefix(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));
+  return value;
+}
+
+export function resolvePaperclipInstanceRootForAdapter(input: {
+  homeDir?: string;
+  instanceId?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): string {
+  const env = input.env ?? process.env;
+  const homeRaw = input.homeDir?.trim() || env.PAPERCLIP_HOME?.trim();
+  const homeDir = path.resolve(homeRaw ? expandHomePrefix(homeRaw) : path.resolve(os.homedir(), ".paperclip"));
+  const instanceId = input.instanceId?.trim() || env.PAPERCLIP_INSTANCE_ID?.trim() || DEFAULT_PAPERCLIP_INSTANCE_ID;
+  if (!PATH_SEGMENT_RE.test(instanceId)) throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${instanceId}'.`);
+  return path.resolve(homeDir, "instances", instanceId);
+}
 
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
@@ -111,8 +133,17 @@ export interface PaperclipSkillEntry {
   key: string;
   runtimeName: string;
   source: string;
+  versionId?: string | null;
+  currentVersionId?: string | null;
+  sourceStatus?: "available" | "missing";
+  missingDetail?: string | null;
   required?: boolean;
   requiredReason?: string | null;
+}
+
+export interface PaperclipDesiredSkillEntry {
+  key: string;
+  versionId: string | null;
 }
 
 export interface InstalledSkillTarget {
@@ -137,6 +168,22 @@ interface PersistentSkillSnapshotOptions {
   externalConflictDetail: string;
   externalDetail: string;
   warnings?: string[];
+}
+
+interface RuntimeMountedSkillSnapshotOptions {
+  adapterType: string;
+  availableEntries: PaperclipSkillEntry[];
+  desiredSkills: string[];
+  configuredDetail: string | ((entry: PaperclipSkillEntry) => string | null);
+  missingDetail?: string;
+  mode?: "ephemeral" | "unsupported";
+  supported?: boolean;
+  unsupportedDetail?: string | ((entry: PaperclipSkillEntry) => string | null);
+  warnings?: string[];
+  externalInstalled?: Map<string, InstalledSkillTarget>;
+  externalLocationLabel?: string | null;
+  externalDetail?: string;
+  skillsHome?: string;
 }
 
 function normalizePathSlashes(value: string): string {
@@ -169,6 +216,26 @@ function buildManagedSkillOrigin(entry: { required?: boolean }): Pick<
     originLabel: "Managed by Paperclip",
     readOnly: false,
   };
+}
+
+function isPaperclipSkillSourceMissing(entry: PaperclipSkillEntry) {
+  return entry.sourceStatus === "missing";
+}
+
+function resolvePaperclipSkillMissingDetail(
+  entry: PaperclipSkillEntry,
+  fallback: string,
+) {
+  return entry.missingDetail?.trim() || fallback;
+}
+
+function resolveSkillDetail(
+  detail: string | ((entry: PaperclipSkillEntry) => string | null) | null | undefined,
+  entry: PaperclipSkillEntry,
+): string | null {
+  if (typeof detail === "function") return detail(entry);
+  if (typeof detail === "string") return detail;
+  return null;
 }
 
 function resolveInstalledEntryTarget(
@@ -999,6 +1066,104 @@ export function shapePaperclipWorkspaceEnvForExecution(input: {
   };
 }
 
+export function rewriteWorkspaceCwdEnvVarsForExecution(input: {
+  env: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  executionCwd?: string | null;
+  executionTargetIsRemote?: boolean;
+}): Record<string, string> {
+  const nextEnv = Object.fromEntries(
+    Object.entries(input.env)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  ) as Record<string, string>;
+  const localWorkspaceCwd = typeof input.workspaceCwd === "string" && input.workspaceCwd.trim().length > 0
+    ? path.resolve(input.workspaceCwd)
+    : null;
+  // executionCwd is a remote path on the target host; we deliberately do not
+  // run `path.resolve` against it because that applies host-Node semantics
+  // (current working directory, host path separator) to a path that lives on
+  // the remote shell. Callers always pass absolute remote paths, so we
+  // forward the trimmed value verbatim.
+  const remoteWorkspaceCwd = typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
+    ? input.executionCwd.trim()
+    : null;
+
+  if (!input.executionTargetIsRemote || !localWorkspaceCwd || !remoteWorkspaceCwd) {
+    return nextEnv;
+  }
+
+  for (const [key, value] of Object.entries(nextEnv)) {
+    if (!key.endsWith("_WORKSPACE_CWD")) continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (path.resolve(trimmed) !== localWorkspaceCwd) continue;
+    nextEnv[key] = remoteWorkspaceCwd;
+  }
+
+  return nextEnv;
+}
+
+export function refreshPaperclipWorkspaceEnvForExecution(input: {
+  env: Record<string, string>;
+  envConfig?: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  workspaceSource?: string | null;
+  workspaceStrategy?: string | null;
+  workspaceId?: string | null;
+  workspaceRepoUrl?: string | null;
+  workspaceRepoRef?: string | null;
+  workspaceBranch?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  agentHome?: string | null;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): {
+  workspaceCwd: string | null;
+  workspaceWorktreePath: string | null;
+  workspaceHints: Array<Record<string, unknown>>;
+} {
+  const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
+    workspaceCwd: input.workspaceCwd,
+    workspaceWorktreePath: input.workspaceWorktreePath,
+    workspaceHints: input.workspaceHints,
+    executionTargetIsRemote: input.executionTargetIsRemote,
+    executionCwd: input.executionCwd,
+  });
+
+  delete input.env.PAPERCLIP_WORKSPACE_CWD;
+  delete input.env.PAPERCLIP_WORKSPACE_WORKTREE_PATH;
+  delete input.env.PAPERCLIP_WORKSPACES_JSON;
+
+  applyPaperclipWorkspaceEnv(input.env, {
+    workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
+    workspaceSource: input.workspaceSource,
+    workspaceStrategy: input.workspaceStrategy,
+    workspaceId: input.workspaceId,
+    workspaceRepoUrl: input.workspaceRepoUrl,
+    workspaceRepoRef: input.workspaceRepoRef,
+    workspaceBranch: input.workspaceBranch,
+    workspaceWorktreePath: shapedWorkspaceEnv.workspaceWorktreePath,
+    agentHome: input.agentHome,
+  });
+
+  if (shapedWorkspaceEnv.workspaceHints.length > 0) {
+    input.env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedWorkspaceEnv.workspaceHints);
+  }
+
+  const shapedEnvConfig = rewriteWorkspaceCwdEnvVarsForExecution({
+    env: input.envConfig ?? {},
+    workspaceCwd: input.workspaceCwd,
+    executionCwd: shapedWorkspaceEnv.workspaceCwd,
+    executionTargetIsRemote: input.executionTargetIsRemote,
+  });
+  for (const [key, value] of Object.entries(shapedEnvConfig)) {
+    input.env[key] = value;
+  }
+
+  return shapedWorkspaceEnv;
+}
+
 export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
@@ -1261,6 +1426,128 @@ export async function readInstalledSkillTargets(skillsHome: string): Promise<Map
   return out;
 }
 
+export function buildRuntimeMountedSkillSnapshot(
+  options: RuntimeMountedSkillSnapshotOptions,
+): AdapterSkillSnapshot {
+  const {
+    adapterType,
+    availableEntries,
+    desiredSkills,
+    configuredDetail,
+    missingDetail = "Paperclip cannot find this skill in the local runtime skills directory.",
+    mode = "ephemeral",
+    externalInstalled,
+    externalLocationLabel,
+    externalDetail = "Installed outside Paperclip management.",
+    skillsHome,
+  } = options;
+  const supported = options.supported ?? mode !== "unsupported";
+  const availableByKey = new Map(availableEntries.map((entry) => [entry.key, entry]));
+  const desiredSet = new Set(desiredSkills);
+  const entries: AdapterSkillEntry[] = [];
+  const warnings = [...(options.warnings ?? [])];
+
+  for (const available of availableEntries) {
+    const desired = desiredSet.has(available.key);
+    if (isPaperclipSkillSourceMissing(available)) {
+      entries.push({
+        key: available.key,
+        runtimeName: available.runtimeName,
+        versionId: available.versionId ?? null,
+        currentVersionId: available.currentVersionId ?? null,
+        desired,
+        managed: true,
+        state: "missing",
+        sourcePath: null,
+        targetPath: null,
+        detail: resolvePaperclipSkillMissingDetail(available, missingDetail),
+        required: Boolean(available.required),
+        requiredReason: available.requiredReason ?? null,
+        ...buildManagedSkillOrigin(available),
+      });
+      continue;
+    }
+
+    const configured = supported && mode === "ephemeral" && desired;
+    entries.push({
+      key: available.key,
+      runtimeName: available.runtimeName,
+      versionId: available.versionId ?? null,
+      currentVersionId: available.currentVersionId ?? null,
+      desired,
+      managed: true,
+      state: configured ? "configured" : "available",
+      sourcePath: available.source,
+      targetPath: null,
+      detail: desired
+        ? configured
+          ? resolveSkillDetail(configuredDetail, available)
+          : resolveSkillDetail(
+              options.unsupportedDetail
+                ?? "Desired state is stored in Paperclip only; this adapter cannot apply skills at runtime.",
+              available,
+            )
+        : null,
+      required: Boolean(available.required),
+      requiredReason: available.requiredReason ?? null,
+      ...buildManagedSkillOrigin(available),
+    });
+  }
+
+  for (const desiredSkill of desiredSkills) {
+    if (availableByKey.has(desiredSkill)) continue;
+    warnings.push(`Desired skill "${desiredSkill}" is not available from the Paperclip skills directory.`);
+    entries.push({
+      key: desiredSkill,
+      runtimeName: null,
+      desired: true,
+      managed: true,
+      state: "missing",
+      sourcePath: null,
+      targetPath: null,
+      detail: missingDetail,
+      origin: "external_unknown",
+      originLabel: "External or unavailable",
+      readOnly: false,
+    });
+  }
+
+  if (externalInstalled) {
+    for (const [name, installedEntry] of externalInstalled.entries()) {
+      if (availableEntries.some((entry) => entry.runtimeName === name)) continue;
+      entries.push({
+        key: name,
+        runtimeName: name,
+        desired: false,
+        managed: false,
+        state: "external",
+        origin: "user_installed",
+        originLabel: "User-installed",
+        locationLabel: skillLocationLabel(externalLocationLabel),
+        readOnly: true,
+        sourcePath: null,
+        targetPath: installedEntry.targetPath ?? (skillsHome ? path.join(skillsHome, name) : null),
+        detail: externalDetail,
+      });
+    }
+  }
+
+  entries.sort((left, right) => left.key.localeCompare(right.key));
+
+  return {
+    adapterType,
+    supported,
+    mode,
+    desiredSkills,
+    desiredSkillEntries: desiredSkills.map((key) => ({
+      key,
+      versionId: availableByKey.get(key)?.versionId ?? null,
+    })),
+    entries,
+    warnings,
+  };
+}
+
 export function buildPersistentSkillSnapshot(
   options: PersistentSkillSnapshotOptions,
 ): AdapterSkillSnapshot {
@@ -1284,6 +1571,28 @@ export function buildPersistentSkillSnapshot(
   for (const available of availableEntries) {
     const installedEntry = installed.get(available.runtimeName) ?? null;
     const desired = desiredSet.has(available.key);
+    if (isPaperclipSkillSourceMissing(available)) {
+      entries.push({
+        key: available.key,
+        runtimeName: available.runtimeName,
+        versionId: available.versionId ?? null,
+        currentVersionId: available.currentVersionId ?? null,
+        desired,
+        managed: true,
+        state: "missing",
+        sourcePath: null,
+        targetPath: path.join(skillsHome, available.runtimeName),
+        detail: resolvePaperclipSkillMissingDetail(
+          available,
+          missingDetail,
+        ),
+        required: Boolean(available.required),
+        requiredReason: available.requiredReason ?? null,
+        ...buildManagedSkillOrigin(available),
+      });
+      continue;
+    }
+
     let state: AdapterSkillEntry["state"] = "available";
     let managed = false;
     let detail: string | null = null;
@@ -1303,6 +1612,8 @@ export function buildPersistentSkillSnapshot(
     entries.push({
       key: available.key,
       runtimeName: available.runtimeName,
+      versionId: available.versionId ?? null,
+      currentVersionId: available.currentVersionId ?? null,
       desired,
       managed,
       state,
@@ -1358,6 +1669,10 @@ export function buildPersistentSkillSnapshot(
     supported: true,
     mode: "persistent",
     desiredSkills,
+    desiredSkillEntries: desiredSkills.map((key) => ({
+      key,
+      versionId: availableByKey.get(key)?.versionId ?? null,
+    })),
     entries,
     warnings,
   };
@@ -1376,6 +1691,19 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
       key,
       runtimeName,
       source,
+      versionId:
+        typeof entry.versionId === "string" && entry.versionId.trim().length > 0
+          ? entry.versionId.trim()
+          : null,
+      currentVersionId:
+        typeof entry.currentVersionId === "string" && entry.currentVersionId.trim().length > 0
+          ? entry.currentVersionId.trim()
+          : null,
+      sourceStatus: entry.sourceStatus === "missing" ? "missing" : "available",
+      missingDetail:
+        typeof entry.missingDetail === "string" && entry.missingDetail.trim().length > 0
+          ? entry.missingDetail.trim()
+          : null,
       required: asBoolean(entry.required, false),
       requiredReason:
         typeof entry.requiredReason === "string" && entry.requiredReason.trim().length > 0
@@ -1417,22 +1745,41 @@ export async function readPaperclipSkillMarkdown(
 export function readPaperclipSkillSyncPreference(config: Record<string, unknown>): {
   explicit: boolean;
   desiredSkills: string[];
+  desiredSkillEntries: PaperclipDesiredSkillEntry[];
 } {
   const raw = config.paperclipSkillSync;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { explicit: false, desiredSkills: [] };
+    return { explicit: false, desiredSkills: [], desiredSkillEntries: [] };
   }
   const syncConfig = raw as Record<string, unknown>;
   const desiredValues = syncConfig.desiredSkills;
   const desired = Array.isArray(desiredValues)
-    ? desiredValues
-        .filter((value): value is string => typeof value === "string")
-        .map((value) => value.trim())
-        .filter(Boolean)
+    ? desiredValues.flatMap((value): PaperclipDesiredSkillEntry[] => {
+        if (typeof value === "string") {
+          const key = value.trim();
+          return key ? [{ key, versionId: null }] : [];
+        }
+        if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+          const record = value as Record<string, unknown>;
+          const key = typeof record.key === "string" ? record.key.trim() : "";
+          if (!key) return [];
+          const versionId = typeof record.versionId === "string" && record.versionId.trim()
+            ? record.versionId.trim()
+            : null;
+          return [{ key, versionId }];
+        }
+        return [];
+      })
     : [];
+  const byKey = new Map<string, PaperclipDesiredSkillEntry>();
+  for (const entry of desired) {
+    if (!byKey.has(entry.key)) byKey.set(entry.key, entry);
+  }
+  const desiredSkillEntries = Array.from(byKey.values());
   return {
     explicit: Object.prototype.hasOwnProperty.call(raw, "desiredSkills"),
-    desiredSkills: Array.from(new Set(desired)),
+    desiredSkills: desiredSkillEntries.map((entry) => entry.key),
+    desiredSkillEntries,
   };
 }
 
@@ -1478,7 +1825,7 @@ export function resolvePaperclipDesiredSkillNames(
 
 export function writePaperclipSkillSyncPreference(
   config: Record<string, unknown>,
-  desiredSkills: string[],
+  desiredSkills: Array<string | PaperclipDesiredSkillEntry>,
 ): Record<string, unknown> {
   const next = { ...config };
   const raw = next.paperclipSkillSync;
@@ -1486,13 +1833,23 @@ export function writePaperclipSkillSyncPreference(
     typeof raw === "object" && raw !== null && !Array.isArray(raw)
       ? { ...(raw as Record<string, unknown>) }
       : {};
-  current.desiredSkills = Array.from(
-    new Set(
-      desiredSkills
-        .map((value) => value.trim())
-        .filter(Boolean),
-    ),
-  );
+  const entries = desiredSkills.flatMap((value): PaperclipDesiredSkillEntry[] => {
+    if (typeof value === "string") {
+      const key = value.trim();
+      return key ? [{ key, versionId: null }] : [];
+    }
+    const key = value.key.trim();
+    if (!key) return [];
+    return [{ key, versionId: value.versionId ?? null }];
+  });
+  const byKey = new Map<string, PaperclipDesiredSkillEntry>();
+  for (const entry of entries) {
+    if (!byKey.has(entry.key)) byKey.set(entry.key, entry);
+  }
+  const normalized = Array.from(byKey.values());
+  current.desiredSkills = normalized.some((entry) => entry.versionId)
+    ? normalized
+    : normalized.map((entry) => entry.key);
   next.paperclipSkillSync = current;
   return next;
 }

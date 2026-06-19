@@ -112,7 +112,7 @@ describe("normalizeContentType", () => {
 
 describe("isInlineAttachmentContentType", () => {
   it("allows the configured inline-safe types", () => {
-    for (const contentType of ["image/png", "image/svg+xml", "application/pdf", "text/plain"]) {
+    for (const contentType of ["image/png", "image/svg+xml", "application/pdf", "text/plain", "video/mp4"]) {
       expect(isInlineAttachmentContentType(contentType)).toBe(true);
     }
   });

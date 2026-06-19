@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1.6
+ARG NODE_VERSION=22
+ARG TARGETARCH
+
+# ---------- Stage 1: build agent-shim ----------
+FROM golang:1.25-bookworm AS shim-build
+ARG TARGETARCH
+WORKDIR /src
+COPY tools/agent-shim/ ./
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
+    go build -ldflags='-s -w' -o /out/paperclip-agent-shim .
+
+# ---------- Stage 2: runtime base image ----------
+# Ubuntu + Node + git + tini + non-root paperclip user + the agent-shim. This is
+# everything the sandbox exec-in model needs: the pod idles and paperclip-server
+# execs the harness CLI in, so the harness images only add their CLI on top of
+# this. Git workspace population (an init-container workspace bootstrap) is
+# intentionally NOT built here yet: the current scope is a blank workspace.
+# Add it when git workspace population lands.
+FROM ubuntu:22.04 AS base
+ARG NODE_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl git tini gnupg \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 paperclip \
+    && useradd -u 1000 -g 1000 -d /home/paperclip -m -s /bin/bash paperclip
+
+COPY --from=shim-build   /out/paperclip-agent-shim                          /usr/local/bin/paperclip-agent-shim
+
+USER 1000:1000
+WORKDIR /workspace
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/local/bin/paperclip-agent-shim"]

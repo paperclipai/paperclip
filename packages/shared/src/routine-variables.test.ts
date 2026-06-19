@@ -76,6 +76,31 @@ describe("routine variable helpers", () => {
     ]);
   });
 
+  it("extracts snake_case variable names", () => {
+    expect(extractRoutineVariableNames("Open {{pr_url}} for review")).toEqual(["pr_url"]);
+  });
+
+  it("extracts variable names whose underscores were markdown-escaped by a WYSIWYG editor", () => {
+    // MDXEditor / mdast-util-to-markdown defensively escape intraword underscores
+    // when serializing rich-text back to markdown, so `{{pr_url}}` is stored as `{{pr\_url}}`.
+    expect(extractRoutineVariableNames("Open {{pr\\_url}} for review")).toEqual(["pr_url"]);
+    expect(extractRoutineVariableNames("{{pr\\_url\\_v2}}")).toEqual(["pr_url_v2"]);
+  });
+
+  it("syncRoutineVariablesWithTemplate handles markdown-escaped underscores", () => {
+    expect(
+      syncRoutineVariablesWithTemplate("Open {{pr\\_url}}", []),
+    ).toEqual([
+      { name: "pr_url", label: null, type: "text", defaultValue: null, required: true, options: [] },
+    ]);
+  });
+
+  it("interpolates variables that appear with markdown-escaped underscores", () => {
+    expect(
+      interpolateRoutineTemplate("Open {{pr\\_url}}", { pr_url: "https://example.com" }),
+    ).toBe("Open https://example.com");
+  });
+
   it("interpolates built-in variables alongside user variables", () => {
     const builtins = getBuiltinRoutineVariableValues();
     const allVars = { ...builtins, repo: "paperclip" };

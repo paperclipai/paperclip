@@ -37,7 +37,7 @@ export function IssueReferencePill({
         data-mention-kind="issue"
         className={classNames}
         title={issue.title}
-        aria-label={`Issue: ${issue.title}`}
+        aria-label={`Task: ${issue.title}`}
       >
         {content}
       </span>
@@ -50,7 +50,7 @@ export function IssueReferencePill({
       data-mention-kind="issue"
       className={classNames}
       title={issue.title}
-      aria-label={`Issue ${issueLabel}: ${issue.title}`}
+      aria-label={`Task ${issueLabel}: ${issue.title}`}
     >
       {content}
     </Link>

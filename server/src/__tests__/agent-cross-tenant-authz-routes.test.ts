@@ -50,6 +50,7 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
+  clearError: vi.fn(),
   terminate: vi.fn(),
   remove: vi.fn(),
   listKeys: vi.fn(),
@@ -60,6 +61,7 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
   getMembership: vi.fn(),
   ensureMembership: vi.fn(),
@@ -275,6 +277,7 @@ function resetMockDefaults() {
   mockAgentService.getById.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.pause.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.resume.mockImplementation(async () => ({ ...baseAgent }));
+  mockAgentService.clearError.mockImplementation(async () => ({ ...baseAgent, status: "idle" }));
   mockAgentService.terminate.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.remove.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.listKeys.mockImplementation(async () => []);
@@ -293,6 +296,17 @@ function resetMockDefaults() {
     revokedAt: new Date("2026-04-11T00:05:00.000Z"),
   }));
   mockAccessService.canUser.mockImplementation(async () => currentAccessCanUser);
+  mockAccessService.decide.mockImplementation(async (input: { actor?: { type?: string; source?: string }; action?: string }) => {
+    const allowed = input.actor?.type === "board" && input.actor.source === "local_implicit"
+      ? true
+      : currentAccessCanUser;
+    return {
+      allowed,
+      action: input.action,
+      reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: allowed ? "Allowed by test grant." : `Missing permission: ${input.action ?? "action"}`,
+    };
+  });
   mockAccessService.hasPermission.mockImplementation(async () => false);
   mockAccessService.getMembership.mockImplementation(async () => null);
   mockAccessService.listPrincipalGrants.mockImplementation(async () => []);
@@ -321,6 +335,12 @@ describe.sequential("agent cross-tenant route authorization", () => {
         request: (app: express.Express) =>
           requestApp(app, (baseUrl) => request(baseUrl).post(`/api/agents/${agentId}/pause`).send({})),
         untouched: [mockAgentService.pause, mockHeartbeatService.cancelActiveForAgent],
+      },
+      {
+        label: "clear error",
+        request: (app: express.Express) =>
+          requestApp(app, (baseUrl) => request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({})),
+        untouched: [mockAgentService.clearError],
       },
       {
         label: "list keys",
@@ -373,5 +393,118 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(res.body.error).toContain("Key not found");
     expect(mockAgentService.getKeyById).toHaveBeenCalledWith(keyId);
     expect(mockAgentService.revokeKey).not.toHaveBeenCalled();
+  });
+
+  it("requires board access before clearing an agent error", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({}),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(mockAgentService.clearError).not.toHaveBeenCalled();
+  });
+
+  it("clears error agents and records a distinct audit action", async () => {
+    const errorAgent = {
+      ...baseAgent,
+      status: "error",
+      pauseReason: "system",
+      pausedAt: new Date("2026-04-11T00:02:00.000Z"),
+    };
+    mockAgentService.getById.mockImplementation(async () => ({ ...errorAgent }));
+    mockAgentService.clearError.mockImplementation(async () => ({
+      ...errorAgent,
+      status: "idle",
+      pauseReason: null,
+      pausedAt: null,
+      updatedAt: new Date("2026-04-11T00:03:00.000Z"),
+    }));
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({}),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: agentId,
+      status: "idle",
+      pauseReason: null,
+      pausedAt: null,
+    });
+    expect(mockAgentService.clearError).toHaveBeenCalledWith(agentId);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId,
+      actorType: "user",
+      actorId: "board-user",
+      action: "agent.error_cleared",
+      entityType: "agent",
+      entityId: agentId,
+    }));
+  });
+
+  it("returns 409 and does not mutate when the agent org chain is invalid", async () => {
+    mockAgentService.getById.mockImplementation(async () => ({
+      ...baseAgent,
+      status: "error",
+      orgChainHealth: {
+        status: "invalid_org_chain",
+        reason: "missing_manager",
+        repairGuidance: "Repair the reporting chain first.",
+      },
+    }));
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({}),
+    );
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Repair the reporting chain first");
+    expect(mockAgentService.clearError).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("returns a clear 409 for non-error agents", async () => {
+    const { conflict } = await import("../errors.js");
+    mockAgentService.getById.mockImplementation(async () => ({ ...baseAgent, status: "idle" }));
+    mockAgentService.clearError.mockImplementation(async () => {
+      throw conflict("Only agents in error status can have their error cleared");
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({}),
+    );
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Only agents in error status can have their error cleared");
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });

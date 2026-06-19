@@ -8,13 +8,6 @@ export default defineConfig({
     maxWorkers: 1,
     minWorkers: 1,
     pool: "forks",
-    poolOptions: {
-      forks: {
-        isolate: true,
-        maxForks: 1,
-        minForks: 1,
-      },
-    },
     sequence: {
       concurrent: false,
       hooks: "list",

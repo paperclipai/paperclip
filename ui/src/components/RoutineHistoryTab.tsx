@@ -2,10 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { History as HistoryIcon, RotateCcw, Search } from "lucide-react";
 import type {
+  CompanySecret,
+  EnvBinding,
+  EnvSecretRefBinding,
   Routine,
+  RoutineEnvConfig,
   RoutineRevision,
   RoutineRevisionSnapshotTriggerV1,
   RoutineVariable,
+  SecretVersionSelector,
 } from "@paperclipai/shared";
 import {
   routinesApi,
@@ -33,6 +38,7 @@ import { MarkdownBody } from "./MarkdownBody";
 
 type AgentLookup = Map<string, { id: string; name: string }>;
 type ProjectLookup = Map<string, { id: string; name: string }>;
+type SecretLookup = Map<string, CompanySecret>;
 
 type DirtyFieldDescriptor = {
   key: string;
@@ -47,6 +53,7 @@ type Props = {
   onSaveEdits: () => void;
   agents: AgentLookup;
   projects: ProjectLookup;
+  secrets?: CompanySecret[];
   onRestoreSecretMaterials: (response: RestoreRoutineRevisionResponse) => void;
   onRestored?: (response: RestoreRoutineRevisionResponse) => void;
 };
@@ -59,9 +66,14 @@ export function RoutineHistoryTab({
   onSaveEdits,
   agents,
   projects,
+  secrets,
   onRestoreSecretMaterials,
   onRestored,
 }: Props) {
+  const secretLookup = useMemo<SecretLookup>(
+    () => new Map((secrets ?? []).map((secret) => [secret.id, secret])),
+    [secrets],
+  );
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [selectedRevisionId, setSelectedRevisionId] = useState<string | null>(null);
@@ -277,6 +289,10 @@ export function RoutineHistoryTab({
             selectedRevision,
             currentRevision,
           )}
+          envDiffCounts={summarizeEnvDiffCounts(
+            currentRevision.snapshot.routine.env ?? null,
+            selectedRevision.snapshot.routine.env ?? null,
+          )}
         />
       )}
 
@@ -289,6 +305,7 @@ export function RoutineHistoryTab({
           initialNewRevisionId={currentRevision.id}
           agents={agents}
           projects={projects}
+          secrets={secretLookup}
           onRestore={(rev) => {
             setSelectedRevisionId(rev.id);
             setDiffOpen(false);
@@ -498,6 +515,10 @@ function RevisionPreview({
     highlighted ? "border-emerald-500/40 bg-emerald-500/10" : "border-border"
   }`;
 
+  const envSummary = summarizeEnv(snapshot.env ?? null);
+  const envDiffers = !!currentSnapshot
+    && JSON.stringify(normalizeEnv(currentSnapshot.env ?? null))
+      !== JSON.stringify(normalizeEnv(snapshot.env ?? null));
   const fieldRows: Array<{ key: string; label: string; value: string; differs: boolean }> = [
     {
       key: "title",
@@ -540,6 +561,12 @@ function RevisionPreview({
       label: "Catch-up",
       value: snapshot.catchUpPolicy.replaceAll("_", " "),
       differs: !!currentSnapshot && currentSnapshot.catchUpPolicy !== snapshot.catchUpPolicy,
+    },
+    {
+      key: "env",
+      label: "Env",
+      value: envSummary,
+      differs: envDiffers,
     },
   ];
 
@@ -670,6 +697,7 @@ function RestoreConfirmDialog({
   onConfirm,
   pending,
   recreatedWebhookLabels,
+  envDiffCounts,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -680,6 +708,7 @@ function RestoreConfirmDialog({
   onConfirm: () => void;
   pending: boolean;
   recreatedWebhookLabels: string[];
+  envDiffCounts: EnvDiffCounts;
 }) {
   const newRevisionNumber = currentRevisionNumber + 1;
   return (
@@ -698,6 +727,12 @@ function RestoreConfirmDialog({
             <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
             Routine field values, variables, and schedule cron will revert.
           </li>
+          {envDiffCounts.total > 0 && (
+            <li className="flex items-start gap-2">
+              <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              Routine secrets will revert: {formatEnvDiffCounts(envDiffCounts)}.
+            </li>
+          )}
           <li className="flex items-start gap-2">
             <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
             Previous run history is preserved.
@@ -743,6 +778,7 @@ function RoutineRevisionDiffModal({
   initialNewRevisionId,
   agents,
   projects,
+  secrets,
   onRestore,
 }: {
   open: boolean;
@@ -752,6 +788,7 @@ function RoutineRevisionDiffModal({
   initialNewRevisionId: string;
   agents: AgentLookup;
   projects: ProjectLookup;
+  secrets: SecretLookup;
   onRestore: (revision: RoutineRevision) => void;
 }) {
   const [leftId, setLeftId] = useState<string>(initialOldRevisionId);
@@ -767,8 +804,8 @@ function RoutineRevisionDiffModal({
   const left = revisions.find((r) => r.id === leftId) ?? null;
   const right = revisions.find((r) => r.id === rightId) ?? null;
   const fieldChanges = useMemo(
-    () => (left && right ? computeFieldChanges(left, right, agents, projects) : []),
-    [left, right, agents, projects],
+    () => (left && right ? computeFieldChanges(left, right, agents, projects, secrets) : []),
+    [left, right, agents, projects, secrets],
   );
   const descriptionDiff = useMemo<DiffRow[]>(
     () => (left && right
@@ -1003,6 +1040,7 @@ function computeFieldChanges(
   right: RoutineRevision,
   agents: AgentLookup,
   projects: ProjectLookup,
+  secrets: SecretLookup,
 ): Array<{ field: string; oldValue: string | null; newValue: string | null }> {
   const oldRoutine = left.snapshot.routine;
   const newRoutine = right.snapshot.routine;
@@ -1042,8 +1080,168 @@ function computeFieldChanges(
       newValue: summarizeVariables(newRoutine.variables),
     });
   }
+  compareEnv(oldRoutine.env ?? null, newRoutine.env ?? null, secrets, changes);
   compareTriggers(left.snapshot.triggers, right.snapshot.triggers, changes);
   return changes;
+}
+
+function normalizeEnv(env: RoutineEnvConfig | null): Record<string, EnvBinding> {
+  if (!env) return {};
+  return env;
+}
+
+function envBindingKind(binding: EnvBinding): "plain" | "secret_ref" {
+  if (typeof binding === "string") return "plain";
+  if (binding && typeof binding === "object" && "type" in binding && binding.type === "secret_ref") {
+    return "secret_ref";
+  }
+  return "plain";
+}
+
+function asSecretRef(binding: EnvBinding): EnvSecretRefBinding | null {
+  if (typeof binding === "string") return null;
+  if (binding && typeof binding === "object" && "type" in binding && binding.type === "secret_ref") {
+    return binding;
+  }
+  return null;
+}
+
+function formatVersionSelector(version: SecretVersionSelector | undefined): string {
+  if (version == null || version === "latest") return "latest";
+  return `v${version}`;
+}
+
+function describeSecretRef(ref: EnvSecretRefBinding, secrets: SecretLookup): string {
+  const secret = secrets.get(ref.secretId);
+  const name = secret?.name ?? "<missing-secret>";
+  return `${name} ${formatVersionSelector(ref.version)}`;
+}
+
+function describeEnvBinding(binding: EnvBinding | undefined, secrets: SecretLookup): string {
+  if (binding === undefined) return "—";
+  const ref = asSecretRef(binding);
+  if (ref) return `secret_ref → ${describeSecretRef(ref, secrets)}`;
+  return "plain (set)";
+}
+
+function summarizeEnv(env: RoutineEnvConfig | null): string {
+  const entries = Object.entries(normalizeEnv(env));
+  if (entries.length === 0) return "";
+  const secretCount = entries.filter(([, binding]) => envBindingKind(binding) === "secret_ref").length;
+  const keyLabel = entries.length === 1 ? "key" : "keys";
+  if (secretCount === 0) return `${entries.length} ${keyLabel}`;
+  return `${entries.length} ${keyLabel} (${secretCount} secret ${secretCount === 1 ? "ref" : "refs"})`;
+}
+
+type EnvDiffCounts = {
+  added: number;
+  removed: number;
+  changed: number;
+  total: number;
+};
+
+function summarizeEnvDiffCounts(
+  current: RoutineEnvConfig | null,
+  target: RoutineEnvConfig | null,
+): EnvDiffCounts {
+  const currentRec = normalizeEnv(current);
+  const targetRec = normalizeEnv(target);
+  let added = 0;
+  let removed = 0;
+  let changed = 0;
+  const keys = new Set<string>([...Object.keys(currentRec), ...Object.keys(targetRec)]);
+  for (const key of keys) {
+    const inCurrent = key in currentRec;
+    const inTarget = key in targetRec;
+    if (inTarget && !inCurrent) {
+      added += 1;
+      continue;
+    }
+    if (!inTarget && inCurrent) {
+      removed += 1;
+      continue;
+    }
+    if (JSON.stringify(currentRec[key]) !== JSON.stringify(targetRec[key])) {
+      changed += 1;
+    }
+  }
+  return { added, removed, changed, total: added + removed + changed };
+}
+
+function formatEnvDiffCounts(counts: EnvDiffCounts): string {
+  const parts: string[] = [];
+  if (counts.added > 0) parts.push(`${counts.added} ${counts.added === 1 ? "key" : "keys"} added`);
+  if (counts.removed > 0) parts.push(`${counts.removed} ${counts.removed === 1 ? "key" : "keys"} removed`);
+  if (counts.changed > 0) parts.push(`${counts.changed} ${counts.changed === 1 ? "key" : "keys"} changed`);
+  return parts.join(", ");
+}
+
+function compareEnv(
+  oldEnv: RoutineEnvConfig | null,
+  newEnv: RoutineEnvConfig | null,
+  secrets: SecretLookup,
+  changes: Array<{ field: string; oldValue: string | null; newValue: string | null }>,
+) {
+  const oldRec = normalizeEnv(oldEnv);
+  const newRec = normalizeEnv(newEnv);
+  const keys = new Set<string>([...Object.keys(oldRec), ...Object.keys(newRec)]);
+  const sortedKeys = [...keys].sort();
+  for (const key of sortedKeys) {
+    const oldBinding = oldRec[key];
+    const newBinding = newRec[key];
+    const inOld = key in oldRec;
+    const inNew = key in newRec;
+    if (inNew && !inOld) {
+      changes.push({
+        field: `Env added (${key})`,
+        oldValue: "—",
+        newValue: describeEnvBinding(newBinding, secrets),
+      });
+      continue;
+    }
+    if (!inNew && inOld) {
+      changes.push({
+        field: `Env removed (${key})`,
+        oldValue: describeEnvBinding(oldBinding, secrets),
+        newValue: "—",
+      });
+      continue;
+    }
+    if (JSON.stringify(oldBinding) === JSON.stringify(newBinding)) continue;
+    const oldKind = envBindingKind(oldBinding);
+    const newKind = envBindingKind(newBinding);
+    if (oldKind !== newKind) {
+      changes.push({
+        field: `Env ${key} binding kind`,
+        oldValue: describeEnvBinding(oldBinding, secrets),
+        newValue: describeEnvBinding(newBinding, secrets),
+      });
+      continue;
+    }
+    if (newKind === "secret_ref") {
+      const oldRef = asSecretRef(oldBinding)!;
+      const newRef = asSecretRef(newBinding)!;
+      if (oldRef.secretId !== newRef.secretId) {
+        changes.push({
+          field: `Env ${key} secret`,
+          oldValue: describeEnvBinding(oldBinding, secrets),
+          newValue: describeEnvBinding(newBinding, secrets),
+        });
+        continue;
+      }
+      changes.push({
+        field: `Env ${key} version`,
+        oldValue: describeSecretRef(oldRef, secrets),
+        newValue: describeSecretRef(newRef, secrets),
+      });
+      continue;
+    }
+    changes.push({
+      field: `Env ${key} value`,
+      oldValue: "plain (set)",
+      newValue: "plain (changed)",
+    });
+  }
 }
 
 function summarizeVariables(variables: RoutineVariable[]): string {

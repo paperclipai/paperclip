@@ -343,6 +343,7 @@ function CommentCard({
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
+  const isDeleted = Boolean(comment.deletedAt);
   const followUpRequested = comment.followUpRequested === true;
 
   return (
@@ -352,10 +353,10 @@ function CommentCard({
       className={`border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${
         isQueued
           ? "border-amber-300/70 bg-amber-50/70 dark:border-amber-500/40 dark:bg-amber-500/10"
-          : isHighlighted
+          : isHighlighted && !isDeleted
             ? "border-primary/50 bg-primary/5"
             : "border-border"
-      } ${isPending ? "opacity-80" : ""}`}
+      } ${isPending ? "opacity-80" : ""} ${isDeleted ? "bg-muted/30 text-muted-foreground" : ""}`}
     >
       <div className="flex items-center justify-between mb-1">
         {comment.authorAgentId ? (
@@ -379,7 +380,7 @@ function CommentCard({
               Follow-up
             </Badge>
           ) : null}
-          {companyId && !isPending ? (
+          {companyId && !isPending && !isDeleted ? (
             <PluginSlotOutlet
               slotTypes={["commentContextMenuItem"]}
               entityType="comment"
@@ -405,11 +406,15 @@ function CommentCard({
               {formatDateTime(comment.createdAt)}
             </a>
           )}
-          <CopyMarkdownButton text={comment.body} />
+          {!isDeleted ? <CopyMarkdownButton text={comment.body} /> : null}
         </span>
       </div>
-      <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
-      {companyId && !isPending ? (
+      {isDeleted ? (
+        <div className="text-sm italic text-muted-foreground">Comment deleted</div>
+      ) : (
+        <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
+      )}
+      {companyId && !isPending && !isDeleted ? (
         <div className="mt-2 space-y-2">
           <PluginSlotOutlet
             slotTypes={["commentAnnotation"]}
@@ -427,7 +432,7 @@ function CommentCard({
           />
         </div>
       ) : null}
-      {comment.authorAgentId && onVote && !isQueued && !isPending ? (
+      {comment.authorAgentId && onVote && !isQueued && !isPending && !isDeleted ? (
         <OutputFeedbackButtons
           activeVote={feedbackVote}
           disabled={voting}
@@ -450,7 +455,7 @@ function CommentCard({
           ) : undefined}
         />
       ) : null}
-      {comment.runId && !isPending && !(comment.authorAgentId && onVote && !isQueued) ? (
+      {comment.runId && !isPending && !isDeleted && !(comment.authorAgentId && onVote && !isQueued) ? (
         <div className="mt-3 pt-3 border-t border-border/60">
           {comment.runAgentId ? (
             <Link
@@ -863,6 +868,15 @@ export function CommentThread({
     const hash = location.hash;
     if (!hash.startsWith("#comment-") || comments.length + queuedComments.length === 0) return;
     const commentId = hash.slice("#comment-".length);
+    const targetComment = [...comments, ...queuedComments].find((comment) => comment.id === commentId);
+    if (targetComment?.deletedAt) {
+      setHighlightCommentId(null);
+      hasScrolledRef.current = false;
+      if (typeof window !== "undefined") {
+        window.history.replaceState(null, "", `${location.pathname}${location.search}`);
+      }
+      return;
+    }
     // Only scroll once per hash
     if (hasScrolledRef.current) return;
     const el = document.getElementById(`comment-${commentId}`);

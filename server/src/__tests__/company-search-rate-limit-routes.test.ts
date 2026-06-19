@@ -13,7 +13,7 @@ function createSearchResponse(query: CompanySearchQuery): CompanySearchResponse 
     limit: query.limit,
     offset: query.offset,
     results: [],
-    countsByType: { issue: 0, agent: 0, project: 0 },
+    countsByType: { issue: 0, artifact: 0, agent: 0, project: 0 },
     hasMore: false,
   };
 }
@@ -24,10 +24,11 @@ describe("company search route rate limiting", () => {
     const app = express();
     app.use((req, _res, next) => {
       req.actor = {
-        type: "agent",
-        agentId: "agent-1",
-        companyId: "company-1",
-        source: "agent_key",
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: true,
       };
       next();
     });

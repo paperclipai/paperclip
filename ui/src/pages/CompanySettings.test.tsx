@@ -220,6 +220,10 @@ describe("CompanyEnvironments", () => {
     await flushReact();
     await flushReact();
 
+    expect(container.textContent).toContain("Installed sandbox providers:");
+    expect(container.textContent).toContain("Secure Sandbox");
+    expect(container.textContent).toContain("These are not adapter types.");
+
     const editButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Edit");
     expect(editButton).toBeTruthy();

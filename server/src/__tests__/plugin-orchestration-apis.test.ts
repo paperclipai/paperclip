@@ -11,6 +11,7 @@ import {
   companies,
   costEvents,
   createDb,
+  executionWorkspaces,
   heartbeatRuns,
   issueRelations,
   issues,
@@ -67,6 +68,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
     await db.delete(pluginManagedResources);
     await db.delete(projects);
     await db.delete(plugins);
@@ -106,6 +108,61 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     tempRoots.push(root);
     return root;
   }
+
+  it("returns plugin-safe execution workspace metadata scoped to the company", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const otherCompanyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other",
+      issuePrefix: issuePrefix(otherCompanyId),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspaces",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Feature workspace",
+      status: "active",
+      cwd: "/tmp/paperclip-feature",
+      repoUrl: "https://example.com/paperclip.git",
+      baseRef: "main",
+      branchName: "feature/workspace",
+      providerType: "git_worktree",
+      providerRef: "/tmp/paperclip-feature",
+      metadata: {
+        providerMetadata: { sandboxId: "sandbox-1" },
+        workspaceRealizationRequest: { hiddenInternal: true },
+      },
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.workspace", createEventBusStub());
+
+    await expect(services.executionWorkspaces.get({ workspaceId, companyId })).resolves.toMatchObject({
+      id: workspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId: null,
+      path: "/tmp/paperclip-feature",
+      cwd: "/tmp/paperclip-feature",
+      repoUrl: "https://example.com/paperclip.git",
+      baseRef: "main",
+      branchName: "feature/workspace",
+      providerType: "git_worktree",
+      providerMetadata: { sandboxId: "sandbox-1" },
+    });
+    await expect(services.executionWorkspaces.get({ workspaceId, companyId: otherCompanyId })).resolves.toBeNull();
+  });
 
   it("creates plugin-origin issues with full orchestration fields and audit activity", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();

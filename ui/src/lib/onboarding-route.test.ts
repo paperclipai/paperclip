@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isOnboardingPath,
+  isOnboardingWizardActive,
   resolveRouteOnboardingOptions,
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./onboarding-route";
@@ -76,5 +77,25 @@ describe("shouldRedirectCompanylessRouteToOnboarding", () => {
         hasCompanies: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("isOnboardingWizardActive", () => {
+  it("is active on the freshly-landed onboarding route (auto-open, not dismissed)", () => {
+    expect(
+      isOnboardingWizardActive({ onboardingOpen: false, routeDismissed: false }),
+    ).toBe(true);
+  });
+
+  it("hands off to the launcher once the wizard is dismissed and not re-opened", () => {
+    expect(
+      isOnboardingWizardActive({ onboardingOpen: false, routeDismissed: true }),
+    ).toBe(false);
+  });
+
+  it("stays active when explicitly re-opened after a dismissal", () => {
+    expect(
+      isOnboardingWizardActive({ onboardingOpen: true, routeDismissed: true }),
+    ).toBe(true);
   });
 });

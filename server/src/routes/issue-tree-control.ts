@@ -3,6 +3,7 @@ import type { Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createIssueTreeHoldSchema,
+  isUuidLike,
   previewIssueTreeControlSchema,
   releaseIssueTreeHoldSchema,
 } from "@paperclipai/shared";
@@ -340,7 +341,13 @@ export function issueTreeControlRoutes(db: Db) {
     }
     assertCompanyAccess(req, root.companyId);
 
-    const hold = await treeControlSvc.getHold(root.companyId, req.params.holdId as string);
+    const holdId = req.params.holdId as string;
+    if (!isUuidLike(holdId)) {
+      res.status(400).json({ error: "Invalid hold ID" });
+      return;
+    }
+
+    const hold = await treeControlSvc.getHold(root.companyId, holdId);
     if (!hold || hold.rootIssueId !== root.id) {
       res.status(404).json({ error: "Issue tree hold not found" });
       return;
@@ -360,8 +367,14 @@ export function issueTreeControlRoutes(db: Db) {
       }
       assertCompanyAccess(req, root.companyId);
 
+      const holdId = req.params.holdId as string;
+      if (!isUuidLike(holdId)) {
+        res.status(400).json({ error: "Invalid hold ID" });
+        return;
+      }
+
       const actor = getActorInfo(req);
-      const hold = await treeControlSvc.releaseHold(root.companyId, root.id, req.params.holdId as string, {
+      const hold = await treeControlSvc.releaseHold(root.companyId, root.id, holdId, {
         ...req.body,
         actor: {
           actorType: actor.actorType,

@@ -53,6 +53,7 @@ function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComm
     authorType: authorAgentId ? "agent" : "user",
     presentation: null,
     metadata: null,
+    sourceTrust: null,
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:00:00.000Z"),
     ...overrides,
@@ -319,6 +320,157 @@ describe("buildIssueChatMessages", () => {
         custom: {
           authorName: "Dotta",
           authorUserId: "user-1",
+        },
+      },
+    });
+  });
+
+  it("flags an operator-interrupted historical run so the timeline can read 'interrupted'", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-int",
+          status: "cancelled",
+          agentId: "agent-1",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:02:00.000Z"),
+          resultJson: { operatorInterrupted: true, interruptionSource: "issue_comment_interrupt" },
+        },
+        {
+          runId: "run-plain",
+          status: "cancelled",
+          agentId: "agent-1",
+          createdAt: new Date("2026-04-06T12:03:00.000Z"),
+          startedAt: new Date("2026-04-06T12:03:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:04:00.000Z"),
+          resultJson: null,
+        },
+      ],
+      liveRuns: [],
+    });
+
+    const interrupted = messages.find((message) => message.id === "run-assistant:run-int");
+    const plain = messages.find((message) => message.id === "run-assistant:run-plain");
+    expect(interrupted?.metadata?.custom).toMatchObject({ runOperatorInterrupted: true });
+    expect(plain?.metadata?.custom).toMatchObject({ runOperatorInterrupted: false });
+  });
+
+  it("redacts deleted comment bodies while preserving tombstone metadata", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          body: "Sensitive deleted body",
+          deletedAt: new Date("2026-04-06T12:05:00.000Z"),
+          deletedByType: "user",
+          deletedByUserId: "user-1",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+      userLabelMap: new Map([["user-1", "Dotta"]]),
+    });
+
+    expect(messages[0]?.content).toEqual([{ type: "text", text: "" }]);
+    expect(messages[0]?.metadata.custom).toMatchObject({
+      deletedAt: "2026-04-06T12:05:00.000Z",
+      deletedByType: "user",
+      deletedByUserId: "user-1",
+    });
+    expect(JSON.stringify(messages[0])).not.toContain("Sensitive deleted body");
+  });
+
+  it("preserves low-trust source metadata on comment messages", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorAgentId: "agent-1",
+          authorUserId: null,
+          sourceTrust: {
+            preset: "low_trust_review",
+            disposition: "quarantined",
+            sourceAgentId: "agent-1",
+          },
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap: new Map([["agent-1", createAgent("agent-1", "Low Trust Reviewer")]]),
+    });
+
+    expect(messages[0]?.metadata.custom.sourceTrust).toMatchObject({
+      preset: "low_trust_review",
+      disposition: "quarantined",
+      sourceAgentId: "agent-1",
+    });
+  });
+
+  it("prefers derived agent attribution when a board-authored comment is proven to come from a run", () => {
+    const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorUserId: "user-1",
+          derivedAuthorAgentId: "agent-1",
+          derivedCreatedByRunId: "run-1",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap,
+      currentUserId: "user-1",
+      userLabelMap: new Map([["user-1", "Dotta"]]),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      metadata: {
+        custom: {
+          authorName: "Claude",
+          authorType: "agent",
+          authorAgentId: "agent-1",
+          authorUserId: "user-1",
+          runId: "run-1",
+          runAgentId: "agent-1",
+        },
+      },
+    });
+  });
+
+  it("renders a comment as agent-authored when runAgentId is set from activity log", () => {
+    const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorUserId: "user-1",
+          runId: "run-1",
+          runAgentId: "agent-1",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap,
+      currentUserId: "user-1",
+      userLabelMap: new Map([["user-1", "Dotta"]]),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      metadata: {
+        custom: {
+          authorName: "Claude",
+          authorType: "agent",
+          authorAgentId: "agent-1",
+          authorUserId: "user-1",
+          runId: "run-1",
+          runAgentId: "agent-1",
         },
       },
     });
@@ -791,6 +943,39 @@ describe("buildIssueChatMessages", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]?.metadata.custom).toMatchObject({
       chainOfThoughtLabel: "Paused by board after 1 minute",
+      runStatus: "cancelled",
+    });
+  });
+
+  it("labels error-code-only operator interruptions as interrupted by board", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-interrupted",
+          status: "cancelled",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:02:00.000Z"),
+          errorCode: "operator_interrupted",
+          resultJson: null,
+        },
+      ],
+      liveRuns: [],
+      transcriptsByRunId: new Map([
+        ["run-interrupted", [{ kind: "assistant", ts: "2026-04-06T12:01:05.000Z", text: "Working on it." }]],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-interrupted",
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.metadata.custom).toMatchObject({
+      chainOfThoughtLabel: "Interrupted by board after 1 minute",
+      runOperatorInterrupted: true,
       runStatus: "cancelled",
     });
   });

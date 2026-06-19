@@ -7,6 +7,7 @@ import {
 } from "../../client/board-auth.js";
 import {
   addCommonClientOptions,
+  apiPath,
   handleCommandError,
   printOutput,
   resolveCommandContext,
@@ -19,6 +20,11 @@ interface AuthLoginOptions extends BaseClientOptions {
 
 interface AuthLogoutOptions extends BaseClientOptions {}
 interface AuthWhoamiOptions extends BaseClientOptions {}
+interface AuthChallengeOptions extends BaseClientOptions {
+  payloadJson?: string;
+  token?: string;
+  tokenEnv?: string;
+}
 
 export function registerClientAuthCommands(auth: Command): void {
   addCommonClientOptions(
@@ -91,6 +97,20 @@ export function registerClientAuthCommands(auth: Command): void {
 
   addCommonClientOptions(
     auth
+      .command("revoke-current")
+      .description("Revoke the current board API token")
+      .action(async (opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post("/api/cli-auth/revoke-current", {}), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    auth
       .command("whoami")
       .description("Show the current board-user identity for this API base")
       .action(async (opts: AuthWhoamiOptions) => {
@@ -110,4 +130,71 @@ export function registerClientAuthCommands(auth: Command): void {
         }
       }),
   );
+
+  const challenge = auth.command("challenge").description("CLI auth challenge operations");
+  addCommonClientOptions(
+    challenge
+      .command("create")
+      .description("Create a CLI auth challenge")
+      .requiredOption("--payload-json <json>", "CreateCliAuthChallenge JSON payload")
+      .action(async (opts: AuthChallengeOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post("/api/cli-auth/challenges", parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+  addCommonClientOptions(
+    challenge
+      .command("get")
+      .description("Get a CLI auth challenge")
+      .argument("<id>", "Challenge ID")
+      .option("--token <token>", "Challenge secret")
+      .option("--token-env <name>", "Read the challenge secret from an environment variable")
+      .action(async (id: string, opts: AuthChallengeOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const query = new URLSearchParams({ token: resolveChallengeToken(opts) });
+          printOutput(await ctx.api.get(`${apiPath`/api/cli-auth/challenges/${id}`}?${query.toString()}`), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+  for (const action of ["approve", "cancel"] as const) {
+    addCommonClientOptions(
+      challenge
+        .command(action)
+        .description(`${action} a CLI auth challenge`)
+        .argument("<id>", "Challenge ID")
+        .option("--token <token>", "Challenge secret")
+        .option("--token-env <name>", "Read the challenge secret from an environment variable")
+        .action(async (id: string, opts: AuthChallengeOptions) => {
+          try {
+            const ctx = resolveCommandContext(opts);
+            printOutput(await ctx.api.post(`${apiPath`/api/cli-auth/challenges/${id}`}/${action}`, { token: resolveChallengeToken(opts) }), { json: ctx.json });
+          } catch (err) {
+            handleCommandError(err);
+          }
+        }),
+    );
+  }
+}
+
+function parseJson(value: string): unknown {
+  return JSON.parse(value) as unknown;
+}
+
+function resolveChallengeToken(opts: AuthChallengeOptions): string {
+  const token = opts.token?.trim();
+  if (token) return token;
+  const envName = opts.tokenEnv?.trim();
+  if (envName) {
+    const envValue = process.env[envName]?.trim();
+    if (envValue) return envValue;
+    throw new Error(`Environment variable ${envName} is empty or not set.`);
+  }
+  throw new Error("Challenge secret is required. Pass --token or --token-env.");
 }

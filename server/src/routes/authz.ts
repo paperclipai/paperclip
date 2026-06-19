@@ -31,6 +31,17 @@ export function assertBoardOrgAccess(req: Request) {
   throw forbidden("Company membership or instance admin access required");
 }
 
+export function assertBoardOrAgent(req: Request) {
+  if (req.actor.type === "agent") {
+    return;
+  }
+  if (req.actor.type === "board") {
+    assertBoardOrgAccess(req);
+    return;
+  }
+  throw forbidden("Board or agent access required");
+}
+
 export function assertInstanceAdmin(req: Request) {
   assertBoard(req);
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
@@ -63,21 +74,46 @@ export function assertCompanyAccess(req: Request, companyId: string) {
   }
 }
 
-export function getActorInfo(req: Request) {
+export function getActorInfo(req: Request): (
+  {
+    actorType: "agent";
+    actorId: string;
+    agentId: string | null;
+    runId: string | null;
+    actorSource: "agent_key" | "agent_jwt";
+  }
+  | {
+    actorType: "user";
+    actorId: string;
+    agentId: null;
+    runId: string | null;
+    actorSource: "local_implicit" | "session" | "board_key" | "cloud_tenant";
+  }
+) {
   assertAuthenticated(req);
   if (req.actor.type === "agent") {
+    const actorSource = req.actor.source === "agent_jwt" ? "agent_jwt" : "agent_key";
     return {
       actorType: "agent" as const,
       actorId: req.actor.agentId ?? "unknown-agent",
       agentId: req.actor.agentId ?? null,
       runId: req.actor.runId ?? null,
+      actorSource,
     };
   }
+
+  const actorSource =
+    req.actor.source === "local_implicit" ||
+      req.actor.source === "board_key" ||
+      req.actor.source === "cloud_tenant"
+      ? req.actor.source
+      : "session";
 
   return {
     actorType: "user" as const,
     actorId: req.actor.userId ?? "board",
     agentId: null,
     runId: req.actor.runId ?? null,
+    actorSource,
   };
 }

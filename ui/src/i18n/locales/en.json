@@ -1,0 +1,9 @@
+{
+  "app": {
+    "noCompanies": {
+      "title": "Create your first company",
+      "description": "Get started by creating a company.",
+      "newCompany": "New Company"
+    }
+  }
+}

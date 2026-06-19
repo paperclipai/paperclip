@@ -64,6 +64,17 @@ Heartbeat still resolves a workspace for the run, but that is about code locatio
 4. Heartbeat passes the resolved code workspace to the agent run.
 5. Workspace runtime services remain manual UI-managed controls rather than automatic heartbeat-managed services.
 
+## Cross-run persistence (no-remote-git contract)
+
+Code state moves between runs through the local execution-workspace cwd alone — not through a git remote.
+
+- Each run's prepare step bundles the local worktree to the run's remote dir over ssh, with no `git remote` configured.
+- The adapter's restore step at the end of the run writes any new remote commits back into the local worktree directly.
+- Adapters must never `git push` from runtime code, and must never assume a remote exists.
+- A failed restore is a run-level error and records `workspace_finalize=failed` on the execution workspace, which gates dependent issue wakes until the next successful finalize.
+
+The invariant is enforced by the "no-remote-git contract" case in `packages/adapter-utils/src/ssh-fixture.test.ts`, which asserts a remote-only commit reaches the local worktree with no remote configured at any point.
+
 ## Current implementation guarantees
 
 With the current implementation:

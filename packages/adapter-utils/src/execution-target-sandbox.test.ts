@@ -5,9 +5,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetToRemoteSpec,
   adapterExecutionTargetUsesPaperclipBridge,
+  ensureAdapterExecutionTargetCommandResolvable,
+  resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
@@ -109,6 +112,89 @@ describe("sandbox adapter execution targets", () => {
     });
   });
 
+  it("applies the remote sandbox fallback when adapter timeoutSec is unset", () => {
+    const sandboxTarget: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner: createLocalSandboxRunner(),
+    };
+
+    expect(resolveAdapterExecutionTargetTimeoutSec(sandboxTarget, 0)).toBe(
+      DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+    );
+    expect(resolveAdapterExecutionTargetTimeoutSec(sandboxTarget, 90)).toBe(90);
+    expect(resolveAdapterExecutionTargetTimeoutSec({
+      kind: "remote",
+      transport: "ssh",
+      remoteCwd: "/workspace",
+      spec: {
+        host: "127.0.0.1",
+        port: 22,
+        username: "fixture",
+        remoteWorkspacePath: "/workspace",
+        remoteCwd: "/workspace",
+        privateKey: "KEY",
+        knownHosts: "host key",
+        strictHostKeyChecking: true,
+      },
+    }, 0)).toBe(0);
+  });
+
+  it("uses the caller timeout override when installing a missing sandbox command", async () => {
+    const runner = {
+      execute: vi.fn()
+        .mockResolvedValueOnce({
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "/usr/bin/opencode\n",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        }),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      timeoutMs: 300_000,
+      runner,
+    };
+
+    await ensureAdapterExecutionTargetCommandResolvable(
+      "opencode",
+      target,
+      "/local/workspace",
+      {},
+      { installCommand: "npm install -g opencode", timeoutSec: 1800 },
+    );
+
+    expect(runner.execute).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      command: "sh",
+      args: ["-c", "npm install -g opencode"],
+      timeoutMs: 1_800_000,
+    }));
+  });
+
   it("runs shell commands through the same runner", async () => {
     const runner = {
       execute: vi.fn(async () => ({
@@ -136,7 +222,7 @@ describe("sandbox adapter execution targets", () => {
 
     expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
       command: "sh",
-      args: ["-lc", 'printf %s "$HOME"'],
+      args: ["-c", 'printf %s "$HOME"'],
       cwd: "/workspace",
       timeoutMs: 7000,
     }));
@@ -284,7 +370,7 @@ describe("sandbox adapter execution targets", () => {
 
     expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
       command: "bash",
-      args: ["-lc", 'printf %s "$HOME"'],
+      args: ["-c", 'printf %s "$HOME"'],
       cwd: "/workspace",
       timeoutMs: 7000,
     }));
@@ -357,6 +443,60 @@ describe("sandbox adapter execution targets", () => {
         auth: "Bearer real-run-jwt",
         runId: "run-bridge",
       }]);
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+
+  it("uses the effective adapter timeout when starting the sandbox callback bridge", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-timeout-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const delegateRunner = createLocalSandboxRunner();
+    const runner = {
+      execute: vi.fn(async (input: Parameters<typeof delegateRunner.execute>[0]) => delegateRunner.execute(input)),
+    };
+    const apiServer = createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge timeout test API server to listen on a TCP port.");
+    }
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "cloudflare",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner,
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-timeout",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      expect(bridge).not.toBeNull();
+      expect(runner.execute).toHaveBeenCalled();
+      expect(runner.execute.mock.calls.some(([input]) => input.timeoutMs === 1_800_000)).toBe(true);
     } finally {
       await bridge?.stop();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));

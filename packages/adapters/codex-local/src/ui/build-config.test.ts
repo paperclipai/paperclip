@@ -51,4 +51,10 @@ describe("buildCodexLocalConfig", () => {
       dangerouslyBypassApprovalsAndSandbox: true,
     });
   });
+
+  it("omits model when the operator leaves it blank", () => {
+    const config = buildCodexLocalConfig(makeValues({ model: "" }));
+
+    expect(config).not.toHaveProperty("model");
+  });
 });

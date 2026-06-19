@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -220,6 +220,202 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.driver).toBe("local");
     expect(rows[0]?.status).toBe("active");
+  });
+
+  it("ensures, refreshes, and finds a managed Kubernetes sandbox environment", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // No managed k8s env yet.
+    expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
+
+    const created = await svc.ensureKubernetesEnvironment(companyId, {
+      backend: "job",
+      inCluster: true,
+      runtimeClassName: "gvisor",
+      egressMode: "cilium",
+      egressAllowFqdns: ["api.anthropic.com"],
+    });
+
+    expect(created.driver).toBe("sandbox");
+    expect(created.config.provider).toBe("kubernetes");
+    expect(created.config.backend).toBe("job");
+    expect(created.config.runtimeClassName).toBe("gvisor");
+    expect(created.metadata?.managedKubernetesSandbox).toBe(true);
+
+    // Idempotent: second call refreshes config in place, no new row.
+    const refreshed = await svc.ensureKubernetesEnvironment(companyId, {
+      backend: "job",
+      inCluster: true,
+      egressMode: "cilium",
+      egressAllowFqdns: ["api.anthropic.com", "api.openai.com"],
+    });
+    expect(refreshed.id).toBe(created.id);
+    expect(refreshed.config.egressAllowFqdns).toEqual([
+      "api.anthropic.com",
+      "api.openai.com",
+    ]);
+
+    const found = await svc.findKubernetesEnvironment(companyId);
+    expect(found?.id).toBe(created.id);
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(eq(environments.companyId, companyId));
+    expect(rows.filter((row) => row.driver === "sandbox")).toHaveLength(1);
+  });
+
+  it("deduplicates concurrent managed Kubernetes environment creation", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // No partial unique index covers sandbox drivers yet, so dedup is
+    // post-insert convergence (prefer the oldest row, delete the loser).
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        svc.ensureKubernetesEnvironment(companyId, { inCluster: true, backend: "job" }),
+      ),
+    );
+
+    expect(new Set(results.map((environment) => environment.id)).size).toBe(1);
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")));
+    expect(rows).toHaveLength(1);
+    expect((rows[0]?.metadata as Record<string, unknown>)?.managedKubernetesSandbox).toBe(true);
+  });
+
+  it("rejects a second managed-sandbox row for the same company at the DB level", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const now = new Date();
+    await db.insert(environments).values({
+      companyId,
+      name: "First",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "kubernetes" },
+      metadata: { managedByPaperclip: true, managedKubernetesSandbox: true },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Partial unique index environments_company_managed_sandbox_idx rejects a
+    // second row matching driver='sandbox' AND managedByPaperclip=true for the
+    // same company. This is the DB-level invariant that replaced the previous
+    // application-side post-insert convergence loop.
+    const secondInsert = db.insert(environments).values({
+      companyId,
+      name: "Second",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "kubernetes" },
+      metadata: { managedByPaperclip: true, managedKubernetesSandbox: true },
+      createdAt: new Date(now.getTime() + 1),
+      updatedAt: new Date(now.getTime() + 1),
+    });
+    let raisedConstraint: string | null = null;
+    try {
+      await secondInsert;
+    } catch (error) {
+      raisedConstraint =
+        (error as { constraint_name?: string; cause?: { constraint_name?: string } })
+          ?.constraint_name ??
+        (error as { cause?: { constraint_name?: string } })?.cause?.constraint_name ??
+        "unknown";
+    }
+    expect(raisedConstraint).toBe("environments_company_managed_sandbox_idx");
+
+    // Index does NOT cover tenant-created sandbox rows (no managedByPaperclip
+    // marker) — operators must be able to keep multiple tenant sandbox envs.
+    await db.insert(environments).values({
+      companyId,
+      name: "Tenant Sandbox",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "fake" },
+      metadata: { tenant: true },
+      createdAt: new Date(now.getTime() + 2),
+      updatedAt: new Date(now.getTime() + 2),
+    });
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")));
+    expect(rows).toHaveLength(2);
+  });
+
+  it("does not treat a non-kubernetes sandbox environment as the managed k8s env", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await svc.create(companyId, {
+      name: "Fake Sandbox",
+      driver: "sandbox",
+      config: { provider: "fake", image: "busybox", reuseLease: false },
+    });
+
+    expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
+  });
+
+  it("ignores a config.provider=kubernetes sandbox env without the managed marker", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // A tenant-created sandbox env with config.provider "kubernetes" but WITHOUT
+    // the managed metadata marker must NOT be treated as the managed k8s env,
+    // otherwise it would bypass the operator gVisor runtimeClass / Cilium egress.
+    await svc.create(companyId, {
+      name: "Tenant K8s Sandbox",
+      driver: "sandbox",
+      config: { provider: "kubernetes", reuseLease: false },
+    });
+
+    expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
+
+    // The managed env (created via ensureKubernetesEnvironment) carries the
+    // marker and is the only one found.
+    const managed = await svc.ensureKubernetesEnvironment(companyId, {
+      backend: "job",
+      inCluster: true,
+      runtimeClassName: "gvisor",
+    });
+    const found = await svc.findKubernetesEnvironment(companyId);
+    expect(found?.id).toBe(managed.id);
   });
 
   it("allows multiple SSH environments for the same company", async () => {

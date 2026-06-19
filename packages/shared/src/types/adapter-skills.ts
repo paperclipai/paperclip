@@ -14,9 +14,16 @@ export type AgentSkillOrigin =
   | "user_installed"
   | "external_unknown";
 
+export interface AgentDesiredSkillEntry {
+  key: string;
+  versionId: string | null;
+}
+
 export interface AgentSkillEntry {
   key: string;
   runtimeName: string | null;
+  versionId?: string | null;
+  currentVersionId?: string | null;
   desired: boolean;
   managed: boolean;
   required?: boolean;
@@ -36,10 +43,11 @@ export interface AgentSkillSnapshot {
   supported: boolean;
   mode: AgentSkillSyncMode;
   desiredSkills: string[];
+  desiredSkillEntries?: AgentDesiredSkillEntry[];
   entries: AgentSkillEntry[];
   warnings: string[];
 }
 
 export interface AgentSkillSyncRequest {
-  desiredSkills: string[];
+  desiredSkills: Array<string | AgentDesiredSkillEntry>;
 }

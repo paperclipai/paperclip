@@ -1,0 +1,9 @@
+{
+  "app": {
+    "noCompanies": {
+      "title": "最初の会社を作成",
+      "description": "会社を作成して始めましょう。",
+      "newCompany": "新しい会社"
+    }
+  }
+}

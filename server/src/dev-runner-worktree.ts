@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 function parseEnvFile(contents: string): Record<string, string> {
@@ -55,6 +56,45 @@ export function resolveWorktreeEnvFilePath(rootDir: string): string {
   return path.resolve(rootDir, ".paperclip", ".env");
 }
 
+function expandHomePrefix(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));
+  return value;
+}
+
+function resolveHomeAwarePath(value: string): string {
+  return path.resolve(expandHomePrefix(value));
+}
+
+function resolveDefaultWorktreeHome(env: NodeJS.ProcessEnv): string {
+  return path.resolve(expandHomePrefix(env.PAPERCLIP_WORKTREES_DIR?.trim() || "~/.paperclip-worktrees"));
+}
+
+function repairStaleMigratedWorktreeEnvEntries(
+  rootDir: string,
+  entries: Record<string, string>,
+  env: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const localConfigPath = path.resolve(rootDir, ".paperclip", "config.json");
+  const configuredPath = entries.PAPERCLIP_CONFIG?.trim();
+  if (!configuredPath) return entries;
+
+  const resolvedConfiguredPath = resolveHomeAwarePath(configuredPath);
+  const staleConfigPath =
+    resolvedConfiguredPath !== localConfigPath &&
+    !existsSync(resolvedConfiguredPath) &&
+    existsSync(localConfigPath);
+  if (!staleConfigPath) return entries;
+
+  const homeDir = resolveDefaultWorktreeHome(env);
+  return {
+    ...entries,
+    PAPERCLIP_HOME: homeDir,
+    PAPERCLIP_CONFIG: localConfigPath,
+    PAPERCLIP_CONTEXT: path.resolve(homeDir, "context.json"),
+  };
+}
+
 export function bootstrapDevRunnerWorktreeEnv(
   rootDir: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -74,7 +114,11 @@ export function bootstrapDevRunnerWorktreeEnv(
     };
   }
 
-  const entries = parseEnvFile(readFileSync(envPath, "utf8"));
+  const entries = repairStaleMigratedWorktreeEnvEntries(
+    rootDir,
+    parseEnvFile(readFileSync(envPath, "utf8")),
+    env,
+  );
   for (const [key, value] of Object.entries(entries)) {
     if (typeof env[key] === "string" && env[key]!.trim().length > 0) continue;
     env[key] = value;

@@ -1,5 +1,6 @@
 import type { CreateConfigValues } from "../components/AgentConfigForm";
 import { buildNewAgentRuntimeConfig } from "./new-agent-runtime-config";
+import type { AgentPermissions } from "@paperclipai/shared";
 
 export function buildNewAgentHirePayload(input: {
   name: string;
@@ -9,6 +10,7 @@ export function buildNewAgentHirePayload(input: {
   selectedSkillKeys?: string[];
   configValues: CreateConfigValues;
   adapterConfig: Record<string, unknown>;
+  permissions?: Partial<AgentPermissions>;
 }) {
   const {
     name,
@@ -18,6 +20,7 @@ export function buildNewAgentHirePayload(input: {
     selectedSkillKeys = [],
     configValues,
     adapterConfig,
+    permissions,
   } = input;
 
   return {
@@ -36,5 +39,6 @@ export function buildNewAgentHirePayload(input: {
       cheapModelEnabled: configValues.cheapModelEnabled,
     }),
     budgetMonthlyCents: 0,
+    ...(permissions ? { permissions } : {}),
   };
 }

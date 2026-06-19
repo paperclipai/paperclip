@@ -3,13 +3,14 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { companies, createDb, issues } from "@paperclipai/db";
+import { companies, companyMemberships, createDb, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -43,13 +44,32 @@ describeEmbeddedPostgres("issue identifier routes", () => {
         companyIds: [companyId],
         memberships: [{ companyId, membershipRole: "owner", status: "active" }],
         source: "cloud_tenant",
-        isInstanceAdmin: true,
+        // cloud_tenant actors are never instance admins — access flows through
+        // company-scoped membership grants, seeded per test company below.
+        isInstanceAdmin: false,
       };
       next();
     });
     app.use("/api", issueRoutes(db, {} as any));
     app.use(errorHandler);
     return app;
+  }
+
+  async function seedCloudTenantMember(companyId: string) {
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "cloud-user-1",
+      status: "active",
+      membershipRole: "owner",
+      updatedAt: new Date(),
+    });
+    await ensureHumanRoleDefaultGrants(db, {
+      companyId,
+      principalId: "cloud-user-1",
+      membershipRole: "owner",
+      grantedByUserId: null,
+    });
   }
 
   it("resolves alphanumeric Cloud tenant issue identifiers for detail reads and updates", async () => {
@@ -62,6 +82,7 @@ describeEmbeddedPostgres("issue identifier routes", () => {
       issuePrefix: "PC1A2",
       requireBoardApprovalForNewAgents: false,
     });
+    await seedCloudTenantMember(companyId);
     await db.insert(issues).values({
       id: issueId,
       companyId,

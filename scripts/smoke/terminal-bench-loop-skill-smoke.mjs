@@ -83,7 +83,7 @@ function assert(condition, message) {
 }
 
 async function assertLocalSkillPackage() {
-  const skillPath = join(repoRoot, "skills", "terminal-bench-loop", "SKILL.md");
+  const skillPath = join(repoRoot, ".agents", "skills", "terminal-bench-loop", "SKILL.md");
   const markdown = await readFile(skillPath, "utf8");
   for (const expected of [
     "name: terminal-bench-loop",

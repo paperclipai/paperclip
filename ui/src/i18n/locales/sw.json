@@ -1,0 +1,9 @@
+{
+  "app": {
+    "noCompanies": {
+      "title": "Unda kampuni yako ya kwanza",
+      "description": "Anza kwa kuunda kampuni.",
+      "newCompany": "Kampuni Mpya"
+    }
+  }
+}

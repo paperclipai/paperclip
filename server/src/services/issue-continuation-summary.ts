@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
@@ -9,6 +9,8 @@ export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
 export const ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS = 8_000;
 const SUMMARY_SECTION_MAX_CHARS = 1_200;
 const PATH_CANDIDATE_RE = /(?:^|[\s`"'(])((?:server|ui|packages|doc|scripts|\.github)\/[A-Za-z0-9._/-]+)/g;
+const WAITING_FOR_REVIEW_OR_APPROVAL_RE =
+  /\bwait(?:ing)? for\b.{0,160}\b(?:review(?:er)?(?: feedback)?|approval|board|human|user|operator)\b/i;
 
 type IssueSummaryInput = {
   id: string;
@@ -42,6 +44,7 @@ export type IssueContinuationSummaryDocument = {
   body: string;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
+  sourceTrust: SourceTrustMetadata | null;
   updatedAt: Date;
 };
 
@@ -118,6 +121,16 @@ function extractPreviousNextAction(previousBody: string | null | undefined) {
     .split(/\r?\n/)
     .map((line) => line.replace(/^[-*]\s+/, "").trim())
     .find(Boolean) ?? null;
+}
+
+export function extractContinuationSummaryNextAction(body: string | null | undefined) {
+  return extractPreviousNextAction(body);
+}
+
+export function continuationSummaryParksExecutor(body: string | null | undefined) {
+  const nextAction = extractContinuationSummaryNextAction(body);
+  if (!nextAction) return false;
+  return WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(nextAction);
 }
 
 export function buildContinuationSummaryMarkdown(input: {
@@ -206,6 +219,7 @@ export async function getIssueContinuationSummaryDocument(
       body: documents.latestBody,
       latestRevisionId: documents.latestRevisionId,
       latestRevisionNumber: documents.latestRevisionNumber,
+      sourceTrust: documents.sourceTrust,
       updatedAt: documents.updatedAt,
     })
     .from(issueDocuments)
@@ -220,6 +234,7 @@ export async function getIssueContinuationSummaryDocument(
     body: row.body,
     latestRevisionId: row.latestRevisionId,
     latestRevisionNumber: row.latestRevisionNumber,
+    sourceTrust: row.sourceTrust ?? null,
     updatedAt: row.updatedAt,
   };
 }

@@ -100,6 +100,27 @@ describe("issue tree control routes", () => {
     expect(mockTreeControlService.createHold).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed tree hold IDs before querying the hold service", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-2"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const getRes = await request(app)
+      .get("/api/issues/11111111-1111-4111-8111-111111111111/tree-holds/null");
+    const releaseRes = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/tree-holds/null/release")
+      .send({ reason: "bad hold id" });
+
+    expect(getRes.status).toBe(400);
+    expect(releaseRes.status).toBe(400);
+    expect(mockTreeControlService.getHold).not.toHaveBeenCalled();
+    expect(mockTreeControlService.releaseHold).not.toHaveBeenCalled();
+  });
+
   it("cancels active descendant runs when creating a pause hold", async () => {
     const app = await createApp({
       type: "board",

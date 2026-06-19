@@ -24,6 +24,14 @@ const mockSidebarPreferencesApi = vi.hoisted(() => ({
   updateCompanyOrder: vi.fn(),
 }));
 
+// Team-centric copy ("Create new team...") ships behind the Conference Room
+// Chat experimental flag (PAP-139). This suite was written against the NUX
+// copy, so the flag is seeded ON; one test flips it OFF for master's copy.
+const conferenceRoomChatFlag = vi.hoisted(() => ({ enabled: true }));
+vi.mock("@/hooks/useConferenceRoomChatEnabled", () => ({
+  useConferenceRoomChatEnabled: () => ({ enabled: conferenceRoomChatFlag.enabled, loaded: true }),
+}));
+
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
 }));
@@ -135,6 +143,40 @@ describe("SidebarCompanyMenu", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    conferenceRoomChatFlag.enabled = true;
+  });
+
+  it("keeps master's 'Add company...' copy when the Conference Room Chat flag is off (PAP-139)", async () => {
+    conferenceRoomChatFlag.enabled = false;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarCompanyMenu />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    expect(trigger).not.toBeNull();
+    await act(async () => {
+      trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Add company...");
+    expect(document.body.textContent).not.toContain("Create new team...");
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("shows the requested company actions and signs out through the dropdown", async () => {
@@ -168,7 +210,7 @@ describe("SidebarCompanyMenu", () => {
     expect(document.body.textContent).toContain("Edit");
     expect(document.body.textContent).toContain("Strata");
     expect(document.body.textContent).toContain("ANA");
-    expect(document.body.textContent).toContain("Add company...");
+    expect(document.body.textContent).toContain("Create new team...");
     expect(document.body.textContent).toContain("Invite people to Acme Labs");
     expect(document.body.textContent).toContain("Company settings");
     expect(document.body.textContent).toContain("Sign out");

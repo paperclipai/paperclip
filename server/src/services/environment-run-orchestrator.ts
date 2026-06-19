@@ -208,6 +208,7 @@ export function environmentRunOrchestrator(
     issueId: string | null;
     heartbeatRunId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+    adapterType: string | null;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
       return await environmentRuntime.acquireRunLease(input);
@@ -282,6 +283,7 @@ export function environmentRunOrchestrator(
       issueId: input.issueId,
       heartbeatRunId: input.heartbeatRunId,
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
+      adapterType: input.adapterType ?? null,
     });
 
     // Step 3: Log lease acquisition activity

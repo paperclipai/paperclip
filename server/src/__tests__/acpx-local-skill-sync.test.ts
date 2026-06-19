@@ -70,6 +70,7 @@ describe("acpx local skill sync", () => {
     expect(snapshot.mode).toBe("unsupported");
     expect(snapshot.desiredSkills).toContain(paperclipKey);
     expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.desired).toBe(true);
+    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("available");
     expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.detail).toContain("stored in Paperclip only");
     expect(snapshot.warnings).toContain(
       "Custom ACP commands do not expose a Paperclip skill integration contract yet; selected skills are tracked only.",

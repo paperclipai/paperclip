@@ -10,6 +10,7 @@ import type {
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
+import { isOperatorInterruptedRun } from "./interrupt-handoff";
 import {
   buildIssueThreadInteractionSummary,
   type IssueThreadInteraction,
@@ -45,6 +46,7 @@ export interface IssueChatLinkedRun {
   finishedAt?: Date | string | null;
   hasStoredOutput?: boolean;
   logBytes?: number | null;
+  errorCode?: string | null;
   resultJson?: Record<string, unknown> | null;
 }
 
@@ -337,14 +339,32 @@ function createAssistantMetadata(custom: Record<string, unknown>) {
   } as const;
 }
 
+function effectiveCommentAuthorAgentId(comment: IssueChatComment) {
+  return comment.authorAgentId ?? comment.runAgentId ?? comment.derivedAuthorAgentId ?? null;
+}
+
+function effectiveCommentRunId(comment: IssueChatComment) {
+  return comment.runId ?? comment.derivedCreatedByRunId ?? null;
+}
+
+function effectiveCommentRunAgentId(comment: IssueChatComment) {
+  return comment.runAgentId ?? effectiveCommentAuthorAgentId(comment);
+}
+
+function effectiveCommentAuthorType(comment: IssueChatComment) {
+  return effectiveCommentAuthorAgentId(comment) ? "agent" : comment.authorType;
+}
+
 function authorNameForComment(
   comment: IssueChatComment,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
   userLabelMap?: ReadonlyMap<string, string> | null,
+  options?: { isSystemNotice?: boolean },
 ) {
-  if (comment.authorAgentId) {
-    return agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8);
+  const authorAgentId = effectiveCommentAuthorAgentId(comment);
+  if (authorAgentId) {
+    return agentMap?.get(authorAgentId)?.name ?? (options?.isSystemNotice ? "Paperclip" : authorAgentId.slice(0, 8));
   }
   const authorUserId = comment.authorUserId ?? null;
   if (!authorUserId) return "You";
@@ -367,20 +387,21 @@ function createCommentMessage(args: {
 }): ThreadMessage {
   const { comment, agentMap, currentUserId, userLabelMap, companyId, projectId } = args;
   const createdAt = toDate(comment.createdAt);
-  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap);
   const isSystemNotice = comment.authorType === "system";
+  const authorAgentId = effectiveCommentAuthorAgentId(comment);
+  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap, { isSystemNotice });
   const custom = {
     kind: isSystemNotice ? "system_notice" : "comment",
     commentId: comment.id,
     anchorId: `comment-${comment.id}`,
     authorName,
-    authorType: comment.authorType,
-    authorAgentId: comment.authorAgentId,
+    authorType: effectiveCommentAuthorType(comment),
+    authorAgentId,
     authorUserId: comment.authorUserId,
     companyId: companyId ?? comment.companyId,
     projectId: projectId ?? null,
-    runId: comment.runId ?? null,
-    runAgentId: comment.runAgentId ?? null,
+    runId: effectiveCommentRunId(comment),
+    runAgentId: effectiveCommentRunAgentId(comment),
     clientStatus: comment.clientStatus ?? null,
     queueState: comment.queueState ?? null,
     queueTargetRunId: comment.queueTargetRunId ?? null,
@@ -389,25 +410,32 @@ function createCommentMessage(args: {
     followUpRequested: comment.followUpRequested === true,
     presentation: comment.presentation ?? null,
     commentMetadata: comment.metadata ?? null,
+    deletedAt: comment.deletedAt ? toDate(comment.deletedAt).toISOString() : null,
+    deletedByType: comment.deletedByType ?? null,
+    deletedByAgentId: comment.deletedByAgentId ?? null,
+    deletedByUserId: comment.deletedByUserId ?? null,
+    deletedByRunId: comment.deletedByRunId ?? null,
+    sourceTrust: comment.sourceTrust ?? null,
   };
+  const contentText = comment.deletedAt ? "" : comment.body;
 
   if (isSystemNotice) {
     const message: ThreadSystemMessage = {
       id: comment.id,
       role: "system",
       createdAt,
-      content: [{ type: "text", text: comment.body }],
+      content: [{ type: "text", text: contentText }],
       metadata: { custom },
     };
     return message;
   }
 
-  if (comment.authorAgentId) {
+  if (authorAgentId) {
     const message: ThreadAssistantMessage = {
       id: comment.id,
       role: "assistant",
       createdAt,
-      content: [{ type: "text", text: comment.body }],
+      content: [{ type: "text", text: contentText }],
       status: { type: "complete", reason: "stop" },
       metadata: createAssistantMetadata(custom),
     };
@@ -418,7 +446,7 @@ function createCommentMessage(args: {
     id: comment.id,
     role: "user",
     createdAt,
-    content: [{ type: "text", text: comment.body }],
+    content: [{ type: "text", text: contentText }],
     attachments: [],
     metadata: { custom },
   };
@@ -569,6 +597,7 @@ function runDurationLabel(run: {
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
+  errorCode?: string | null;
   resultJson?: Record<string, unknown> | null;
 }) {
   const start = run.startedAt ?? run.createdAt;
@@ -585,6 +614,9 @@ function runDurationLabel(run: {
     case "timed_out":
       return durationText ? `Timed out after ${durationText}` : "Run timed out";
     case "cancelled":
+      if (isOperatorInterruptedRun(run.resultJson, run.errorCode)) {
+        return durationText ? `Interrupted by board after ${durationText}` : "Interrupted by board";
+      }
       if (stopReason === "paused") {
         return durationText ? `Paused by board after ${durationText}` : "Paused by board";
       }
@@ -613,6 +645,7 @@ function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<stri
         runAgentId: run.agentId,
         runAgentName: agentName,
         runStatus: run.status,
+        runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       },
     },
   };
@@ -649,6 +682,7 @@ function createHistoricalTranscriptMessage(args: {
       runAgentId: run.agentId,
       runAgentName: agentName,
       runStatus: run.status,
+      runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       notices,
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),

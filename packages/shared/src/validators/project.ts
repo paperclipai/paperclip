@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { PROJECT_STATUSES } from "../constants.js";
+import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
+import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -21,16 +22,17 @@ export const projectExecutionWorkspacePolicySchema = z
     defaultProjectWorkspaceId: z.string().uuid().optional().nullable(),
     environmentId: z.string().uuid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
-    workspaceRuntime: z.record(z.unknown()).optional().nullable(),
-    branchPolicy: z.record(z.unknown()).optional().nullable(),
-    pullRequestPolicy: z.record(z.unknown()).optional().nullable(),
-    runtimePolicy: z.record(z.unknown()).optional().nullable(),
-    cleanupPolicy: z.record(z.unknown()).optional().nullable(),
+    workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
+    branchPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    pullRequestPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    runtimePolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    cleanupPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    authorizationPolicy: trustAuthorizationPolicySchema.optional().nullable(),
   })
   .strict();
 
 export const projectWorkspaceRuntimeConfigSchema = z.object({
-  workspaceRuntime: z.record(z.unknown()).optional().nullable(),
+  workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
   desiredState: z.enum(["running", "stopped", "manual"]).optional().nullable(),
   serviceStates: z.record(z.enum(["running", "stopped", "manual"])).optional().nullable(),
 }).strict();
@@ -51,7 +53,7 @@ const projectWorkspaceFields = {
   remoteProvider: z.string().optional().nullable(),
   remoteWorkspaceRef: z.string().optional().nullable(),
   sharedWorkspaceKey: z.string().optional().nullable(),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
   runtimeConfig: projectWorkspaceRuntimeConfigSchema.optional().nullable(),
 };
 
@@ -105,6 +107,7 @@ const projectFields = {
   leadAgentId: z.string().uuid().optional().nullable(),
   targetDate: z.string().optional().nullable(),
   color: z.string().optional().nullable(),
+  icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
   env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
