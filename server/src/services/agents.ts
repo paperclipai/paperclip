@@ -294,9 +294,10 @@ export function agentService(db: Db) {
     return new Map(rows.map((row) => [row.agentId, Number(row.spentMonthlyCents ?? 0)]));
   }
 
-  async function hydrateAgentRunStats<T extends { id: string }>(normalizedAgents: T[]) {
+  async function hydrateAgentRunStats<T extends { id: string; companyId: string }>(normalizedAgents: T[]) {
     if (normalizedAgents.length === 0) return normalizedAgents.map((a) => ({ ...a, runCount: 0, lastRunAt: null as Date | null }));
     const agentIds = normalizedAgents.map((a) => a.id);
+    const companyId = normalizedAgents[0]!.companyId;
     const stats = await db
       .select({
         agentId: heartbeatRuns.agentId,
@@ -304,7 +305,7 @@ export function agentService(db: Db) {
         lastRunAt: sql<Date | null>`max(${heartbeatRuns.createdAt})`,
       })
       .from(heartbeatRuns)
-      .where(inArray(heartbeatRuns.agentId, agentIds))
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.agentId, agentIds)))
       .groupBy(heartbeatRuns.agentId);
     const statsByAgentId = new Map(stats.map((s) => [s.agentId, s]));
     return normalizedAgents.map((a) => {
