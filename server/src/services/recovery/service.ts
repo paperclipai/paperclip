@@ -203,7 +203,7 @@ type ContinuationRetryClassification = {
   errorCode: string | null;
 };
 
-function classifyContinuationFailure(latestRun: LatestIssueRun): ContinuationRetryClassification {
+export function classifyContinuationFailure(latestRun: LatestIssueRun): ContinuationRetryClassification {
   const errorCode = readNonEmptyString(latestRun?.errorCode);
   if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };

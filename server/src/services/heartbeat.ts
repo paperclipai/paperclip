@@ -163,6 +163,7 @@ import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
   shouldCancelRunsForNonInvokableAgent,
+  DIRECT_NON_INVOKABLE_STATUSES,
   type AgentOrgRow,
 } from "./agent-invokability.js";
 import {
@@ -8833,24 +8834,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((rows) => rows[0] ?? null);
       if (runningWithSession) run = runningWithSession;
 
+      // Pause Durability: flip to "running" ONLY if the agent is still invokable.
+      // Atomic conditional UPDATE is the sole gate (no read-then-write); 0 rows => abort.
       const runningAgent = await db
         .update(agents)
         .set({ status: "running", updatedAt: new Date() })
-        .where(eq(agents.id, agent.id))
+        .where(and(eq(agents.id, agent.id), notInArray(agents.status, [...DIRECT_NON_INVOKABLE_STATUSES])))
         .returning()
         .then((rows) => rows[0] ?? null);
 
-      if (runningAgent) {
-        publishLiveEvent({
-          companyId: runningAgent.companyId,
-          type: "agent.status",
-          payload: {
-            agentId: runningAgent.id,
-            status: runningAgent.status,
-            outcome: "running",
-          },
+      if (!runningAgent) {
+        logger.warn(
+          { agentId: agent.id, runId: run.id, previousStatus: agent.status },
+          "execution-start aborted: agent not invokable",
+        );
+        const abortReason = "Cancelled: agent not invokable at execution-start";
+        await setRunStatus(run.id, "cancelled", {
+          finishedAt: new Date(),
+          error: abortReason,
+          errorCode: "agent_not_invokable",
+          ...(agent ? {
+            resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+              resultJson: parseObject(run.resultJson),
+              errorCode: "agent_not_invokable",
+              errorMessage: abortReason,
+            }),
+          } : {}),
         });
+        await releaseIssueExecutionAndPromote(run);
+        return;
       }
+
+      publishLiveEvent({
+        companyId: runningAgent.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: runningAgent.id,
+          status: runningAgent.status,
+          outcome: "running",
+        },
+      });
 
       const currentRun = run;
       await appendRunEvent(currentRun, seq++, {
@@ -11183,7 +11206,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
-  async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause") {
+  async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause", errorCode = "cancelled") {
     const agent = await getAgent(agentId);
     const runs = await db
       .select()
@@ -11194,11 +11217,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,
-        errorCode: "cancelled",
+        errorCode,
         ...(agent ? {
           resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
             resultJson: parseObject(run.resultJson),
-            errorCode: "cancelled",
+            errorCode,
             errorMessage: reason,
           }),
         } : {}),
@@ -11621,7 +11644,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
 
-    cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
+    cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason, "agent_paused"),
 
     cancelInvocationsForAgents: (agentIds: string[], reason: string) =>
       cancelInvocationsForAgentsInternal(agentIds, reason),
