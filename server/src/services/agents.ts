@@ -18,6 +18,7 @@ import {
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  AGENT_PREFERRED_MAX_CONCURRENT_RUNS,
   getAgentWorkEligibility,
   isUuidLike,
   normalizeAgentUrlKey,
@@ -137,7 +138,7 @@ function normalizeRuntimeConfigForNewAgent(runtimeConfig: unknown): Record<strin
     ? { ...normalizedRuntimeConfig.heartbeat }
     : {};
   if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
-    heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+    heartbeat.maxConcurrentRuns = AGENT_PREFERRED_MAX_CONCURRENT_RUNS;
   }
   normalizedRuntimeConfig.heartbeat = heartbeat;
   return normalizedRuntimeConfig;

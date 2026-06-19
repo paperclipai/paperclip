@@ -87,6 +87,7 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  maxTotalConcurrentRuns: number;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -333,5 +334,11 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    maxTotalConcurrentRuns: Math.max(
+      1,
+      Number(process.env.PAPERCLIP_INSTANCE_MAX_TOTAL_CONCURRENT_RUNS) ||
+        fileConfig?.instance?.maxTotalConcurrentRuns ||
+        10,
+    ),
   };
 }

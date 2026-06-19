@@ -56,6 +56,10 @@ export const serverConfigSchema = z.object({
   serveUi: z.boolean().default(true),
 });
 
+export const instanceConfigSchema = z.object({
+  maxTotalConcurrentRuns: z.number().int().min(1).default(10),
+});
+
 export const authConfigSchema = z.object({
   baseUrlMode: z.enum(AUTH_BASE_URL_MODES).default("auto"),
   publicBaseUrl: z.string().url().optional(),
@@ -110,6 +114,7 @@ export const paperclipConfigSchema = z
     database: databaseConfigSchema,
     logging: loggingConfigSchema,
     server: serverConfigSchema,
+    instance: instanceConfigSchema.optional(),
     telemetry: telemetryConfigSchema,
     auth: authConfigSchema.default({
       baseUrlMode: "auto",
@@ -197,3 +202,4 @@ export type AuthConfig = z.infer<typeof authConfigSchema>;
 export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>;
 export type ConfigMeta = z.infer<typeof configMetaSchema>;
 export type DatabaseBackupConfig = z.infer<typeof databaseBackupConfigSchema>;
+export type InstanceConfig = z.infer<typeof instanceConfigSchema>;
