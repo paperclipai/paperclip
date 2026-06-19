@@ -93,14 +93,14 @@ function metadataText(value: unknown, fallback = "unknown") {
   return resolved.length > 2000 ? `${resolved.slice(0, 1997)}...` : resolved;
 }
 
-function keyValueRow(label: string, value: unknown): IssueCommentMetadata["sections"][number]["rows"][number] {
+function keyValueRow(label: string, value: unknown): NonNullable<IssueCommentMetadata["sections"]>[number]["rows"][number] {
   return { type: "key_value", label, value: metadataText(value) };
 }
 
 function issueLinkRow(
   label: string,
   issue: NullableNoticeIssue,
-): IssueCommentMetadata["sections"][number]["rows"][number] {
+): NonNullable<IssueCommentMetadata["sections"]>[number]["rows"][number] {
   if (!issue) return keyValueRow(label, "unknown");
   return {
     type: "issue_link",
@@ -114,7 +114,7 @@ function issueLinkRow(
 function runLinkRow(
   label: string,
   run: NullableNoticeRun,
-): IssueCommentMetadata["sections"][number]["rows"][number] {
+): NonNullable<IssueCommentMetadata["sections"]>[number]["rows"][number] {
   if (!run) return keyValueRow(label, "unknown");
   return { type: "run_link", label, runId: run.id, title: run.status };
 }
@@ -122,7 +122,7 @@ function runLinkRow(
 function agentLinkRow(
   label: string,
   agent: NullableNoticeAgent,
-): IssueCommentMetadata["sections"][number]["rows"][number] {
+): NonNullable<IssueCommentMetadata["sections"]>[number]["rows"][number] {
   if (!agent) return keyValueRow(label, "unknown");
   return { type: "agent_link", label, agentId: agent.id, name: agent.name };
 }

@@ -528,11 +528,27 @@ export const issueCommentMetadataSectionSchema = z.object({
   rows: z.array(issueCommentMetadataRowSchema).min(1).max(50),
 }).strict();
 
+export const issueCommentCrossAssigneeContextSchema = z.object({
+  trigger: z.enum(["linked_checkout", "mention"]),
+  viaIssueId: z.string().uuid().nullable().optional(),
+}).strict();
+
+export type IssueCommentCrossAssigneeContext = z.infer<typeof issueCommentCrossAssigneeContextSchema>;
+
 export const issueCommentMetadataSchema = z.object({
   version: z.literal(1),
   sourceRunId: z.string().uuid().nullable().optional(),
-  sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
-}).strict();
+  crossAssignee: issueCommentCrossAssigneeContextSchema.nullable().optional(),
+  sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (!value.crossAssignee && !value.sections) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "sections are required unless crossAssignee context is present",
+      path: ["sections"],
+    });
+  }
+});
 
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
