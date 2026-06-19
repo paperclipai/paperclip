@@ -796,6 +796,86 @@ describeEmbeddedPostgres("github-webhook route", () => {
     });
   });
 
+  it("dedupes replayed @ally PR comment reviewer wakes by comment-scoped idempotency key", async () => {
+    const { agentId } = await seedCompanyAndAgent({ agentName: "Ally" });
+    const app = buildApp({ prReviewerAgentId: agentId });
+    const payload = {
+      action: "created",
+      issue: {
+        number: 1193,
+        title: "feat(tenants): restore admin capability and ASN APIs",
+        body: null,
+        html_url: "https://github.com/Blockcast/magma/pull/1193",
+        pull_request: { url: "https://api.github.com/repos/Blockcast/magma/pulls/1193" },
+        user: { login: "codex" },
+      },
+      comment: {
+        id: 4746466885,
+        body: "@ally please review tenant admin API auth and migration safety.",
+        html_url: "https://github.com/Blockcast/magma/pull/1193#issuecomment-4746466885",
+        user: { login: "kkroo" },
+      },
+      repository: { full_name: "Blockcast/magma" },
+    };
+    const { body, signature } = signedRequest(payload);
+
+    const first = await request(app)
+      .post("/api/webhooks/github")
+      .set("x-github-event", "issue_comment")
+      .set("x-hub-signature-256", signature)
+      .set("x-github-delivery", "delivery-review-comment-1")
+      .set("content-type", "application/json")
+      .send(body);
+    const replay = await request(app)
+      .post("/api/webhooks/github")
+      .set("x-github-event", "issue_comment")
+      .set("x-hub-signature-256", signature)
+      .set("x-github-delivery", "delivery-review-comment-2")
+      .set("content-type", "application/json")
+      .send(body);
+
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({
+      ignored: "no_paperclip_identifier",
+      reviewerWakeFired: true,
+    });
+    expect(replay.status).toBe(200);
+    expect(replay.body).toMatchObject({
+      ignored: "no_paperclip_identifier",
+      reviewerWakeFired: false,
+    });
+
+    const runs = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      status: "queued",
+      contextSnapshot: expect.objectContaining({
+        taskKey: "pr_review:Blockcast/magma:1193",
+        wakeReason: "github_pr_review_requested",
+        githubCommentId: 4746466885,
+      }),
+    });
+
+    const wakes = await db
+      .select({
+        status: agentWakeupRequests.status,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({
+      status: "queued",
+      idempotencyKey: "pr_review:Blockcast/magma:1193:github_pr_review_requested:comment:4746466885",
+    });
+  });
+
   it("drives a wake on check_run.completed when the PR head_branch references a paperclip issue (CI completion)", async () => {
     const { agentId, issueId } = await seedIssueWithIdentifier("BLO-3182");
     const app = buildApp();
