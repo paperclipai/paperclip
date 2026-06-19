@@ -976,6 +976,151 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("reaps non-terminal wakeup requests linked to terminal or missing heartbeat runs", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const cases = [
+      { wakeupStatus: "queued", runStatus: "succeeded", expectedStatus: "completed", runError: null },
+      { wakeupStatus: "claimed", runStatus: "failed", expectedStatus: "failed", runError: "adapter failed" },
+      { wakeupStatus: "deferred_issue_execution", runStatus: "cancelled", expectedStatus: "cancelled", runError: "cancelled by user" },
+      { wakeupStatus: "claimed", runStatus: "timed_out", expectedStatus: "timed_out", runError: "adapter timed out" },
+    ];
+    const expected = new Map<string, { status: string; error: string | null }>();
+
+    for (const row of cases) {
+      const wakeupRequestId = randomUUID();
+      const runId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId,
+        agentId,
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: {},
+        status: row.wakeupStatus,
+        runId,
+        claimedAt: row.wakeupStatus === "claimed" ? new Date("2026-03-19T00:00:00.000Z") : null,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: row.runStatus,
+        wakeupRequestId,
+        finishedAt,
+        error: row.runError,
+      });
+      expected.set(wakeupRequestId, {
+        status: row.expectedStatus,
+        error: row.expectedStatus === "completed" ? null : row.runError,
+      });
+    }
+
+    const missingRunWakeupId = randomUUID();
+    const missingRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: missingRunWakeupId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {},
+      status: "queued",
+      runId: missingRunId,
+    });
+    expected.set(missingRunWakeupId, {
+      status: "failed",
+      error: `Wake request references missing heartbeat run ${missingRunId}`,
+    });
+
+    const liveWakeupId = randomUUID();
+    const liveRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: liveWakeupId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {},
+      status: "queued",
+      runId: liveRunId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: liveRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: liveWakeupId,
+    });
+
+    const deferredWakeupId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeupId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId: randomUUID() },
+      status: "deferred_issue_execution",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const wakeups = await db
+      .select({
+        id: agentWakeupRequests.id,
+        status: agentWakeupRequests.status,
+        error: agentWakeupRequests.error,
+        finishedAt: agentWakeupRequests.finishedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(inArray(agentWakeupRequests.id, [...expected.keys(), liveWakeupId, deferredWakeupId]));
+    const wakeupById = new Map(wakeups.map((row) => [row.id, row]));
+
+    for (const [wakeupRequestId, expectation] of expected) {
+      const wakeup = wakeupById.get(wakeupRequestId);
+      expect(wakeup?.status).toBe(expectation.status);
+      expect(wakeup?.error).toBe(expectation.error);
+      expect(wakeup?.finishedAt).toBeTruthy();
+    }
+
+    expect(wakeupById.get(liveWakeupId)?.status).toBe("queued");
+    expect(wakeupById.get(liveWakeupId)?.finishedAt).toBeNull();
+    expect(wakeupById.get(deferredWakeupId)?.status).toBe("deferred_issue_execution");
+    expect(wakeupById.get(deferredWakeupId)?.finishedAt).toBeNull();
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
