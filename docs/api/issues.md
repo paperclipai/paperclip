@@ -75,6 +75,9 @@ When the patch is requested by an agent actor, the following restrictions apply:
 
 ### Guarded Done Transitions
 For projects subject to the Done Transition Guard (configured via `PAPERCLIP_DONE_GUARD_PROJECT_ID` or any project containing "dark factory" in its name), code-changing or remediation issues cannot transition to `done` unless they satisfy the verification contract:
+
+*Note: All guard evidence (e.g. PR links, user waiver/disposition comments, No Mistakes proof comments) must already exist on the issue or be linked as a work product before the `status: done` transition is requested. A PR link or waiver comment supplied in the same `PATCH` request's `comment` field will not satisfy the guard as the validation runs before that comment is persisted.*
+
 1. **Linked PR:** The issue must have a linked implementation PR (either created as a `pull_request` work product or referenced in the description/comments).
 2. **PR Merged:** The PR must be merged (verified by the server using `gh pr view`).
 3. **No Mistakes Gate Proof:** A valid No Mistakes runs directory check must confirm a `PASS` verdict for the exact PR head commit SHA (either via the `run-manifest.json` in the latest run directory or a user comment matching the head commit SHA indicating `no mistakes pass`).

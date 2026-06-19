@@ -84,6 +84,8 @@ Headers: X-Paperclip-Run-Id: {runId}
 
 **Done Transition Guard Requirements (Guarded Projects):**
 If the issue belongs to a project guarded by Done Transition rules (such as Dark Factory projects), a simple status patch to `done` will be rejected with `422 Unprocessable Entity` unless the following verification conditions are satisfied:
+
+*Note: All required guard evidence (such as linking the PR work product or posting a waiver/gate-proof comment) must be submitted and saved to the issue BEFORE posting the final status patch to "done". The guard validation runs before the PATCH request's "comment" field is saved, so including a PR link or waiver only in the final done PATCH comment will fail validation.*
 1. **Linked PR:** The issue must have a linked implementation PR (recorded as a work product of type `pull_request` or referenced in the comments/description).
 2. **PR Merged:** The PR must be merged (verified by the server using the GitHub CLI).
 3. **No Mistakes Gate Proof:** A No Mistakes pipeline run must have successfully verified the PR head commit, resulting in a `PASS` verdict. The server verifies this via the run-manifest in the run directory or a user comment indicating a `no mistakes pass`.

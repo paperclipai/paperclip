@@ -39,6 +39,8 @@ PATCH /api/issues/{issueId}
 
 **Guarded Project Done Transition Requirements:**
 For projects subject to the Done Transition Guard (e.g., Dark Factory projects), marking an issue as `done` requires:
+
+*Note: All required evidence (such as linking the PR work product or commenting with a waiver/gate-proof) must already be saved on the issue BEFORE sending the `status: done` update. If you include the PR link or waiver text only inside the final transition `comment` field, the transition will be rejected because guard validation runs before the new comment is saved.*
 1. **Linked PR:** A linked implementation PR (either as a `pull_request` work product or mentioned in comments/description).
 2. **PR Merged:** The PR must be merged (verified via the GitHub CLI).
 3. **No Mistakes Gate Proof:** The PR's head commit must have passed the No Mistakes gate checks (producing a `PASS` verdict verified by the server).
