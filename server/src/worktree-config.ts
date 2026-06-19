@@ -468,7 +468,7 @@ export function maybePersistWorktreeRuntimePorts(input: {
     serverPort: input.serverPort,
     databasePort: input.databasePort,
     allowServerPortWrite: !nonEmpty(process.env.PORT),
-    allowDatabasePortWrite: !nonEmpty(process.env.DATABASE_URL),
+    allowDatabasePortWrite: !nonEmpty(process.env.PAPERCLIP_DATABASE_URL ?? process.env.DATABASE_URL),
   });
 
   if (changed) {
