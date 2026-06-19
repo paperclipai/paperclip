@@ -2,6 +2,8 @@
 
 This document describes how `@paperclipai/adapter-openclaw-gateway` invokes OpenClaw over the Gateway protocol.
 
+For the deploy-time bridge contract — protocol range, OpenClaw schema carry, required config, image-roll gates, and live smoke checks — see [doc/BRIDGE_REQUIREMENTS.md](doc/BRIDGE_REQUIREMENTS.md).
+
 ## Transport
 
 This adapter always uses WebSocket gateway transport.
@@ -9,7 +11,7 @@ This adapter always uses WebSocket gateway transport.
 - URL must be `ws://` or `wss://`
 - Connect flow follows gateway protocol:
 1. receive `connect.challenge`
-2. send `req connect` (protocol/client/auth/device payload)
+2. send `req connect` (protocol/client/auth/device payload, currently `minProtocol=3`, `maxProtocol=4`)
 3. send `req agent`
 4. wait for completion via `req agent.wait`
 5. stream `event agent` frames into Paperclip logs/transcript parsing

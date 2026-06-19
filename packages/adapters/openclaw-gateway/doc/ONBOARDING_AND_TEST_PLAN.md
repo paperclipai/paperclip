@@ -10,10 +10,11 @@ This plan is now **gateway-only**. Paperclip supports OpenClaw through `openclaw
 1. OpenClaw test image must be stock/clean every run.
 2. Onboarding must work from one primary prompt pasted into OpenClaw (optional one follow-up ping allowed).
 3. Device auth stays enabled by default; pairing is persisted via `adapterConfig.devicePrivateKeyPem`.
-4. Invite/access flow must be secure:
+4. Bridge compatibility must satisfy [BRIDGE_REQUIREMENTS.md](BRIDGE_REQUIREMENTS.md): Paperclip advertises `minProtocol=3` / `maxProtocol=4`, OpenClaw accepts the root `paperclip` agent payload field, and production image rolls pass Release + Docker for the exact pinned commit.
+5. Invite/access flow must be secure:
 - invite prompt endpoint is board-permission protected
 - CEO agent is allowed to invoke the invite prompt endpoint for their own company
-5. E2E pass criteria must include the 3 functional task cases.
+6. E2E pass criteria must include the 3 functional task cases.
 
 ## Current Product Flow
 1. Board/CEO opens company settings.
@@ -90,7 +91,7 @@ curl -fsS http://127.0.0.1:3100/api/health
 3. In `/new` OpenClaw session, OpenClaw can still create a Paperclip task.
 
 ## Manual Smoke Checklist
-Use [doc/OPENCLAW_ONBOARDING.md](../../../../doc/OPENCLAW_ONBOARDING.md) as the operator runbook.
+Use [doc/OPENCLAW_ONBOARDING.md](../../../../doc/OPENCLAW_ONBOARDING.md) as the operator runbook, then run the post-deploy smoke checks in [BRIDGE_REQUIREMENTS.md](BRIDGE_REQUIREMENTS.md#deployment-smoke-checks).
 
 ## Regression Gates
 Required before merge:
