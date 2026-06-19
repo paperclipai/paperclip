@@ -278,32 +278,20 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 
 ## Quickstart
 
-Open source. Self-hosted. No Paperclip account required.
+Get running in 60 seconds. No account required.
 
 ```bash
 npx paperclipai onboard --yes
 ```
 
-That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
+That's it. The server starts at `http://localhost:3100` with an embedded database — no setup needed.
+
+To access from other devices, restart with `--bind lan` or `--bind tailnet` for Tailscale:
 
 ```bash
-npx paperclipai onboard --yes --bind lan
-# or:
-npx paperclipai onboard --yes --bind tailnet
+npx paperclipai configure   # change bind preset
+npx paperclipai run          # restart with new settings
 ```
-
-If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to edit settings.
-
-Or manually:
-
-```bash
-git clone https://github.com/paperclipai/paperclip.git
-cd paperclip
-pnpm install
-pnpm dev
-```
-
-This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
 
