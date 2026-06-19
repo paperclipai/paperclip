@@ -24,8 +24,10 @@ import {
   type AgentEligibilityAgent,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { secretService } from "./secrets.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -218,6 +220,8 @@ export function deduplicateAgentName(
 }
 
 export function agentService(db: Db) {
+  const secretsSvc = secretService(db);
+
   function currentUtcMonthWindow(now = new Date()) {
     const year = now.getUTCFullYear();
     const month = now.getUTCMonth();
@@ -371,6 +375,15 @@ export function agentService(db: Db) {
     }
   }
 
+  async function syncAgentSecretBindings(agent: { id: string; companyId: string; adapterConfig: unknown }) {
+    await syncAgentAdapterEnvBindings({
+      secretsSvc,
+      companyId: agent.companyId,
+      agentId: agent.id,
+      adapterConfig: agent.adapterConfig,
+    });
+  }
+
   async function updateAgent(
     id: string,
     data: Partial<typeof agents.$inferInsert>,
@@ -422,6 +435,10 @@ export function agentService(db: Db) {
       .returning()
       .then((rows) => rows[0] ?? null);
     const normalizedUpdated = updated ? await getById(updated.id) : null;
+
+    if (normalizedUpdated && Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
+      await syncAgentSecretBindings(normalizedUpdated);
+    }
 
     if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
       const afterConfig = buildConfigSnapshot(normalizedUpdated);
@@ -479,8 +496,9 @@ export function agentService(db: Db) {
         .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
         .returning()
         .then((rows) => rows[0]);
-
-      return requireGetById(created.id);
+      const normalizedCreated = await requireGetById(created.id);
+      await syncAgentSecretBindings(normalizedCreated);
+      return normalizedCreated;
     },
 
     update: updateAgent,
@@ -623,7 +641,9 @@ export function agentService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
-        return { agent: await requireGetById(updated.id), activated: true };
+        const agent = await requireGetById(updated.id);
+        await syncAgentSecretBindings(agent);
+        return { agent, activated: true };
       }
 
       const existing = await getById(id);
