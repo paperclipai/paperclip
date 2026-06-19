@@ -14,6 +14,21 @@ export interface ErrorContext {
   reqQuery?: unknown;
 }
 
+type JsonBodyParseError = SyntaxError & {
+  status?: number;
+  statusCode?: number;
+  type?: string;
+  body?: unknown;
+};
+
+export function isInvalidJsonBodyError(err: unknown): err is JsonBodyParseError {
+  if (!(err instanceof SyntaxError)) return false;
+  const parseError = err as JsonBodyParseError;
+  if (parseError.type === "entity.parse.failed") return true;
+  if (parseError.status === 400 || parseError.statusCode === 400) return true;
+  return /json/i.test(parseError.message);
+}
+
 function attachErrorContext(
   req: Request,
   res: Response,
@@ -59,6 +74,14 @@ export function errorHandler(
 
   if (err instanceof ZodError) {
     res.status(400).json({ error: "Validation error", details: err.errors });
+    return;
+  }
+
+  if (isInvalidJsonBodyError(err)) {
+    res.status(400).json({
+      error: "Invalid JSON body",
+      details: [{ message: err.message, code: "invalid_json" }],
+    });
     return;
   }
 
