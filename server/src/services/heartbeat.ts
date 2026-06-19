@@ -232,9 +232,15 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 // Concurrency caps (FUL-4341)
-const GLOBAL_MAX_CONCURRENT_RUNS = 6;
-const PREMIUM_MAX_CONCURRENT_RUNS = 1;
-const PER_AGENT_MAX_CONCURRENT_RUNS_HARD_CAP = 1;
+const GLOBAL_MAX_CONCURRENT_RUNS_DEFAULT = 20;
+const GLOBAL_MAX_CONCURRENT_RUNS_MIN = 1;
+const GLOBAL_MAX_CONCURRENT_RUNS_MAX = 50;
+const PREMIUM_MAX_CONCURRENT_RUNS_DEFAULT = 5;
+const PREMIUM_MAX_CONCURRENT_RUNS_MIN = 1;
+const PREMIUM_MAX_CONCURRENT_RUNS_MAX = 20;
+const PER_AGENT_MAX_CONCURRENT_RUNS_DEFAULT = 5;
+const PER_AGENT_MAX_CONCURRENT_RUNS_MIN = 1;
+const PER_AGENT_MAX_CONCURRENT_RUNS_MAX = 20;
 const PREMIUM_ADAPTER_TYPES: ReadonlyArray<string> = ["claude_local"];
 const PREMIUM_MANAGED_MAX_CONCURRENT_RUNS_DEFAULT = 3;
 const PREMIUM_MANAGED_MAX_CONCURRENT_RUNS_MIN = 1;
@@ -1443,6 +1449,45 @@ function normalizePremiumManagedMaxConcurrentRuns(value: unknown) {
     PREMIUM_MANAGED_MAX_CONCURRENT_RUNS_MIN,
     Math.min(PREMIUM_MANAGED_MAX_CONCURRENT_RUNS_MAX, parsed),
   );
+}
+
+function normalizeGlobalMaxConcurrentRuns(value: unknown) {
+  const parsedValue = typeof value === "string" && value.trim().length > 0
+    ? Number(value)
+    : asNumber(value, GLOBAL_MAX_CONCURRENT_RUNS_DEFAULT);
+  const parsed = Math.floor(parsedValue);
+  if (!Number.isFinite(parsed)) return GLOBAL_MAX_CONCURRENT_RUNS_DEFAULT;
+  return Math.max(GLOBAL_MAX_CONCURRENT_RUNS_MIN, Math.min(GLOBAL_MAX_CONCURRENT_RUNS_MAX, parsed));
+}
+
+function normalizePremiumMaxConcurrentRuns(value: unknown) {
+  const parsedValue = typeof value === "string" && value.trim().length > 0
+    ? Number(value)
+    : asNumber(value, PREMIUM_MAX_CONCURRENT_RUNS_DEFAULT);
+  const parsed = Math.floor(parsedValue);
+  if (!Number.isFinite(parsed)) return PREMIUM_MAX_CONCURRENT_RUNS_DEFAULT;
+  return Math.max(PREMIUM_MAX_CONCURRENT_RUNS_MIN, Math.min(PREMIUM_MAX_CONCURRENT_RUNS_MAX, parsed));
+}
+
+function normalizePerAgentMaxConcurrentRuns(value: unknown) {
+  const parsedValue = typeof value === "string" && value.trim().length > 0
+    ? Number(value)
+    : asNumber(value, PER_AGENT_MAX_CONCURRENT_RUNS_DEFAULT);
+  const parsed = Math.floor(parsedValue);
+  if (!Number.isFinite(parsed)) return PER_AGENT_MAX_CONCURRENT_RUNS_DEFAULT;
+  return Math.max(PER_AGENT_MAX_CONCURRENT_RUNS_MIN, Math.min(PER_AGENT_MAX_CONCURRENT_RUNS_MAX, parsed));
+}
+
+function globalMaxConcurrentRuns() {
+  return normalizeGlobalMaxConcurrentRuns(process.env.PAPERCLIP_GLOBAL_MAX_CONCURRENT_RUNS);
+}
+
+function premiumMaxConcurrentRuns() {
+  return normalizePremiumMaxConcurrentRuns(process.env.PAPERCLIP_PREMIUM_MAX_CONCURRENT_RUNS);
+}
+
+function perAgentMaxConcurrentRuns() {
+  return normalizePerAgentMaxConcurrentRuns(process.env.PAPERCLIP_PER_AGENT_MAX_CONCURRENT_RUNS);
 }
 
 function premiumManagedMaxConcurrentRuns() {
@@ -7252,7 +7297,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           activePremiumRunningCount++;
         }
 
-        if (activePremiumRunningCount >= PREMIUM_MAX_CONCURRENT_RUNS) {
+        if (activePremiumRunningCount >= premiumMaxConcurrentRuns()) {
           return null; // Defer — do not cancel
         }
       }
@@ -8234,14 +8279,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         return [];
       }
+      const globalCap = globalMaxConcurrentRuns();
+      const perAgentCap = perAgentMaxConcurrentRuns();
       const globalRunningCount = await countGlobalRunningRuns();
-      if (globalRunningCount >= GLOBAL_MAX_CONCURRENT_RUNS) return [];
+      if (globalRunningCount >= globalCap) return [];
 
       const runningCount = await countRunningRunsForAgent(agentId);
-      if (runningCount >= PER_AGENT_MAX_CONCURRENT_RUNS_HARD_CAP) return [];
+      if (runningCount >= perAgentCap) return [];
       const availableSlots = Math.min(
-        PER_AGENT_MAX_CONCURRENT_RUNS_HARD_CAP - runningCount,
-        GLOBAL_MAX_CONCURRENT_RUNS - globalRunningCount,
+        perAgentCap - runningCount,
+        globalCap - globalRunningCount,
       );
       if (availableSlots <= 0) return [];
 
@@ -12932,16 +12979,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ]);
       return {
         global: {
-          max: GLOBAL_MAX_CONCURRENT_RUNS,
+          max: globalMaxConcurrentRuns(),
           running: globalRunning,
           queued: globalQueued,
         },
         premium: {
-          max: PREMIUM_MAX_CONCURRENT_RUNS,
+          max: premiumMaxConcurrentRuns(),
           running: premiumRunning,
         },
         perAgent: {
-          hardCap: PER_AGENT_MAX_CONCURRENT_RUNS_HARD_CAP,
+          hardCap: perAgentMaxConcurrentRuns(),
         },
         pausedWakeBackoff: pausedWakeBackoffRows.map((row) => ({
           agentId: row.agentId,
