@@ -25,7 +25,7 @@ describe("production Dockerfile k8s adapter runtime pins", () => {
   });
 
   it("vendors the opencode_k8s adapter commit with crash, runtime-cache, MCP header, pod-stderr, and per-agent runtime-cache fixes", () => {
-    expect(dockerfile).toContain("ARG OPENCODE_K8S_REF=861227d3d0726b43bf7e4a5421d076e3ab8de0af");
+    expect(dockerfile).toContain("ARG OPENCODE_K8S_REF=42d2d995a2f966e134f1b62a637497f9fe98c101");
     expect(dockerfile).toContain("type-crash");
     expect(dockerfile).toContain("5-strike adapter crashloop circuit-breaker");
     expect(dockerfile).toContain("writable home (/paperclip/.runtime-cache)");
@@ -38,6 +38,8 @@ describe("production Dockerfile k8s adapter runtime pins", () => {
     expect(dockerfile).toContain("mount a per-agent");
     expect(dockerfile).toContain("/runtime-cache emptyDir in opencode_k8s Jobs");
     expect(dockerfile).toContain("Chrome BrowserMetrics");
+    expect(dockerfile).toContain("reserve the runtime-cache env keys");
+    expect(dockerfile).toContain("stale /paperclip/.runtime-cache overrides");
   });
 
   it("routes Paperclip Docker deploy builds through the dedicated deploy runner pool", () => {

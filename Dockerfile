@@ -159,7 +159,12 @@ ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98
 # PVC. Also redirects Chrome BrowserMetrics to that emptyDir. PR
 # kkroo/paperclip-adapter-opencode-k8s#29; local adapter verification passed
 # job-manifest tests, typecheck, and build.
-ARG OPENCODE_K8S_REF=861227d3d0726b43bf7e4a5421d076e3ab8de0af
+# Bumped 2026-06-19 to 42d2d99: reserve the runtime-cache env keys after
+# adapterConfig.env merging, so stale /paperclip/.runtime-cache overrides cannot
+# move regenerable caches back onto the shared PVC. PR
+# kkroo/paperclip-adapter-opencode-k8s#30; local adapter verification passed
+# job-manifest tests, typecheck, and build.
+ARG OPENCODE_K8S_REF=42d2d995a2f966e134f1b62a637497f9fe98c101
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
