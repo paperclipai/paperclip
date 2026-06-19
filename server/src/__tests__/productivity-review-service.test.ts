@@ -21,6 +21,7 @@ import {
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+  classifyStandingIssueParkState,
   productivityReviewService,
 } from "../services/productivity-review.ts";
 
@@ -51,10 +52,11 @@ describeEmbeddedPostgres("productivity review service", () => {
   });
 
   async function seedAssignedIssue(opts?: {
-    status?: "todo" | "in_progress";
+    status?: "backlog" | "todo" | "in_progress" | "done";
     startedAt?: Date;
     parentId?: string | null;
     originKind?: string;
+    executionPolicy?: Record<string, unknown> | null;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -103,6 +105,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       assigneeAgentId: coderId,
       parentId: opts?.parentId ?? null,
       originKind: opts?.originKind ?? "manual",
+      executionPolicy: opts?.executionPolicy ?? null,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       startedAt: opts?.startedAt ?? createdAt,
@@ -208,6 +211,65 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
+  });
+
+  it("skips parked standing issues but still reviews active standing issues without an override", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const parked = await seedAssignedIssue({ status: "todo", originKind: "standing_issue" });
+    await insertRuns({
+      companyId: parked.companyId,
+      agentId: parked.coderId,
+      issueId: parked.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const parkedResult = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: parked.companyId,
+    });
+    expect(parkedResult.created).toBe(0);
+    expect(parkedResult.skipped).toBeGreaterThanOrEqual(1);
+    expect(await listProductivityReviews(parked.companyId)).toHaveLength(0);
+
+    const active = await seedAssignedIssue({ status: "in_progress", originKind: "standing_issue" });
+    await insertRuns({
+      companyId: active.companyId,
+      agentId: active.coderId,
+      issueId: active.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    const activeResult = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: active.companyId,
+    });
+    expect(activeResult.created).toBe(1);
+  });
+
+  it("classifies standing issue parked and closure override states", () => {
+    expect(classifyStandingIssueParkState({
+      originKind: "registry_issue",
+      status: "backlog",
+    })).toBe("healthy_parked");
+    expect(classifyStandingIssueParkState({
+      originKind: "registry_issue",
+      status: "in_progress",
+    })).toBe("active_without_override");
+    expect(classifyStandingIssueParkState({
+      originKind: "registry_issue",
+      status: "in_progress",
+      executionPolicy: { standing: { allowExecution: true, reason: "operator requested registry maintenance" } },
+    })).toBe("active_with_override");
+    expect(classifyStandingIssueParkState({
+      originKind: "log_issue",
+      status: "done",
+    })).toBe("done_without_closure_override");
+    expect(classifyStandingIssueParkState({
+      originKind: "log_issue",
+      status: "done",
+      executionPolicy: { standing: { allowTerminal: true, reason: "registry intentionally retired" } },
+    })).toBe("done_with_closure_override");
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {

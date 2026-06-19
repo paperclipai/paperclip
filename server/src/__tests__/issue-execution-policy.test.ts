@@ -132,6 +132,30 @@ describe("normalizeIssueExecutionPolicy", () => {
       },
     });
   });
+
+  it("keeps standing-only allowExecution policies with a reason", () => {
+    expect(normalizeIssueExecutionPolicy({
+      standing: { allowExecution: true, reason: "Operator requested maintenance run" },
+    })).toMatchObject({
+      stages: [],
+      standing: { allowExecution: true, reason: "Operator requested maintenance run" },
+    });
+  });
+
+  it("keeps standing-only allowTerminal policies with a reason", () => {
+    expect(normalizeIssueExecutionPolicy({
+      standing: { allowTerminal: true, reason: "Registry retired by operator" },
+    })).toMatchObject({
+      stages: [],
+      standing: { allowTerminal: true, reason: "Registry retired by operator" },
+    });
+  });
+
+  it("rejects standing policies without a reason or boolean override", () => {
+    expect(() => normalizeIssueExecutionPolicy({ standing: {} })).toThrow("Invalid execution policy");
+    expect(() => normalizeIssueExecutionPolicy({ standing: { allowExecution: true } })).toThrow("Invalid execution policy");
+    expect(() => normalizeIssueExecutionPolicy({ standing: { reason: "No override selected" } })).toThrow("Invalid execution policy");
+  });
 });
 
 describe("parseIssueExecutionState", () => {

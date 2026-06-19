@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { clampIssueRequestDepth } from "@paperclipai/shared";
+import { clampIssueRequestDepth, isStandingIssueOriginKind } from "@paperclipai/shared";
 import {
   agents,
   companies,
@@ -19,6 +19,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import { readStandingIssueOverride } from "./standing-issue-policy.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
@@ -78,6 +79,36 @@ type ProductivityReviewEvidence = {
   thresholds: ProductivityReviewThresholds;
   generatedAt: Date;
 };
+
+export type StandingIssueParkClassification =
+  | "not_standing"
+  | "healthy_parked"
+  | "active_without_override"
+  | "active_with_override"
+  | "done_without_closure_override"
+  | "done_with_closure_override"
+  | "cancelled";
+
+export function classifyStandingIssueParkState(issue: {
+  originKind: string | null;
+  status: string;
+  executionPolicy?: unknown;
+}): StandingIssueParkClassification {
+  if (!isStandingIssueOriginKind(issue.originKind)) return "not_standing";
+  if (issue.status === "backlog" || issue.status === "todo") return "healthy_parked";
+  if (issue.status === "cancelled") return "cancelled";
+  if (issue.status === "done") {
+    return readStandingIssueOverride(issue.executionPolicy, "allowTerminal")
+      ? "done_with_closure_override"
+      : "done_without_closure_override";
+  }
+  if (issue.status === "in_progress" || issue.status === "in_review" || issue.status === "blocked") {
+    return readStandingIssueOverride(issue.executionPolicy, "allowExecution")
+      ? "active_with_override"
+      : "active_without_override";
+  }
+  return "healthy_parked";
+}
 
 type EnqueueWakeup = (
   agentId: string,
@@ -796,6 +827,13 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
     const prefixCache = new Map<string, string>();
     for (const candidate of candidates) {
+      const standingClassification = classifyStandingIssueParkState(candidate);
+      // Explicit operator overrides turn standing work into intentional activity;
+      // parked standing records should also stay out of stuck-work automation.
+      if (standingClassification === "healthy_parked" || standingClassification === "active_with_override") {
+        result.skipped += 1;
+        continue;
+      }
       if (!candidate.assigneeAgentId) {
         result.skipped += 1;
         continue;

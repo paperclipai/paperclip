@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, not, or, sql }
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
   companySecretBindings,
   companySecretVersions,
   companySecrets,
@@ -2385,9 +2386,11 @@ export function routineService(
           trigger: routineTriggers,
           routine: routines,
           projectPausedAt: projects.pausedAt,
+          companyStatus: companies.status,
         })
         .from(routineTriggers)
         .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .innerJoin(companies, eq(routines.companyId, companies.id))
         .leftJoin(projects, eq(routines.projectId, projects.id))
         .where(
           and(
@@ -2409,11 +2412,12 @@ export function routineService(
         // at the next cron boundary instead of replaying missed firings. Routines with no
         // project are never suppressed here.
         const projectPaused = !!(row.routine.projectId && row.projectPausedAt);
+        const companyArchived = row.companyStatus === "archived";
 
         let runCount = 1;
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
-        if (!projectPaused && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
+        if (!projectPaused && !companyArchived && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           let cursor: Date | null = row.trigger.nextRunAt;
           runCount = 0;
           while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
@@ -2440,11 +2444,11 @@ export function routineService(
           .then((rows) => rows[0] ?? null);
         if (!claimed) continue;
 
-        if (projectPaused) {
+        if (projectPaused || companyArchived) {
           await recordSuppressedScheduleRun({
             routine: row.routine,
             trigger: row.trigger,
-            reason: "paused",
+            reason: companyArchived ? "archived_company" : "paused",
             nextRunAt: claimedNextRunAt,
           });
           continue;

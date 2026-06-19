@@ -218,6 +218,10 @@ export async function createApp(
     }),
   );
   api.use(openApiRoutes());
+  api.use(issueRoutes(db, opts.storageService, {
+    feedbackExportService: opts.feedbackExportService,
+    pluginWorkerManager: workerManager,
+  }));
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(companySkillRoutes(db));
@@ -225,10 +229,6 @@ export async function createApp(
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
-  api.use(issueRoutes(db, opts.storageService, {
-    feedbackExportService: opts.feedbackExportService,
-    pluginWorkerManager: workerManager,
-  }));
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));

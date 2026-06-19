@@ -1671,4 +1671,40 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(runsAfterResume).toHaveLength(2);
     expect(runsAfterResume.some((run) => run.status === "issue_created")).toBe(true);
   });
+
+  it("suppresses scheduled ticks while the company is archived without creating execution issues", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "daily",
+        cronExpression: "0 0 * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, trigger.id));
+
+    const result = await svc.tickScheduledTriggers(new Date());
+    expect(result.triggered).toBe(0);
+
+    const companyIssues = await db.select().from(issues).where(eq(issues.companyId, companyId));
+    expect(companyIssues).toHaveLength(0);
+
+    const skippedRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(skippedRuns).toHaveLength(1);
+    expect(skippedRuns[0]?.status).toBe("skipped");
+    expect(skippedRuns[0]?.source).toBe("schedule");
+    expect(skippedRuns[0]?.failureReason).toBe("archived_company");
+    expect(skippedRuns[0]?.linkedIssueId).toBeNull();
+
+    const activityRows = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    const skippedActivityRows = activityRows.filter((row) => row.action === "routine.run_skipped");
+    expect(skippedActivityRows).toHaveLength(1);
+    expect(skippedActivityRows[0]?.details).toMatchObject({ reason: "archived_company" });
+  });
 });

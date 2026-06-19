@@ -261,10 +261,37 @@ export const ISSUE_ORIGIN_KINDS = [
   "harness_liveness_escalation",
   "issue_productivity_review",
   "stranded_issue_recovery",
+  "standing_issue",
+  "registry_issue",
+  "log_issue",
+  "dependency_watcher",
+  "external_dependency_watcher",
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
 export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
+export const STANDING_ISSUE_ORIGIN_KINDS = [
+  "standing_issue",
+  "registry_issue",
+  "log_issue",
+] as const;
+export type StandingIssueOriginKind = (typeof STANDING_ISSUE_ORIGIN_KINDS)[number];
+export const DEPENDENCY_WATCHER_ISSUE_ORIGIN_KINDS = [
+  "dependency_watcher",
+  "external_dependency_watcher",
+] as const;
+export type DependencyWatcherIssueOriginKind = (typeof DEPENDENCY_WATCHER_ISSUE_ORIGIN_KINDS)[number];
+
+export function isStandingIssueOriginKind(originKind: string | null | undefined): originKind is StandingIssueOriginKind {
+  return typeof originKind === "string" && STANDING_ISSUE_ORIGIN_KINDS.includes(originKind as StandingIssueOriginKind);
+}
+
+export function isDependencyWatcherIssueOriginKind(
+  originKind: string | null | undefined,
+): originKind is DependencyWatcherIssueOriginKind {
+  return typeof originKind === "string" &&
+    DEPENDENCY_WATCHER_ISSUE_ORIGIN_KINDS.includes(originKind as DependencyWatcherIssueOriginKind);
+}
 export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
 export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
 

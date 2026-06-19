@@ -213,6 +213,10 @@ Invariant:
 
 Routine execution issues add a routine-scoped env overlay after project env and before Paperclip runtime-owned keys. Routine env uses the same secret-aware binding format, is stored on `routines.env`, is snapshotted in routine revisions, and resolves secret refs against the routine binding target so routine-owned secrets do not require direct bindings on the executing agent.
 
+Scheduled routine triggers are suppressed for archived companies by default.
+The scheduler records a skipped routine run and advances the trigger without
+creating an execution issue or waking agents.
+
 ## 7.6 `issues` (core task entity)
 
 - `id` uuid pk
@@ -249,6 +253,16 @@ Invariants:
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
 - terminal states: `done | cancelled`
+
+Standing governance issues use explicit issue origins (`standing_issue`,
+`registry_issue`, or `log_issue`) instead of a separate table. These issues are
+parked by design in `backlog`/`todo`, are excluded from productivity/stuck
+review solely for remaining open, and cannot be checked out or marked `done`
+unless their execution policy carries an explicit `standing` override with a
+reason. Dependency watcher issues (`dependency_watcher` and
+`external_dependency_watcher`) are cleanup helpers: when every downstream issue
+they block is cancelled, internal watchers are cancelled automatically and
+external/uncontrolled watchers are parked with an evidence comment.
 
 ## 7.7 `issue_comments`
 

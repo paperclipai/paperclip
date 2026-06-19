@@ -19,6 +19,7 @@ import {
   ISSUE_RECOVERY_ACTION_OWNER_TYPES,
   ISSUE_RECOVERY_ACTION_STATUSES,
   ISSUE_WORK_MODES,
+  ISSUE_ORIGIN_KINDS,
   clampIssueRequestDepth,
   ISSUE_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
@@ -201,6 +202,18 @@ export const issueExecutionPolicySchema = z.object({
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  standing: z.object({
+    allowTerminal: z.boolean().optional(),
+    allowExecution: z.boolean().optional(),
+    reason: z.string().trim().min(1).max(500),
+  }).superRefine((value, ctx) => {
+    if (typeof value.allowTerminal !== "boolean" && typeof value.allowExecution !== "boolean") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Standing policy requires allowTerminal or allowExecution",
+      });
+    }
+  }).optional(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -388,6 +401,12 @@ const createIssueBaseSchema = z.object({
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
   billingCode: z.string().optional().nullable(),
+  originKind: z.union([
+    z.enum(ISSUE_ORIGIN_KINDS),
+    z.string().regex(/^plugin:[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$/, "Plugin issue origins must start with plugin:"),
+  ]).optional(),
+  originId: z.string().trim().min(1).max(200).optional().nullable(),
+  originFingerprint: z.string().trim().min(1).max(200).optional(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),
