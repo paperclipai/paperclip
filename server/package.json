@@ -43,7 +43,7 @@
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.888.0",
+    "@aws-sdk/client-s3": "^3.1072.0",
     "@paperclipai/adapter-acpx-local": "workspace:*",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
@@ -83,14 +83,14 @@
     "@types/express": "^5.0.0",
     "@types/express-serve-static-core": "^5.0.0",
     "@types/jsdom": "^28.0.0",
-    "@types/multer": "^2.0.0",
-    "@types/node": "^24.6.0",
+    "@types/multer": "^2.1.0",
+    "@types/node": "^22.19.21",
     "@types/sharp": "^0.32.0",
     "@types/supertest": "^6.0.2",
     "@types/ws": "^8.18.1",
     "cross-env": "^10.1.0",
     "supertest": "^7.0.0",
-    "tsx": "^4.19.2",
+    "tsx": "^4.22.4",
     "typescript": "^5.7.3",
     "vite": "^6.1.0",
     "vitest": "^4.1.8"

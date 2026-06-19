@@ -701,69 +701,89 @@ async function integrateImportedGitHead(input: {
   localDir: string;
   importedHead: string;
 }): Promise<void> {
-  const snapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
-  if (!snapshot) return;
+  const isConcurrentRefUpdateError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes("cannot lock ref") && message.includes("expected");
+  };
 
-  const currentHead = snapshot.headCommit;
-  if (!currentHead || currentHead === input.importedHead) return;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const snapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
+    if (!snapshot) return;
 
-  const headRef = snapshot.branchName ? `refs/heads/${snapshot.branchName}` : "HEAD";
-  const mergeBase = await runLocalGit(input.localDir, ["merge-base", currentHead, input.importedHead], {
-    timeout: 10_000,
-    maxBuffer: 16 * 1024,
-  }).catch(() => null);
-  const mergeBaseHead = mergeBase?.stdout.trim() ?? "";
+    const currentHead = snapshot.headCommit;
+    if (!currentHead || currentHead === input.importedHead) return;
 
-  if (mergeBaseHead === input.importedHead) {
-    return;
-  }
-
-  if (mergeBaseHead === currentHead) {
-    await runLocalGit(input.localDir, ["update-ref", headRef, input.importedHead, currentHead], {
+    const headRef = snapshot.branchName ? `refs/heads/${snapshot.branchName}` : "HEAD";
+    const mergeBase = await runLocalGit(input.localDir, ["merge-base", currentHead, input.importedHead], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
-    });
-    return;
-  }
+    }).catch(() => null);
+    const mergeBaseHead = mergeBase?.stdout.trim() ?? "";
 
-  let mergedTree;
-  try {
-    mergedTree = await runLocalGit(input.localDir, ["merge-tree", "--write-tree", currentHead, input.importedHead], {
-      timeout: 60_000,
-      maxBuffer: 256 * 1024,
-    });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Failed to merge concurrent SSH git histories for ${currentHead.slice(0, 12)} and ${input.importedHead.slice(0, 12)}: ${reason}`,
+    if (mergeBaseHead === input.importedHead) {
+      return;
+    }
+
+    if (mergeBaseHead === currentHead) {
+      try {
+        await runLocalGit(input.localDir, ["update-ref", headRef, input.importedHead, currentHead], {
+          timeout: 10_000,
+          maxBuffer: 16 * 1024,
+        });
+        return;
+      } catch (error) {
+        if (isConcurrentRefUpdateError(error) && attempt < 4) continue;
+        throw error;
+      }
+    }
+
+    let mergedTree;
+    try {
+      mergedTree = await runLocalGit(input.localDir, ["merge-tree", "--write-tree", currentHead, input.importedHead], {
+        timeout: 60_000,
+        maxBuffer: 256 * 1024,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Failed to merge concurrent SSH git histories for ${currentHead.slice(0, 12)} and ${input.importedHead.slice(0, 12)}: ${reason}`,
+      );
+    }
+    const mergedTreeId = mergedTree.stdout.trim().split("\n")[0]?.trim() ?? "";
+    if (!mergedTreeId) {
+      throw new Error("Failed to compute a merged git tree for SSH workspace restore.");
+    }
+
+    const mergeCommit = await runLocalGit(
+      input.localDir,
+      [
+        "commit-tree",
+        mergedTreeId,
+        "-p",
+        currentHead,
+        "-p",
+        input.importedHead,
+        "-m",
+        `Paperclip SSH sync merge ${input.importedHead.slice(0, 12)}`,
+      ],
+      {
+        timeout: 60_000,
+        maxBuffer: 64 * 1024,
+      },
     );
-  }
-  const mergedTreeId = mergedTree.stdout.trim().split("\n")[0]?.trim() ?? "";
-  if (!mergedTreeId) {
-    throw new Error("Failed to compute a merged git tree for SSH workspace restore.");
+    try {
+      await runLocalGit(input.localDir, ["update-ref", headRef, mergeCommit.stdout.trim(), currentHead], {
+        timeout: 10_000,
+        maxBuffer: 16 * 1024,
+      });
+      return;
+    } catch (error) {
+      if (isConcurrentRefUpdateError(error) && attempt < 4) continue;
+      throw error;
+    }
   }
 
-  const mergeCommit = await runLocalGit(
-    input.localDir,
-    [
-      "commit-tree",
-      mergedTreeId,
-      "-p",
-      currentHead,
-      "-p",
-      input.importedHead,
-      "-m",
-      `Paperclip SSH sync merge ${input.importedHead.slice(0, 12)}`,
-    ],
-    {
-      timeout: 60_000,
-      maxBuffer: 64 * 1024,
-    },
-  );
-  await runLocalGit(input.localDir, ["update-ref", headRef, mergeCommit.stdout.trim(), currentHead], {
-    timeout: 10_000,
-    maxBuffer: 16 * 1024,
-  });
+  throw new Error(`Failed to integrate concurrent SSH git history for ${input.importedHead.slice(0, 12)} after multiple retries.`);
 }
 
 async function clearRemoteDirectory(input: {

@@ -62,6 +62,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { buildLineDiff, type DiffRow } from "../lib/line-diff";
 import { cn, relativeTime } from "../lib/utils";
+import { resolveSkillSummaryText } from "../lib/company-skill-summary";
 import {
   parseSkillRoute,
   skillRoute,
@@ -496,18 +497,6 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// Some bundled skills ship with a frontmatter-only SKILL.md whose extracted
-// description is just punctuation (e.g. ">"). Strip leading markdown syntax and
-// fall back to a neutral placeholder so cards don't render bare glyphs.
-function cardDescriptionText(raw: string | null | undefined): string {
-  const cleaned = (raw ?? "")
-    .replace(/^[\s>#*_\-`>]+/, "")
-    .trim();
-  // Empty descriptions render as a blank line on cards so spacing stays
-  // consistent across the grid (PAP-10907).
-  return cleaned.length >= 3 ? cleaned : "";
-}
-
 // ---------------------------------------------------------------------------
 // Skills Store discovery grid (PAP-10879)
 // ---------------------------------------------------------------------------
@@ -536,6 +525,7 @@ export type DiscoveryCard = {
   slug: string;
   author: string;
   version: string | null;
+  tagline: string | null;
   description: string | null;
   categories: string[];
   iconUrl: string | null;
@@ -679,7 +669,8 @@ function buildDiscoveryCards(
       slug: skill.slug,
       author: skill.authorName ?? skill.sourceLabel ?? "you",
       version: discoveryVersionLabel(skill, required),
-      description: skill.tagline ?? skill.description,
+      tagline: skill.tagline ?? null,
+      description: skill.description ?? null,
       categories: uniqueCategories([...(skill.categories ?? []), catalogMatch?.category]),
       iconUrl: skill.iconUrl,
       color: skill.color,
@@ -706,6 +697,7 @@ function buildDiscoveryCards(
       slug: entry.slug,
       author: entry.packageName ?? "Paperclip",
       version: discoveryVersionLabel({ packageVersion: entry.packageVersion ?? null, sourceRef: null }, required),
+      tagline: null,
       description: entry.description,
       categories: uniqueCategories([entry.category, ...(entry.tags ?? [])]),
       iconUrl: null,
@@ -768,6 +760,7 @@ function discoveryMatchesSearch(card: DiscoveryCard, query: string): boolean {
     card.name,
     card.slug,
     card.author,
+    card.tagline ?? "",
     card.description ?? "",
     card.categories.join(" "),
   ].join(" ").toLowerCase();
@@ -830,7 +823,12 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
 
       {/* Always reserve two lines so cards line up even without a description. */}
       <p className="mt-2 line-clamp-2 min-h-8 text-xs text-muted-foreground">
-        {cardDescriptionText(card.description)}
+        {resolveSkillSummaryText({
+          tagline: card.tagline,
+          description: card.description,
+          key: card.key,
+          name: card.name,
+        }) ?? ""}
       </p>
 
       <div className="mt-auto pt-3">
@@ -1382,6 +1380,7 @@ function NewSkillWizard({
                 slug: effectiveSlug || "skill",
                 author: "you",
                 version: null,
+                tagline: draft.tagline || null,
                 description: draft.tagline,
                 categories: draft.categories,
                 iconUrl: null,
@@ -2673,9 +2672,7 @@ export function SkillDetailPage({
   const currentPin = shortRef(skill.sourceRef);
   const latestPin = shortRef(updateStatus?.latestRef);
   const selectedVersion = versions.find((version) => version.id === currentVersionSelection(skill)) ?? null;
-  const subtitleText = skill.tagline || skill.description
-    ? cardDescriptionText(skill.tagline ?? skill.description)
-    : source.label;
+  const subtitleText = resolveSkillSummaryText(skill) ?? source.label;
   // Look up the richer agent record (icon, paused) for agents using this skill.
   const attachAgentMetaById = new Map(attachAgents.map((agent) => [agent.id, agent]));
 
@@ -2958,6 +2955,7 @@ export function SkillDetailPage({
                   slug: detail.slug,
                   author: detail.authorName ?? source.label,
                   version: null,
+                  tagline: detail.tagline,
                   description: detail.description,
                   categories: detail.categories,
                   iconUrl: detail.iconUrl,

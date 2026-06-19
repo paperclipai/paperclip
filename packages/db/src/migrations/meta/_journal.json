@@ -726,8 +726,15 @@
     {
       "idx": 103,
       "version": "7",
+      "when": 1781490200000,
+      "tag": "0103_agent_error_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
       "when": 1778966210569,
-      "tag": "0103_plugin_config_company_scope",
+      "tag": "0104_plugin_config_company_scope",
       "breakpoints": true
     }
   ]
