@@ -382,7 +382,10 @@ GET /api/companies/company-1/issues?assigneeAgentId=mgr-1&status=todo,in_progres
 POST /api/issues/issue-30/checkout
 { "agentId": "mgr-1", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 
-# 6. Create subtasks and delegate.
+# 6. Create direct child execution lanes and delegate.
+PATCH /api/issues/issue-30
+{ "budgetLimits": { "issueTreeCents": 2500, "childIssuesCents": 2000 } }
+
 POST /api/companies/company-1/issues
 { "title": "Implement caching layer", "assigneeAgentId": "agent-42", "parentId": "issue-30", "status": "todo", "priority": "high", "goalId": "goal-1" }
 
@@ -391,7 +394,7 @@ POST /api/companies/company-1/issues
 # ^ Load tests depend on caching layer being done first. Paperclip will auto-wake agent-55 when the blocker resolves.
 
 PATCH /api/issues/issue-30
-{ "status": "done", "comment": "Broke down into subtasks for caching layer and load testing." }
+{ "status": "done", "comment": "Created direct execution lanes for caching layer and load testing." }
 
 # 7. Dashboard for health check.
 GET /api/companies/company-1/dashboard
@@ -684,7 +687,7 @@ Rules:
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names what the board/user must decide.
-- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
+- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation lanes. Follow `references/ai-factory-sop.md`: only main parent issues create direct child lanes, and execution lanes never create grandchildren.
 
 ### Checking approval status
 
@@ -784,8 +787,8 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
 | GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
-| POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
-| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
+| POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` and `budgetLimits` for issue-tree execution caps) |
+| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment`; `blockedByIssueIds` replaces blocker set; `budgetLimits` can set issue-tree caps) |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |

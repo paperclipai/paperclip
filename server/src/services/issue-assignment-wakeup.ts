@@ -18,9 +18,13 @@ export interface IssueAssignmentWakeupDeps {
   ) => Promise<unknown>;
 }
 
+function isHumanControlWorkItemType(value: unknown) {
+  return value === "initiative" || value === "human_task";
+}
+
 export function queueIssueAssignmentWakeup(input: {
   heartbeat: IssueAssignmentWakeupDeps;
-  issue: { id: string; assigneeAgentId: string | null; status: string };
+  issue: { id: string; assigneeAgentId: string | null; status: string; workItemType?: string | null };
   reason: string;
   mutation: string;
   contextSource: string;
@@ -31,6 +35,7 @@ export function queueIssueAssignmentWakeup(input: {
   // Master fork: wake agents even for backlog assignments. If an agent is assigned,
   // they should be woken regardless of status — backlog items otherwise never get picked up.
   if (!input.issue.assigneeAgentId) return;
+  if (isHumanControlWorkItemType(input.issue.workItemType)) return;
 
   return input.heartbeat
     .wakeup(input.issue.assigneeAgentId, {

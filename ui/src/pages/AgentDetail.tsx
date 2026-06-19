@@ -43,7 +43,7 @@ import { RunButton, PauseResumeButton } from "../components/AgentActionButtons";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { FileTree, buildFileTree } from "../components/FileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
-import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { formatCents, formatDate, formatDateTime, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { RetryNowButton } from "../components/RetryNowButton";
@@ -62,6 +62,8 @@ import {
   XCircle,
   Clock,
   Timer,
+  CalendarClock,
+  ListChecks,
   Loader2,
   Slash,
   RotateCcw,
@@ -256,6 +258,84 @@ function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
     if (typeof value === "number" && Number.isFinite(value)) return value;
   }
   return 0;
+}
+
+const ACTIVE_HEARTBEAT_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
+
+function isActiveHeartbeatRun(run: HeartbeatRun) {
+  return ACTIVE_HEARTBEAT_RUN_STATUSES.has(run.status);
+}
+
+function parseBooleanLike(value: unknown, fallback: boolean) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return fallback;
+  }
+  if (typeof value !== "string") return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") return true;
+  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") return false;
+  return fallback;
+}
+
+function parseNumberLike(value: unknown, fallback: number) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return fallback;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseAgentHeartbeatPolicy(agent: AgentDetailRecord) {
+  const heartbeat = asRecord(agent.runtimeConfig?.heartbeat) ?? {};
+  return {
+    enabled: parseBooleanLike(heartbeat.enabled, false),
+    intervalSec: Math.max(0, Math.trunc(parseNumberLike(heartbeat.intervalSec, 0))),
+    wakeOnDemand: parseBooleanLike(
+      heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation,
+      true,
+    ),
+    maxConcurrentRuns: Math.max(1, Math.trunc(parseNumberLike(heartbeat.maxConcurrentRuns, 1))),
+  };
+}
+
+function formatDurationSeconds(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = minutes / 60;
+  if (hours < 48) return `${Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(1)}h`;
+  const days = hours / 24;
+  return `${Number.isInteger(days) ? days.toFixed(0) : days.toFixed(1)}d`;
+}
+
+function countActiveRunsByStatus(runs: HeartbeatRun[]) {
+  return runs.reduce(
+    (acc, run) => {
+      if (run.status === "running") acc.running += 1;
+      else if (run.status === "queued") acc.queued += 1;
+      else if (run.status === "scheduled_retry") acc.scheduledRetry += 1;
+      return acc;
+    },
+    { running: 0, queued: 0, scheduledRetry: 0 },
+  );
+}
+
+function readRunContextField(run: HeartbeatRun, key: string) {
+  const listRun = run as HeartbeatRun & Record<string, unknown>;
+  const projectedValue = listRun[`context${key[0]?.toUpperCase() ?? ""}${key.slice(1)}`];
+  return asNonEmptyString(projectedValue) ?? asNonEmptyString(asRecord(run.contextSnapshot)?.[key]);
+}
+
+function describeRunScope(run: HeartbeatRun) {
+  const issueId = readRunContextField(run, "issueId");
+  const taskKey = readRunContextField(run, "taskKey");
+  const wakeReason = readRunContextField(run, "wakeReason");
+  if (taskKey && taskKey !== issueId) return taskKey;
+  if (issueId) return `issue ${issueId.slice(0, 8)}`;
+  return wakeReason ?? "agent heartbeat";
 }
 
 function setsEqual<T>(left: Set<T>, right: Set<T>) {
@@ -1267,6 +1347,268 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   );
 }
 
+function HeartbeatScheduleCard({
+  agent,
+  runs,
+  companyId,
+  agentRouteId,
+}: {
+  agent: AgentDetailRecord;
+  runs: HeartbeatRun[];
+  companyId: string;
+  agentRouteId: string;
+}) {
+  const queryClient = useQueryClient();
+  const policy = parseAgentHeartbeatPolicy(agent);
+  const activeRuns = useMemo(
+    () => runs.filter(isActiveHeartbeatRun).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [runs],
+  );
+  const activeCounts = useMemo(() => countActiveRunsByStatus(activeRuns), [activeRuns]);
+  const lastRun = useMemo(
+    () => [...runs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0] ?? null,
+    [runs],
+  );
+  const lastTimerRun = useMemo(
+    () => runs
+      .filter((run) => run.invocationSource === "timer")
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0] ?? null,
+    [runs],
+  );
+  const statusEligible =
+    agent.status !== "paused" &&
+    agent.status !== "terminated" &&
+    agent.status !== "pending_approval";
+  const timerActive = statusEligible && policy.enabled && policy.intervalSec > 0;
+  const baselineAt = agent.lastHeartbeatAt ?? agent.createdAt;
+  const nextDueAt = timerActive
+    ? new Date(new Date(baselineAt).getTime() + policy.intervalSec * 1000)
+    : null;
+  const nextDueLabel = !timerActive
+    ? statusEligible
+      ? "Not scheduled"
+      : `Inactive: ${agent.status}`
+    : nextDueAt && nextDueAt.getTime() <= Date.now()
+      ? `Due now (${formatDateTime(nextDueAt)})`
+      : nextDueAt
+        ? formatDateTime(nextDueAt)
+        : "Not scheduled";
+
+  const cancelRun = useMutation({
+    mutationFn: (runId: string) => heartbeatsApi.cancel(runId, { force: true }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteId) });
+    },
+  });
+
+  const cancelActive = useMutation({
+    mutationFn: () => agentsApi.cancelActiveHeartbeats(agent.id, companyId, { force: true }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agent.id) });
+    },
+  });
+
+  return (
+    <section className="space-y-3 rounded-lg border border-border bg-background/70 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-medium">
+            <CalendarClock className="h-4 w-4 text-muted-foreground" />
+            Heartbeat schedule
+          </h3>
+        </div>
+        <Button
+          variant="destructive"
+          size="sm"
+          onClick={() => cancelActive.mutate()}
+          disabled={activeRuns.length === 0 || cancelActive.isPending}
+        >
+          {cancelActive.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Slash className="h-3.5 w-3.5" />}
+          <span>Cancel active</span>
+        </Button>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <ScheduleStat
+          label="Timer"
+          value={timerActive ? "Enabled" : "Disabled"}
+          tone={timerActive ? "ok" : "muted"}
+        />
+        <ScheduleStat
+          label="Interval"
+          value={policy.enabled && policy.intervalSec > 0 ? `Every ${formatDurationSeconds(policy.intervalSec)}` : "Off"}
+          tone="muted"
+        />
+        <ScheduleStat
+          label="Next timer"
+          value={nextDueLabel}
+          tone={timerActive && nextDueAt && nextDueAt.getTime() <= Date.now() ? "warn" : "muted"}
+        />
+        <ScheduleStat
+          label="Parallel cap"
+          value={`${policy.maxConcurrentRuns} run${policy.maxConcurrentRuns === 1 ? "" : "s"}`}
+          tone="muted"
+        />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <div className="rounded-lg border border-border/80 bg-muted/20 p-3">
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <div className="text-muted-foreground">Last heartbeat</div>
+              <div className="mt-1 font-medium">
+                {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "Never"}
+              </div>
+              {agent.lastHeartbeatAt && (
+                <div className="mt-0.5 text-muted-foreground">{formatDateTime(agent.lastHeartbeatAt)}</div>
+              )}
+            </div>
+            <div>
+              <div className="text-muted-foreground">Last timer run</div>
+              <div className="mt-1 font-medium">
+                {lastTimerRun ? relativeTime(lastTimerRun.createdAt) : "None"}
+              </div>
+              {lastTimerRun && (
+                <Link
+                  to={`/agents/${agentRouteId}/runs/${lastTimerRun.id}`}
+                  className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground hover:text-foreground"
+                >
+                  {lastTimerRun.id.slice(0, 8)}
+                </Link>
+              )}
+            </div>
+            <div>
+              <div className="text-muted-foreground">Wake on demand</div>
+              <div className="mt-1 font-medium">{policy.wakeOnDemand ? "Allowed" : "Blocked"}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">Latest run</div>
+              <div className="mt-1 font-medium">{lastRun ? relativeTime(lastRun.createdAt) : "Never"}</div>
+              {lastRun && (
+                <Link
+                  to={`/agents/${agentRouteId}/runs/${lastRun.id}`}
+                  className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground hover:text-foreground"
+                >
+                  {lastRun.id.slice(0, 8)}
+                </Link>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border/80 bg-muted/20">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 px-3 py-2">
+            <div className="flex items-center gap-2 text-xs font-medium">
+              <ListChecks className="h-3.5 w-3.5 text-muted-foreground" />
+              Active queue
+            </div>
+            <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+              <span>{activeCounts.running} running</span>
+              <span>·</span>
+              <span>{activeCounts.queued} queued</span>
+              <span>·</span>
+              <span>{activeCounts.scheduledRetry} retry</span>
+            </div>
+          </div>
+          {activeRuns.length === 0 ? (
+            <p className="px-3 py-4 text-sm text-muted-foreground">No queued, running, or scheduled retry heartbeats.</p>
+          ) : (
+            <div className="divide-y divide-border/70">
+              {activeRuns.slice(0, 5).map((run) => {
+                const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
+                const StatusIcon = statusInfo.icon;
+                const metrics = runMetrics(run);
+                const isStopping = cancelRun.variables === run.id && cancelRun.isPending;
+                return (
+                  <div key={run.id} className="flex items-center gap-3 px-3 py-2">
+                    <StatusIcon className={cn("h-3.5 w-3.5 shrink-0", statusInfo.color, run.status === "running" && "animate-spin")} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <Link
+                          to={`/agents/${agentRouteId}/runs/${run.id}`}
+                          className="truncate font-mono text-xs hover:text-foreground"
+                        >
+                          {run.id.slice(0, 8)}
+                        </Link>
+                        <StatusBadge status={run.status} />
+                        <span className="shrink-0 text-[11px] text-muted-foreground">
+                          {sourceLabels[run.invocationSource] ?? run.invocationSource}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                        {describeRunScope(run)}
+                        {metrics.totalTokens > 0 && ` · ${formatTokens(metrics.totalTokens)} tokens`}
+                        {run.status === "scheduled_retry" && run.scheduledRetryAt
+                          ? ` · retry at ${formatDateTime(run.scheduledRetryAt)}`
+                          : ` · ${relativeTime(run.createdAt)}`}
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => cancelRun.mutate(run.id)}
+                      disabled={isStopping || cancelRun.isPending}
+                    >
+                      {isStopping ? <Loader2 className="h-3 w-3 animate-spin" /> : <Slash className="h-3 w-3" />}
+                      Stop
+                    </Button>
+                  </div>
+                );
+              })}
+              {activeRuns.length > 5 && (
+                <Link
+                  to={`/agents/${agentRouteId}/runs`}
+                  className="block px-3 py-2 text-center text-xs text-muted-foreground hover:text-foreground"
+                >
+                  View {activeRuns.length - 5} more active runs
+                </Link>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {(cancelRun.isError || cancelActive.isError) && (
+        <p className="text-xs text-destructive">
+          {(cancelRun.error ?? cancelActive.error) instanceof Error
+            ? ((cancelRun.error ?? cancelActive.error) as Error).message
+            : "Failed to cancel heartbeat run."}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function ScheduleStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "ok" | "warn" | "muted";
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border px-3 py-2",
+        tone === "ok" && "border-emerald-400/30 bg-emerald-500/10",
+        tone === "warn" && "border-amber-400/40 bg-amber-500/10",
+        tone === "muted" && "border-border bg-muted/20",
+      )}
+    >
+      <div className="text-[11px] uppercase text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
 /* ---- Agent Overview (main single-page view) ---- */
 
 function AgentOverview({
@@ -1288,6 +1630,13 @@ function AgentOverview({
     <div className="space-y-8">
       {/* Latest Run */}
       <LatestRunCard runs={runs} agentId={agentRouteId} />
+
+      <HeartbeatScheduleCard
+        agent={agent}
+        runs={runs}
+        companyId={agent.companyId}
+        agentRouteId={agentRouteId}
+      />
 
       {/* Charts */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

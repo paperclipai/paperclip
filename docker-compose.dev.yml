@@ -109,8 +109,26 @@ services:
         SQL
 
   server:
-    build: .
+    build:
+      context: .
+      no_cache: true
     restart: unless-stopped
+    labels:
+      paperclip.dev.deployment_generation: "2026-06-17-clean-server-dist"
+      traefik.enable: "true"
+      traefik.docker.network: dokploy-network
+      traefik.http.routers.paperclip-dev-web.entrypoints: web
+      traefik.http.routers.paperclip-dev-web.rule: Host(`paper-dev.zenova.id`)
+      traefik.http.routers.paperclip-dev-web.middlewares: redirect-to-https@file
+      traefik.http.routers.paperclip-dev-web.priority: "10000"
+      traefik.http.routers.paperclip-dev-web.service: paperclip-dev-web
+      traefik.http.services.paperclip-dev-web.loadbalancer.server.port: "3100"
+      traefik.http.routers.paperclip-dev-websecure.entrypoints: websecure
+      traefik.http.routers.paperclip-dev-websecure.rule: Host(`paper-dev.zenova.id`)
+      traefik.http.routers.paperclip-dev-websecure.priority: "10000"
+      traefik.http.routers.paperclip-dev-websecure.service: paperclip-dev-websecure
+      traefik.http.routers.paperclip-dev-websecure.tls.certresolver: letsencrypt
+      traefik.http.services.paperclip-dev-websecure.loadbalancer.server.port: "3100"
     expose:
       - "3100"
     environment:
@@ -122,6 +140,8 @@ services:
       PAPERCLIP_DEPLOYMENT_MODE: "${PAPERCLIP_DEPLOYMENT_MODE:-authenticated}"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-https://paper-dev.zenova.id}"
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "${PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN:-}"
+      PAPERCLIP_DEPLOYMENT_INSTALL_TOKEN: "${PAPERCLIP_DEPLOYMENT_INSTALL_TOKEN:-}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
       BETTER_AUTH_TRUSTED_ORIGINS: "${BETTER_AUTH_TRUSTED_ORIGINS:-}"
       PAPERCLIP_AGENT_JWT_SECRET: "${PAPERCLIP_AGENT_JWT_SECRET:-}"

@@ -130,7 +130,9 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.runtime).length > 0 ||
     o.credentialId !== undefined ||
     o.credentialIds !== undefined ||
-    o.modelProfiles?.cheap !== undefined
+    o.modelProfiles?.cheap !== undefined ||
+    o.routes?.cheap !== undefined ||
+    o.routes?.backup !== undefined
   );
 }
 
@@ -712,6 +714,91 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         return cheapProfileFromAgent.model;
       })();
 
+  function routeState(routeKey: "cheap" | "backup") {
+    if (isCreate) {
+      return routeKey === "cheap"
+        ? {
+            enabled: val!.cheapRouteEnabled ?? false,
+            adapterType: val!.cheapRouteAdapterType ?? "codex_local",
+            credentialIds: val!.cheapRouteCredentialIds ?? [],
+            model: val!.cheapRouteModel ?? "",
+          }
+        : {
+            enabled: val!.backupRouteEnabled ?? false,
+            adapterType: val!.backupRouteAdapterType ?? "codex_local",
+            credentialIds: val!.backupRouteCredentialIds ?? [],
+            model: val!.backupRouteModel ?? "",
+          };
+    }
+    const routes = (runtimeConfig.routes ?? {}) as Record<string, unknown>;
+    const route = (routes[routeKey] ?? {}) as Record<string, unknown>;
+    const overlayRoute = !isCreate ? overlay.routes?.[routeKey] : undefined;
+    const routeAdapterConfig = (route.adapterConfig ?? {}) as Record<string, unknown>;
+    const overlayAdapterConfig = (overlayRoute?.adapterConfig ?? {}) as Record<string, unknown>;
+    return {
+      enabled: overlayRoute?.enabled ?? (route.enabled === true),
+      adapterType: overlayRoute?.adapterType ?? (typeof route.adapterType === "string" ? route.adapterType : adapterType),
+      credentialIds:
+        overlayRoute?.credentialIds ??
+        (Array.isArray(route.credentialIds)
+          ? route.credentialIds.filter((value): value is string => typeof value === "string")
+          : []),
+      model:
+        typeof overlayAdapterConfig.model === "string"
+          ? overlayAdapterConfig.model
+          : typeof routeAdapterConfig.model === "string"
+            ? routeAdapterConfig.model
+            : "",
+    };
+  }
+
+  const cheapRoute = routeState("cheap");
+  const backupRoute = routeState("backup");
+
+  function updateRuntimeRoute(
+    routeKey: "cheap" | "backup",
+    patch: { enabled?: boolean; adapterType?: string; model?: string; credentialIds?: string[] },
+  ) {
+    if (isCreate) {
+      if (routeKey === "cheap") {
+        set!({
+          ...(patch.enabled !== undefined ? { cheapRouteEnabled: patch.enabled } : {}),
+          ...(patch.adapterType !== undefined ? { cheapRouteAdapterType: patch.adapterType } : {}),
+          ...(patch.model !== undefined ? { cheapRouteModel: patch.model } : {}),
+          ...(patch.credentialIds !== undefined ? { cheapRouteCredentialIds: patch.credentialIds } : {}),
+        });
+      } else {
+        set!({
+          ...(patch.enabled !== undefined ? { backupRouteEnabled: patch.enabled } : {}),
+          ...(patch.adapterType !== undefined ? { backupRouteAdapterType: patch.adapterType } : {}),
+          ...(patch.model !== undefined ? { backupRouteModel: patch.model } : {}),
+          ...(patch.credentialIds !== undefined ? { backupRouteCredentialIds: patch.credentialIds } : {}),
+        });
+      }
+      return;
+    }
+    setOverlay((prev) => {
+      const existing = prev.routes?.[routeKey] ?? {};
+      const nextAdapterConfig = {
+        ...((existing.adapterConfig ?? {}) as Record<string, unknown>),
+        ...(patch.model !== undefined ? { model: patch.model || undefined } : {}),
+      };
+      return {
+        ...prev,
+        routes: {
+          ...(prev.routes ?? {}),
+          [routeKey]: {
+            ...existing,
+            ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+            ...(patch.adapterType !== undefined ? { adapterType: patch.adapterType } : {}),
+            ...(patch.credentialIds !== undefined ? { credentialIds: patch.credentialIds } : {}),
+            adapterConfig: nextAdapterConfig,
+          },
+        },
+      };
+    });
+  }
+
   function setCheapEnabled(next: boolean) {
     if (isCreate) {
       set!({ cheapModelEnabled: next });
@@ -1173,6 +1260,83 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   open={cheapModelOpen}
                   onOpenChange={setCheapModelOpen}
                 />
+              )}
+
+              {(
+                <div className="space-y-3 rounded-md border border-border/70 bg-muted/20 px-3 py-3">
+                  <div>
+                    <div className="text-xs font-medium text-foreground">Route profiles</div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Cheap and backup routes can use a different adapter/model than the primary agent.
+                    </p>
+                  </div>
+                  {(["cheap", "backup"] as const).map((routeKey) => {
+                    const state = routeKey === "cheap" ? cheapRoute : backupRoute;
+                    const routeCredentialTypes = credentialTypesForAdapterType(state.adapterType);
+                    const routeCredentials = credentials.filter((credential) => routeCredentialTypes.has(credential.type));
+                    return (
+                      <div key={routeKey} className="space-y-2 rounded-md border border-border/60 px-3 py-2">
+                        <ToggleField
+                          label={routeKey === "cheap" ? "Cheap route" : "Backup route"}
+                          hint={
+                            routeKey === "cheap"
+                              ? "Used when an issue requests the cheap lane."
+                              : "Used after primary hits quota/rate-limit and no same-type credential can take over."
+                          }
+                          checked={state.enabled}
+                          onChange={(enabled) => updateRuntimeRoute(routeKey, { enabled })}
+                        />
+                        {state.enabled && (
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <Field label="Adapter">
+                              <AdapterTypeDropdown
+                                value={state.adapterType}
+                                disabledTypes={disabledTypes}
+                                onChange={(nextAdapterType) =>
+                                  updateRuntimeRoute(routeKey, { adapterType: nextAdapterType })
+                                }
+                              />
+                            </Field>
+                            <Field label="Model">
+                              <DraftInput
+                                value={state.model}
+                                onCommit={(model) => updateRuntimeRoute(routeKey, { model })}
+                                immediate
+                                className={inputClass}
+                                placeholder="Default model"
+                              />
+                            </Field>
+                            {routeCredentials.length > 0 && (
+                              <Field label="Credentials">
+                                <div className="space-y-1 rounded-md border border-border/60 px-2 py-1.5">
+                                  {routeCredentials.map((credential) => {
+                                    const checked = state.credentialIds.includes(credential.id);
+                                    return (
+                                      <label key={credential.id} className="flex items-center gap-2 text-xs">
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={() => {
+                                            const next = checked
+                                              ? state.credentialIds.filter((id) => id !== credential.id)
+                                              : [...state.credentialIds, credential.id];
+                                            updateRuntimeRoute(routeKey, { credentialIds: next });
+                                          }}
+                                        />
+                                        <span className="truncate">{credential.name}</span>
+                                        <span className="shrink-0 text-[10px] text-muted-foreground">{credential.type}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </Field>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
 
               {showThinkingEffort && (

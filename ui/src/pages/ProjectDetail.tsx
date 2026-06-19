@@ -6,6 +6,7 @@ import {
   PROJECT_PERMISSION_KEYS,
   PROJECT_ROLE_PRESETS,
   isUuidLike,
+  type Issue,
   type BudgetPolicySummary,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
@@ -33,13 +34,13 @@ import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
-import { projectRouteRef } from "../lib/utils";
+import { cn, projectRouteRef } from "../lib/utils";
 import { ToggleField } from "../components/agent-config-primitives";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { Loader2, Users, Shield, ChevronDown, ChevronRight, Trash2, Plus, Bot } from "lucide-react";
+import { Loader2, Users, Shield, ChevronDown, ChevronRight, Trash2, Plus, Bot, ListChecks, UserCheck } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
@@ -763,8 +764,37 @@ function ColorPicker({
 
 /* ── List (issues) tab content ── */
 
+type ProjectIssueLane = "all" | "human" | "execution" | "initiative";
+
+const PROJECT_ISSUE_LANES: Array<{
+  id: ProjectIssueLane;
+  label: string;
+  icon: typeof ListChecks;
+}> = [
+  { id: "all", label: "All project work", icon: ListChecks },
+  { id: "human", label: "Human-owned", icon: UserCheck },
+  { id: "execution", label: "Execution issues", icon: Bot },
+  { id: "initiative", label: "Initiatives", icon: Shield },
+];
+
+function isHumanOwnedProjectIssue(issue: Issue) {
+  return issue.workItemType === "human_task" || issue.assigneeUserId !== null;
+}
+
+function isExecutionProjectIssue(issue: Issue) {
+  return issue.workItemType === "ai_task" || issue.assigneeAgentId !== null;
+}
+
+function filterProjectIssuesByLane(issues: Issue[], lane: ProjectIssueLane) {
+  if (lane === "human") return issues.filter(isHumanOwnedProjectIssue);
+  if (lane === "execution") return issues.filter(isExecutionProjectIssue);
+  if (lane === "initiative") return issues.filter((issue) => issue.workItemType === "initiative");
+  return issues;
+}
+
 function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
   const queryClient = useQueryClient();
+  const [activeLane, setActiveLane] = useState<ProjectIssueLane>("all");
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -792,6 +822,21 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
   });
 
+  const laneCounts = useMemo(() => {
+    const source = issues ?? [];
+    return {
+      all: source.length,
+      human: source.filter(isHumanOwnedProjectIssue).length,
+      execution: source.filter(isExecutionProjectIssue).length,
+      initiative: source.filter((issue) => issue.workItemType === "initiative").length,
+    } satisfies Record<ProjectIssueLane, number>;
+  }, [issues]);
+
+  const visibleIssues = useMemo(
+    () => filterProjectIssuesByLane(issues ?? [], activeLane),
+    [activeLane, issues],
+  );
+
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
       issuesApi.update(id, data),
@@ -802,17 +847,73 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   });
 
   return (
-    <IssuesList
-      issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
-      agents={agents}
-      projects={projects}
-      liveIssueIds={liveIssueIds}
-      projectId={projectId}
-      viewStateKey="paperclip:project-issues-view"
-      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-    />
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 border-b border-border/60 pb-3 md:flex-row md:items-center md:justify-between">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">Project work lanes</div>
+          <div className="text-xs text-muted-foreground">
+            Human tasks stay visible separately from agent execution issues.
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {PROJECT_ISSUE_LANES.map((lane) => {
+            const Icon = lane.icon;
+            const isActive = activeLane === lane.id;
+            return (
+              <button
+                key={lane.id}
+                type="button"
+                onClick={() => setActiveLane(lane.id)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                  isActive
+                    ? "bg-foreground text-background"
+                    : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground",
+                )}
+              >
+                <Icon className="h-3 w-3" />
+                <span>{lane.label}</span>
+                <span
+                  className={cn(
+                    "rounded-full px-1.5 py-0.5 text-[10px] tabular-nums",
+                    isActive ? "bg-background/20 text-background" : "bg-background/70 text-muted-foreground",
+                  )}
+                >
+                  {laneCounts[lane.id]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <IssuesList
+        issues={visibleIssues}
+        isLoading={isLoading}
+        error={error as Error | null}
+        agents={agents}
+        projects={projects}
+        liveIssueIds={liveIssueIds}
+        projectId={projectId}
+        viewStateKey={`paperclip:project-issues-view:${activeLane}`}
+        searchWithinLoadedIssues
+        baseCreateIssueDefaults={activeLane === "human"
+          ? { workItemType: "human_task" }
+          : activeLane === "initiative"
+            ? { workItemType: "initiative" }
+            : activeLane === "execution"
+              ? { workItemType: "ai_task" }
+              : undefined}
+        createIssueLabel={activeLane === "human"
+          ? "Human Task"
+          : activeLane === "initiative"
+            ? "Initiative"
+            : activeLane === "execution"
+              ? "Execution Issue"
+              : undefined}
+        onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+      />
+    </div>
   );
 }
 

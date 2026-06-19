@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
+import { budgetsApi } from "../api/budgets";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
@@ -33,6 +34,7 @@ import {
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
+import { isHumanControlWorkItemType } from "../lib/issue-work-items";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   hasBlockingShortcutDialog,
@@ -77,6 +79,7 @@ import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
+import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -144,6 +147,7 @@ import {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  type BudgetPolicySummary,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
   type ActivityEvent,
@@ -1132,6 +1136,40 @@ type IssueDetailActivityTabProps = {
   handoffFocusSignal?: number;
 };
 
+function fallbackIssueBudgetSummary(input: {
+  companyId: string;
+  issue: Issue;
+  scopeType: "issue_tree" | "issue_children";
+  observedAmount: number;
+}): BudgetPolicySummary {
+  const now = new Date();
+  const issueRef = input.issue.identifier ?? input.issue.id.slice(0, 8);
+  return {
+    policyId: "",
+    companyId: input.companyId,
+    scopeType: input.scopeType,
+    scopeId: input.issue.id,
+    scopeName: input.scopeType === "issue_tree"
+      ? `${input.issue.title} (${issueRef})`
+      : `Execution lanes for ${input.issue.title} (${issueRef})`,
+    metric: "billed_cents",
+    windowKind: "lifetime",
+    amount: 0,
+    observedAmount: input.observedAmount,
+    remainingAmount: 0,
+    utilizationPercent: 0,
+    warnPercent: 80,
+    hardStopEnabled: true,
+    notifyEnabled: true,
+    isActive: false,
+    status: "ok",
+    paused: false,
+    pauseReason: null,
+    windowStart: now,
+    windowEnd: now,
+  };
+}
+
 function IssueDetailActivityTab({
   issue,
   issueId,
@@ -1148,6 +1186,7 @@ function IssueDetailActivityTab({
   checkingMonitorNow,
   handoffFocusSignal = 0,
 }: IssueDetailActivityTabProps) {
+  const queryClient = useQueryClient();
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1182,6 +1221,34 @@ function IssueDetailActivityTab({
     queryKey: queryKeys.issues.costSummary(issueId),
     queryFn: () => issuesApi.getCostSummary(issueId),
     placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getCostSummary>>>(issueId),
+  });
+  const { data: childIssueCostSummary } = useQuery({
+    queryKey: queryKeys.issues.costSummary(issueId, { excludeRoot: true }),
+    queryFn: () => issuesApi.getCostSummary(issueId, { excludeRoot: true }),
+    placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getCostSummary>>>(
+      issueId,
+    ),
+  });
+  const { data: budgetOverview } = useQuery({
+    queryKey: queryKeys.budgets.overview(companyId),
+    queryFn: () => budgetsApi.overview(companyId),
+  });
+  const issueBudgetMutation = useMutation({
+    mutationFn: (input: { scopeType: "issue_tree" | "issue_children"; amountCents: number }) =>
+      budgetsApi.upsertPolicy(companyId, {
+        scopeType: input.scopeType,
+        scopeId: issueId,
+        amount: input.amountCents,
+        windowKind: "lifetime",
+      }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(companyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.costSummary(issueId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.costSummary(issueId, { excludeRoot: true }) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) }),
+      ]);
+    },
   });
   const initialLoading =
     (activityLoading && activity === undefined)
@@ -1250,6 +1317,26 @@ function IssueDetailActivityTab({
       || issueTreeCostSummary.issueCount > 1);
   const shouldShowCostSummary =
     (linkedRuns && linkedRuns.length > 0) || hasIssueTreeCost;
+  const treeBudgetSummary = useMemo(() => {
+    return budgetOverview?.policies.find(
+      (policy) => policy.scopeType === "issue_tree" && policy.scopeId === issueId,
+    ) ?? fallbackIssueBudgetSummary({
+      companyId,
+      issue,
+      scopeType: "issue_tree",
+      observedAmount: issueTreeCostSummary?.costCents ?? 0,
+    });
+  }, [budgetOverview?.policies, companyId, issue, issueId, issueTreeCostSummary?.costCents]);
+  const childBudgetSummary = useMemo(() => {
+    return budgetOverview?.policies.find(
+      (policy) => policy.scopeType === "issue_children" && policy.scopeId === issueId,
+    ) ?? fallbackIssueBudgetSummary({
+      companyId,
+      issue,
+      scopeType: "issue_children",
+      observedAmount: childIssueCostSummary?.costCents ?? 0,
+    });
+  }, [budgetOverview?.policies, childIssueCostSummary?.costCents, companyId, issue, issueId]);
 
   if (initialLoading) {
     return <IssueSectionSkeleton titleWidth="w-20" rows={4} />;
@@ -1318,6 +1405,35 @@ function IssueDetailActivityTab({
           )}
         </div>
       )}
+      <div className="mb-3 grid gap-3 xl:grid-cols-2">
+        <BudgetPolicyCard
+          summary={treeBudgetSummary}
+          compact
+          isSaving={
+            issueBudgetMutation.isPending
+            && issueBudgetMutation.variables?.scopeType === "issue_tree"
+          }
+          onSave={(amountCents) =>
+            issueBudgetMutation.mutate({ scopeType: "issue_tree", amountCents })}
+        />
+        <BudgetPolicyCard
+          summary={childBudgetSummary}
+          compact
+          isSaving={
+            issueBudgetMutation.isPending
+            && issueBudgetMutation.variables?.scopeType === "issue_children"
+          }
+          onSave={(amountCents) =>
+            issueBudgetMutation.mutate({ scopeType: "issue_children", amountCents })}
+        />
+      </div>
+      {issueBudgetMutation.isError ? (
+        <p className="mb-3 text-xs text-destructive">
+          {issueBudgetMutation.error instanceof Error
+            ? issueBudgetMutation.error.message
+            : "Unable to save issue budget."}
+        </p>
+      ) : null}
       <div className="mb-3">
         <IssueRunLedger
           issueId={issueId}
@@ -1667,13 +1783,14 @@ export function IssueDetail() {
     () => buildCompanyUserLabelMap(companyMembers?.users),
     [companyMembers?.users],
   );
+  const isHumanControlIssue = isHumanControlWorkItemType(issue?.workItemType);
   const mentionOptions = useMemo<MentionOption[]>(() => {
     return buildMarkdownMentionOptions({
-      agents,
+      agents: isHumanControlIssue ? [] : agents,
       projects: orderedProjects,
       members: companyMembers?.users,
     });
-  }, [agents, companyMembers?.users, orderedProjects]);
+  }, [agents, companyMembers?.users, isHumanControlIssue, orderedProjects]);
 
   const resolvedProject = useMemo(
     () => (issue?.projectId ? orderedProjects.find((project) => project.id === issue.projectId) ?? issue.project ?? null : null),
@@ -1700,8 +1817,9 @@ export function IssueDetail() {
     [issuePanelKey],
   );
   const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(childIssuesLoading, childIssues.length);
+  const canCreateSubIssues = Boolean(issue && !issue.parentId);
   const openNewSubIssue = useCallback(() => {
-    if (!issue) return;
+    if (!issue || issue.parentId) return;
     openNewIssue(buildSubIssueDefaultsForViewer(issue, currentUserId));
   }, [
     currentUserId,
@@ -1712,17 +1830,19 @@ export function IssueDetail() {
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
     options.push(...buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId] }));
-    const activeAgents = [...(agents ?? [])]
-      .filter((agent) => agent.status !== "terminated")
-      .sort((a, b) => a.name.localeCompare(b.name));
-    for (const agent of activeAgents) {
-      options.push({ id: `agent:${agent.id}`, label: agent.name });
+    if (!isHumanControlIssue) {
+      const activeAgents = [...(agents ?? [])]
+        .filter((agent) => agent.status !== "terminated")
+        .sort((a, b) => a.name.localeCompare(b.name));
+      for (const agent of activeAgents) {
+        options.push({ id: `agent:${agent.id}`, label: agent.name });
+      }
     }
     if (currentUserId) {
       options.push({ id: `user:${currentUserId}`, label: "Me" });
     }
     return options;
-  }, [agents, companyMembers?.users, currentUserId]);
+  }, [agents, companyMembers?.users, currentUserId, isHumanControlIssue]);
 
   const actualAssigneeValue = useMemo(
     () => assigneeValueFromSelection(issue ?? {}),
@@ -1730,13 +1850,15 @@ export function IssueDetail() {
   );
 
   const suggestedAssigneeValue = useMemo(
-    () =>
-      suggestedCommentAssigneeValue(
+    () => {
+      const value = suggestedCommentAssigneeValue(
         issue ?? {},
         mergeIssueComments(comments ?? [], optimisticComments),
         currentUserId,
-      ),
-    [issue, comments, optimisticComments, currentUserId],
+      );
+      return isHumanControlIssue && value.startsWith("agent:") ? "" : value;
+    },
+    [issue, comments, optimisticComments, currentUserId, isHumanControlIssue],
   );
 
   const threadComments = useMemo(
@@ -2779,7 +2901,7 @@ export function IssueDetail() {
       <IssueProperties
         issue={panelIssue}
         childIssues={panelChildIssues}
-        onAddSubIssue={openNewSubIssue}
+        onAddSubIssue={panelIssue.parentId ? undefined : openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
       />
     );
@@ -3835,22 +3957,23 @@ export function IssueDetail() {
             issueLinkState={resolvedIssueDetailState ?? location.state}
             searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
             searchWithinLoadedIssues
-            baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
-            createIssueLabel="Sub-issue"
+            allowCreateIssue={canCreateSubIssues}
+            baseCreateIssueDefaults={canCreateSubIssues ? buildSubIssueDefaultsForViewer(issue, currentUserId) : undefined}
+            createIssueLabel={canCreateSubIssues ? "Sub-issue" : undefined}
             defaultSortField="workflow"
             showProgressSummary
             parentIssueIdForCostSummary={issue.id}
             onUpdateIssue={handleChildIssueUpdate}
           />
         </div>
-      ) : (
+      ) : canCreateSubIssues ? (
         <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
           <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shrink-0 shadow-none">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
             New Sub-issue
           </Button>
         </div>
-      )}
+      ) : null}
 
       <IssueDocumentsSection
         issue={issue}
@@ -4324,7 +4447,7 @@ export function IssueDetail() {
               <IssueProperties
                 issue={issue}
                 childIssues={childIssues}
-                onAddSubIssue={openNewSubIssue}
+                onAddSubIssue={issue.parentId ? undefined : openNewSubIssue}
                 onUpdate={(data) => updateIssue.mutate(data)}
                 inline
               />

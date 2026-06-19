@@ -1,4 +1,4 @@
-import type { CredentialType } from "@paperclipai/shared";
+import type { CredentialType, ProviderCredentialQuota, ProviderCredentialUsage } from "@paperclipai/shared";
 import { api } from "./client";
 
 export interface ProviderCredential {
@@ -21,14 +21,14 @@ export interface ProviderCredential {
   updatedAt: string;
 }
 
-export interface CredentialUsage {
-  credentialId: string;
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  costCents: number;
-  events: number;
-}
+export type CredentialUsage = ProviderCredentialUsage;
+
+export type CredentialUsageResponse = {
+  period?: "calendar_month_utc" | "rolling_days";
+  days?: number;
+  since?: string;
+  usage: CredentialUsage[];
+};
 
 export interface RevealedCredential {
   credential: Record<string, unknown>;
@@ -75,10 +75,23 @@ export const credentialsApi = {
   remove: (id: string, force = false) =>
     api.delete<{ ok: true }>(`/credentials/${id}${force ? "?force=true" : ""}`),
   reveal: (id: string) => api.get<RevealedCredential>(`/credentials/${id}/reveal`),
-  usage: (companyId: string, days = 30) =>
-    api.get<{ days: number; usage: CredentialUsage[] }>(
-      `/companies/${companyId}/credentials/usage?days=${days}`,
-    ),
+  usage: (companyId: string, options: number | { days?: number; period?: "month" } = { period: "month" }) => {
+    const params = new URLSearchParams();
+    if (typeof options === "number") {
+      params.set("days", String(options));
+    } else if (options.period === "month") {
+      params.set("period", "month");
+    } else if (options.days) {
+      params.set("days", String(options.days));
+    } else {
+      params.set("period", "month");
+    }
+    return api.get<CredentialUsageResponse>(
+      `/companies/${companyId}/credentials/usage?${params.toString()}`,
+    );
+  },
+  quotaWindows: (companyId: string) =>
+    api.get<ProviderCredentialQuota[]>(`/companies/${companyId}/credentials/quota-windows`),
   test: (id: string) =>
     api.post<{ ok: boolean; message: string }>(`/credentials/${id}/test`, {}),
   reenable: (id: string) => api.post<ProviderCredential>(`/credentials/${id}/reenable`, {}),

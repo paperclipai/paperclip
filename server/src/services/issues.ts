@@ -78,7 +78,7 @@ const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
-export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
+export const MAX_DIRECT_CHILD_ISSUES_PER_PARENT = 10;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
@@ -246,6 +246,7 @@ export function parseStatusFilter(input: string | readonly string[] | undefined)
 }
 
 const ISSUE_WORK_ITEM_TYPE_SET = new Set<string>(ISSUE_WORK_ITEM_TYPES);
+const HUMAN_CONTROL_WORK_ITEM_TYPES = new Set(["initiative", "human_task"]);
 
 export function parseWorkItemTypeFilter(input: string | readonly string[] | undefined): string[] {
   if (input == null) return [];
@@ -254,6 +255,49 @@ export function parseWorkItemTypeFilter(input: string | readonly string[] | unde
     .flatMap((entry) => (typeof entry === "string" ? entry.split(",") : []))
     .map((workItemType) => workItemType.trim())
     .filter((workItemType) => ISSUE_WORK_ITEM_TYPE_SET.has(workItemType));
+}
+
+function isHumanControlWorkItemType(value: unknown) {
+  return typeof value === "string" && HUMAN_CONTROL_WORK_ITEM_TYPES.has(value);
+}
+
+function assertAgentAssignmentAllowedForWorkItem(workItemType: unknown, assigneeAgentId: string | null | undefined) {
+  if (!assigneeAgentId || !isHumanControlWorkItemType(workItemType)) return;
+  throw unprocessable("Initiatives and human tasks cannot be assigned to AI agents. Create a linked AI execution issue instead.");
+}
+
+async function assertChildIssueCreationAllowed(
+  dbOrTx: DbReader,
+  companyId: string,
+  parentIssueId: string,
+) {
+  const parent = await dbOrTx
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      parentId: issues.parentId,
+    })
+    .from(issues)
+    .where(and(eq(issues.id, parentIssueId), eq(issues.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!parent) throw notFound("Parent issue not found");
+  if (parent.parentId) {
+    throw unprocessable(
+      "Execution lanes cannot create sub-issues. Paperclip supports only one child level under a main parent issue.",
+    );
+  }
+
+  const [{ childCount }] = await dbOrTx
+    .select({ childCount: sql<number>`count(*)::int` })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.parentId, parent.id)));
+  if (childCount >= MAX_DIRECT_CHILD_ISSUES_PER_PARENT) {
+    throw unprocessable(
+      `Parent issue already has the maximum ${MAX_DIRECT_CHILD_ISSUES_PER_PARENT} direct execution lanes.`,
+    );
+  }
+
+  return parent;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -309,6 +353,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  budgetLimits?: unknown;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -2956,6 +3001,7 @@ export function issueService(db: Db) {
           id: issues.id,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
+          workItemType: issues.workItemType,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -2993,7 +3039,10 @@ export function issueService(db: Db) {
       }
 
       return candidates
-        .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
+        .filter((candidate) =>
+          candidate.assigneeAgentId
+          && !isHumanControlWorkItemType(candidate.workItemType)
+          && !["backlog", "done", "cancelled"].includes(candidate.status))
         .map((candidate) => {
           const blockers = blockersByIssueId.get(candidate.id) ?? [];
           return {
@@ -3013,6 +3062,7 @@ export function issueService(db: Db) {
         .map((candidate) => ({
           id: candidate.id,
           assigneeAgentId: candidate.assigneeAgentId!,
+          workItemType: candidate.workItemType,
           blockerIssueIds: candidate.blockerIssueIds,
         }));
     },
@@ -3023,12 +3073,18 @@ export function issueService(db: Db) {
           id: issues.id,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
+          workItemType: issues.workItemType,
           companyId: issues.companyId,
         })
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
-      if (!parent || !parent.assigneeAgentId || ["backlog", "done", "cancelled"].includes(parent.status)) {
+      if (
+        !parent
+        || !parent.assigneeAgentId
+        || isHumanControlWorkItemType(parent.workItemType)
+        || ["backlog", "done", "cancelled"].includes(parent.status)
+      ) {
         return null;
       }
 
@@ -3079,6 +3135,7 @@ export function issueService(db: Db) {
       return {
         id: parent.id,
         assigneeAgentId: parent.assigneeAgentId,
+        workItemType: parent.workItemType,
         childIssueIds: children.map((child) => child.id),
         childIssueSummaries,
         childIssueSummaryTruncated: children.length > childIssueSummaries.length,
@@ -3095,14 +3152,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
-
-      const [{ childCount }] = await db
-        .select({ childCount: sql<number>`count(*)::int` })
-        .from(issues)
-        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parent.id)));
-      if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
-        throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
-      }
+      await assertChildIssueCreationAllowed(db, parent.companyId, parent.id);
 
       const {
         acceptanceCriteria,
@@ -3150,6 +3200,7 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        budgetLimits: _budgetLimits,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -3161,6 +3212,7 @@ export function issueService(db: Db) {
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
+      assertAgentAssignmentAllowedForWorkItem(issueData.workItemType, data.assigneeAgentId);
       if (data.assigneeAgentId) {
         await assertAssignableAgent(companyId, data.assigneeAgentId);
       }
@@ -3171,6 +3223,9 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        if (issueData.parentId) {
+          await assertChildIssueCreationAllowed(tx, companyId, issueData.parentId);
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -3422,10 +3477,12 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+      const nextWorkItemType = issueData.workItemType !== undefined ? issueData.workItemType : existing.workItemType;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
+      assertAgentAssignmentAllowedForWorkItem(nextWorkItemType, nextAssigneeAgentId);
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
@@ -3727,11 +3784,12 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, workItemType: issues.workItemType })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
+      assertAgentAssignmentAllowedForWorkItem(issueCompany.workItemType, agentId);
       await assertAssignableAgent(issueCompany.companyId, agentId);
 
       const now = new Date();

@@ -1,4 +1,5 @@
 import type { CredentialType } from "../constants.js";
+import type { QuotaWindow } from "./quota.js";
 
 export interface ProviderCredential {
   id: string;
@@ -8,4 +9,61 @@ export interface ProviderCredential {
   isDefault: boolean;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface ProviderCredentialQuota {
+  credentialId: string;
+  name: string;
+  type: CredentialType;
+  supported: boolean;
+  ok: boolean;
+  quotaWindows: QuotaWindow[];
+  source?: string | null;
+  cooldownUntil?: string | null;
+  cooldownReason?: string | null;
+  disabledAt?: string | null;
+  error?: string;
+  stale?: boolean;
+  cachedAt?: string | null;
+  sampledAt: string;
+}
+
+export interface ProviderCredentialUsageWindow {
+  label: string;
+  hours: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  costCents: number;
+  apiEquivalentCostCents: number;
+  subscriptionApiEquivalentCostCents: number;
+  events: number;
+}
+
+export interface ProviderCredentialUsageModel {
+  provider: string;
+  biller: string;
+  billingType: string;
+  model: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  costCents: number;
+  apiEquivalentCostCents: number;
+  subscriptionApiEquivalentCostCents: number;
+  events: number;
+  pricingLabel: string | null;
+}
+
+export interface ProviderCredentialUsage {
+  credentialId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  costCents: number;
+  apiEquivalentCostCents: number;
+  subscriptionApiEquivalentCostCents: number;
+  events: number;
+  windows: ProviderCredentialUsageWindow[];
+  models: ProviderCredentialUsageModel[];
 }

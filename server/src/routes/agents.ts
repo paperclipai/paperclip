@@ -1030,27 +1030,44 @@ export function agentRoutes(
     profile: Record<string, unknown>;
     adapterConfig: Record<string, unknown>;
     path: string;
+    adapterType?: string | null;
   }> {
     const runtimeRecord = asRecord(runtimeConfig);
     const modelProfiles = asRecord(runtimeRecord?.modelProfiles);
-    if (!modelProfiles) return [];
-
     const entries: Array<{
       profileKey: string;
       profile: Record<string, unknown>;
       adapterConfig: Record<string, unknown>;
       path: string;
+      adapterType?: string | null;
     }> = [];
-    for (const [profileKey, rawProfile] of Object.entries(modelProfiles)) {
-      const profile = asRecord(rawProfile);
-      const adapterConfig = asRecord(profile?.adapterConfig);
-      if (!profile || !adapterConfig) continue;
-      entries.push({
-        profileKey,
-        profile,
-        adapterConfig,
-        path: `runtimeConfig.modelProfiles.${profileKey}.adapterConfig`,
-      });
+    if (modelProfiles) {
+      for (const [profileKey, rawProfile] of Object.entries(modelProfiles)) {
+        const profile = asRecord(rawProfile);
+        const adapterConfig = asRecord(profile?.adapterConfig);
+        if (!profile || !adapterConfig) continue;
+        entries.push({
+          profileKey,
+          profile,
+          adapterConfig,
+          path: `runtimeConfig.modelProfiles.${profileKey}.adapterConfig`,
+        });
+      }
+    }
+    const routes = asRecord(runtimeRecord?.routes);
+    if (routes) {
+      for (const [routeKey, rawRoute] of Object.entries(routes)) {
+        const route = asRecord(rawRoute);
+        const adapterConfig = asRecord(route?.adapterConfig);
+        if (!route || !adapterConfig) continue;
+        entries.push({
+          profileKey: routeKey,
+          profile: route,
+          adapterConfig,
+          adapterType: asNonEmptyString(route.adapterType),
+          path: `runtimeConfig.routes.${routeKey}.adapterConfig`,
+        });
+      }
     }
     return entries;
   }
@@ -1094,24 +1111,35 @@ export function agentRoutes(
     const normalizedRuntimeConfig = { ...runtimeConfig };
     const modelProfiles = asRecord(runtimeConfig.modelProfiles) ?? {};
     const normalizedModelProfiles = { ...modelProfiles };
-    normalizedRuntimeConfig.modelProfiles = normalizedModelProfiles;
+    const routes = asRecord(runtimeConfig.routes) ?? {};
+    const normalizedRoutes = { ...routes };
+    if (Object.keys(normalizedModelProfiles).length > 0) normalizedRuntimeConfig.modelProfiles = normalizedModelProfiles;
+    if (Object.keys(normalizedRoutes).length > 0) normalizedRuntimeConfig.routes = normalizedRoutes;
 
     for (const entry of entries) {
       const adapterProfile = adapterModelProfiles.find((profile) => profile.key === entry.profileKey);
       const adapterDefaultConfig = asRecord(adapterProfile?.adapterConfig) ?? {};
+      const entryAdapterType = entry.adapterType ?? adapterType;
       const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
         companyId,
-        adapterType,
+        adapterType: entryAdapterType,
         adapterConfig: entry.adapterConfig,
         constraintAdapterConfig: {
-          ...baseAdapterConfig,
+          ...(entry.adapterType ? {} : baseAdapterConfig),
           ...adapterDefaultConfig,
         },
       });
-      normalizedModelProfiles[entry.profileKey] = {
-        ...entry.profile,
-        adapterConfig: normalizedAdapterConfig,
-      };
+      if (entry.path.startsWith("runtimeConfig.routes.")) {
+        normalizedRoutes[entry.profileKey] = {
+          ...entry.profile,
+          adapterConfig: normalizedAdapterConfig,
+        };
+      } else {
+        normalizedModelProfiles[entry.profileKey] = {
+          ...entry.profile,
+          adapterConfig: normalizedAdapterConfig,
+        };
+      }
     }
 
     return normalizedRuntimeConfig;
@@ -2949,6 +2977,36 @@ export function agentRoutes(
     });
 
     res.json(agent);
+  });
+
+  router.post("/agents/:id/heartbeat-runs/cancel-active", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleAgent(req, res, id);
+    if (!agent) {
+      return;
+    }
+
+    const force = (req.body && (req.body as Record<string, unknown>).force) === true;
+    const cancelled = await heartbeat.cancelActiveForAgent(
+      agent.id,
+      "Cancelled by board from agent page",
+      { force },
+    );
+
+    if (cancelled > 0) {
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "heartbeat.bulk_cancelled",
+        entityType: "agent",
+        entityId: agent.id,
+        details: { agentId: agent.id, cancelled, force, source: "agent_detail" },
+      });
+    }
+
+    res.json({ cancelled });
   });
 
   router.post("/agents/:id/approve", async (req, res) => {

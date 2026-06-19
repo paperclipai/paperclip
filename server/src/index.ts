@@ -517,8 +517,8 @@ export async function startServer(): Promise<StartedServer> {
     );
     const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
     betterAuthHandler = createBetterAuthHandler(auth);
-    resolveSession = (req) => resolveBetterAuthSession(auth, req);
-    resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
+    resolveSession = (req) => resolveBetterAuthSession(auth, req, db as any);
+    resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers, db as any);
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
   }

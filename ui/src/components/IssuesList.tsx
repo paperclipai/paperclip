@@ -16,6 +16,7 @@ import {
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
+import { buildIssueLabelParts } from "../lib/issue-labels";
 import {
   buildSubIssueProgressSummary,
   shouldRenderSubIssueProgressSummary,
@@ -41,6 +42,7 @@ import {
   resolveIssueWorkspaceName,
   type InboxIssueColumn,
 } from "../lib/inbox";
+import { isHumanControlWorkItemType } from "../lib/issue-work-items";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
 import {
   InboxIssueMetaLeading,
@@ -67,7 +69,7 @@ import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
-import { ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
+import { ISSUE_STATUSES, type Issue, type IssueStatus, type IssueWorkItemType, type Project } from "@paperclipai/shared";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
@@ -105,6 +107,14 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
   done: "bg-green-500",
   blocked: "bg-red-500",
   cancelled: "bg-neutral-400",
+};
+const workItemTypeBadgeClasses: Partial<Record<IssueWorkItemType, string>> = {
+  initiative: "border-violet-500/35 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+  human_task: "border-blue-500/35 bg-blue-500/10 text-blue-700 dark:text-blue-300",
+};
+const workItemTypeLabels: Partial<Record<IssueWorkItemType, string>> = {
+  initiative: "Initiative",
+  human_task: "Human task",
 };
 
 /* ── View state ── */
@@ -362,6 +372,7 @@ interface IssuesListProps {
   searchWithinLoadedIssues?: boolean;
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
+  allowCreateIssue?: boolean;
   defaultSortField?: IssueSortField;
   showProgressSummary?: boolean;
   /**
@@ -574,6 +585,7 @@ export function IssuesList({
   searchWithinLoadedIssues = false,
   baseCreateIssueDefaults,
   createIssueLabel,
+  allowCreateIssue = true,
   defaultSortField,
   showProgressSummary = false,
   parentIssueIdForCostSummary,
@@ -1279,10 +1291,12 @@ export function IssuesList({
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-2 sm:gap-3">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <Button size="sm" variant="outline" className="h-8 px-2 text-xs sm:h-9 sm:px-3 sm:text-sm" onClick={() => openCreateIssueDialog()}>
-            <Plus className="h-4 w-4 sm:mr-1" />
-            <span className="hidden sm:inline">{createButtonLabel}</span>
-          </Button>
+          {allowCreateIssue ? (
+            <Button size="sm" variant="outline" className="h-8 px-2 text-xs sm:h-9 sm:px-3 sm:text-sm" onClick={() => openCreateIssueDialog()}>
+              <Plus className="h-4 w-4 sm:mr-1" />
+              <span className="hidden sm:inline">{createButtonLabel}</span>
+            </Button>
+          ) : null}
           <IssueSearchInput
             value={issueSearch}
             onDebouncedChange={(nextSearch) => {
@@ -1444,8 +1458,8 @@ export function IssuesList({
         <EmptyState
           icon={CircleDot}
           message="No issues match the current filters or search."
-          action={createActionLabel}
-          onAction={() => openCreateIssueDialog()}
+          action={allowCreateIssue ? createActionLabel : undefined}
+          onAction={allowCreateIssue ? () => openCreateIssueDialog() : undefined}
         />
       )}
 
@@ -1484,7 +1498,7 @@ export function IssuesList({
                       : [...viewState.collapsedGroups, group.key],
                   });
                 }}
-                trailing={(
+                trailing={allowCreateIssue ? (
                   <Button
                     variant="ghost"
                     size="icon-xs"
@@ -1495,7 +1509,7 @@ export function IssuesList({
                   >
                     <Plus className="h-3 w-3" />
                   </Button>
-                )}
+                ) : undefined}
               />
             )}
             <CollapsibleContent>
@@ -1517,6 +1531,7 @@ export function IssuesList({
                   const parentIssue = issue.parentId ? issueById.get(issue.parentId) ?? null : null;
                   const issueBadge = issueBadgeById?.get(issue.id);
                   const isMutedIssue = mutedIssueIds?.has(issue.id) === true;
+                  const isHumanControlIssue = isHumanControlWorkItemType(issue.workItemType);
                   const assigneeUserProfile = issue.assigneeUserId
                     ? companyUserProfileMap.get(issue.assigneeUserId) ?? null
                     : null;
@@ -1525,6 +1540,12 @@ export function IssuesList({
                     currentUserId,
                     companyUserLabelMap,
                   ) ?? assigneeUserProfile?.label ?? null;
+                  const workItemTypeLabel = isHumanControlIssue
+                    ? workItemTypeLabels[issue.workItemType ?? "ai_task"] ?? null
+                    : null;
+                  const workItemTypeOwnerLabel = issue.workItemType === "human_task" && assigneeUserLabel
+                    ? `${workItemTypeLabel} · ${assigneeUserLabel}`
+                    : workItemTypeLabel;
                   const toggleCollapse = (e: { preventDefault: () => void; stopPropagation: () => void }) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1545,7 +1566,7 @@ export function IssuesList({
                     .map((blockerId) => {
                       const blockerIssue = issueById.get(blockerId);
                       if (!blockerIssue) return null;
-                      const label = blockerIssue.identifier ?? blockerIssue.id.slice(0, 8);
+                      const label = buildIssueLabelParts(blockerIssue).text;
                       const blockerStep = checklistMeta?.stepNumberByIssueId.get(blockerId);
                       const blockerStepSuffix = blockerStep ? ` \u00b7 step ${blockerStep}` : "";
                       return { blockerId, chipLabel: `blocked by ${label}${blockerStepSuffix}` };
@@ -1609,6 +1630,17 @@ export function IssuesList({
                         titleClassName={doneRowTitleClass}
                         titleSuffix={(
                           <>
+                            {workItemTypeOwnerLabel ? (
+                              <span
+                                className={cn(
+                                  "ml-1.5 inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+                                  workItemTypeBadgeClasses[issue.workItemType ?? "ai_task"],
+                                )}
+                                title={issue.assigneeUserId ? `Human owner: ${assigneeUserLabel ?? issue.assigneeUserId}` : workItemTypeLabel ?? undefined}
+                              >
+                                {workItemTypeOwnerLabel}
+                              </span>
+                            ) : null}
                             {hasChildren && !isExpanded ? (
                               <span className="ml-1.5 text-xs text-muted-foreground">
                                 ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
@@ -1779,6 +1811,7 @@ export function IssuesList({
                                       )}
                                       {(agents ?? [])
                                         .filter((agent) => {
+                                          if (isHumanControlIssue) return false;
                                           if (!assigneeSearch.trim()) return true;
                                           return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
                                         })

@@ -59,6 +59,7 @@ import * as serviceIndex from "../services/index.js";
 import {
   accessService,
   agentService,
+  budgetService,
   companyService,
   companySearchService,
   executionWorkspaceService,
@@ -190,6 +191,14 @@ function buildCreateIssueActivityStatusDetails(
         : "no_agent_assignee"
       : null,
   };
+}
+
+function isHumanControlWorkItemType(value: unknown) {
+  return value === "initiative" || value === "human_task";
+}
+
+function issueAllowsAgentWakeups(issue: { workItemType?: string | null }) {
+  return !isHumanControlWorkItemType(issue.workItemType);
 }
 
 const SUCCESSFUL_RUN_HANDOFF_ACTIONS = [
@@ -862,6 +871,9 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const budgetsSvc = budgetService(db, {
+    cancelWorkForScope: heartbeat.cancelBudgetScopeWork,
+  });
   const webPush = webPushService(db);
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
@@ -1398,6 +1410,51 @@ export function issueRoutes(
       error: getClosedIsolatedExecutionWorkspaceMessage(workspace),
       executionWorkspace: workspace,
     });
+  }
+
+  async function syncIssueBudgetLimits(input: {
+    companyId: string;
+    issueId: string;
+    budgetLimits: {
+      issueTreeCents?: number | null;
+      childIssuesCents?: number | null;
+      windowKind?: "calendar_month_utc" | "lifetime";
+    } | null | undefined;
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    if (!input.budgetLimits) return;
+    const actorUserId = input.actor.actorType === "user" ? input.actor.actorId : null;
+    const windowKind = input.budgetLimits.windowKind ?? "lifetime";
+    const upserts: Array<Promise<unknown>> = [];
+    if (input.budgetLimits.issueTreeCents !== undefined) {
+      upserts.push(
+        budgetsSvc.upsertPolicy(
+          input.companyId,
+          {
+            scopeType: "issue_tree",
+            scopeId: input.issueId,
+            amount: Math.max(0, Math.floor(input.budgetLimits.issueTreeCents ?? 0)),
+            windowKind,
+          },
+          actorUserId,
+        ),
+      );
+    }
+    if (input.budgetLimits.childIssuesCents !== undefined) {
+      upserts.push(
+        budgetsSvc.upsertPolicy(
+          input.companyId,
+          {
+            scopeType: "issue_children",
+            scopeId: input.issueId,
+            amount: Math.max(0, Math.floor(input.budgetLimits.childIssuesCents ?? 0)),
+            windowKind,
+          },
+          actorUserId,
+        ),
+      );
+    }
+    await Promise.all(upserts);
   }
 
   async function resolveIssueRouteId(rawId: string): Promise<string> {
@@ -2638,7 +2695,12 @@ export function issueRoutes(
     }
     const resolvedVisibility: "private" | "company" =
       req.body.visibility ?? (req.body.projectId ? "company" : "private");
-    const { dueDate: dueDateRaw, workLeadDays: workLeadDaysRaw, ...createBody } = req.body;
+    const {
+      dueDate: dueDateRaw,
+      workLeadDays: workLeadDaysRaw,
+      budgetLimits,
+      ...createBody
+    } = req.body;
     const issue = await svc.create(companyId, {
       ...createBody,
       ...(dueDateRaw !== undefined ? { dueDate: dueDateRaw ? new Date(dueDateRaw) : null } : {}),
@@ -2648,6 +2710,7 @@ export function issueRoutes(
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
+    await syncIssueBudgetLimits({ companyId, issueId: issue.id, budgetLimits, actor });
     await issueReferencesSvc.syncIssue(issue.id);
     const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
     const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -2810,14 +2873,16 @@ export function issueRoutes(
       actor.actorType,
     );
     assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    const { budgetLimits, ...childBody } = req.body;
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
-      ...req.body,
+      ...childBody,
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     });
+    await syncIssueBudgetLimits({ companyId: parent.companyId, issueId: issue.id, budgetLimits, actor });
 
     await logActivity(db, {
       companyId: parent.companyId,
@@ -2966,6 +3031,7 @@ export function issueRoutes(
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
       dueDate: dueDateRaw,
+      budgetLimits,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -3214,6 +3280,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    await syncIssueBudgetLimits({ companyId: issue.companyId, issueId: issue.id, budgetLimits, actor });
     if (issue.assigneeUserId && issue.assigneeUserId !== existing.assigneeUserId) {
       await visibility.ensureCollaborator({
         companyId: issue.companyId,
@@ -3649,6 +3716,7 @@ export function issueRoutes(
     void (async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
+      const allowDirectAgentWakeups = issueAllowsAgentWakeups(issue);
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
         const wakeIssueId =
           wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
@@ -3657,9 +3725,9 @@ export function issueRoutes(
         wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
       };
 
-      if (executionStageWakeup) {
+      if (allowDirectAgentWakeups && executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId) {
+      } else if (allowDirectAgentWakeups && assigneeChanged && issue.assigneeAgentId) {
         // Master fork: wake agents even on backlog assignments — otherwise backlog items never start.
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
@@ -3691,6 +3759,7 @@ export function issueRoutes(
       }
 
       if (
+        allowDirectAgentWakeups &&
         !assigneeChanged &&
         (statusChangedFromBacklog || statusChangedFromBlockedToTodo || statusChangedFromClosedToTodo) &&
         issue.assigneeAgentId
@@ -3716,7 +3785,7 @@ export function issueRoutes(
         });
       }
 
-      if (commentBody && comment) {
+      if (allowDirectAgentWakeups && commentBody && comment) {
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
@@ -3820,6 +3889,7 @@ export function issueRoutes(
           for (const child of children) {
             if (
               child.assigneeAgentId &&
+              issueAllowsAgentWakeups(child) &&
               child.status !== "done" &&
               child.status !== "cancelled"
             ) {
@@ -4942,11 +5012,12 @@ export function issueRoutes(
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+      const allowDirectAgentWakeups = issueAllowsAgentWakeups(currentIssue);
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
       const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
+      if (allowDirectAgentWakeups && assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",
@@ -5003,10 +5074,12 @@ export function issueRoutes(
       }
 
       let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+      if (allowDirectAgentWakeups) {
+        try {
+          mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+        } catch (err) {
+          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+        }
       }
 
       for (const mentionedId of mentionedIds) {

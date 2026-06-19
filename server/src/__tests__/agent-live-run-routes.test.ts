@@ -13,6 +13,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
+  cancelActiveForAgent: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -230,6 +231,7 @@ describe("agent live run routes", () => {
       invocationSource: "on_demand",
       triggerDetail: "manual",
     });
+    mockHeartbeatService.cancelActiveForAgent.mockResolvedValue(0);
   });
 
   it("returns a compact active run payload for issue polling", async () => {
@@ -605,5 +607,30 @@ describe("agent live run routes", () => {
         actorId: "local-board",
       },
     });
+  });
+
+  it("bulk-cancels an agent's queued and running heartbeat runs", async () => {
+    mockAgentService.getById.mockResolvedValueOnce({
+      id: routeAgentId,
+      companyId: "company-1",
+      name: "Builder",
+      adapterType: "codex_local",
+    });
+    mockHeartbeatService.cancelActiveForAgent.mockResolvedValueOnce(3);
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat-runs/cancel-active?companyId=company-1`)
+        .send({ force: true }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.cancelActiveForAgent).toHaveBeenCalledWith(
+      routeAgentId,
+      "Cancelled by board from agent page",
+      { force: true },
+    );
+    expect(res.body).toEqual({ cancelled: 3 });
   });
 });

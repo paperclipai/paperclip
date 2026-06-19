@@ -1,8 +1,20 @@
-import { afterEach, describe, expect, it } from "vitest";
+import express from "express";
+import request from "supertest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BetterAuthOptions } from "better-auth";
 import { getCookies } from "better-auth/cookies";
+
+const { toNodeHandlerMock } = vi.hoisted(() => ({
+  toNodeHandlerMock: vi.fn(),
+}));
+
+vi.mock("better-auth/node", () => ({
+  toNodeHandler: toNodeHandlerMock,
+}));
+
 import {
   buildBetterAuthAdvancedOptions,
+  createBetterAuthHandler,
   deriveAuthCookiePrefix,
   deriveAuthTrustedOrigins,
 } from "../auth/better-auth.js";
@@ -12,6 +24,7 @@ const ORIGINAL_INSTANCE_ID = process.env.PAPERCLIP_INSTANCE_ID;
 afterEach(() => {
   if (ORIGINAL_INSTANCE_ID === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
   else process.env.PAPERCLIP_INSTANCE_ID = ORIGINAL_INSTANCE_ID;
+  toNodeHandlerMock.mockReset();
 });
 
 describe("Better Auth cookie scoping", () => {
@@ -74,5 +87,63 @@ describe("Better Auth cookie scoping", () => {
     ]));
     expect(trustedOrigins).not.toContain("https://board.example.test:3100");
     expect(trustedOrigins).not.toContain("http://board.example.test:3100");
+  });
+});
+
+describe("Better Auth request handler", () => {
+  function buildAuthApp() {
+    const app = express();
+    app.all("/api/auth/{*authPath}", createBetterAuthHandler({} as never));
+    app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      res.status((err as { status?: number })?.status ?? 500).json({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    return app;
+  }
+
+  it("finishes successful auth responses without waiting for next()", async () => {
+    let calls = 0;
+    toNodeHandlerMock.mockReturnValue(async (_req: express.Request, res: express.Response) => {
+      calls += 1;
+      res.status(200).json({ ok: true });
+    });
+
+    await expect(request(buildAuthApp()).post("/api/auth/sign-in/email")).resolves.toMatchObject({
+      status: 200,
+      body: { ok: true },
+    });
+    expect(calls).toBe(1);
+  });
+
+  it("retries one retryable sign-in handler failure", async () => {
+    let calls = 0;
+    toNodeHandlerMock.mockReturnValue(async (_req: express.Request, res: express.Response) => {
+      calls += 1;
+      if (calls === 1) {
+        throw Object.assign(new Error("database connection dropped"), { status: 500 });
+      }
+      res.status(200).json({ ok: true });
+    });
+
+    await expect(request(buildAuthApp()).post("/api/auth/sign-in/email")).resolves.toMatchObject({
+      status: 200,
+      body: { ok: true },
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("does not retry non-sign-in auth handler failures", async () => {
+    let calls = 0;
+    toNodeHandlerMock.mockReturnValue(async () => {
+      calls += 1;
+      throw Object.assign(new Error("database connection dropped"), { status: 500 });
+    });
+
+    await expect(request(buildAuthApp()).post("/api/auth/sign-out")).resolves.toMatchObject({
+      status: 500,
+      body: { error: "database connection dropped" },
+    });
+    expect(calls).toBe(1);
   });
 });

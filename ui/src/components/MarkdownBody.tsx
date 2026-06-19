@@ -10,6 +10,7 @@ import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chi
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
+import { buildIssueLabelParts } from "../lib/issue-labels";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
 
@@ -47,22 +48,28 @@ function MarkdownIssueLink({
   });
 
   const identifier = data?.identifier ?? issuePathId;
-  const title = data?.title ?? identifier;
   const status = data?.status;
-  const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
+  const labelParts = buildIssueLabelParts(data ?? { id: issuePathId, identifier }, identifier);
 
   return (
     <Link
       to={`/issues/${identifier}`}
       data-mention-kind="issue"
       className="paperclip-markdown-issue-ref"
-      title={title}
-      aria-label={issueLabel}
+      title={labelParts.text}
+      aria-label={labelParts.ariaLabel}
     >
       {status ? (
         <StatusIcon status={status} className="mr-1 h-3 w-3 align-[-0.125em]" />
       ) : null}
-      {children}
+      {labelParts.identifierSuffix ? (
+        <>
+          <span>{labelParts.title}</span>
+          <span className="ml-1 font-mono text-[0.88em] text-muted-foreground">
+            {labelParts.identifierSuffix}
+          </span>
+        </>
+      ) : children}
     </Link>
   );
 }

@@ -7,6 +7,7 @@ import {
   agents,
   companies,
   companyMemberships,
+  costEvents,
   createDb,
   providerCredentials,
 } from "@paperclipai/db";
@@ -36,6 +37,7 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
   }, 30_000);
 
   afterEach(async () => {
+    await db.delete(costEvents);
     await db.delete(agentCredentials);
     await db.delete(agents);
     await db.delete(providerCredentials);
@@ -168,6 +170,66 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
       ok: false,
       error: "mixed_codex_auth_modes",
     });
+  });
+
+  it("reports API-equivalent value and rolling windows for subscription credential usage", async () => {
+    const { company, agent } = await setupCompanyAndAgent("codex_local");
+    const svc = credentialService(db);
+    const codexCred = await svc.create(company.id, {
+      name: "codex-subscription",
+      type: "codex_oauth",
+      credential: {
+        accessToken: "codex-oauth-access-token",
+      },
+    });
+
+    await db.insert(costEvents).values([
+      {
+        companyId: company.id,
+        agentId: agent.id,
+        credentialId: codexCred.id,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        model: "gpt-5.3-codex",
+        inputTokens: 1_000_000,
+        cachedInputTokens: 100_000,
+        outputTokens: 1_000_000,
+        costCents: 0,
+        occurredAt: new Date(),
+      },
+      {
+        companyId: company.id,
+        agentId: agent.id,
+        credentialId: codexCred.id,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        model: "gpt-5.3-codex",
+        inputTokens: 1_000_000,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: 0,
+        occurredAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
+      },
+    ]);
+
+    const usage = await svc.usageByCredential(company.id, 30 * 24 * 60 * 60 * 1000);
+    const row = usage.find((entry) => entry.credentialId === codexCred.id);
+    expect(row).toBeDefined();
+    expect(row?.costCents).toBe(0);
+    expect(row?.apiEquivalentCostCents).toBeGreaterThan(0);
+    expect(row?.subscriptionApiEquivalentCostCents).toBe(row?.apiEquivalentCostCents);
+    expect(row?.inputTokens).toBe(2_000_000);
+    expect(row?.cachedInputTokens).toBe(100_000);
+    expect(row?.outputTokens).toBe(1_000_000);
+
+    const fiveHour = row?.windows.find((window) => window.label === "5h");
+    const sevenDay = row?.windows.find((window) => window.label === "7d");
+    const thirtyDay = row?.windows.find((window) => window.label === "30d");
+    expect(fiveHour?.inputTokens).toBe(1_000_000);
+    expect(sevenDay?.inputTokens).toBe(2_000_000);
+    expect(thirtyDay?.apiEquivalentCostCents).toBe(row?.apiEquivalentCostCents);
   });
 
   it("attributes codex OpenAI API-key auth to the selected OpenAI credential", () => {

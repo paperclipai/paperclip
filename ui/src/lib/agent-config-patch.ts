@@ -19,6 +19,18 @@ export interface AgentConfigOverlay {
   credentialId?: string | null;
   credentialIds?: string[];
   modelProfiles?: { cheap?: AgentModelProfileOverlay };
+  routes?: {
+    cheap?: AgentRuntimeRouteOverlay;
+    backup?: AgentRuntimeRouteOverlay;
+  };
+}
+
+export interface AgentRuntimeRouteOverlay {
+  enabled?: boolean;
+  adapterType?: string;
+  adapterConfig?: Record<string, unknown>;
+  credentialIds?: string[];
+  cleared?: boolean;
 }
 
 const ADAPTER_AGNOSTIC_KEYS = [
@@ -71,8 +83,9 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
   const cheapOverlay = overlay.modelProfiles?.cheap;
   const hasModelProfileChange = cheapOverlay !== undefined;
+  const hasRouteChange = overlay.routes?.cheap !== undefined || overlay.routes?.backup !== undefined;
 
-  if (Object.keys(overlay.heartbeat).length > 0 || hasModelProfileChange) {
+  if (Object.keys(overlay.heartbeat).length > 0 || hasModelProfileChange || hasRouteChange) {
     const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
     const nextRuntimeConfig: Record<string, unknown> = (patch.runtimeConfig as Record<string, unknown> | undefined)
       ?? { ...existingRc };
@@ -106,6 +119,36 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
         delete nextRuntimeConfig.modelProfiles;
       } else {
         nextRuntimeConfig.modelProfiles = nextProfiles;
+      }
+    }
+
+    if (hasRouteChange) {
+      const existingRoutes = ((existingRc.routes ?? {}) as Record<string, unknown>);
+      const nextRoutes = { ...existingRoutes };
+      for (const key of ["cheap", "backup"] as const) {
+        const routeOverlay = overlay.routes?.[key];
+        if (!routeOverlay) continue;
+        if (routeOverlay.cleared) {
+          delete nextRoutes[key];
+          continue;
+        }
+        const existingRoute = ((existingRoutes[key] ?? {}) as Record<string, unknown>);
+        const mergedAdapterConfig = {
+          ...((existingRoute.adapterConfig ?? {}) as Record<string, unknown>),
+          ...(routeOverlay.adapterConfig ?? {}),
+        };
+        nextRoutes[key] = {
+          ...existingRoute,
+          ...(routeOverlay.enabled !== undefined ? { enabled: routeOverlay.enabled } : {}),
+          ...(routeOverlay.adapterType !== undefined ? { adapterType: routeOverlay.adapterType } : {}),
+          ...(routeOverlay.credentialIds !== undefined ? { credentialIds: routeOverlay.credentialIds } : {}),
+          adapterConfig: omitUndefinedEntries(mergedAdapterConfig),
+        };
+      }
+      if (Object.keys(nextRoutes).length === 0) {
+        delete nextRuntimeConfig.routes;
+      } else {
+        nextRuntimeConfig.routes = nextRoutes;
       }
     }
 

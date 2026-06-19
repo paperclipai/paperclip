@@ -583,7 +583,7 @@ describe("IssuesList", () => {
       expect(rows.filter((row) => row.getAttribute("data-current-step") === "true")).toHaveLength(1);
       expect(rows.find((row) => row.textContent?.includes("Active blocker"))?.getAttribute("data-current-step")).toBe("true");
       expect(rows.find((row) => row.textContent?.includes("Done first"))?.getAttribute("data-title-class")).toContain("text-muted-foreground");
-      expect(container.textContent).toContain("blocked by PAP-3 · step 2");
+      expect(container.textContent).toContain("blocked by Active blocker PAP-3 · step 2");
     });
 
     act(() => {
@@ -723,14 +723,14 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("blocked by PAP-2");
+      expect(container.textContent).toContain("blocked by First blocker PAP-2");
       expect(container.textContent).toContain("... and 2 more");
       expect(container.textContent).not.toContain("blocked by PAP-3");
       expect(container.textContent).not.toContain("blocked by PAP-4");
       const blockerButtons = Array.from(container.querySelectorAll("button"))
         .filter((button) => button.textContent?.includes("blocked by"));
       expect(blockerButtons).toHaveLength(1);
-      expect(blockerButtons[0]?.textContent).toBe("blocked by PAP-2 · step 2 ... and 2 more");
+      expect(blockerButtons[0]?.textContent).toBe("blocked by First blocker PAP-2 · step 2 ... and 2 more");
     });
 
     act(() => {

@@ -1008,6 +1008,7 @@ export interface ParsedIssueAssigneeAdapterOverrides {
 
 type ModelProfileRequestSource = "issue_override" | "wake_context";
 type AppliedModelProfileConfigSource = "agent_runtime" | "adapter_default";
+type RuntimeRouteKey = "primary" | "cheap" | "backup";
 
 export interface ModelProfileApplication {
   requested: ModelProfileKey | null;
@@ -1016,6 +1017,16 @@ export interface ModelProfileApplication {
   configSource: AppliedModelProfileConfigSource | null;
   fallbackReason: string | null;
   adapterConfig: Record<string, unknown> | null;
+}
+
+interface RuntimeRouteApplication {
+  requested: RuntimeRouteKey;
+  requestedBy: "default" | "model_profile" | "backup_retry";
+  applied: RuntimeRouteKey;
+  adapterType: string;
+  adapterConfig: Record<string, unknown> | null;
+  credentialIds: string[] | null;
+  fallbackReason: string | null;
 }
 
 export type ResolvedWorkspaceForRun = {
@@ -1068,6 +1079,93 @@ function readContextModelProfile(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ): ModelProfileKey | null {
   return readModelProfileKey(contextSnapshot?.modelProfile);
+}
+
+function readRuntimeRouteKey(value: unknown): RuntimeRouteKey | null {
+  return value === "primary" || value === "cheap" || value === "backup"
+    ? value
+    : null;
+}
+
+function readAgentRuntimeRoute(runtimeConfig: unknown, key: RuntimeRouteKey): Record<string, unknown> | null {
+  if (key === "primary") return null;
+  const routes = parseObject(parseObject(runtimeConfig).routes);
+  const route = parseObject(routes[key]);
+  return Object.keys(route).length > 0 ? route : null;
+}
+
+function resolveRuntimeRouteApplication(input: {
+  agentAdapterType: string;
+  agentRuntimeConfig: unknown;
+  issueModelProfile: ModelProfileKey | null | undefined;
+  contextSnapshot: Record<string, unknown> | null | undefined;
+}): RuntimeRouteApplication {
+  const explicitRoute = readRuntimeRouteKey(input.contextSnapshot?.modelRoute);
+  const requested =
+    explicitRoute ??
+    (input.issueModelProfile === "cheap" || readContextModelProfile(input.contextSnapshot) === "cheap"
+      ? "cheap"
+      : "primary");
+
+  if (requested === "primary") {
+    return {
+      requested,
+      requestedBy: "default",
+      applied: "primary",
+      adapterType: input.agentAdapterType,
+      adapterConfig: null,
+      credentialIds: null,
+      fallbackReason: null,
+    };
+  }
+
+  const route = readAgentRuntimeRoute(input.agentRuntimeConfig, requested);
+  if (!route) {
+    return {
+      requested,
+      requestedBy: requested === "backup" ? "backup_retry" : "model_profile",
+      applied: "primary",
+      adapterType: input.agentAdapterType,
+      adapterConfig: null,
+      credentialIds: null,
+      fallbackReason: "route_not_configured",
+    };
+  }
+  if (route.enabled === false) {
+    return {
+      requested,
+      requestedBy: requested === "backup" ? "backup_retry" : "model_profile",
+      applied: "primary",
+      adapterType: input.agentAdapterType,
+      adapterConfig: null,
+      credentialIds: null,
+      fallbackReason: "route_disabled",
+    };
+  }
+
+  const credentialIds = Array.isArray(route.credentialIds)
+    ? route.credentialIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  return {
+    requested,
+    requestedBy: requested === "backup" ? "backup_retry" : "model_profile",
+    applied: requested,
+    adapterType: readNonEmptyString(route.adapterType) ?? input.agentAdapterType,
+    adapterConfig: parseObject(route.adapterConfig),
+    credentialIds: credentialIds.length > 0 ? credentialIds : null,
+    fallbackReason: null,
+  };
+}
+
+function runtimeRouteRunMetadata(route: RuntimeRouteApplication): Record<string, unknown> {
+  return {
+    requested: route.requested,
+    requestedBy: route.requestedBy,
+    applied: route.applied,
+    adapterType: route.adapterType,
+    credentialIds: route.credentialIds ?? undefined,
+    fallbackReason: route.fallbackReason,
+  };
 }
 
 export function normalizeModelProfileWakeContext(input: {
@@ -2183,7 +2281,7 @@ export function buildPaperclipTaskMarkdown(input: {
         directive = "Update the plan only. Do not write code or perform implementation work.";
       }
       if (acceptedPlanContinuation) {
-        directive = "Create child issues from the approved plan only. Do not write code or perform implementation work on the planning issue.";
+        directive = "Create direct child execution lanes from the approved plan only. Do not write code or perform implementation work on the planning issue, and never create grandchildren.";
       }
       lines.push(
         `- Work mode: ${quoteTaskScalar("planning")}`,
@@ -5167,6 +5265,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wakeReason?: string;
       maxAttempts?: number;
       delayMs?: number;
+      contextPatch?: Record<string, unknown>;
     },
   ) {
     const now = opts?.now ?? new Date();
@@ -5253,6 +5352,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
       ...contextSnapshot,
+      ...(opts?.contextPatch ?? {}),
       retryOfRunId: run.id,
       wakeReason,
       retryReason,
@@ -6866,7 +6966,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
-    const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
     const issueDependencyReadiness = issueId
@@ -6920,6 +7019,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             raw: issueContext.assigneeAdapterOverrides,
           })
         : null;
+    let routeApplication = resolveRuntimeRouteApplication({
+      agentAdapterType: agent.adapterType,
+      agentRuntimeConfig: agent.runtimeConfig,
+      issueModelProfile: issueAssigneeOverrides?.modelProfile ?? null,
+      contextSnapshot: context,
+    });
+    context.paperclipRoute = runtimeRouteRunMetadata(routeApplication);
+    if (routeApplication.applied !== "primary") {
+      context.modelRoute = routeApplication.applied;
+    }
+    let sessionCodec = getAdapterSessionCodec(routeApplication.adapterType);
     const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
       ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings)
@@ -6942,7 +7052,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       isolatedWorkspacesEnabled,
     );
     const taskSession = taskKey
-      ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
+      ? await getTaskSession(agent.companyId, agent.id, routeApplication.adapterType, taskKey)
       : null;
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
@@ -6955,7 +7065,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(explicitResumeSessionParams) : null) ??
         readNonEmptyString(explicitResumeSessionParams?.sessionId),
     );
-    const previousSessionParams =
+    let previousSessionParams =
       explicitResumeSessionParams ??
       (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??
       normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null));
@@ -7100,7 +7210,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
     let profileResolutionFallbackReason: string | null = null;
     try {
-      adapterModelProfiles = await listAdapterModelProfiles(agent.adapterType);
+      adapterModelProfiles = await listAdapterModelProfiles(routeApplication.adapterType);
     } catch (error) {
       profileResolutionFallbackReason = "adapter_profile_resolution_failed";
       logger.warn(
@@ -7108,7 +7218,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           err: error,
           companyId: agent.companyId,
           agentId: agent.id,
-          adapterType: agent.adapterType,
+          adapterType: routeApplication.adapterType,
           runId: run.id,
         },
         "Failed to resolve adapter model profiles; falling back to primary adapter config",
@@ -7128,8 +7238,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipModelProfile;
     }
+    const routeBaseConfig =
+      routeApplication.adapterType === agent.adapterType
+        ? {
+            ...persistedWorkspaceManagedConfig,
+            ...(routeApplication.adapterConfig ?? {}),
+          }
+        : {
+            ...Object.fromEntries(
+              Object.entries(persistedWorkspaceManagedConfig).filter(([key]) =>
+                [
+                  "env",
+                  "cwd",
+                  "timeoutSec",
+                  "graceSec",
+                  "promptTemplate",
+                  "workspaceRuntime",
+                  "executionWorkspace",
+                ].includes(key),
+              ),
+            ),
+            ...(routeApplication.adapterConfig ?? {}),
+          };
     const mergedConfig = mergeModelProfileAdapterConfig({
-      baseConfig: persistedWorkspaceManagedConfig,
+      baseConfig: routeBaseConfig,
       modelProfile: modelProfileApplication,
       issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
     });
@@ -7151,15 +7283,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let runActiveCredentialId: string | null = null;
     let runActiveCredentialType: string | null = null;
     try {
-      const credResolution = await resolveAllCredentialEnv(db, agent.id);
+      const credResolution = await resolveAllCredentialEnv(
+        db,
+        agent.id,
+        routeApplication.adapterType,
+        routeApplication.credentialIds,
+      );
       const existingEnv = parseObject(resolvedConfig.env);
       const mergedEnv = {
         ...existingEnv,
         ...credResolution.env,
       };
       const activeChoice = selectActiveCredentialForAdapter({
-        adapterType: agent.adapterType,
-        adapterConfig: parseObject(agent.adapterConfig),
+        adapterType: routeApplication.adapterType,
+        adapterConfig: parseObject(mergedConfig),
         chosen: credResolution.chosen,
         env: mergedEnv,
       });
@@ -7372,7 +7509,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       companyId: agent.companyId,
       selectedEnvironmentId: persistedEnvironmentId,
       defaultEnvironmentId: defaultEnvironment.id,
-      adapterType: agent.adapterType,
+      adapterType: routeApplication.adapterType,
       issueId: issueId ?? null,
       heartbeatRunId: run.id,
       agentId: agent.id,
@@ -7387,7 +7524,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const realizationResult = await envOrchestrator.realizeForRun({
       environment: selectedEnvironment,
       lease: activeEnvironmentLease.lease,
-      adapterType: agent.adapterType,
+      adapterType: routeApplication.adapterType,
       companyId: agent.companyId,
       issueId: issueId ?? null,
       heartbeatRunId: run.id,
@@ -7753,13 +7890,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: {
             ...(meta as unknown as Record<string, unknown>),
             ...(modelProfileMetadata ? { modelProfile: modelProfileMetadata } : {}),
+            route: runtimeRouteRunMetadata(routeApplication),
           },
         });
       };
 
-      const adapter = getServerAdapter(agent.adapterType);
+      const adapter = getServerAdapter(routeApplication.adapterType);
       const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
+        ? createLocalAgentJwt(agent.id, agent.companyId, routeApplication.adapterType, run.id)
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(
@@ -7767,14 +7905,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: agent.companyId,
             agentId: agent.id,
             runId: run.id,
-            adapterType: agent.adapterType,
+      adapterType: routeApplication.adapterType,
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
-      const adapterResult = await adapter.execute({
+      let adapterResult = await adapter.execute({
         runId: run.id,
-        agent,
+        agent: {
+          ...agent,
+          adapterType: routeApplication.adapterType,
+          adapterConfig: runtimeConfig,
+        },
         runtime: runtimeForAdapter,
         config: runtimeConfig,
         context,
@@ -7797,10 +7939,169 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
         authToken: authToken ?? undefined,
       });
+      if (
+        (adapterResult.exitCode ?? 0) !== 0 &&
+        isCredentialFailure({
+          errorFamily: adapterResult.errorFamily ?? null,
+          errorCode: adapterResult.errorCode ?? null,
+          errorMessage: adapterResult.errorMessage ?? null,
+        }) &&
+        routeApplication.applied !== "backup" &&
+        readAgentRuntimeRoute(agent.runtimeConfig, "backup") != null &&
+        readAgentRuntimeRoute(agent.runtimeConfig, "backup")?.enabled !== false
+      ) {
+        const primaryRoute = routeApplication;
+        if (runActiveCredentialId) {
+          const retryAt = readNonEmptyString(adapterResult.retryNotBefore);
+          const parsedRetryAfter = retryAt ? new Date(retryAt) : null;
+          await recordCredentialFailure(db, runActiveCredentialId, {
+            kind: adapterResult.errorFamily === "transient_upstream" ? "rate_limit" : "auth",
+            reason: adapterResult.errorCode ?? adapterResult.errorFamily ?? "credential_error",
+            providerRetryAfter:
+              parsedRetryAfter && Number.isFinite(parsedRetryAfter.getTime())
+                ? parsedRetryAfter
+                : null,
+          }).catch((err) => {
+            logger.warn(
+              { agentId: agent.id, credentialId: runActiveCredentialId, err: err instanceof Error ? err.message : String(err) },
+              "failed to cool down primary credential before backup route",
+            );
+          });
+        }
+        await onLog(
+          "stderr",
+          `[paperclip] ${primaryRoute.adapterType} hit a credential/quota failure; retrying once on backup route inside this run\n`,
+        );
+
+        routeApplication = resolveRuntimeRouteApplication({
+          agentAdapterType: agent.adapterType,
+          agentRuntimeConfig: agent.runtimeConfig,
+          issueModelProfile: null,
+          contextSnapshot: { ...context, modelRoute: "backup" },
+        });
+        sessionCodec = getAdapterSessionCodec(routeApplication.adapterType);
+        previousSessionParams = null;
+        context.modelRoute = "backup";
+        context.paperclipRoute = runtimeRouteRunMetadata(routeApplication);
+        context.paperclipBackupRoute = {
+          primaryAdapterType: primaryRoute.adapterType,
+          primaryErrorCode: adapterResult.errorCode ?? null,
+          primaryErrorMessage: adapterResult.errorMessage ?? null,
+        };
+
+        const backupBaseConfig =
+          routeApplication.adapterType === agent.adapterType
+            ? {
+                ...persistedWorkspaceManagedConfig,
+                ...(routeApplication.adapterConfig ?? {}),
+              }
+            : {
+                ...Object.fromEntries(
+                  Object.entries(persistedWorkspaceManagedConfig).filter(([key]) =>
+                    [
+                      "env",
+                      "cwd",
+                      "timeoutSec",
+                      "graceSec",
+                      "promptTemplate",
+                      "workspaceRuntime",
+                      "executionWorkspace",
+                    ].includes(key),
+                  ),
+                ),
+                ...(routeApplication.adapterConfig ?? {}),
+              };
+        const backupExecutionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(backupBaseConfig);
+        const backupResolved = await resolveExecutionRunAdapterConfig({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId,
+          heartbeatRunId: run.id,
+          projectId: projectContext?.id ?? null,
+          executionRunConfig: backupExecutionRunConfig,
+          projectEnv: projectContext?.env ?? null,
+          secretsSvc,
+        });
+        const backupConfig = backupResolved.resolvedConfig;
+        for (const key of backupResolved.secretKeys) secretKeys.add(key);
+        const backupCredResolution = await resolveAllCredentialEnv(
+          db,
+          agent.id,
+          routeApplication.adapterType,
+          routeApplication.credentialIds,
+        );
+        const backupEnv = {
+          ...parseObject(backupConfig.env),
+          ...backupCredResolution.env,
+        };
+        const backupActiveChoice = selectActiveCredentialForAdapter({
+          adapterType: routeApplication.adapterType,
+          adapterConfig: parseObject(backupBaseConfig),
+          chosen: backupCredResolution.chosen,
+          env: backupEnv,
+        });
+        runActiveCredentialId = backupActiveChoice?.credentialId ?? null;
+        runActiveCredentialType = backupActiveChoice?.type ?? null;
+        if (Object.keys(backupCredResolution.env).length > 0) {
+          backupConfig.env = backupEnv;
+          for (const key of Object.keys(backupCredResolution.env)) secretKeys.add(key);
+        }
+        const backupRuntimeConfig = {
+          ...backupConfig,
+          paperclipRuntimeSkills: runtimeSkillEntries,
+        };
+        const backupAdapter = getServerAdapter(routeApplication.adapterType);
+        const backupAuthToken = backupAdapter.supportsLocalAgentJwt
+          ? createLocalAgentJwt(agent.id, agent.companyId, routeApplication.adapterType, run.id)
+          : null;
+        await appendRunEvent(currentRun, seq++, {
+          eventType: "adapter.invoke",
+          stream: "system",
+          level: "info",
+          message: "backup adapter invocation",
+          payload: {
+            route: runtimeRouteRunMetadata(routeApplication),
+          },
+        });
+        adapterResult = await backupAdapter.execute({
+          runId: run.id,
+          agent: {
+            ...agent,
+            adapterType: routeApplication.adapterType,
+            adapterConfig: backupRuntimeConfig,
+          },
+          runtime: {
+            sessionId: null,
+            sessionParams: null,
+            sessionDisplayId: null,
+            taskKey,
+          },
+          config: backupRuntimeConfig,
+          context,
+          runtimeCommandSpec: backupAdapter.getRuntimeCommandSpec?.(backupRuntimeConfig) ?? null,
+          executionTarget,
+          executionTransport: remoteExecution
+            ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
+            : undefined,
+          onLog,
+          onMeta: onAdapterMeta,
+          onSpawn: async (meta) => {
+            await persistRunProcessMetadata(run.id, {
+              pid: meta.pid,
+              processGroupId:
+                "processGroupId" in meta && typeof meta.processGroupId === "number"
+                  ? meta.processGroupId
+                  : null,
+              startedAt: meta.startedAt,
+            });
+          },
+          authToken: backupAuthToken ?? undefined,
+        });
+      }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
-            adapterType: agent.adapterType,
+        adapterType: routeApplication.adapterType,
             runId: run.id,
             agent: {
               id: agent.id,
@@ -7937,14 +8238,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const persistedResultJson = mergeHeartbeatRunResultJson(
         mergeRunStopMetadataForAgent(agent, outcome, {
-          resultJson: mergeModelProfileRunMetadata(
-            mergeAdapterRecoveryMetadata({
-              resultJson: adapterResult.resultJson ?? null,
+          resultJson: {
+            ...(mergeModelProfileRunMetadata(
+              mergeAdapterRecoveryMetadata({
+                resultJson: adapterResult.resultJson ?? null,
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,
-            }),
-            modelProfileApplication,
-          ),
+              }),
+              modelProfileApplication,
+            ) ?? {}),
+            route: runtimeRouteRunMetadata(routeApplication),
+          },
           errorCode: runErrorCode,
           errorMessage: runErrorMessage,
         }),
@@ -7983,6 +8287,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       //    frozen after 3 consecutive so the board fixes it.
       // A successful run resets the streak.
       let seamlessFailoverRetry = false;
+      let backupRouteRetry = false;
       if (runActiveCredentialId) {
         try {
           // Per-run auth diagnostic: surfaces which credential a run used and
@@ -7992,7 +8297,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             {
               agentId: agent.id,
               runId: run.id,
-              adapterType: agent.adapterType,
+        adapterType: routeApplication.adapterType,
               credentialId: runActiveCredentialId,
               credentialType: runActiveCredentialType,
               outcome,
@@ -8045,12 +8350,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 runActiveCredentialId,
               ));
             seamlessFailoverRetry = kind === "rate_limit" && hasAlternate;
+            backupRouteRetry =
+              kind === "rate_limit" &&
+              !hasAlternate &&
+              routeApplication.applied !== "backup" &&
+              readAgentRuntimeRoute(agent.runtimeConfig, "backup") != null;
             await onLog(
               "stderr",
               result.disabled
                 ? `[paperclip] credential ${runActiveCredentialId} FROZEN after ${result.failureCount} consecutive auth failures — using another credential and flagging for the board to fix\n`
                 : seamlessFailoverRetry
                   ? `[paperclip] credential ${runActiveCredentialId} hit a usage limit (cooling until ${result.cooldownUntil.toISOString()}) — switching to another ${runActiveCredentialType} credential now\n`
+                  : backupRouteRetry
+                    ? `[paperclip] credential ${runActiveCredentialId} hit a usage limit — switching to backup route now\n`
                   : `[paperclip] credential ${runActiveCredentialId} cooling down until ${result.cooldownUntil.toISOString()} (${kind} failure ${result.failureCount}) — next run rotates to another credential\n`,
             );
           } else if (outcome === "succeeded") {
@@ -8135,6 +8447,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             retryReason: "credential_failover",
             wakeReason: "credential_failover_retry",
           });
+        } else if (backupRouteRetry) {
+          await scheduleBoundedRetryForRun(livenessRun, agent, {
+            delayMs: 0,
+            retryReason: "adapter_backup_failover",
+            wakeReason: "adapter_backup_failover_retry",
+            maxAttempts: 1,
+            contextPatch: {
+              modelRoute: "backup",
+              backupOfRunId: livenessRun.id,
+            },
+          });
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
@@ -8167,13 +8490,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
               taskKey,
-              adapterType: agent.adapterType,
+              adapterType: routeApplication.adapterType,
             });
           } else {
             await upsertTaskSession({
               companyId: agent.companyId,
               agentId: agent.id,
-              adapterType: agent.adapterType,
+              adapterType: routeApplication.adapterType,
               taskKey,
               sessionParamsJson: nextSessionState.params,
               sessionDisplayId: nextSessionState.displayId,
@@ -8251,7 +8574,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await upsertTaskSession({
             companyId: agent.companyId,
             agentId: agent.id,
-            adapterType: agent.adapterType,
+            adapterType: routeApplication.adapterType,
             taskKey,
             sessionParamsJson: previousSessionParams,
             sessionDisplayId: previousSessionDisplayId,
@@ -9555,6 +9878,73 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return rows.map((row) => row.id);
   }
 
+  async function listIssueScopedRunIds(companyId: string, issueId: string, includeRoot: boolean) {
+    const finalFilter = includeRoot ? sql`` : sql`WHERE id <> ${issueId}`;
+    const rows = await db.execute(sql`
+      WITH RECURSIVE issue_tree(id) AS (
+        SELECT (${issues.id})::text
+        FROM ${issues}
+        WHERE ${issues.companyId} = ${companyId}
+          AND ${issues.id} = ${issueId}
+          AND ${issues.hiddenAt} IS NULL
+        UNION ALL
+        SELECT child.id::text
+        FROM ${issues} child
+        JOIN issue_tree ON child.parent_id::text = issue_tree.id
+        WHERE child.company_id = ${companyId}
+          AND child.hidden_at IS NULL
+      )
+      SELECT DISTINCT ${heartbeatRuns.id}::text AS id
+      FROM ${heartbeatRuns}
+      WHERE ${heartbeatRuns.companyId} = ${companyId}
+        AND ${heartbeatRuns.status} IN (${sql.join(CANCELLABLE_HEARTBEAT_RUN_STATUSES.map((status) => sql`${status}`), sql`, `)})
+        AND coalesce(
+          ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+          ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+        ) IN (SELECT id FROM issue_tree ${finalFilter})
+    `);
+    return Array.isArray(rows)
+      ? rows
+        .map((row) => (row as { id?: unknown }).id)
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [];
+  }
+
+  async function listIssueScopedWakeupIds(companyId: string, issueId: string, includeRoot: boolean) {
+    const finalFilter = includeRoot ? sql`` : sql`WHERE id <> ${issueId}`;
+    const rows = await db.execute(sql`
+      WITH RECURSIVE issue_tree(id) AS (
+        SELECT (${issues.id})::text
+        FROM ${issues}
+        WHERE ${issues.companyId} = ${companyId}
+          AND ${issues.id} = ${issueId}
+          AND ${issues.hiddenAt} IS NULL
+        UNION ALL
+        SELECT child.id::text
+        FROM ${issues} child
+        JOIN issue_tree ON child.parent_id::text = issue_tree.id
+        WHERE child.company_id = ${companyId}
+          AND child.hidden_at IS NULL
+      )
+      SELECT DISTINCT ${agentWakeupRequests.id}::text AS id
+      FROM ${agentWakeupRequests}
+      WHERE ${agentWakeupRequests.companyId} = ${companyId}
+        AND ${agentWakeupRequests.status} IN ('queued', 'deferred_issue_execution')
+        AND ${agentWakeupRequests.runId} IS NULL
+        AND coalesce(
+          ${agentWakeupRequests.payload} ->> 'issueId',
+          ${agentWakeupRequests.payload} ->> 'taskId',
+          ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
+          ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
+        ) IN (SELECT id FROM issue_tree ${finalFilter})
+    `);
+    return Array.isArray(rows)
+      ? rows
+        .map((row) => (row as { id?: unknown }).id)
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [];
+  }
+
   async function cancelPendingWakeupsForBudgetScope(scope: BudgetEnforcementScope) {
     const now = new Date();
     let wakeupIds: string[] = [];
@@ -9584,8 +9974,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ),
         )
         .then((rows) => rows.map((row) => row.id));
-    } else {
+    } else if (scope.scopeType === "project") {
       wakeupIds = await listProjectScopedWakeupIds(scope.companyId, scope.scopeId);
+    } else if (scope.scopeType === "issue_tree" || scope.scopeType === "issue_children") {
+      wakeupIds = await listIssueScopedWakeupIds(
+        scope.companyId,
+        scope.scopeId,
+        scope.scopeType === "issue_tree",
+      );
     }
 
     if (wakeupIds.length === 0) return 0;
@@ -9671,7 +10067,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
-  async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause") {
+  async function cancelActiveForAgentInternal(
+    agentId: string,
+    reason = "Cancelled due to agent pause",
+    options: { force?: boolean } = {},
+  ) {
     const agent = await getAgent(agentId);
     const runs = await db
       .select()
@@ -9703,15 +10103,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           pid: running.child.pid ?? run.processPid,
           processGroupId: running.processGroupId ?? run.processGroupId,
           graceMs: Math.max(1, running.graceSec) * 1000,
+          force: options.force,
         });
         runningProcesses.delete(run.id);
       } else if (run.processPid || run.processGroupId) {
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
           processGroupId: run.processGroupId,
+          force: options.force,
         });
       }
-      await releaseIssueExecutionAndPromote(run);
+      await releaseIssueExecutionAndPromote({ ...run, status: "cancelled" }, { suppressImmediateRecovery: true });
     }
 
     return runs.length;
@@ -9736,7 +10138,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ),
           )
           .then((rows) => rows.map((row) => row.id))
-        : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
+        : scope.scopeType === "project"
+          ? await listProjectScopedRunIds(scope.companyId, scope.scopeId)
+          : scope.scopeType === "issue_tree" || scope.scopeType === "issue_children"
+            ? await listIssueScopedRunIds(scope.companyId, scope.scopeId, scope.scopeType === "issue_tree")
+            : [];
 
     for (const runId of runIds) {
       await cancelRunInternal(runId, "Cancelled due to budget pause");
@@ -10059,7 +10465,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         force: options?.force,
       }),
 
-    cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+    cancelActiveForAgent: (agentId: string, reason?: string, options?: { force?: boolean }) =>
+      cancelActiveForAgentInternal(agentId, reason, options),
 
     cancelBudgetScopeWork,
 

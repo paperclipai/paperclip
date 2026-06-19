@@ -64,6 +64,22 @@ describe("GET /health", () => {
     });
   });
 
+  it("returns 200 when the fast database probe fails but schema probes succeed", async () => {
+    const executeMock = vi.fn()
+      .mockRejectedValueOnce(new Error("transient SELECT 1 failure"))
+      .mockResolvedValue([{ exists: true }]);
+    const db = {
+      execute: executeMock,
+    } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(executeMock.mock.calls.length).toBeGreaterThan(1);
+    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
+  });
+
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
     vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);

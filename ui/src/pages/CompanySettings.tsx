@@ -6,7 +6,7 @@ import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
 } from "@paperclipai/shared";
-import type { CredentialType } from "@paperclipai/shared";
+import type { CredentialType, ProviderCredentialQuota } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
@@ -19,6 +19,7 @@ import {
   type ProviderCredential,
 } from "../api/credentials";
 import { queryKeys } from "../lib/queryKeys";
+import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Settings,
@@ -853,6 +854,95 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
+function formatCredentialMoney(cents: number): string {
+  return `$${(Math.max(0, cents) / 100).toFixed(2)}`;
+}
+
+function credentialUsageTotalTokens(usage: CredentialUsage): number {
+  return usage.inputTokens + usage.cachedInputTokens + usage.outputTokens;
+}
+
+function credentialUsageTitle(usage: CredentialUsage): string {
+  const modelRows = (usage.models ?? [])
+    .slice(0, 6)
+    .map((model) => {
+      const tokens = model.inputTokens + model.cachedInputTokens + model.outputTokens;
+      return `${model.model}: ${formatTokenCount(tokens)} tok · ${formatCredentialMoney(model.apiEquivalentCostCents)} API value · ${model.pricingLabel ?? "recorded/fallback pricing"}`;
+    })
+    .join(" | ");
+  return [
+    `${usage.events} run(s)`,
+    `${usage.inputTokens.toLocaleString()} input miss`,
+    `${usage.cachedInputTokens.toLocaleString()} cached`,
+    `${usage.outputTokens.toLocaleString()} output tokens`,
+    `${formatCredentialMoney(usage.apiEquivalentCostCents)} API-equivalent value`,
+    `${formatCredentialMoney(usage.costCents)} billed`,
+    "month-to-date UTC",
+    modelRows ? `models: ${modelRows}` : "model-aware pricing where available",
+  ].join(" · ");
+}
+
+function credentialUsageInlineLabel(usage: CredentialUsage): string {
+  const topModel = usage.models?.[0]?.model;
+  const suffix = topModel ? ` · ${topModel.length > 14 ? `${topModel.slice(0, 13)}…` : topModel}` : "";
+  return `${formatTokenCount(credentialUsageTotalTokens(usage))} tok · ${formatCredentialMoney(usage.apiEquivalentCostCents)} value${suffix}`;
+}
+
+function compactCredentialQuotaLabel(label: string): string {
+  const normalized = label.toLowerCase();
+  if (normalized.includes("session")) return "5h";
+  if (normalized.includes("week") && normalized.includes("sonnet")) return "sonnet wk";
+  if (normalized.includes("week") && normalized.includes("opus")) return "opus wk";
+  if (normalized.includes("week")) return "week";
+  return label.length > 12 ? `${label.slice(0, 11)}…` : label;
+}
+
+function formatCredentialQuotaSummary(quota: ProviderCredentialQuota): string {
+  const visible = quota.quotaWindows
+    .filter((entry) => entry.usedPercent != null || entry.valueLabel)
+    .slice(0, 3);
+  if (visible.length === 0) return quota.stale ? "quota stale" : "quota ok";
+  const prefix = quota.stale ? "stale · " : "";
+  return visible
+    .map((entry) => {
+      const value = entry.usedPercent != null
+        ? `${Math.max(0, Math.round(100 - entry.usedPercent))}% left`
+        : entry.valueLabel ?? "ok";
+      return `${compactCredentialQuotaLabel(entry.label)} ${value}`;
+    })
+    .join(" · ")
+    .replace(/^/, prefix);
+}
+
+function formatCredentialQuotaTitle(quota: ProviderCredentialQuota): string {
+  const detail = quota.quotaWindows
+    .map((entry) => {
+      const value = entry.usedPercent != null
+        ? `${Math.round(entry.usedPercent)}% used · ${Math.max(0, Math.round(100 - entry.usedPercent))}% available`
+        : entry.valueLabel ?? "reported";
+      const reset = formatCredentialQuotaReset(entry.resetsAt);
+      return `${entry.label}: ${value}${reset ? ` · resets ${reset}` : ""}`;
+    })
+    .join(" · ");
+  const stale = quota.stale
+    ? `Showing last successful quota sample${quota.cachedAt ? ` from ${new Date(quota.cachedAt).toLocaleString()}` : ""}.`
+    : "";
+  return [stale, quota.error, detail].filter(Boolean).join(" ");
+}
+
+function formatCredentialQuotaReset(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 // Long-lived tokens from `claude setup-token` are inference-only OAuth tokens
 // with the `sk-ant-oat<digits>-` prefix. They have no refresh/expiry metadata
 // and are routed through the CLAUDE_CODE_OAUTH_TOKEN env var at runtime.
@@ -942,16 +1032,25 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     queryFn: () => credentialsApi.list(companyId),
   });
 
-  // Per-credential token/cost usage (trailing 30 days) for the usage column.
+  // Per-credential token/cost usage from the beginning of the current UTC month.
   const { data: usageResp } = useQuery({
-    queryKey: ["credentials", "usage", companyId],
-    queryFn: () => credentialsApi.usage(companyId),
+    queryKey: ["credentials", "usage", companyId, "mtd"],
+    queryFn: () => credentialsApi.usage(companyId, { period: "month" }),
+  });
+  const { data: quotaRows = [] } = useQuery({
+    queryKey: queryKeys.credentials.quotaWindows(companyId),
+    queryFn: () => credentialsApi.quotaWindows(companyId),
+    refetchInterval: 60_000,
   });
   const usageByCredential = useMemo(() => {
     const map = new Map<string, CredentialUsage>();
     for (const u of usageResp?.usage ?? []) map.set(u.credentialId, u);
     return map;
   }, [usageResp]);
+  const quotaByCredential = useMemo(() => {
+    const map = new Map(quotaRows.map((row) => [row.credentialId, row]));
+    return map;
+  }, [quotaRows]);
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [addName, setAddName] = useState("");
@@ -1388,14 +1487,50 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                       {(() => {
                         const u = usageByCredential.get(cred.id);
                         if (!u) return null;
-                        const tokens = u.inputTokens + u.outputTokens;
-                        if (tokens === 0 && u.costCents === 0) return null;
+                        const tokens = credentialUsageTotalTokens(u);
+                        if (tokens === 0 && u.costCents === 0 && u.apiEquivalentCostCents === 0) return null;
                         return (
                           <span
                             className="shrink-0 text-[10px] text-muted-foreground"
-                            title={`${u.events} run(s) · ${u.inputTokens.toLocaleString()} in / ${u.outputTokens.toLocaleString()} out tokens · $${(u.costCents / 100).toFixed(2)} (last 30 days)`}
+                            title={credentialUsageTitle(u)}
                           >
-                            {formatTokenCount(tokens)} tok · ${(u.costCents / 100).toFixed(2)}
+                            {credentialUsageInlineLabel(u)}
+                            {u.subscriptionApiEquivalentCostCents > 0 ? " sub" : ""}
+                          </span>
+                        );
+                      })()}
+                      {(() => {
+                        const quota = quotaByCredential.get(cred.id);
+                        if (!quota) return null;
+                        if (!quota.supported) {
+                          return (
+                            <span className="shrink-0 text-[10px] text-muted-foreground">
+                              quota n/a
+                            </span>
+                          );
+                        }
+                        const visibleQuotaWindows = quota.quotaWindows
+                          .filter((entry) => entry.usedPercent != null || entry.valueLabel);
+                        if (!quota.ok && visibleQuotaWindows.length === 0) {
+                          return (
+                            <span
+                              className="shrink-0 text-[10px] text-amber-600"
+                              title={quota.error ?? "Quota unavailable"}
+                            >
+                              quota unavailable
+                            </span>
+                          );
+                        }
+                        const summary = formatCredentialQuotaSummary(quota);
+                        return (
+                          <span
+                            className={cn(
+                              "shrink-0 text-[10px]",
+                              quota.stale ? "text-amber-600" : "text-muted-foreground",
+                            )}
+                            title={formatCredentialQuotaTitle(quota)}
+                          >
+                            {summary}
                           </span>
                         );
                       })()}

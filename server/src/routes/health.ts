@@ -33,8 +33,18 @@ export interface SchemaIntegrityResult {
   errors: Array<{ table: string; message: string }>;
 }
 
+function rowsFromDbExecuteResult<T>(result: unknown): T[] {
+  if (!result) return [];
+  if (Array.isArray(result)) return result as T[];
+  if (typeof result === "object" && "rows" in result) {
+    const rowsValue = (result as { rows?: unknown }).rows;
+    if (Array.isArray(rowsValue)) return rowsValue as T[];
+  }
+  return [];
+}
+
 /**
- * Cheap `SELECT 1 FROM "<table>" LIMIT 1` probe against each critical table.
+ * Cheap information-schema probe against each critical table.
  * Each query wrapped in its own try/catch to collect every failure rather
  * than aborting on the first one.
  */
@@ -49,7 +59,18 @@ export async function checkSchemaIntegrity(db: Db | undefined): Promise<SchemaIn
 
   for (const table of CRITICAL_TABLES) {
     try {
-      await db.execute(sql`SELECT 1 FROM ${sql.identifier(table)} LIMIT 1`);
+      const rows = rowsFromDbExecuteResult<{ exists: boolean }>(await db.execute(sql`
+        SELECT EXISTS (
+          SELECT 1
+          FROM information_schema.tables
+          WHERE table_schema = current_schema()
+            AND table_name = ${table}
+        ) AS exists
+      `));
+      if (rows[0]?.exists !== true) {
+        missingTables.push(table);
+        errors.push({ table, message: "missing critical table" });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       missingTables.push(table);
@@ -63,6 +84,24 @@ export async function checkSchemaIntegrity(db: Db | undefined): Promise<SchemaIn
     missingTables,
     errors,
   };
+}
+
+async function canReachDatabase(db: Db): Promise<boolean> {
+  try {
+    await db.execute(sql`SELECT 1`);
+    return true;
+  } catch (error) {
+    logger.warn({ err: error }, "Health check database probe failed");
+    const integrity = await checkSchemaIntegrity(db);
+    if (integrity.status === "ok") {
+      logger.warn(
+        { err: error, checkedAt: integrity.checkedAt },
+        "Health check database probe failed but schema integrity probe succeeded",
+      );
+      return true;
+    }
+    return false;
+  }
 }
 
 function shouldExposeFullHealthDetails(
@@ -118,10 +157,7 @@ export function healthRoutes(
       return;
     }
 
-    try {
-      await db.execute(sql`SELECT 1`);
-    } catch (error) {
-      logger.warn({ err: error }, "Health check database probe failed");
+    if (!(await canReachDatabase(db))) {
       res.status(503).json({
         status: "unhealthy",
         version: serverVersion,

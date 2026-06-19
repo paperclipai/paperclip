@@ -4,6 +4,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { twoFactor } from "better-auth/plugins";
 import { toNodeHandler } from "better-auth/node";
+import { and, eq, gt } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   authAccounts,
@@ -61,6 +62,99 @@ function headersFromNodeHeaders(rawHeaders: IncomingHttpHeaders): Headers {
 
 function headersFromExpressRequest(req: Request): Headers {
   return headersFromNodeHeaders(req.headers);
+}
+
+function isSignInEmailRequest(req: Request): boolean {
+  return req.path.includes("/sign-in/email") || req.originalUrl.includes("/sign-in/email");
+}
+
+function isRetryableAuthError(err: unknown): boolean {
+  const status = typeof err === "object" && err !== null && "status" in err
+    ? Number((err as { status?: number }).status)
+    : undefined;
+  if (status === 429 || (status !== undefined && status >= 500)) return true;
+
+  const message = err instanceof Error ? err.message : String(err);
+  return /database|connection|timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT/i.test(message);
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function parseCookieHeader(cookieHeader: string | null): Map<string, string> {
+  const cookies = new Map<string, string>();
+  if (!cookieHeader) return cookies;
+
+  for (const segment of cookieHeader.split(";")) {
+    const index = segment.indexOf("=");
+    if (index <= 0) continue;
+    const name = segment.slice(0, index).trim();
+    const rawValue = segment.slice(index + 1).trim();
+    if (!name || cookies.has(name)) continue;
+    try {
+      cookies.set(name, decodeURIComponent(rawValue));
+    } catch {
+      cookies.set(name, rawValue);
+    }
+  }
+
+  return cookies;
+}
+
+function extractSessionTokenFromHeaders(headers: Headers): string | null {
+  const cookies = parseCookieHeader(headers.get("cookie"));
+  const baseName = `${deriveAuthCookiePrefix()}.session_token`;
+  const candidates = [
+    baseName,
+    `__Secure-${baseName}`,
+    `__Host-${baseName}`,
+  ];
+
+  for (const name of candidates) {
+    const value = cookies.get(name);
+    if (!value) continue;
+    const token = value.split(".")[0]?.trim();
+    if (token) return token;
+  }
+
+  return null;
+}
+
+async function resolveSessionFromCookieFallback(
+  db: Db,
+  headers: Headers,
+): Promise<BetterAuthSessionResult | null> {
+  const token = extractSessionTokenFromHeaders(headers);
+  if (!token) return null;
+
+  const row = await db
+    .select({
+      sessionId: authSessions.id,
+      sessionUserId: authSessions.userId,
+      userId: authUsers.id,
+      email: authUsers.email,
+      name: authUsers.name,
+    })
+    .from(authSessions)
+    .innerJoin(authUsers, eq(authUsers.id, authSessions.userId))
+    .where(and(eq(authSessions.token, token), gt(authSessions.expiresAt, new Date())))
+    .then((rows) => rows[0] ?? null);
+
+  if (!row) return null;
+  return {
+    session: {
+      id: row.sessionId,
+      userId: row.sessionUserId,
+    },
+    user: {
+      id: row.userId,
+      email: row.email ?? null,
+      name: row.name ?? null,
+    },
+  };
 }
 
 export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: number }): string[] {
@@ -136,22 +230,42 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
 
 export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandler {
   const handler = toNodeHandler(auth);
-  return (req, res, next) => {
-    void Promise.resolve(handler(req, res)).catch(next);
+  return async (req, res, next) => {
+    const maxRetries = isSignInEmailRequest(req) ? 1 : 0;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await handler(req, res);
+        return;
+      } catch (err) {
+        if (
+          attempt >= maxRetries ||
+          !isRetryableAuthError(err) ||
+          res.headersSent ||
+          res.writableEnded
+        ) {
+          next(err);
+          return;
+        }
+        await wait(200 * (attempt + 1));
+      }
+    }
   };
 }
 
 export async function resolveBetterAuthSessionFromHeaders(
   auth: BetterAuthInstance,
   headers: Headers,
+  db?: Db,
 ): Promise<BetterAuthSessionResult | null> {
   const api = (auth as unknown as { api?: { getSession?: (input: unknown) => Promise<unknown> } }).api;
-  if (!api?.getSession) return null;
+  if (!api?.getSession) return db ? resolveSessionFromCookieFallback(db, headers) : null;
 
   const sessionValue = await api.getSession({
     headers,
   });
-  if (!sessionValue || typeof sessionValue !== "object") return null;
+  if (!sessionValue || typeof sessionValue !== "object") {
+    return db ? resolveSessionFromCookieFallback(db, headers) : null;
+  }
 
   const value = sessionValue as {
     session?: { id?: string; userId?: string } | null;
@@ -168,13 +282,16 @@ export async function resolveBetterAuthSessionFromHeaders(
       }
     : null;
 
-  if (!session || !user) return null;
+  if (!session || !user) {
+    return db ? resolveSessionFromCookieFallback(db, headers) : null;
+  }
   return { session, user };
 }
 
 export async function resolveBetterAuthSession(
   auth: BetterAuthInstance,
   req: Request,
+  db?: Db,
 ): Promise<BetterAuthSessionResult | null> {
-  return resolveBetterAuthSessionFromHeaders(auth, headersFromExpressRequest(req));
+  return resolveBetterAuthSessionFromHeaders(auth, headersFromExpressRequest(req), db);
 }

@@ -48,18 +48,12 @@ function Section({
         <ul className="-mx-1 flex flex-col">
           {items.map((item) => {
             const groupedSources = groupSourcesByLabel(item.sources);
-            const showTitle = item.issue.identifier !== item.issue.title;
             return (
               <li
                 key={item.issue.id}
                 className="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-md px-1 py-1.5 hover:bg-accent/40"
               >
                 <IssueReferencePill issue={item.issue} />
-                {showTitle ? (
-                  <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
-                    {item.issue.title}
-                  </span>
-                ) : null}
                 <div className="flex flex-wrap items-center gap-1.5">
                   {groupedSources.map((group) => (
                     <span

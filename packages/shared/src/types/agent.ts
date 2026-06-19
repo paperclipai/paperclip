@@ -20,8 +20,17 @@ export interface AgentModelProfileConfig {
   adapterConfig: Record<string, unknown>;
 }
 
+export interface AgentRuntimeRouteConfig {
+  enabled?: boolean;
+  label?: string;
+  adapterType?: string;
+  adapterConfig?: Record<string, unknown>;
+  credentialIds?: string[];
+}
+
 export interface AgentRuntimeConfig extends Record<string, unknown> {
   modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
+  routes?: Partial<Record<"cheap" | "backup", AgentRuntimeRouteConfig>>;
 }
 
 export type AgentInstructionsBundleMode = "managed" | "external";

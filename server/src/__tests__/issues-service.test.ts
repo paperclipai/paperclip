@@ -28,6 +28,7 @@ import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
+  MAX_DIRECT_CHILD_ISSUES_PER_PARENT,
   issueService,
   parseWorkItemTypeFilter,
 } from "../services/issues.ts";
@@ -334,6 +335,61 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(humanTaskIds).toEqual([humanTaskId]);
 
     await expect(svc.list(companyId, { workItemType: "unknown" })).resolves.toEqual([]);
+  });
+
+  it("prevents AI agent assignment for human control work items", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(svc.create(companyId, {
+      title: "Human follow-up",
+      status: "todo",
+      priority: "medium",
+      workItemType: "human_task",
+      assigneeAgentId: agentId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    await expect(svc.create(companyId, {
+      title: "Planning initiative",
+      status: "todo",
+      priority: "medium",
+      workItemType: "initiative",
+      assigneeAgentId: agentId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    const humanTaskId = randomUUID();
+    await db.insert(issues).values({
+      id: humanTaskId,
+      companyId,
+      title: "Existing human task",
+      status: "todo",
+      priority: "medium",
+      workItemType: "human_task",
+    });
+
+    await expect(svc.update(humanTaskId, {
+      assigneeAgentId: agentId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    await expect(svc.checkout(humanTaskId, agentId, ["todo"], null)).rejects.toMatchObject({ status: 422 });
   });
 
   it("combines participation filtering with search", async () => {
@@ -2223,6 +2279,86 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
 
     expect(child.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("prevents execution lanes from creating grandchildren", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+    const childIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: parentIssueId,
+        companyId,
+        title: "Main parent",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: childIssueId,
+        companyId,
+        parentId: parentIssueId,
+        title: "Execution lane",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await expect(svc.create(companyId, {
+      parentId: childIssueId,
+      title: "Grandchild attempt",
+      status: "todo",
+      priority: "medium",
+    })).rejects.toMatchObject({ status: 422 });
+
+    await expect(svc.createChild(childIssueId, {
+      title: "Helper grandchild attempt",
+      status: "todo",
+    })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("caps direct execution lanes under a parent issue", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Main parent",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issues).values(
+      Array.from({ length: MAX_DIRECT_CHILD_ISSUES_PER_PARENT }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        parentId: parentIssueId,
+        title: `Execution lane ${index + 1}`,
+        status: "todo",
+        priority: "medium",
+      })),
+    );
+
+    await expect(svc.create(companyId, {
+      parentId: parentIssueId,
+      title: "One lane too many",
+      status: "todo",
+      priority: "medium",
+    })).rejects.toMatchObject({ status: 422 });
   });
 });
 

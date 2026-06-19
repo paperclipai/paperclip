@@ -218,6 +218,18 @@ describe("issue validators", () => {
     }).workMode).toBe("planning");
   });
 
+  it("does not inject create defaults into partial issue updates", () => {
+    const parsed = updateIssueSchema.parse({
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+    });
+
+    expect(parsed.assigneeAgentId).toBe("22222222-2222-4222-8222-222222222222");
+    expect(parsed).not.toHaveProperty("workItemType");
+    expect(parsed).not.toHaveProperty("workMode");
+    expect(parsed).not.toHaveProperty("priority");
+    expect(parsed).not.toHaveProperty("requestDepth");
+  });
+
   it("rejects unknown issue work modes", () => {
     expect(createIssueSchema.safeParse({ title: "Plan first", workMode: "normal" }).success).toBe(false);
     expect(suggestedTaskDraftSchema.safeParse({

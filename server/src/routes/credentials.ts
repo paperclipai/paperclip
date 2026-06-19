@@ -7,9 +7,12 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import {
   createProviderCredentialSchema,
+  type CredentialType,
+  type QuotaWindow,
   updateProviderCredentialSchema,
 } from "@paperclipai/shared";
-import { runCodexLogin } from "@paperclipai/adapter-codex-local/server";
+import { fetchClaudeQuota } from "@paperclipai/adapter-claude-local/server";
+import { fetchCodexQuota, runCodexLogin } from "@paperclipai/adapter-codex-local/server";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
@@ -17,6 +20,51 @@ import { forbidden } from "../errors.js";
 import { accessService, credentialService, logActivity } from "../services/index.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const QUOTA_CACHE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+type CredentialQuotaCacheEntry = {
+  type: CredentialType;
+  credentialUpdatedAtMs: number;
+  source: string;
+  quotaWindows: QuotaWindow[];
+  sampledAt: string;
+};
+
+const credentialQuotaCache = new Map<string, CredentialQuotaCacheEntry>();
+
+function normalizeQuotaError(provider: "claude" | "codex", error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  if (lower.includes("429")) {
+    return provider === "claude"
+      ? "Anthropic usage endpoint is rate limited (HTTP 429). OAuth can still be active; showing the last successful quota sample when available."
+      : "ChatGPT usage endpoint is rate limited (HTTP 429). OAuth can still be active; showing the last successful quota sample when available.";
+  }
+  if (lower.includes("timed out") || lower.includes("timeout")) {
+    return provider === "claude"
+      ? "Anthropic usage endpoint timed out. Showing the last successful quota sample when available."
+      : "Codex quota polling timed out. Showing the last successful quota sample when available.";
+  }
+  if (lower.includes("401") || lower.includes("403")) {
+    return provider === "claude"
+      ? `Anthropic rejected this OAuth token: ${message}`
+      : `ChatGPT rejected this OAuth token: ${message}`;
+  }
+  return message;
+}
+
+function getFreshQuotaCache(credential: {
+  id: string;
+  type: CredentialType;
+  updatedAt: Date;
+}): CredentialQuotaCacheEntry | null {
+  const cached = credentialQuotaCache.get(credential.id);
+  if (!cached) return null;
+  if (cached.type !== credential.type) return null;
+  if (cached.credentialUpdatedAtMs !== credential.updatedAt.getTime()) return null;
+  if (Date.now() - new Date(cached.sampledAt).getTime() > QUOTA_CACHE_MAX_AGE_MS) return null;
+  return cached;
+}
 
 export function credentialRoutes(db: Db) {
   const router = Router();
@@ -42,16 +90,123 @@ export function credentialRoutes(db: Db) {
     res.json(rows);
   });
 
-  // Per-credential token/cost usage over a trailing window (default 30 days).
+  // Per-credential token/cost usage. `period=month` uses calendar month-to-date
+  // from the first day of the current UTC month; `days=N` remains for legacy
+  // trailing-window callers.
   // Feeds the Credentials UI's usage column; aggregates cost_events.credentialId.
   router.get("/companies/:companyId/credentials/usage", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const period = String(req.query.period ?? "").trim().toLowerCase();
+    if (period === "month" || period === "mtd" || period === "calendar_month_utc") {
+      const result = await svc.usageByCredentialMonthToDate(companyId);
+      res.json({
+        period: "calendar_month_utc",
+        since: result.since.toISOString(),
+        usage: result.usage,
+      });
+      return;
+    }
     const daysRaw = Number.parseInt(String(req.query.days ?? "30"), 10);
     const days = Number.isFinite(daysRaw) ? Math.min(365, Math.max(1, daysRaw)) : 30;
     const usage = await svc.usageByCredential(companyId, days * 24 * 60 * 60 * 1000);
-    res.json({ days, usage });
+    res.json({ period: "rolling_days", days, usage });
+  });
+
+  router.get("/companies/:companyId/credentials/quota-windows", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rows = await svc.list(companyId);
+    const sampledAt = new Date().toISOString();
+    const results = await Promise.all(rows.map(async (credential) => {
+      const base = {
+        credentialId: credential.id,
+        name: credential.name,
+        type: credential.type,
+        cooldownUntil: credential.cooldownUntil ? credential.cooldownUntil.toISOString() : null,
+        cooldownReason: credential.cooldownReason ?? null,
+        disabledAt: credential.disabledAt ? credential.disabledAt.toISOString() : null,
+        sampledAt,
+      };
+      if (credential.type !== "claude_oauth" && credential.type !== "codex_oauth") {
+        return {
+          ...base,
+          supported: false,
+          ok: false,
+          quotaWindows: [],
+          source: null,
+          error: "live quota is only available for Claude OAuth and Codex OAuth credentials",
+        };
+      }
+      const credentialType: Extract<CredentialType, "claude_oauth" | "codex_oauth"> =
+        credential.type === "claude_oauth" ? "claude_oauth" : "codex_oauth";
+      try {
+        const payload = await svc.getDecryptedPayload(credential.id);
+        const accessToken = typeof payload?.accessToken === "string" ? payload.accessToken : "";
+        if (!accessToken) throw new Error("credential has no accessToken");
+        if (credentialType === "claude_oauth") {
+          return {
+            ...base,
+            supported: true,
+            ok: true,
+            quotaWindows: await fetchClaudeQuota(accessToken).then((quotaWindows) => {
+              credentialQuotaCache.set(credential.id, {
+                type: credentialType,
+                credentialUpdatedAtMs: credential.updatedAt.getTime(),
+                source: "anthropic-oauth-usage",
+                quotaWindows,
+                sampledAt,
+              });
+              return quotaWindows;
+            }),
+            source: "anthropic-oauth-usage",
+            stale: false,
+            cachedAt: null,
+          };
+        }
+        const accountId = typeof payload?.accountId === "string" && payload.accountId.trim()
+          ? payload.accountId.trim()
+          : null;
+        return {
+          ...base,
+          supported: true,
+          ok: true,
+          quotaWindows: await fetchCodexQuota(accessToken, accountId).then((quotaWindows) => {
+            credentialQuotaCache.set(credential.id, {
+              type: credentialType,
+              credentialUpdatedAtMs: credential.updatedAt.getTime(),
+              source: "chatgpt-wham-usage",
+              quotaWindows,
+              sampledAt,
+            });
+            return quotaWindows;
+          }),
+          source: "chatgpt-wham-usage",
+          stale: false,
+          cachedAt: null,
+        };
+      } catch (error) {
+        const cached = getFreshQuotaCache({
+          id: credential.id,
+          type: credentialType,
+          updatedAt: credential.updatedAt,
+        });
+        const provider = credentialType === "claude_oauth" ? "claude" : "codex";
+        return {
+          ...base,
+          supported: true,
+          ok: false,
+          quotaWindows: cached?.quotaWindows ?? [],
+          source: cached?.source ?? (credentialType === "claude_oauth" ? "anthropic-oauth-usage" : "chatgpt-wham-usage"),
+          error: normalizeQuotaError(provider, error),
+          stale: Boolean(cached),
+          cachedAt: cached?.sampledAt ?? null,
+        };
+      }
+    }));
+    res.json(results);
   });
 
   // Create a credential

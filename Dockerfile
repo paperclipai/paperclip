@@ -44,7 +44,11 @@ WORKDIR /app
 COPY --from=deps /app /app
 ARG CACHE_BUST=1
 COPY . .
-RUN pnpm --filter "@paperclipai/ui..." build
+RUN rm -rf ui/dist server/ui-dist server/dist \
+  && pnpm --filter "@paperclipai/ui..." build \
+  && mkdir -p server/ui-dist \
+  && cp -R ui/dist/. server/ui-dist/ \
+  && node -e "const fs=require('fs');const path=require('path');const root='server/ui-dist';const html=fs.readFileSync(path.join(root,'index.html'),'utf8');const refs=[...html.matchAll(/(?:src|href)=['\\\"](\\/assets\\/[^'\\\"]+)/g)].map((m)=>m[1]);const missing=refs.filter((ref)=>!fs.existsSync(path.join(root,ref)));if(missing.length){console.error('Missing UI assets referenced by index.html:',missing.join(', '));process.exit(1);}"
 RUN pnpm --filter "@paperclipai/server..." build
 RUN pnpm --filter "@paperclipai/plugin-llm-wiki" build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)

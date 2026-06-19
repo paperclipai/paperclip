@@ -20,6 +20,7 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
+import { isHumanControlWorkItemType } from "../lib/issue-work-items";
 import { useToastActions } from "../context/ToastContext";
 import {
   assigneeValueFromSelection,
@@ -138,6 +139,22 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
 
 function isIssueWorkMode(value: unknown): value is IssueWorkMode {
   return value === "standard" || value === "planning";
+}
+
+function assigneeValueFromIssueDefaults(defaults: {
+  workItemType?: IssueWorkItemType;
+  assigneeAgentId?: string;
+  assigneeUserId?: string;
+}) {
+  if (isHumanControlWorkItemType(defaults.workItemType) && defaults.assigneeAgentId) {
+    return assigneeValueFromSelection({ ...defaults, assigneeAgentId: undefined });
+  }
+  return assigneeValueFromSelection(defaults);
+}
+
+function assigneeValueAllowedForWorkItem(value: string, workItemType: IssueWorkItemType | undefined) {
+  if (!isHumanControlWorkItemType(workItemType)) return value;
+  return parseAssigneeValue(value).assigneeAgentId ? "" : value;
 }
 
 const ISSUE_WORK_MODE_OPTIONS: ReadonlyArray<{
@@ -511,6 +528,7 @@ export function NewIssueDialog() {
   const selectedAssignee = useMemo(() => parseAssigneeValue(assigneeValue), [assigneeValue]);
   const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
   const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
+  const isHumanControlWorkItem = isHumanControlWorkItemType(newIssueDefaults.workItemType);
 
   const selectedAssigneeAgent = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId) ?? null;
   const assigneeAdapterType = selectedAssigneeAgent?.adapterType ?? null;
@@ -748,7 +766,7 @@ export function NewIssueDialog() {
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceId);
-      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setAssigneeValue(assigneeValueFromIssueDefaults(newIssueDefaults));
       setAssigneeModelLane("primary");
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
@@ -769,7 +787,7 @@ export function NewIssueDialog() {
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject));
-      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setAssigneeValue(assigneeValueFromIssueDefaults(newIssueDefaults));
       setReviewerValue("");
       setApproverValue("");
       setShowReviewerRow(false);
@@ -796,8 +814,8 @@ export function NewIssueDialog() {
       setPriority(draft.priority);
       setAssigneeValue(
         newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId
-          ? assigneeValueFromSelection(newIssueDefaults)
-          : (draft.assigneeValue ?? draft.assigneeId ?? ""),
+          ? assigneeValueFromIssueDefaults(newIssueDefaults)
+          : assigneeValueAllowedForWorkItem(draft.assigneeValue ?? draft.assigneeId ?? "", newIssueDefaults.workItemType),
       );
       setReviewerValue(draft.reviewerValue ?? "");
       setApproverValue(draft.approverValue ?? "");
@@ -840,7 +858,7 @@ export function NewIssueDialog() {
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject));
-      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setAssigneeValue(assigneeValueFromIssueDefaults(newIssueDefaults));
       setReviewerValue("");
       setApproverValue("");
       setShowReviewerRow(false);
@@ -1119,24 +1137,28 @@ export function NewIssueDialog() {
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentAssigneeOptionIds = useMemo(
-    () => recentAssigneeIds.map((id) => assigneeValueFromSelection({ assigneeAgentId: id })),
-    [recentAssigneeIds],
+    () => isHumanControlWorkItem
+      ? []
+      : recentAssigneeIds.map((id) => assigneeValueFromSelection({ assigneeAgentId: id })),
+    [isHumanControlWorkItem, recentAssigneeIds],
   );
   const recentProjectIds = useMemo(() => getRecentProjectIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () => [
       ...currentUserAssigneeOption(currentUserId),
       ...buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId] }),
-      ...sortAgentsByRecency(
-        (agents ?? []).filter((agent) => agent.status !== "terminated"),
-        recentAssigneeIds,
-      ).map((agent) => ({
-        id: assigneeValueFromSelection({ assigneeAgentId: agent.id }),
-        label: agent.name,
-        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
-      })),
+      ...(isHumanControlWorkItem
+        ? []
+        : sortAgentsByRecency(
+          (agents ?? []).filter((agent) => agent.status !== "terminated"),
+          recentAssigneeIds,
+        ).map((agent) => ({
+          id: assigneeValueFromSelection({ assigneeAgentId: agent.id }),
+          label: agent.name,
+          searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+        }))),
     ],
-    [agents, companyMembers?.users, currentUserId, recentAssigneeIds],
+    [agents, companyMembers?.users, currentUserId, isHumanControlWorkItem, recentAssigneeIds],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>

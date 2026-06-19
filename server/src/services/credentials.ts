@@ -3,8 +3,14 @@ import path from "node:path";
 import { and, eq, gt, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentCredentials, agents, costEvents, providerCredentials } from "@paperclipai/db";
+import type {
+  ProviderCredentialUsage,
+  ProviderCredentialUsageModel,
+  ProviderCredentialUsageWindow,
+} from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
+import { estimateApiEquivalentCostCents, isSubscriptionBillingType } from "./api-equivalent-cost.js";
 import { resolveCodexAccountId } from "./codex-account-id.js";
 import {
   decryptCredential,
@@ -15,6 +21,8 @@ import {
 type CredentialRow = typeof providerCredentials.$inferSelect;
 type SafeCredential = Omit<CredentialRow, "credential">;
 type CredentialSelectionRow = Pick<CredentialRow, "id" | "type">;
+type CredentialUsageAggregate = Omit<ProviderCredentialUsageWindow, "label" | "hours">;
+type CredentialUsageWindowSpec = { label: string; hours: number; key: string; since?: Date };
 
 export type CredentialAssignmentValidationResult =
   | { ok: true; credentials: SafeCredential[] }
@@ -48,7 +56,192 @@ function readCredentialConfigString(record: Record<string, unknown> | null | und
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function emptyCredentialUsageAggregate(): CredentialUsageAggregate {
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    costCents: 0,
+    apiEquivalentCostCents: 0,
+    subscriptionApiEquivalentCostCents: 0,
+    events: 0,
+  };
+}
+
+function buildCredentialUsageWindowSpecs(sinceMs: number): {
+  specs: CredentialUsageWindowSpec[];
+  primaryKey: string;
+} {
+  const requestedHours = Math.max(1, Math.round(Math.max(1, sinceMs) / (60 * 60 * 1000)));
+  const requestedLabel = requestedHours % 24 === 0 ? `${requestedHours / 24}d` : `${requestedHours}h`;
+  const requestedKey = String(requestedHours);
+  const base: CredentialUsageWindowSpec[] = [
+    { label: "5h", hours: 5, key: "5" },
+    { label: "24h", hours: 24, key: "24" },
+    { label: "7d", hours: 7 * 24, key: String(7 * 24) },
+    { label: requestedLabel, hours: requestedHours, key: requestedKey },
+  ];
+  const seen = new Map<string, CredentialUsageWindowSpec>();
+  for (const spec of base) {
+    if (!seen.has(spec.key)) seen.set(spec.key, spec);
+  }
+  return { specs: [...seen.values()], primaryKey: requestedKey };
+}
+
+function buildCredentialUsageMonthToDateWindowSpecs(now = new Date()): {
+  specs: CredentialUsageWindowSpec[];
+  primaryKey: string;
+  since: Date;
+} {
+  const since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const elapsedHours = Math.max(1, Math.ceil((now.getTime() - since.getTime()) / (60 * 60 * 1000)));
+  const base: CredentialUsageWindowSpec[] = [
+    { label: "5h", hours: 5, key: "5" },
+    { label: "24h", hours: 24, key: "24" },
+    { label: "7d", hours: 7 * 24, key: String(7 * 24) },
+    { label: "MTD", hours: elapsedHours, key: "mtd", since },
+  ];
+  return { specs: base, primaryKey: "mtd", since };
+}
+
 export function credentialService(db: Db) {
+  async function usageByCredentialForSpecs(
+    companyId: string,
+    specs: CredentialUsageWindowSpec[],
+    primaryKey: string,
+  ): Promise<ProviderCredentialUsage[]> {
+    async function aggregateWindow(
+      spec: CredentialUsageWindowSpec,
+      includeModels = false,
+    ): Promise<{
+      byCredential: Map<string, CredentialUsageAggregate>;
+      modelsByCredential: Map<string, ProviderCredentialUsageModel[]>;
+    }> {
+      const since = spec.since ?? new Date(Date.now() - spec.hours * 60 * 60 * 1000);
+      const rows = await db
+        .select({
+          credentialId: costEvents.credentialId,
+          provider: costEvents.provider,
+          biller: costEvents.biller,
+          billingType: costEvents.billingType,
+          model: costEvents.model,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::double precision`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::double precision`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::double precision`,
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          events: sql<number>`count(*)::double precision`,
+        })
+        .from(costEvents)
+        .where(
+          and(
+            eq(costEvents.companyId, companyId),
+            gte(costEvents.occurredAt, since),
+            isNotNull(costEvents.credentialId),
+          ),
+        )
+        .groupBy(
+          costEvents.credentialId,
+          costEvents.provider,
+          costEvents.biller,
+          costEvents.billingType,
+          costEvents.model,
+        );
+
+      const byCredential = new Map<string, CredentialUsageAggregate>();
+      const modelsByCredential = new Map<string, ProviderCredentialUsageModel[]>();
+      for (const row of rows) {
+        if (!row.credentialId) continue;
+        const aggregate = byCredential.get(row.credentialId) ?? emptyCredentialUsageAggregate();
+        const inputTokens = Number(row.inputTokens);
+        const outputTokens = Number(row.outputTokens);
+        const cachedInputTokens = Number(row.cachedInputTokens);
+        const costCents = Number(row.costCents);
+        const events = Number(row.events);
+        const apiEquivalent = estimateApiEquivalentCostCents({
+          provider: row.provider,
+          biller: row.biller,
+          model: row.model,
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          fallbackCostCents: costCents,
+        });
+
+        aggregate.inputTokens += inputTokens;
+        aggregate.outputTokens += outputTokens;
+        aggregate.cachedInputTokens += cachedInputTokens;
+        aggregate.costCents += costCents;
+        aggregate.apiEquivalentCostCents += apiEquivalent.costCents;
+        if (isSubscriptionBillingType(row.billingType)) {
+          aggregate.subscriptionApiEquivalentCostCents += apiEquivalent.costCents;
+        }
+        aggregate.events += events;
+        byCredential.set(row.credentialId, aggregate);
+
+        if (includeModels) {
+          const models = modelsByCredential.get(row.credentialId) ?? [];
+          models.push({
+            provider: row.provider,
+            biller: row.biller,
+            billingType: row.billingType,
+            model: row.model,
+            inputTokens,
+            cachedInputTokens,
+            outputTokens,
+            costCents,
+            apiEquivalentCostCents: apiEquivalent.costCents,
+            subscriptionApiEquivalentCostCents: isSubscriptionBillingType(row.billingType)
+              ? apiEquivalent.costCents
+              : 0,
+            events,
+            pricingLabel: apiEquivalent.pricingLabel,
+          });
+          modelsByCredential.set(row.credentialId, models);
+        }
+      }
+      for (const models of modelsByCredential.values()) {
+        models.sort((a, b) =>
+          b.apiEquivalentCostCents - a.apiEquivalentCostCents
+          || b.costCents - a.costCents
+          || b.inputTokens + b.cachedInputTokens + b.outputTokens - (a.inputTokens + a.cachedInputTokens + a.outputTokens),
+        );
+      }
+      return { byCredential, modelsByCredential };
+    }
+
+    const windowPairs = await Promise.all(
+      specs.map(async (spec) => [spec, await aggregateWindow(spec, spec.key === primaryKey)] as const),
+    );
+    const primary = windowPairs.find(([spec]) => spec.key === primaryKey)?.[1] ?? {
+      byCredential: new Map<string, CredentialUsageAggregate>(),
+      modelsByCredential: new Map<string, ProviderCredentialUsageModel[]>(),
+    };
+    const credentialIds = new Set<string>();
+    for (const [, aggregate] of windowPairs) {
+      for (const credentialId of aggregate.byCredential.keys()) credentialIds.add(credentialId);
+    }
+
+    return [...credentialIds].sort().map((credentialId) => {
+      const primaryAggregate = primary.byCredential.get(credentialId) ?? emptyCredentialUsageAggregate();
+      return {
+        credentialId,
+        inputTokens: primaryAggregate.inputTokens,
+        outputTokens: primaryAggregate.outputTokens,
+        cachedInputTokens: primaryAggregate.cachedInputTokens,
+        costCents: primaryAggregate.costCents,
+        apiEquivalentCostCents: primaryAggregate.apiEquivalentCostCents,
+        subscriptionApiEquivalentCostCents: primaryAggregate.subscriptionApiEquivalentCostCents,
+        events: primaryAggregate.events,
+        windows: windowPairs.map(([spec, aggregate]) => ({
+          label: spec.label,
+          hours: spec.hours,
+          ...(aggregate.byCredential.get(credentialId) ?? emptyCredentialUsageAggregate()),
+        })),
+        models: primary.modelsByCredential.get(credentialId) ?? [],
+      };
+    });
+  }
+
   const svc = {
     async list(companyId: string): Promise<SafeCredential[]> {
       const rows = await db
@@ -319,53 +512,17 @@ export function credentialService(db: Db) {
       return { ok: true, credentials: creds.map(stripCredential) };
     },
 
-    /**
-     * Aggregate token/cost usage per managed credential for a company over a
-     * trailing window, from cost_events.credentialId. Used by the Credentials
-     * UI to show how much each credential (and each pool member) has spent.
-     */
-    async usageByCredential(
-      companyId: string,
-      sinceMs: number,
-    ): Promise<
-      Array<{
-        credentialId: string;
-        inputTokens: number;
-        outputTokens: number;
-        cachedInputTokens: number;
-        costCents: number;
-        events: number;
-      }>
-    > {
-      const since = new Date(Date.now() - Math.max(0, sinceMs));
-      const rows = await db
-        .select({
-          credentialId: costEvents.credentialId,
-          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)`,
-          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)`,
-          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)`,
-          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)`,
-          events: sql<number>`count(*)`,
-        })
-        .from(costEvents)
-        .where(
-          and(
-            eq(costEvents.companyId, companyId),
-            gte(costEvents.occurredAt, since),
-            isNotNull(costEvents.credentialId),
-          ),
-        )
-        .groupBy(costEvents.credentialId);
-      return rows
-        .filter((r): r is typeof r & { credentialId: string } => r.credentialId != null)
-        .map((r) => ({
-          credentialId: r.credentialId,
-          inputTokens: Number(r.inputTokens),
-          outputTokens: Number(r.outputTokens),
-          cachedInputTokens: Number(r.cachedInputTokens),
-          costCents: Number(r.costCents),
-          events: Number(r.events),
-        }));
+    async usageByCredential(companyId: string, sinceMs: number): Promise<ProviderCredentialUsage[]> {
+      const { specs, primaryKey } = buildCredentialUsageWindowSpecs(sinceMs);
+      return usageByCredentialForSpecs(companyId, specs, primaryKey);
+    },
+
+    async usageByCredentialMonthToDate(companyId: string): Promise<{
+      since: Date;
+      usage: ProviderCredentialUsage[];
+    }> {
+      const { specs, primaryKey, since } = buildCredentialUsageMonthToDateWindowSpecs();
+      return { since, usage: await usageByCredentialForSpecs(companyId, specs, primaryKey) };
     },
   };
 
@@ -1340,6 +1497,8 @@ export async function persistCodexRefreshedTokens(
 export async function resolveAllCredentialEnv(
   db: Db,
   agentId: string,
+  adapterTypeOverride?: string | null,
+  credentialIdAllowList?: string[] | null,
 ): Promise<{
   env: Record<string, string>;
   home?: string;
@@ -1349,11 +1508,14 @@ export async function resolveAllCredentialEnv(
   // adapterType decides how some credentials resolve (e.g. a deepseek_api_key on
   // a Claude Code agent routes the CLI through DeepSeek's Anthropic endpoint).
   const [agentRow] = await db
-    .select({ credentialId: agents.credentialId, adapterType: agents.adapterType })
+    .select({ credentialId: agents.credentialId, adapterType: agents.adapterType, companyId: agents.companyId })
     .from(agents)
     .where(eq(agents.id, agentId))
     .limit(1);
-  const adapterType = agentRow?.adapterType ?? undefined;
+  const adapterType = adapterTypeOverride ?? agentRow?.adapterType ?? undefined;
+  const allowedCredentialIds = credentialIdAllowList && credentialIdAllowList.length > 0
+    ? new Set(credentialIdAllowList)
+    : null;
 
   // Disabled credentials (auto-disabled after repeated failures, or manually)
   // are excluded from the rotation pool entirely — the picker never selects
@@ -1381,10 +1543,26 @@ export async function resolveAllCredentialEnv(
       .from(agentCredentials)
       .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
       .where(and(eq(agentCredentials.agentId, agentId), isNull(providerCredentials.disabledAt)));
+    const routeRows = allowedCredentialIds && agentRow?.companyId
+      ? await tx
+          .select({
+            credentialId: providerCredentials.id,
+            type: providerCredentials.type,
+            cooldownUntil: providerCredentials.cooldownUntil,
+            lastUsedAt: providerCredentials.lastUsedAt,
+          })
+          .from(providerCredentials)
+          .where(and(
+            eq(providerCredentials.companyId, agentRow.companyId),
+            inArray(providerCredentials.id, Array.from(allowedCredentialIds)),
+            isNull(providerCredentials.disabledAt),
+          ))
+      : [];
 
     const nowMs = Date.now();
     const byType = new Map<string, RotationCandidate[]>();
-    for (const row of joinRows) {
+    for (const row of [...joinRows, ...routeRows]) {
+      if (allowedCredentialIds && !allowedCredentialIds.has(row.credentialId)) continue;
       const list = byType.get(row.type) ?? [];
       list.push(row);
       byType.set(row.type, list);

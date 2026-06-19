@@ -424,13 +424,14 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("evidence, not valid liveness paths by themselves");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("keep `in_progress` only when a live continuation path exists");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Prefer the smallest verification that proves the change");
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use direct child issues only from main parent issues");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("execution lanes must never create child issues or grandchildren");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("coordinate engineer/QA/fix loops inside this same issue thread");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create direct child execution lanes only when you know what needs to be done");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("POST /api/issues/{issueId}/interactions");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("kind suggest_tasks, ask_user_questions, or request_confirmation");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("confirmation:{issueId}:plan:{revisionId}");
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Wait for acceptance before creating implementation subtasks");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Wait for acceptance before creating direct child execution lanes");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "Respect budget, pause/cancel, approval gates, and company boundaries",
     );
@@ -458,7 +459,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
     expect(prompt).toContain("clear final disposition");
     expect(prompt).toContain("evidence, not valid liveness paths by themselves");
-    expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
+    expect(prompt).toContain("Use direct child issues only for bounded parent-level parallelism");
+    expect(prompt).toContain("never create grandchildren");
     expect(prompt).toContain("named unblock owner/action");
   });
 
@@ -520,7 +522,7 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("Update the plan only. Do not write code or perform implementation work.");
     expect(prompt).not.toContain("accepted-plan continuation");
-    expect(prompt).not.toContain("Create child issues from the approved plan only");
+    expect(prompt).not.toContain("Create direct child execution lanes from the approved plan only");
   });
 
   it("renders accepted-plan continuation guidance for planning issues", () => {
@@ -541,8 +543,9 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("accepted-plan continuation");
-    expect(prompt).toContain("Create child issues from the approved plan only");
-    expect(prompt).toContain("may create child implementation issues");
+    expect(prompt).toContain("Create direct child execution lanes from the approved plan only");
+    expect(prompt).toContain("may create direct child execution lanes");
+    expect(prompt).toContain("must never create grandchildren");
     expect(prompt).toContain("must not start implementation work on the planning issue itself");
   });
 
@@ -566,7 +569,7 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("accepted-plan continuation");
-    expect(prompt).toContain("Create child issues from the approved plan only");
+    expect(prompt).toContain("Create direct child execution lanes from the approved plan only");
     expect(prompt).not.toContain("Update the plan only");
   });
 

@@ -51,7 +51,7 @@ describe("buildPaperclipTaskMarkdown", () => {
       },
     });
 
-    expect(acceptedConfirmation).toContain("Create child issues from the approved plan only");
+    expect(acceptedConfirmation).toContain("Create direct child execution lanes from the approved plan only");
     expect(acceptedConfirmation).not.toContain("Make the plan only.");
   });
 
@@ -75,7 +75,7 @@ describe("buildPaperclipTaskMarkdown", () => {
     });
 
     expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
-    expect(commentWake).not.toContain("Create child issues from the approved plan only");
+    expect(commentWake).not.toContain("Create direct child execution lanes from the approved plan only");
   });
 });
 
