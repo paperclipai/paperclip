@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
@@ -253,5 +254,81 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+
+describe("detectClaudeLoginRequired — Anthropic OAuth 401 (SAG-4314)", () => {
+  it("classifies the exact Anthropic auth-401 error string as auth-required", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+    });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("classifies the error when it appears in stdout", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+      stderr: "",
+    });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("classifies 'invalid_api_key' error code (via code field) as auth-required", () => {
+    // errors[].code is the fallback when message/error are absent
+    const result = detectClaudeLoginRequired({
+      parsed: { is_error: true, errors: [{ code: "invalid_api_key" }] },
+      stdout: "",
+      stderr: "",
+    });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("classifies 'authentication_error' string in stderr as auth-required", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "authentication_error: bad credentials",
+    });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("does not classify a benign non-auth completion as auth-required", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "Claude completed successfully.",
+      stderr: "",
+    });
+    expect(result.requiresLogin).toBe(false);
+  });
+
+  it("does not classify a transient rate-limit error as auth-required", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "HTTP 429: Too Many Requests",
+    });
+    expect(result.requiresLogin).toBe(false);
+  });
+});
+
+describe("isClaudeTransientUpstreamError — Anthropic auth-401 guard (SAG-4314)", () => {
+  it("does not classify the Anthropic auth-401 string as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        stderr: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not classify invalid_api_key as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: { is_error: true, errors: [{ type: "invalid_api_key", message: "Invalid API key" }] },
+      }),
+    ).toBe(false);
   });
 });
