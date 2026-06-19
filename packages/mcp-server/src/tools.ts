@@ -5,11 +5,13 @@ import {
   checkoutIssueSchema,
   createApprovalSchema,
   createIssueInputSchema,
+  createMilestoneSchema,
   issueThreadInteractionContinuationPolicySchema,
   requestCheckboxConfirmationPayloadSchema,
   requestConfirmationPayloadSchema,
   suggestTasksPayloadSchema,
   updateIssueSchema,
+  updateMilestoneSchema,
   upsertIssueDocumentSchema,
   linkIssueApprovalSchema,
 } from "@paperclipai/shared";
@@ -172,6 +174,21 @@ const approvalDecisionSchema = z.object({
 const createApprovalToolSchema = z.object({
   companyId: companyIdOptional,
 }).merge(createApprovalSchema);
+
+const milestoneIdSchema = z.string().uuid();
+
+const createMilestoneToolSchema = z.object({
+  companyId: companyIdOptional,
+}).merge(createMilestoneSchema);
+
+const listMilestonesToolSchema = z.object({
+  companyId: companyIdOptional,
+  projectId: z.string().uuid().optional(),
+});
+
+const updateMilestoneToolSchema = z.object({
+  milestoneId: milestoneIdSchema,
+}).merge(updateMilestoneSchema);
 
 const apiRequestSchema = z.object({
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
@@ -659,6 +676,51 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         client.requestJson("POST", `/approvals/${encodeURIComponent(approvalId)}/comments`, {
           body: { body },
         }),
+    ),
+    makeTool(
+      "paperclipCreateMilestone",
+      "Creates a new milestone on a Linear project.",
+      createMilestoneToolSchema,
+      async ({ companyId, ...body }) => {
+        const resolved = await client.resolveCompany({ override: companyId });
+        return client.requestJson("POST", `/companies/${resolved}/milestones`, {
+          body,
+          companyId: resolved,
+        });
+      },
+    ),
+    makeTool(
+      "paperclipListMilestones",
+      "Lists milestones for a Linear project. Returns id, name, description, and target date.",
+      listMilestonesToolSchema,
+      async ({ companyId, projectId }) => {
+        const resolved = await client.resolveCompany({ override: companyId });
+        const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+        return client.requestJson("GET", `/companies/${resolved}/milestones${qs}`, {
+          companyId: resolved,
+        });
+      },
+    ),
+    makeTool(
+      "paperclipGetMilestone",
+      "Gets full detail on a single Linear milestone by ID.",
+      z.object({ milestoneId: milestoneIdSchema }),
+      async ({ milestoneId }) =>
+        client.requestJson("GET", `/milestones/${encodeURIComponent(milestoneId)}`),
+    ),
+    makeTool(
+      "paperclipUpdateMilestone",
+      "Updates a Linear project milestone.",
+      updateMilestoneToolSchema,
+      async ({ milestoneId, ...body }) =>
+        client.requestJson("PATCH", `/milestones/${encodeURIComponent(milestoneId)}`, { body }),
+    ),
+    makeTool(
+      "paperclipDeleteMilestone",
+      "Deletes a milestone by ID.",
+      z.object({ milestoneId: milestoneIdSchema }),
+      async ({ milestoneId }) =>
+        client.requestJson("DELETE", `/milestones/${encodeURIComponent(milestoneId)}`),
     ),
     makeTool(
       "paperclipApiRequest",

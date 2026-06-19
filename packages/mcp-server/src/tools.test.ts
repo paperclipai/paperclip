@@ -563,6 +563,108 @@ describe("paperclip MCP tools", () => {
     expect((init.headers as Record<string, string>)["X-Paperclip-Company"]).toBe(bloId);
   });
 
+  it("creates a milestone with the expected company-scoped payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "M0" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateMilestone");
+    await tool.execute({ name: "M0", targetDate: "2026-09-01" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/milestones",
+    );
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      name: "M0",
+      targetDate: "2026-09-01",
+    });
+  });
+
+  it("lists milestones for the default company", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse([{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "M0" }]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListMilestones");
+    const response = await tool.execute({});
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/milestones",
+    );
+    expect(response.content[0]?.text).toContain("M0");
+  });
+
+  it("lists milestones filtered by projectId", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListMilestones");
+    await tool.execute({ projectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" });
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/milestones?projectId=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    );
+  });
+
+  it("gets a milestone by id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "M0" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGetMilestone");
+    const response = await tool.execute({ milestoneId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/milestones/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+    expect(init.method).toBe("GET");
+    expect(response.content[0]?.text).toContain("M0");
+  });
+
+  it("updates a milestone with a PATCH request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "M0 revised" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipUpdateMilestone");
+    await tool.execute({ milestoneId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "M0 revised" });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/milestones/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(String(init.body))).toEqual({ name: "M0 revised" });
+  });
+
+  it("deletes a milestone with a DELETE request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ success: true }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipDeleteMilestone");
+    await tool.execute({ milestoneId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/milestones/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+    expect(init.method).toBe("DELETE");
+  });
+
   it("errors when a prefix override is not an accessible company", async () => {
     const fetchMock = vi
       .fn()
