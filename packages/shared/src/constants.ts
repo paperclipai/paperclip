@@ -809,6 +809,7 @@ export const PLUGIN_CAPABILITIES = [
   "goals.read",
   "goals.create",
   "goals.update",
+  "milestones.read",
   "activity.read",
   "costs.read",
   "issues.orchestration.read",
@@ -1173,6 +1174,9 @@ export const PLUGIN_EVENT_TYPES = [
   "budget.incident.resolved",
   "cost_event.created",
   "activity.logged",
+  "milestone.created",
+  "milestone.updated",
+  "milestone.deleted",
 ] as const;
 export type PluginEventType = (typeof PLUGIN_EVENT_TYPES)[number];
 

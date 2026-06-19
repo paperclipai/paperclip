@@ -20,6 +20,7 @@ import type {
   IssueDocument,
   Agent,
   Goal,
+  Milestone,
 } from "@paperclipai/shared";
 import type {
   EventFilter,
@@ -101,6 +102,7 @@ export interface TestHarness {
     issueComments?: IssueComment[];
     agents?: Agent[];
     goals?: Goal[];
+    milestones?: Milestone[];
     /**
      * Seed in-memory `linear_issue_links` rows. Used to test the Linear
      * plugin's webhook create-handler dedup against host-allocator
@@ -485,6 +487,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const issueDocuments = new Map<string, IssueDocument>();
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
+  const milestones = new Map<string, Milestone>();
   const accessMembers = new Map<string, PluginAccessMember>();
   const principalGrants = new Map<string, PrincipalPermissionGrant[]>();
 
@@ -2277,6 +2280,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         return updated;
       },
     },
+    milestones: {
+      async list(input) {
+        requireCapability(manifest, capabilitySet, "milestones.read");
+        const cid = requireCompanyId(input.companyId);
+        return [...milestones.values()].filter(
+          (m) => m.companyId === cid && (!input.projectId || m.projectId === input.projectId),
+        );
+      },
+    },
     access: {
       members: {
         async list(input) {
@@ -2514,6 +2526,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       }
       for (const row of input.agents ?? []) agents.set(row.id, row);
       for (const row of input.goals ?? []) goals.set(row.id, row);
+      for (const row of input.milestones ?? []) milestones.set(row.id, row);
       for (const row of input.linearIssueLinks ?? []) {
         linearIssueLinksByLinearIssueId.set(linkKey(row.companyId, row.linearIssueId), row.paperclipIssueId);
         linearIssueLinksByPaperclipIssueId.set(row.paperclipIssueId, {

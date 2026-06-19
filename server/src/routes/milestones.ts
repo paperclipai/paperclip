@@ -41,7 +41,14 @@ export function milestoneRoutes(db: Db) {
       action: "milestone.created",
       entityType: "milestone",
       entityId: milestone.id,
-      details: { name: milestone.name },
+      details: {
+        id: milestone.id,
+        projectId: milestone.projectId,
+        companyId: milestone.companyId,
+        name: milestone.name,
+        description: milestone.description,
+        targetDate: milestone.targetDate,
+      },
     });
     res.status(201).json(milestone);
   });
@@ -68,7 +75,15 @@ export function milestoneRoutes(db: Db) {
       action: "milestone.updated",
       entityType: "milestone",
       entityId: milestone.id,
-      details: req.body,
+      details: {
+        id: milestone.id,
+        projectId: milestone.projectId,
+        companyId: milestone.companyId,
+        name: milestone.name,
+        description: milestone.description,
+        targetDate: milestone.targetDate,
+        ...req.body,
+      },
     });
     res.json(milestone);
   });
@@ -95,6 +110,12 @@ export function milestoneRoutes(db: Db) {
       action: "milestone.deleted",
       entityType: "milestone",
       entityId: existing.id,
+      details: {
+        id: existing.id,
+        projectId: existing.projectId,
+        companyId: existing.companyId,
+        name: existing.name,
+      },
     });
     res.json({ success: true });
   });

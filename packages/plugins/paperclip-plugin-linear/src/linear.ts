@@ -214,6 +214,7 @@ export interface LinearIssue {
   assignee: { name: string; email: string } | null;
   labels: { nodes: Array<{ id?: string; name: string; color: string }> };
   project: { id: string; name: string; description: string | null; state: string } | null;
+  projectMilestone?: { id: string; name: string } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -450,7 +451,8 @@ export async function getIssue(
         state { name type }
         assignee { name email }
         labels { nodes { id name color } }
-          project { id name description state }
+        project { id name description state }
+        projectMilestone { id name }
       }
     }
   `, { id: issueId });
@@ -479,7 +481,8 @@ export async function getIssueByIdentifier(
             state { name type }
             assignee { name email }
             labels { nodes { id name color } }
-          project { id name description state }
+            project { id name description state }
+            projectMilestone { id name }
           }
         }
       }
@@ -512,6 +515,7 @@ export async function listIssuesByIds(
           assignee { name email }
           labels { nodes { id name color } }
           project { id name description state }
+          projectMilestone { id name }
         }
       }
     }
@@ -1122,6 +1126,73 @@ export async function updateInitiative(
     }
   `, { id, input });
   return data.initiativeUpdate.initiative;
+}
+
+export interface LinearProjectMilestone {
+  id: string;
+  name: string;
+  description: string | null;
+  targetDate: string | null;
+}
+
+export async function listProjectMilestones(
+  fetch: LinearFetch,
+  token: string,
+  projectId: string,
+): Promise<LinearProjectMilestone[]> {
+  const data = await gql<{
+    project: { projectMilestones: { nodes: LinearProjectMilestone[] } };
+  }>(fetch, token, `
+    query ListProjectMilestones($projectId: String!) {
+      project(id: $projectId) {
+        projectMilestones { nodes { id name description targetDate } }
+      }
+    }
+  `, { projectId });
+  return data.project.projectMilestones.nodes;
+}
+
+export async function createProjectMilestone(
+  fetch: LinearFetch,
+  token: string,
+  input: { name: string; projectId: string; description?: string | null; targetDate?: string | null },
+): Promise<LinearProjectMilestone> {
+  const data = await gql<{
+    projectMilestoneCreate: { projectMilestone: LinearProjectMilestone };
+  }>(fetch, token, `
+    mutation CreateProjectMilestone($input: ProjectMilestoneCreateInput!) {
+      projectMilestoneCreate(input: $input) { projectMilestone { id name description targetDate } }
+    }
+  `, { input });
+  return data.projectMilestoneCreate.projectMilestone;
+}
+
+export async function updateProjectMilestone(
+  fetch: LinearFetch,
+  token: string,
+  id: string,
+  input: { name?: string; description?: string | null; targetDate?: string | null },
+): Promise<LinearProjectMilestone> {
+  const data = await gql<{
+    projectMilestoneUpdate: { projectMilestone: LinearProjectMilestone };
+  }>(fetch, token, `
+    mutation UpdateProjectMilestone($id: String!, $input: ProjectMilestoneUpdateInput!) {
+      projectMilestoneUpdate(id: $id, input: $input) { projectMilestone { id name description targetDate } }
+    }
+  `, { id, input });
+  return data.projectMilestoneUpdate.projectMilestone;
+}
+
+export async function deleteProjectMilestone(
+  fetch: LinearFetch,
+  token: string,
+  id: string,
+): Promise<void> {
+  await gql<{ projectMilestoneDelete: { success: boolean } }>(fetch, token, `
+    mutation DeleteProjectMilestone($id: String!) {
+      projectMilestoneDelete(id: $id) { success }
+    }
+  `, { id });
 }
 
 export function parseLinearIssueRef(

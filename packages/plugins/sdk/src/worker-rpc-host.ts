@@ -1236,6 +1236,17 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      milestones: {
+        async list(input) {
+          return callHost("milestones.list", {
+            companyId: input.companyId,
+            projectId: input.projectId,
+            limit: input.limit,
+            offset: input.offset,
+          });
+        },
+      },
+
       access: {
         members: {
           async list(input) {

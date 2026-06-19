@@ -39,6 +39,7 @@ import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
+import { createMilestonesService } from "./milestones.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
@@ -583,6 +584,7 @@ export function buildHostServices(
   const issues = issueService(db);
   const documents = documentService(db);
   const goals = goalService(db);
+  const milestoneSvc = createMilestonesService(db);
   const access = accessService(db);
   const authorization = authorizationService(db);
   const budgets = budgetService(db);
@@ -2608,6 +2610,15 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         requireInCompany("Goal", await goals.getById(params.goalId), companyId);
         return (await goals.update(params.goalId, params.patch as any)) as Goal;
+      },
+    },
+
+    milestones: {
+      async list(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rows = await milestoneSvc.list(companyId, params.projectId as string | undefined);
+        return applyWindow(rows, params);
       },
     },
 
