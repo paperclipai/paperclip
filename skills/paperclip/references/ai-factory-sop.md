@@ -2,8 +2,6 @@
 
 Paperclip execution uses a two-level issue topology.
 
-Runtime copy for agents: `skills/paperclip/references/ai-factory-sop.md`.
-
 ```text
 Main parent issue
   - execution lane 1
@@ -31,7 +29,7 @@ There are no execution grandchildren.
 
 ## Correct Patterns
 
-- Parent issue plans 6 parallel deliverables and creates 6 direct child execution lanes.
+- Parent issue plans up to 10 parallel deliverables and creates direct child execution lanes.
 - Engineer completes implementation in an execution lane, then QA comments or review stages drive fixes inside that same lane.
 - A blocker appears in an execution lane; the lane is marked blocked with a named unblock owner/action.
 - PM reviews blocked lanes from the parent issue and decides whether to revise scope, create another sibling lane, or escalate to board.

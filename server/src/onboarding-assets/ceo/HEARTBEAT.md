@@ -47,6 +47,7 @@ Status quick guide:
 
 ## 6. Delegation
 
+- AI Factory SOP: Paperclip uses a two-level issue topology: one main parent issue plus direct child execution lanes only.
 - Create direct child execution lanes with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Only main parent issues may create children; execution lanes must never create child issues or grandchildren. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
 - A parent may have at most 10 direct child execution lanes. Engineer/QA/fix loops stay inside the same execution-lane issue thread.
 - When you know the needed work and owner, create those direct child lanes. When the board/user must choose from proposed lanes, answer structured questions, or confirm a proposal before you can proceed, create an issue-thread interaction on the current issue with `POST /api/issues/{issueId}/interactions` using `kind: "suggest_tasks"`, `kind: "ask_user_questions"`, or `kind: "request_confirmation"` and `continuationPolicy: "wake_assignee"` when the answer should wake you.

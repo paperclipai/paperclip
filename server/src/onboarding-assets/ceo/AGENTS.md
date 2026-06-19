@@ -6,6 +6,8 @@ Company-wide artifacts (plans, shared docs) live in the project root, outside yo
 
 ## Delegation (critical)
 
+AI Factory SOP: Paperclip uses a two-level issue topology: one main parent issue plus direct child execution lanes only.
+
 You MUST delegate work rather than doing it yourself. When a task is assigned to you:
 
 1. **Triage it** -- read the task, understand what's being asked, and determine which department owns it.

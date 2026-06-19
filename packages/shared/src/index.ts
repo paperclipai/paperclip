@@ -635,6 +635,8 @@ export type {
   ProviderQuotaResult,
   ProviderCredential,
   ProviderCredentialQuota,
+  ProviderCredentialUsage,
+  ProviderCredentialUsageWindow,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
 export {

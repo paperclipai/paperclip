@@ -1,4 +1,4 @@
-import type { CredentialType, ProviderCredentialQuota } from "@paperclipai/shared";
+import type { CredentialType, ProviderCredentialQuota, ProviderCredentialUsage } from "@paperclipai/shared";
 import { api } from "./client";
 
 export interface ProviderCredential {
@@ -21,14 +21,7 @@ export interface ProviderCredential {
   updatedAt: string;
 }
 
-export interface CredentialUsage {
-  credentialId: string;
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  costCents: number;
-  events: number;
-}
+export type CredentialUsage = ProviderCredentialUsage;
 
 export interface RevealedCredential {
   credential: Record<string, unknown>;

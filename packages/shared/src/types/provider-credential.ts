@@ -25,3 +25,27 @@ export interface ProviderCredentialQuota {
   error?: string;
   sampledAt: string;
 }
+
+export interface ProviderCredentialUsageWindow {
+  label: string;
+  hours: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  costCents: number;
+  apiEquivalentCostCents: number;
+  subscriptionApiEquivalentCostCents: number;
+  events: number;
+}
+
+export interface ProviderCredentialUsage {
+  credentialId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  costCents: number;
+  apiEquivalentCostCents: number;
+  subscriptionApiEquivalentCostCents: number;
+  events: number;
+  windows: ProviderCredentialUsageWindow[];
+}

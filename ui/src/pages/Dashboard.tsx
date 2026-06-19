@@ -7,7 +7,7 @@ import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
-import { credentialsApi } from "../api/credentials";
+import { credentialsApi, type CredentialUsage } from "../api/credentials";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -23,7 +23,7 @@ import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents, formatTokens } from "../lib/utils";
 import { Bot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Eye, KeyRound } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
-import { AnimatedNumber, DotMatrixText } from "../components/NothingAesthetic";
+import { AnimatedNumber, DotMatrixText, LedProgress } from "../components/NothingAesthetic";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
@@ -34,6 +34,34 @@ const DASHBOARD_ACTIVITY_LIMIT = 10;
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+function credentialUsageTokens(usage: CredentialUsage | undefined): number {
+  if (!usage) return 0;
+  return usage.inputTokens + usage.cachedInputTokens + usage.outputTokens;
+}
+
+function credentialUsageWindowTokens(usage: CredentialUsage | undefined, label: string): number {
+  const window = usage?.windows.find((entry) => entry.label === label);
+  if (!window) return 0;
+  return window.inputTokens + window.cachedInputTokens + window.outputTokens;
+}
+
+function compactQuotaLabel(label: string): string {
+  const normalized = label.toLowerCase();
+  if (normalized.includes("session")) return "5h";
+  if (normalized.includes("week") && normalized.includes("sonnet")) return "sonnet wk";
+  if (normalized.includes("week") && normalized.includes("opus")) return "opus wk";
+  if (normalized.includes("week")) return "week";
+  if (normalized.includes("extra")) return "extra";
+  return label.length > 14 ? `${label.slice(0, 13)}…` : label;
+}
+
+function quotaTone(usedPercent: number | null | undefined): "default" | "warning" | "danger" | "success" {
+  if (usedPercent == null) return "default";
+  if (usedPercent >= 90) return "danger";
+  if (usedPercent >= 70) return "warning";
+  return "success";
 }
 
 export function Dashboard() {
@@ -113,6 +141,15 @@ export function Dashboard() {
     refetchInterval: 60_000,
   });
 
+  const { data: credentialUsageResp } = useQuery({
+    queryKey: selectedCompanyId
+      ? ["credentials", selectedCompanyId, "usage", 30]
+      : ["credentials", "none", "usage", 30],
+    queryFn: () => credentialsApi.usage(selectedCompanyId!, 30),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 60_000,
+  });
+
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
@@ -126,6 +163,27 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+  const credentialUsageById = useMemo(() => {
+    const map = new Map<string, CredentialUsage>();
+    for (const usage of credentialUsageResp?.usage ?? []) map.set(usage.credentialId, usage);
+    return map;
+  }, [credentialUsageResp]);
+  const credentialUsageTotals = useMemo(() => {
+    const usageRows = credentialUsageResp?.usage ?? [];
+    let tokens5h = 0;
+    let value7dCents = 0;
+    let value30dCents = 0;
+    let billed30dCents = 0;
+    let maxCredentialTokens = 1;
+    for (const usage of usageRows) {
+      tokens5h += credentialUsageWindowTokens(usage, "5h");
+      value7dCents += usage.windows.find((entry) => entry.label === "7d")?.apiEquivalentCostCents ?? 0;
+      value30dCents += usage.apiEquivalentCostCents;
+      billed30dCents += usage.costCents;
+      maxCredentialTokens = Math.max(maxCredentialTokens, credentialUsageTokens(usage));
+    }
+    return { tokens5h, value7dCents, value30dCents, billed30dCents, maxCredentialTokens };
+  }, [credentialUsageResp]);
 
   // Stalled tasks: open issues whose blocker-attention says they're stalled or
   // need attention (computed server-side and returned on the list). Most-recent
@@ -309,25 +367,55 @@ export function Dashboard() {
           ) : null}
 
           {credentialQuota.length > 0 && (
-            <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm px-5 py-4">
-              <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="rounded-2xl border border-border/60 bg-background/75 backdrop-blur-sm shadow-sm px-5 py-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
-                  <KeyRound className="h-4 w-4 text-muted-foreground" />
-                  <h3 className="text-sm font-medium">Credential quota</h3>
+                  <KeyRound className="h-4 w-4 text-[#34BFF0]" />
+                  <h3 className="text-sm font-medium">Credential quota & value</h3>
                 </div>
                 <Link to="/settings" className="text-xs text-muted-foreground hover:text-foreground">
                   Manage
                 </Link>
               </div>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="mb-4 grid gap-2 sm:grid-cols-3">
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                  <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">5h tokens</p>
+                  <DotMatrixText className="text-xl leading-tight text-foreground">
+                    <AnimatedNumber value={credentialUsageTotals.tokens5h} format={formatTokens} />
+                  </DotMatrixText>
+                </div>
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                  <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">7d API value</p>
+                  <DotMatrixText className="text-xl leading-tight text-foreground">
+                    <AnimatedNumber value={credentialUsageTotals.value7dCents} format={(n) => formatCents(Math.round(n))} />
+                  </DotMatrixText>
+                </div>
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                  <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">30d value / billed</p>
+                  <DotMatrixText className="text-xl leading-tight text-foreground">
+                    <AnimatedNumber value={credentialUsageTotals.value30dCents} format={(n) => formatCents(Math.round(n))} />
+                  </DotMatrixText>
+                  <p className="text-[10px] text-muted-foreground">
+                    billed {formatCents(credentialUsageTotals.billed30dCents)}
+                  </p>
+                </div>
+              </div>
+              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                 {credentialQuota.slice(0, 6).map((row) => {
-                  const window = row.quotaWindows.find((entry) => entry.usedPercent != null) ?? row.quotaWindows[0];
-                  const remaining =
-                    window?.usedPercent != null
-                      ? `${Math.max(0, Math.round(100 - window.usedPercent))}% left`
-                      : window?.valueLabel ?? (row.supported ? "quota ok" : "quota n/a");
+                  const usage = credentialUsageById.get(row.credentialId);
+                  const totalTokens = credentialUsageTokens(usage);
+                  const weekValue = usage?.windows.find((entry) => entry.label === "7d")?.apiEquivalentCostCents ?? 0;
+                  const observedPercent = Math.min(
+                    100,
+                    credentialUsageTotals.maxCredentialTokens > 0
+                      ? (totalTokens / credentialUsageTotals.maxCredentialTokens) * 100
+                      : 0,
+                  );
+                  const visibleQuotaWindows = row.quotaWindows
+                    .filter((entry) => entry.usedPercent != null || entry.valueLabel)
+                    .slice(0, 4);
                   return (
-                    <div key={row.credentialId} className="rounded-xl border border-border/60 bg-muted/20 px-3 py-2">
+                    <div key={row.credentialId} className="rounded-md border border-border/60 bg-muted/20 px-3 py-3">
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate text-xs font-medium">{row.name}</span>
                         <span className={cn(
@@ -341,8 +429,62 @@ export function Dashboard() {
                           {row.disabledAt ? "disabled" : row.cooldownUntil ? "cooling" : row.type}
                         </span>
                       </div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {row.ok ? `${window?.label ?? "quota"} · ${remaining}` : row.supported ? row.error ?? "quota unavailable" : "quota unavailable"}
+                      <div className="mt-2 flex items-end justify-between gap-2">
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">30d tokens</p>
+                          <DotMatrixText className="text-base leading-none">
+                            {formatTokens(totalTokens)}
+                          </DotMatrixText>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">API value</p>
+                          <span className="text-xs tabular-nums">
+                            {formatCents(usage?.apiEquivalentCostCents ?? 0)}
+                          </span>
+                        </div>
+                      </div>
+                      <LedProgress
+                        percent={observedPercent}
+                        tone={totalTokens > 0 ? "live" : "muted"}
+                        className="mt-2"
+                      />
+                      <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px] text-muted-foreground">
+                        <span>5h {formatTokens(credentialUsageWindowTokens(usage, "5h"))}</span>
+                        <span className="text-right">7d {formatCents(weekValue)}</span>
+                      </div>
+                      <div
+                        className="mt-3 space-y-1.5"
+                        title={row.quotaWindows
+                          .map((entry) => `${entry.label}: ${entry.usedPercent != null ? `${Math.round(entry.usedPercent)}% used` : entry.valueLabel ?? "reported"}`)
+                          .join(" · ")}
+                      >
+                        {!row.supported ? (
+                          <p className="text-[10px] text-muted-foreground">quota n/a</p>
+                        ) : !row.ok ? (
+                          <p className="text-[10px] text-amber-600">{row.error ?? "quota unavailable"}</p>
+                        ) : visibleQuotaWindows.length === 0 ? (
+                          <p className="text-[10px] text-muted-foreground">quota ok</p>
+                        ) : (
+                          visibleQuotaWindows.map((window) => (
+                            <div key={window.label} className="space-y-1">
+                              <div className="flex items-center justify-between gap-2 text-[10px]">
+                                <span className="truncate text-muted-foreground">{compactQuotaLabel(window.label)}</span>
+                                <span className="shrink-0 tabular-nums">
+                                  {window.usedPercent != null
+                                    ? `${Math.max(0, Math.round(100 - window.usedPercent))}% left`
+                                    : window.valueLabel ?? "ok"}
+                                </span>
+                              </div>
+                              {window.usedPercent != null ? (
+                                <LedProgress
+                                  percent={window.usedPercent}
+                                  tone={quotaTone(window.usedPercent)}
+                                  showDeficitNotch={window.usedPercent >= 90}
+                                />
+                              ) : null}
+                            </div>
+                          ))
+                        )}
                       </div>
                     </div>
                   );

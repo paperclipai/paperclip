@@ -334,7 +334,12 @@ export type {
   UserCompanyAccessResponse,
 } from "./access.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
-export type { ProviderCredential, ProviderCredentialQuota } from "./provider-credential.js";
+export type {
+  ProviderCredential,
+  ProviderCredentialQuota,
+  ProviderCredentialUsage,
+  ProviderCredentialUsageWindow,
+} from "./provider-credential.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilityEnvInput,

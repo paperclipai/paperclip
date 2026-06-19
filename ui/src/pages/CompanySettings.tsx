@@ -6,7 +6,7 @@ import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
 } from "@paperclipai/shared";
-import type { CredentialType } from "@paperclipai/shared";
+import type { CredentialType, ProviderCredentialQuota } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
@@ -853,6 +853,38 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
+function formatCredentialMoney(cents: number): string {
+  return `$${(Math.max(0, cents) / 100).toFixed(2)}`;
+}
+
+function credentialUsageTotalTokens(usage: CredentialUsage): number {
+  return usage.inputTokens + usage.cachedInputTokens + usage.outputTokens;
+}
+
+function compactCredentialQuotaLabel(label: string): string {
+  const normalized = label.toLowerCase();
+  if (normalized.includes("session")) return "5h";
+  if (normalized.includes("week") && normalized.includes("sonnet")) return "sonnet wk";
+  if (normalized.includes("week") && normalized.includes("opus")) return "opus wk";
+  if (normalized.includes("week")) return "week";
+  return label.length > 12 ? `${label.slice(0, 11)}…` : label;
+}
+
+function formatCredentialQuotaSummary(quota: ProviderCredentialQuota): string {
+  const visible = quota.quotaWindows
+    .filter((entry) => entry.usedPercent != null || entry.valueLabel)
+    .slice(0, 3);
+  if (visible.length === 0) return "quota ok";
+  return visible
+    .map((entry) => {
+      const value = entry.usedPercent != null
+        ? `${Math.max(0, Math.round(100 - entry.usedPercent))}% left`
+        : entry.valueLabel ?? "ok";
+      return `${compactCredentialQuotaLabel(entry.label)} ${value}`;
+    })
+    .join(" · ");
+}
+
 // Long-lived tokens from `claude setup-token` are inference-only OAuth tokens
 // with the `sk-ant-oat<digits>-` prefix. They have no refresh/expiry metadata
 // and are routed through the CLAUDE_CODE_OAUTH_TOKEN env var at runtime.
@@ -1397,14 +1429,15 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                       {(() => {
                         const u = usageByCredential.get(cred.id);
                         if (!u) return null;
-                        const tokens = u.inputTokens + u.outputTokens;
-                        if (tokens === 0 && u.costCents === 0) return null;
+                        const tokens = credentialUsageTotalTokens(u);
+                        if (tokens === 0 && u.costCents === 0 && u.apiEquivalentCostCents === 0) return null;
                         return (
                           <span
                             className="shrink-0 text-[10px] text-muted-foreground"
-                            title={`${u.events} run(s) · ${u.inputTokens.toLocaleString()} in / ${u.outputTokens.toLocaleString()} out tokens · $${(u.costCents / 100).toFixed(2)} (last 30 days)`}
+                            title={`${u.events} run(s) · ${u.inputTokens.toLocaleString()} in / ${u.cachedInputTokens.toLocaleString()} cached / ${u.outputTokens.toLocaleString()} out tokens · ${formatCredentialMoney(u.apiEquivalentCostCents)} API-equivalent value · ${formatCredentialMoney(u.costCents)} billed (last 30 days)`}
                           >
-                            {formatTokenCount(tokens)} tok · ${(u.costCents / 100).toFixed(2)}
+                            {formatTokenCount(tokens)} tok · {formatCredentialMoney(u.apiEquivalentCostCents)} value
+                            {u.subscriptionApiEquivalentCostCents > 0 ? " sub" : ""}
                           </span>
                         );
                       })()}
@@ -1428,8 +1461,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                             </span>
                           );
                         }
-                        const window = quota.quotaWindows.find((entry) => entry.usedPercent != null) ?? quota.quotaWindows[0];
-                        if (!window) return null;
+                        const summary = formatCredentialQuotaSummary(quota);
                         return (
                           <span
                             className="shrink-0 text-[10px] text-muted-foreground"
@@ -1437,7 +1469,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                               .map((entry) => `${entry.label}: ${entry.usedPercent != null ? `${Math.round(entry.usedPercent)}% used` : entry.valueLabel ?? "reported"}`)
                               .join(" · ")}
                           >
-                            {window.label}: {window.usedPercent != null ? `${Math.round(100 - window.usedPercent)}% left` : window.valueLabel ?? "quota ok"}
+                            {summary}
                           </span>
                         );
                       })()}
