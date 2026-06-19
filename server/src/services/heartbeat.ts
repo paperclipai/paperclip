@@ -8343,6 +8343,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       resolvedConfig,
       runScopedMentionedSkillKeys,
     );
+    let shopifyRouterWarning: string | null = null;
     const { config: routedResolvedConfig, routing: routedShopifySkillKeys } = await resolveRoutedShopifyConfig({
       db,
       companyId: agent.companyId,
@@ -8352,6 +8353,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         capabilities: agent.capabilities ?? null,
       },
       resolvedConfig: effectiveResolvedConfig,
+      onWarning: (message) => { shopifyRouterWarning = message; },
     });
     const shopifyRouterLogLine =
       `[paperclip] Shopify skill router: gated=${String(routedShopifySkillKeys.gated)}, matched=[${routedShopifySkillKeys.matchedRules.join(", ")}], keys=[${routedShopifySkillKeys.skillKeys.join(", ")}]\n`;
@@ -8918,6 +8920,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       };
       await onLog("stdout", shopifyRouterLogLine);
+      if (shopifyRouterWarning) {
+        await onLog("stderr", shopifyRouterWarning);
+      }
       if (runScopedMentionedSkillKeys.length > 0) {
         await onLog(
           "stdout",

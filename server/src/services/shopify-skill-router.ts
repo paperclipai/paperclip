@@ -19,7 +19,6 @@ export interface ShopifyRouterInput {
   agentRole: string | null;
   agentCapabilities: string | null;
   goalTitle: string | null;
-  projectTags: string[];
 }
 
 export interface ShopifyRouterOutput {
@@ -93,7 +92,6 @@ export async function resolveRoutedShopifySkillKeys(args: {
       agentRole: args.agent.role,
       agentCapabilities: args.agent.capabilities,
       goalTitle,
-      projectTags: [],
     });
   } catch (error) {
     logger.warn(
@@ -120,8 +118,7 @@ export function routeShopifySkillKeys(
     input.goalTitle ?? "",
     input.agentCapabilities ?? "",
   ].join("\n");
-  const tagHaystack = input.projectTags.join("\n");
-  const gateMatches = config.gateRegex.test(haystack) || config.gateRegex.test(tagHaystack);
+  const gateMatches = config.gateRegex.test(haystack);
   config.gateRegex.lastIndex = 0;
   if (!gateMatches) {
     return { skillKeys: [], matchedRules: [], gated: true };
