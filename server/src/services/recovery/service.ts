@@ -188,6 +188,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "agent_not_found",
   "budget_blocked",
   "budget_exhausted",
+  "claude_auth_required",
   "issue_paused",
   "issue_dependencies_blocked",
 ]);
@@ -195,6 +196,14 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+
+// Maximum consecutive failed source_scoped_recovery dispatches before switching to board escalation.
+// Caps the storm amplifier at O(CAP × stranded_issues) instead of O(∞).
+export const SOURCE_SCOPED_RECOVERY_DISPATCH_CAP = 3;
+
+export function shouldSuppressSourceScopedRecoveryDispatch(attemptCount: number): boolean {
+  return attemptCount > SOURCE_SCOPED_RECOVERY_DISPATCH_CAP;
+}
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
@@ -2339,6 +2348,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     if (input.recoveryCause === "workspace_validation_failed") return;
     if (!input.action.ownerAgentId) return;
+    if (shouldSuppressSourceScopedRecoveryDispatch(input.action.attemptCount)) {
+      logger.warn({
+        actionId: input.action.id,
+        issueId: input.issue.id,
+        attemptCount: input.action.attemptCount,
+        cap: SOURCE_SCOPED_RECOVERY_DISPATCH_CAP,
+        ownerAgentId: input.action.ownerAgentId,
+      }, "source_scoped_recovery: dispatch cap exceeded, suppressing agent wake — board must intervene");
+      return;
+    }
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",
