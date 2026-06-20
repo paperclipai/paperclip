@@ -126,7 +126,10 @@ describe("gemini remote execution", () => {
       },
       config: {
         command: "gemini",
-        env: { GEMINI_API_KEY: "test-key" },
+        env: {
+          GEMINI_API_KEY: "test-key",
+          NO_COLOR: "1",
+        },
       },
       context: {
         paperclipWorkspace: {
@@ -221,7 +224,7 @@ describe("gemini remote execution", () => {
     expect(call?.[3].env.TERM).toBe("xterm-256color");
     expect(call?.[3].env.COLORTERM).toBe("truecolor");
     expect(call?.[3].env.NO_BROWSER).toBe("1");
-    expect(call?.[3].env.NO_COLOR).toBe("");
+    expect(call?.[3].env).not.toHaveProperty("NO_COLOR");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);

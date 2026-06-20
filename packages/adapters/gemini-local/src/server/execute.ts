@@ -71,16 +71,26 @@ function resolveGeminiBillingType(env: Record<string, string>): "api" | "subscri
     : "subscription";
 }
 
-function applyGeminiHeadlessEnv(env: Record<string, string>): void {
+function buildGeminiHeadlessEnv(env: Record<string, string>): Record<string, string> {
+  const next = { ...env };
   const term = env.TERM?.trim().toLowerCase();
   if (!term || term === "dumb" || term === "vt100") {
-    env.TERM = "xterm-256color";
+    next.TERM = "xterm-256color";
   }
-  if (!env.COLORTERM?.trim()) {
-    env.COLORTERM = "truecolor";
+  if (!next.COLORTERM?.trim()) {
+    next.COLORTERM = "truecolor";
   }
-  env.NO_BROWSER = "1";
-  env.NO_COLOR = "";
+  next.NO_BROWSER = "1";
+  delete next.NO_COLOR;
+  return next;
+}
+
+function buildGeminiRuntimeEnv(env: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(ensurePathInEnv({ ...process.env, ...buildGeminiHeadlessEnv(env) })).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -281,18 +291,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  applyGeminiHeadlessEnv(env);
-  const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...process.env, ...env }).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
-  const billingType = resolveGeminiBillingType(effectiveEnv);
-  const runtimeEnv = Object.fromEntries(
-    Object.entries(ensurePathInEnv(effectiveEnv)).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
+  const runtimeEnv = buildGeminiRuntimeEnv(env);
+  const billingType = resolveGeminiBillingType(runtimeEnv);
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
     asNumber(config.timeoutSec, 0),
@@ -314,12 +314,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutSec,
   });
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
-  let loggedEnv = buildInvocationEnvForLogs(env, {
-    runtimeEnv,
-    includeRuntimeKeys: ["HOME"],
-    resolvedCommand,
-  });
-
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -367,7 +361,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         executionTargetIsRemote,
         executionCwd: effectiveExecutionCwd,
       });
-      applyGeminiHeadlessEnv(env);
       remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
       const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
       const managedRemoteHomeDir =
@@ -448,12 +441,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
     if (paperclipBridge) {
       Object.assign(env, paperclipBridge.env);
-      applyGeminiHeadlessEnv(env);
-      loggedEnv = buildInvocationEnvForLogs(env, {
-        runtimeEnv: ensurePathInEnv({ ...process.env, ...env }),
-        includeRuntimeKeys: ["HOME"],
-        resolvedCommand,
-      });
     }
   }
 
@@ -573,6 +560,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const args = buildArgs(resumeSessionId);
+    const invocationEnv = buildGeminiHeadlessEnv(env);
+    const invocationRuntimeEnv = buildGeminiRuntimeEnv(env);
+    const loggedEnv = buildInvocationEnvForLogs(invocationEnv, {
+      runtimeEnv: invocationRuntimeEnv,
+      includeRuntimeKeys: ["HOME"],
+      resolvedCommand,
+    });
     if (onMeta) {
       await onMeta({
         adapterType: "gemini_local",
@@ -591,7 +585,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
-      env,
+      env: invocationEnv,
       timeoutSec,
       graceSec,
       onSpawn,
