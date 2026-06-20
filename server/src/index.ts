@@ -802,6 +802,14 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
 
+      const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
+      if (taskWatchdogsReconciled.triggered > 0) {
+        logger.warn(
+          { ...taskWatchdogsReconciled },
+          "startup task-watchdog reconciliation triggered watchdog work",
+        );
+      }
+
       const scanned = await heartbeat.scanSilentActiveRuns();
       if (scanned.created > 0 || scanned.escalated > 0) {
         logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
@@ -869,6 +877,12 @@ export async function startServer(): Promise<StartedServer> {
           const reconciled = await heartbeat.reconcileIssueGraphLiveness();
           if (reconciled.escalationsCreated > 0) {
             logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
+          }
+        })
+        .then(async () => {
+          const reconciled = await heartbeat.reconcileTaskWatchdogs();
+          if (reconciled.triggered > 0) {
+            logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
           }
         })
         .then(async () => {

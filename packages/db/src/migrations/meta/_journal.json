@@ -733,8 +733,22 @@
     {
       "idx": 104,
       "version": "7",
+      "when": 1781733000000,
+      "tag": "0104_issue_watchdogs",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1781902000000,
+      "tag": "0105_instance_scoped_environments",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
       "when": 1778966210569,
-      "tag": "0104_plugin_config_company_scope",
+      "tag": "0106_plugin_config_company_scope",
       "breakpoints": true
     }
   ]

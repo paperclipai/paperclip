@@ -78,12 +78,12 @@ describe("agent config test action", () => {
 function makeEnvironment(overrides: Partial<Environment>): Environment {
   return {
     id: "env-1",
-    companyId: "co-1",
     name: "Env",
     description: null,
     driver: "local",
     status: "active",
     config: {},
+    envVars: {},
     metadata: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),

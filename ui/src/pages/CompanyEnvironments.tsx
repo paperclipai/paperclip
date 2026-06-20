@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AGENT_ADAPTER_TYPES,
   getAdapterEnvironmentSupport,
+  type EnvBinding,
   type Environment,
   type EnvironmentProbeResult,
   type JsonSchema,
@@ -12,6 +13,7 @@ import { environmentsApi } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { secretsApi } from "@/api/secrets";
 import { Button } from "@/components/ui/button";
+import { EnvVarEditor } from "@/components/EnvVarEditor";
 import { JsonSchemaForm, getDefaultValues, validateJsonSchemaForm } from "@/components/JsonSchemaForm";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -37,6 +39,7 @@ type EnvironmentFormState = {
   sshStrictHostKeyChecking: boolean;
   sandboxProvider: string;
   sandboxConfig: Record<string, unknown>;
+  envVars: Record<string, EnvBinding>;
 };
 
 const ENVIRONMENT_SUPPORT_ROWS = AGENT_ADAPTER_TYPES.map((adapterType) => ({
@@ -49,6 +52,7 @@ function buildEnvironmentPayload(form: EnvironmentFormState) {
     name: form.name.trim(),
     description: form.description.trim() || null,
     driver: form.driver,
+    envVars: form.envVars,
     config:
       form.driver === "ssh"
         ? {
@@ -88,7 +92,21 @@ function createEmptyEnvironmentForm(): EnvironmentFormState {
     sshStrictHostKeyChecking: true,
     sandboxProvider: "",
     sandboxConfig: {},
+    envVars: {},
   };
+}
+
+function isLocalEnvironment(environment: Environment | null | undefined) {
+  return environment?.driver === "local";
+}
+
+function normalizeNonLocalEnvironmentId(
+  environmentId: string | null | undefined,
+  environments: readonly Environment[],
+): string {
+  if (!environmentId) return "";
+  const environment = environments.find((candidate) => candidate.id === environmentId) ?? null;
+  return isLocalEnvironment(environment) ? "" : environmentId;
 }
 
 function readSshConfig(environment: Environment) {
@@ -159,21 +177,28 @@ function SupportMark({ supported }: { supported: boolean }) {
 }
 
 export function CompanyEnvironments() {
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [editingEnvironmentId, setEditingEnvironmentId] = useState<string | null>(null);
   const [environmentForm, setEnvironmentForm] = useState<EnvironmentFormState>(createEmptyEnvironmentForm);
   const [probeResults, setProbeResults] = useState<Record<string, EnvironmentProbeResult | null>>({});
+  const [testingEnvironmentId, setTestingEnvironmentId] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Environments" },
     ]);
-  }, [selectedCompany?.name, setBreadcrumbs]);
+  }, [setBreadcrumbs]);
+
+  const { data: instanceSettings } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    retry: false,
+  });
 
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -197,6 +222,16 @@ export function CompanyEnvironments() {
     queryKey: selectedCompanyId ? ["company-secrets", selectedCompanyId] : ["company-secrets", "none"],
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
+  });
+  const createSecret = useMutation({
+    mutationFn: (input: { name: string; value: string }) => {
+      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      return secretsApi.create(selectedCompanyId, input);
+    },
+    onSuccess: async () => {
+      if (!selectedCompanyId) return;
+      await queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
   });
 
   const environmentMutation = useMutation({
@@ -230,8 +265,34 @@ export function CompanyEnvironments() {
     },
   });
 
+  const defaultEnvironmentMutation = useMutation({
+    mutationFn: async (defaultEnvironmentId: string | null) =>
+      await instanceSettingsApi.update({ defaultEnvironmentId }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.instance.settings });
+      pushToast({
+        title: "Default environment updated",
+        body: "Agent inheritance now follows the updated instance default.",
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to update default environment",
+        body: error instanceof Error ? error.message : "Default environment update failed.",
+        tone: "error",
+      });
+    },
+  });
+
   const environmentProbeMutation = useMutation({
     mutationFn: async (environmentId: string) => await environmentsApi.probe(environmentId),
+    onMutate: (environmentId) => {
+      setTestingEnvironmentId(environmentId);
+    },
+    onSettled: (_probe, _error, environmentId) => {
+      setTestingEnvironmentId((current) => (current === environmentId ? null : current));
+    },
     onSuccess: (probe, environmentId) => {
       setProbeResults((current) => ({
         ...current,
@@ -287,6 +348,7 @@ export function CompanyEnvironments() {
     setEditingEnvironmentId(null);
     setEnvironmentForm(createEmptyEnvironmentForm());
     setProbeResults({});
+    setTestingEnvironmentId(null);
   }, [selectedCompanyId]);
 
   function handleEditEnvironment(environment: Environment) {
@@ -306,6 +368,7 @@ export function CompanyEnvironments() {
         sshPrivateKeySecretId: ssh.privateKeySecretId,
         sshKnownHosts: ssh.knownHosts,
         sshStrictHostKeyChecking: ssh.strictHostKeyChecking,
+        envVars: environment.envVars ?? {},
       });
       return;
     }
@@ -319,6 +382,7 @@ export function CompanyEnvironments() {
         driver: "sandbox",
         sandboxProvider: sandbox.provider,
         sandboxConfig: sandbox.config,
+        envVars: environment.envVars ?? {},
       });
       return;
     }
@@ -328,6 +392,7 @@ export function CompanyEnvironments() {
       name: environment.name,
       description: environment.description ?? "",
       driver: "local",
+      envVars: environment.envVars ?? {},
     });
   }
 
@@ -396,8 +461,17 @@ export function CompanyEnvironments() {
       environmentForm.sandboxProvider !== "fake" &&
       Object.keys(sandboxConfigErrors).length === 0);
 
+  const savedEnvironments = environments ?? [];
+  const nonLocalEnvironments = savedEnvironments.filter((environment) => !isLocalEnvironment(environment));
+  const instanceDefaultEnvironmentId = normalizeNonLocalEnvironmentId(
+    instanceSettings?.defaultEnvironmentId ?? null,
+    savedEnvironments,
+  );
+  const instanceDefaultEnvironment =
+    nonLocalEnvironments.find((environment) => environment.id === instanceDefaultEnvironmentId) ?? null;
+
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to manage environments.</div>;
+    return <div className="text-sm text-muted-foreground">Select a company context to manage environment secrets and bindings.</div>;
   }
 
   if (!environmentsEnabled) {
@@ -405,28 +479,59 @@ export function CompanyEnvironments() {
       <div className="max-w-3xl space-y-4">
         <div className="flex items-center gap-2">
           <Settings className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Environments</h1>
+          <h1 className="text-lg font-semibold">Environments</h1>
         </div>
         <div className="rounded-md border border-border px-4 py-4 text-sm text-muted-foreground">
-          Enable Environments in instance experimental settings to manage company execution targets.
+          Enable Environments in instance experimental settings to manage shared execution targets.
         </div>
       </div>
     );
   }
 
   return (
-    <div className="max-w-5xl space-y-6" data-testid="company-settings-environments-section">
+    <div className="max-w-5xl space-y-6" data-testid="instance-settings-environments-section">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <Settings className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Environments</h1>
+          <h1 className="text-lg font-semibold">Environments</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Define reusable execution targets for projects, task workspaces, and remote-capable adapters.
+          Define reusable execution targets for the instance. The built-in default is <span className="font-medium text-foreground">Local</span>; agents inherit that unless the instance default or an agent override points somewhere else.
         </p>
       </div>
 
       <div className="space-y-4 rounded-md border border-border px-4 py-4">
+        <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Instance default environment</div>
+              <div className="text-xs text-muted-foreground">
+                New agent configurations inherit this target unless they explicitly override it.
+              </div>
+            </div>
+            <div className="min-w-[18rem] flex-1">
+              <select
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                value={instanceDefaultEnvironmentId}
+                onChange={(event) =>
+                  defaultEnvironmentMutation.mutate(event.target.value || null)}
+                disabled={defaultEnvironmentMutation.isPending}
+              >
+                <option value="">Local (built-in default)</option>
+                {nonLocalEnvironments.map((environment) => (
+                  <option key={environment.id} value={environment.id}>
+                    {environment.name} · {environment.driver}
+                  </option>
+                ))}
+              </select>
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                {instanceDefaultEnvironment
+                  ? `Agents currently inherit ${instanceDefaultEnvironment.name} unless they override it.`
+                  : "Agents currently inherit the built-in Local environment unless they override it."}
+              </div>
+            </div>
+          </div>
+        </div>
         <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
           Environment choices use the same adapter support matrix as agent defaults. SSH is always available for
           remote-managed adapters, and sandbox environments appear only when a run-capable sandbox provider plugin is
@@ -485,10 +590,10 @@ export function CompanyEnvironments() {
         </div>
 
         <div className="space-y-3">
-          {(environments ?? []).length === 0 ? (
-            <div className="text-sm text-muted-foreground">No environments saved for this company yet.</div>
+          {savedEnvironments.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No saved environments yet. Local remains the default until you add another target.</div>
           ) : (
-            (environments ?? []).map((environment) => {
+            savedEnvironments.map((environment) => {
               const probe = probeResults[environment.id] ?? null;
               const isEditing = editingEnvironmentId === environment.id;
               return (
@@ -530,9 +635,9 @@ export function CompanyEnvironments() {
                           size="sm"
                           variant="outline"
                           onClick={() => environmentProbeMutation.mutate(environment.id)}
-                          disabled={environmentProbeMutation.isPending}
+                          disabled={testingEnvironmentId === environment.id}
                         >
-                          {environmentProbeMutation.isPending
+                          {testingEnvironmentId === environment.id
                             ? "Testing..."
                             : environment.driver === "ssh"
                               ? "Test connection"
@@ -589,7 +694,7 @@ export function CompanyEnvironments() {
                 onChange={(e) => setEnvironmentForm((current) => ({ ...current, description: e.target.value }))}
               />
             </Field>
-            <Field label="Driver" hint="Local runs on this host. SSH stores a remote machine target. Sandbox stores plugin-backed provider config on the shared environment seam.">
+            <Field label="Driver" hint="Sandbox stores plugin-backed provider config on the shared environment seam. SSH stores a remote machine target.">
               <select
                 className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                 value={environmentForm.driver}
@@ -610,19 +715,16 @@ export function CompanyEnvironments() {
                                 : {}
                           )
                         : current.sandboxConfig,
-                    driver:
-                      e.target.value === "local"
-                        ? "local"
-                        : e.target.value === "sandbox"
-                          ? "sandbox"
-                          : "ssh",
+                    driver: e.target.value === "sandbox" ? "sandbox" : "ssh",
                   }))}
               >
-                <option value="ssh">SSH</option>
                 {sandboxCreationEnabled || environmentForm.driver === "sandbox" ? (
                   <option value="sandbox">Sandbox</option>
                 ) : null}
-                <option value="local">Local</option>
+                <option value="ssh">SSH</option>
+                {environmentForm.driver === "local" ? (
+                  <option value="local">Local</option>
+                ) : null}
               </select>
             </Field>
 
@@ -757,6 +859,19 @@ export function CompanyEnvironments() {
               </div>
             ) : null}
 
+            <Field
+              label="Environment variables"
+              hint="Injected into runs that resolve through this environment. Use plain values or company secrets."
+            >
+              <EnvVarEditor
+                value={environmentForm.envVars}
+                secrets={secrets ?? []}
+                onCreateSecret={async (name, value) => await createSecret.mutateAsync({ name, value })}
+                onChange={(env) =>
+                  setEnvironmentForm((current) => ({ ...current, envVars: env ?? {} }))}
+              />
+            </Field>
+
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
@@ -788,7 +903,7 @@ export function CompanyEnvironments() {
                   onClick={() => draftEnvironmentProbeMutation.mutate(environmentForm)}
                   disabled={draftEnvironmentProbeMutation.isPending || !environmentFormValid}
                 >
-                  {draftEnvironmentProbeMutation.isPending ? "Testing..." : "Test draft"}
+                  {draftEnvironmentProbeMutation.isPending ? "Testing..." : "Test"}
                 </Button>
               ) : null}
               {environmentMutation.isError ? (

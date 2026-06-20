@@ -7,6 +7,7 @@ import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
@@ -47,8 +48,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2, ScanEye } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import {
@@ -394,6 +396,11 @@ export function IssueProperties({
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -424,6 +431,9 @@ export function IssueProperties({
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
+  const [watchdogOpen, setWatchdogOpen] = useState(false);
+  const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
+  const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
   const normalizedBlockedBySearch = blockedBySearch.trim();
 
   const { data: session } = useQuery({
@@ -922,6 +932,160 @@ export function IssueProperties({
     issue.executionPolicy?.monitor?.notes,
     issue.executionPolicy?.monitor?.serviceName,
   ]);
+  // Re-sync watchdog editor inputs when the persisted watchdog changes (and reset on close).
+  useEffect(() => {
+    if (watchdogOpen) return;
+    setWatchdogAgentInput(issue.watchdog?.watchdogAgentId ?? "");
+    setWatchdogInstructionsInput(issue.watchdog?.instructions ?? "");
+  }, [issue.watchdog?.watchdogAgentId, issue.watchdog?.instructions, watchdogOpen]);
+
+  const watchdogAgentOptions = useMemo<InlineEntityOption[]>(
+    () =>
+      (agents ?? [])
+        .filter(isAgentTaskTarget)
+        .map((agent) => ({
+          id: agent.id,
+          label: agent.name,
+          searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+        })),
+    [agents],
+  );
+  const upsertWatchdog = useMutation({
+    mutationFn: (data: { agentId: string; instructions: string | null }) =>
+      issuesApi.upsertWatchdog(issue.id, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      setWatchdogOpen(false);
+    },
+  });
+  const deleteWatchdog = useMutation({
+    mutationFn: () => issuesApi.deleteWatchdog(issue.id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      setWatchdogOpen(false);
+    },
+  });
+  const saveWatchdog = () => {
+    if (!watchdogAgentInput) return;
+    upsertWatchdog.mutate({
+      agentId: watchdogAgentInput,
+      instructions: watchdogInstructionsInput.trim() || null,
+    });
+  };
+  const removeWatchdog = () => {
+    if (issue.watchdog) {
+      deleteWatchdog.mutate();
+    } else {
+      setWatchdogOpen(false);
+    }
+    setWatchdogAgentInput("");
+    setWatchdogInstructionsInput("");
+  };
+  const watchdogMutationError =
+    upsertWatchdog.error instanceof Error
+      ? upsertWatchdog.error.message
+      : deleteWatchdog.error instanceof Error
+        ? deleteWatchdog.error.message
+        : null;
+  const watchdogIssueRef = (childIssues ?? []).find(
+    (child) => child.id === issue.watchdog?.watchdogIssueId,
+  );
+  const watchdogTrigger = issue.watchdog ? (
+    <span className="inline-flex min-w-0 items-center gap-1.5 text-sm">
+      {(() => {
+        const agent = (agents ?? []).find((candidate) => candidate.id === issue.watchdog?.watchdogAgentId);
+        return agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null;
+      })()}
+      <span className="truncate">{agentName(issue.watchdog.watchdogAgentId)}</span>
+      {issue.watchdog.instructions?.trim() ? (
+        <span className="truncate text-muted-foreground">· {issue.watchdog.instructions.trim()}</span>
+      ) : null}
+      {issue.watchdog.status === "disabled" ? (
+        <span className="shrink-0 text-xs text-muted-foreground">(disabled)</span>
+      ) : null}
+    </span>
+  ) : (
+    <span className="text-sm text-muted-foreground">Set watchdog</span>
+  );
+  const watchdogContent = (
+    <div className="space-y-3 p-2">
+      <div className="space-y-1.5">
+        <div className="text-xs font-medium text-foreground">Watchdog agent</div>
+        <InlineEntitySelector
+          value={watchdogAgentInput}
+          options={watchdogAgentOptions}
+          placeholder="Select agent"
+          noneLabel="No watchdog agent"
+          searchPlaceholder="Search agents..."
+          emptyMessage="No agents found."
+          onChange={setWatchdogAgentInput}
+          renderTriggerValue={(option) => {
+            if (!option) return <span className="text-muted-foreground">Select agent</span>;
+            const agent = (agents ?? []).find((candidate) => candidate.id === option.id);
+            return (
+              <>
+                {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                <span className="truncate">{option.label}</span>
+              </>
+            );
+          }}
+          renderOption={(option) => {
+            const agent = (agents ?? []).find((candidate) => candidate.id === option.id);
+            return (
+              <>
+                {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                <span className="truncate">{option.label}</span>
+              </>
+            );
+          }}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <div className="text-xs font-medium text-foreground">
+          Instructions <span className="font-normal text-muted-foreground">(optional)</span>
+        </div>
+        <Textarea
+          value={watchdogInstructionsInput}
+          onChange={(event) => setWatchdogInstructionsInput(event.target.value)}
+          placeholder="What should the watchdog watch for and how should it keep work moving?"
+          rows={4}
+          className="text-xs"
+        />
+      </div>
+      {watchdogIssueRef ? (
+        <div className="text-xs text-muted-foreground">
+          Watchdog task:{" "}
+          <Link to={`/issues/${watchdogIssueRef.id}`} className="text-primary hover:underline">
+            {watchdogIssueRef.identifier ?? "View task"}
+          </Link>
+        </div>
+      ) : null}
+      {watchdogMutationError ? (
+        <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive">
+          {watchdogMutationError}
+        </div>
+      ) : null}
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          className="text-xs text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+          disabled={deleteWatchdog.isPending || (!issue.watchdog && !watchdogAgentInput)}
+          onClick={removeWatchdog}
+        >
+          {deleteWatchdog.isPending ? "Removing…" : "Remove"}
+        </button>
+        <Button
+          type="button"
+          size="sm"
+          className="h-7 text-xs"
+          disabled={!watchdogAgentInput || upsertWatchdog.isPending}
+          onClick={saveWatchdog}
+        >
+          {upsertWatchdog.isPending ? "Saving…" : issue.watchdog ? "Update" : "Set watchdog"}
+        </Button>
+      </div>
+    </div>
+  );
 
   const updateMonitor = (nextMonitor: Issue["executionPolicy"] extends infer T
     ? T extends { monitor?: infer M | null } | null | undefined
@@ -2129,6 +2293,32 @@ export function IssueProperties({
         >
           {monitorContent}
         </PropertyPicker>
+
+        {taskWatchdogsEnabled ? (
+          <PropertyPicker
+            inline={inline}
+            label="Watchdog"
+            open={watchdogOpen}
+            onOpenChange={setWatchdogOpen}
+            triggerContent={watchdogTrigger}
+            triggerClassName="min-w-0 max-w-full"
+            popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-96")}
+            extra={
+              watchdogIssueRef ? (
+                <Link
+                  to={`/issues/${watchdogIssueRef.id}`}
+                  className="ml-1 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                  title="Open watchdog task"
+                >
+                  <ScanEye className="h-3 w-3" />
+                  {watchdogIssueRef.identifier ?? "Task"}
+                </Link>
+              ) : undefined
+            }
+          >
+            {watchdogContent}
+          </PropertyPicker>
+        ) : null}
 
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
