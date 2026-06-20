@@ -544,6 +544,90 @@ describe("realizeExecutionWorkspace", () => {
     ).rejects.toThrow(/not a reusable git worktree \(path is not registered in `git worktree list`\)\./);
   });
 
+  it("degrades to project_primary with a warning when the base directory is not a git checkout", async () => {
+    const baseCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-non-git-"));
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.strategy).toBe("project_primary");
+    expect(realized.cwd).toBe(baseCwd);
+    expect(realized.branchName).toBeNull();
+    expect(realized.worktreePath).toBeNull();
+    expect(realized.created).toBe(false);
+    expect(realized.warnings).toEqual([
+      expect.stringContaining('is not a git checkout; falling back to "project_primary"'),
+    ]);
+  });
+
+  it("prunes a stale registered worktree for the branch and recreates it instead of failing", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-447-add-worktree-support";
+    const stalePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await fs.mkdir(path.dirname(stalePath), { recursive: true });
+    await execFileAsync("git", ["worktree", "add", "-b", branchName, stalePath, "HEAD"], { cwd: repoRoot });
+    await fs.rm(stalePath, { recursive: true, force: true });
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.strategy).toBe("git_worktree");
+    expect(realized.branchName).toBe(branchName);
+    expect(realized.warnings).toEqual([
+      expect.stringContaining(`Pruned stale git worktree registration for branch "${branchName}"`),
+    ]);
+    await expect(fs.stat(path.join(realized.cwd, ".git"))).resolves.toBeTruthy();
+    expect(await readGit(realized.cwd, ["symbolic-ref", "--short", "HEAD"])).toBe(branchName);
+  });
+
   it("reuses the current linked worktree instead of nesting another worktree inside it", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "PAP-1355-worktree-reuse";
