@@ -5216,6 +5216,42 @@ export function issueService(db: Db) {
               );
           }
         }
+        // Stamp execution workspace cleanup-eligible when issue reaches a terminal state
+        if (
+          (issueData.status === "done" || issueData.status === "cancelled") &&
+          existing.status !== issueData.status &&
+          updated.executionWorkspaceId
+        ) {
+          const others = await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.executionWorkspaceId, updated.executionWorkspaceId),
+                ne(issues.id, updated.id),
+                notInArray(issues.status, ["done", "cancelled"]),
+              ),
+            );
+          if (others.length === 0) {
+            const now = new Date();
+            await tx
+              .update(executionWorkspaces)
+              .set({
+                status: "idle",
+                closedAt: now,
+                cleanupEligibleAt: now,
+                cleanupReason: "issue_terminal",
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  eq(executionWorkspaces.id, updated.executionWorkspaceId),
+                  isNull(executionWorkspaces.closedAt),
+                  ne(executionWorkspaces.mode, "shared_workspace"),
+                ),
+              );
+          }
+        }
         return enriched;
       };
 
