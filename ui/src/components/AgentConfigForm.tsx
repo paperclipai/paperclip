@@ -116,22 +116,6 @@ export function supportsAdapterModelRefresh(adapterType: string): boolean {
   return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "acpx_local";
 }
 
-export function getAgentConfigTestActionLabel(input: { isCreate: boolean; isDirty: boolean }): string {
-  return !input.isCreate && input.isDirty ? "Save + Test" : "Test";
-}
-
-export async function runAgentConfigEnvironmentTest(input: {
-  isCreate: boolean;
-  isDirty: boolean;
-  saveDraft?: () => void | Promise<unknown>;
-  runTest: () => Promise<AdapterEnvironmentTestResult>;
-}) {
-  if (!input.isCreate && input.isDirty) {
-    await input.saveDraft?.();
-  }
-  return await input.runTest();
-}
-
 function isOverlayDirty(o: AgentConfigOverlay): boolean {
   return (
     Object.keys(o.identity).length > 0 ||
@@ -555,7 +539,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   });
   const [testActionPending, setTestActionPending] = useState(false);
   const [testActionError, setTestActionError] = useState<string | null>(null);
-  const testActionLabel = getAgentConfigTestActionLabel({ isCreate, isDirty });
+  const testActionLabel = "Test";
   const isSavePending = !isCreate && Boolean(props.isSaving);
   const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId;
   const runEnvironmentTest = useCallback(async () => {
@@ -566,19 +550,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setTestActionError(null);
     testEnvironment.reset();
     try {
-      return await runAgentConfigEnvironmentTest({
-        isCreate,
-        isDirty,
-        saveDraft: !isCreate ? handleSave : undefined,
-        runTest: () => testEnvironment.mutateAsync(),
-      });
+      return await testEnvironment.mutateAsync();
     } catch (error) {
       setTestActionError(error instanceof Error ? error.message : "Environment test failed");
       throw error;
     } finally {
       setTestActionPending(false);
     }
-  }, [selectedCompanyId, isCreate, isDirty, handleSave, testEnvironment]);
+  }, [selectedCompanyId, testEnvironment]);
   // `runEnvironmentTest` (and `testEnvironmentDisabled`) change identity on every
   // render because `useMutation` returns a fresh result object each time. Hold the
   // latest behavior in a ref so the trigger handed to the parent stays referentially
