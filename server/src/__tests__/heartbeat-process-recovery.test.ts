@@ -580,6 +580,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     livenessState?: "completed" | "advanced" | "plan_only" | "empty_response" | "blocked" | "failed" | "needs_followup" | null;
     runErrorCode?: string | null;
     runError?: string | null;
+    originKind?: string;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -678,6 +679,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         assigneeUserId: input.assignToUser ? "user-1" : null,
         checkoutRunId: input.status === "in_progress" ? runId : null,
         executionRunId: null,
+        ...(input.originKind ? { originKind: input.originKind } : {}),
         issueNumber: input.activePauseHold ? 2 : 1,
         identifier: `${issuePrefix}-${input.activePauseHold ? 2 : 1}`,
         startedAt: input.status === "in_progress" ? now : null,
@@ -2569,6 +2571,62 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.id).toBeTruthy();
     expect((retryRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("issue_continuation_needed");
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
+    if (retryRun) {
+      await waitForRunToSettle(heartbeat, retryRun.id);
+    }
+  });
+
+  // LIB-577 (LIB-576 Finding B): a blocked routine_execution issue must not get
+  // a timer/interval-driven `productive_terminal_continuation_recovery` run —
+  // its only valid continuation is the blocker resolving. PR #8245 suppressed
+  // the max-turn continuation path only; this covers the continuationAttempt=0
+  // reconcile path that re-posted an identical blocked status on LIB-554.
+  it("suppresses timer recovery for a blocked routine_execution issue", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "blocked",
+      originKind: "routine_execution",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.blockedRoutineContinuationSuppressed).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    // No recovery run scheduled: only the original seeded run exists.
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+  });
+
+  // Scope guard: the LIB-577 suppression is keyed on originKind. A non-routine
+  // blocked issue still follows the existing productive-continuation path, so a
+  // regression here would mean the suppression leaked beyond routine_execution.
+  it("still requeues continuation for a blocked non-routine issue", async () => {
+    const { agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "blocked",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.blockedRoutineContinuationSuppressed).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const retryRun = runs.find((row) => row.livenessState !== "blocked");
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }

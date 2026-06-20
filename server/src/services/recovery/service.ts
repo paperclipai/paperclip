@@ -2661,6 +2661,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       continuationRequeued: 0,
       productiveContinuationObserved: 0,
       successfulContinuationObserved: 0,
+      blockedRoutineContinuationSuppressed: 0,
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
       escalated: 0,
@@ -2810,6 +2811,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       if (isSuccessfulInProgressContinuationRun(latestRun)) {
         const successfulRun = latestRun;
+
+        // LIB-577 (LIB-576 Finding B): a `routine_execution` issue whose latest
+        // run is liveness-`blocked` ("Issue status is blocked") has no valid
+        // timer/interval-driven continuation — `isProductiveContinuationRun`
+        // counts `blocked` as productive, so without this guard the reconcile
+        // sweep keeps enqueuing `productive_terminal_continuation_recovery` and
+        // replays full context (e.g. LIB-554: ~889K input re-posting an
+        // identical blocked status). A blocked routine issue's only valid
+        // continuation is the blocker resolving, not a recovery rehydration.
+        // Mirrors PR #8245's `routine_execution` suppression, which only covered
+        // the max-turn continuation path and never reached continuationAttempt=0.
+        if (
+          issue.originKind === "routine_execution" &&
+          successfulRun.livenessState === "blocked"
+        ) {
+          result.blockedRoutineContinuationSuppressed += 1;
+          result.skipped += 1;
+          continue;
+        }
 
         if (!isProductiveContinuationRun(successfulRun)) {
           result.successfulContinuationObserved += 1;
