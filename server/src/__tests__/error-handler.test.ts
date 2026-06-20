@@ -62,6 +62,39 @@ describe("errorHandler", () => {
     expect(res.err).toBe(err);
   });
 
+  it("exposes raw 500 messages to agent actors so they can self-correct", () => {
+    const req = {
+      ...makeReq(),
+      method: "PUT",
+      originalUrl: "/api/issues/abc/documents/plan",
+      actor: { type: "agent", agentId: "agent-1" },
+    } as unknown as Request;
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = new Error("invalid document body");
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Internal server error",
+      message: "invalid document body",
+    });
+  });
+
+  it("keeps 500 messages opaque for non-agent external callers", () => {
+    const req = {
+      ...makeReq(),
+      actor: { type: "board", userId: "u1", source: "session" },
+    } as unknown as Request;
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(new Error("secret internals"), req, res, next);
+
+    expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
+  });
+
   it("attaches HttpError instances for 500 responses", () => {
     const req = makeReq();
     const res = makeRes() as any;

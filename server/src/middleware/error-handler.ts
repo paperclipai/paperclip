@@ -77,8 +77,16 @@ export function errorHandler(
 
   res.status(500).json({
     error: "Internal server error",
-    ...(shouldExposeTrustedCloudTenantImportError(req) ? { message: rootError.message } : {}),
+    ...(shouldExposeInternalError(req) ? { message: rootError.message } : {}),
   });
+}
+
+// Agents are internal, trusted callers. Surfacing the real error message to an
+// agent lets it correct the offending call in one retry instead of blind-bisecting
+// the payload (which re-sends the growing transcript every turn at full token cost).
+// External callers keep the opaque "Internal server error".
+function shouldExposeInternalError(req: Request) {
+  return req.actor?.type === "agent" || shouldExposeTrustedCloudTenantImportError(req);
 }
 
 function shouldExposeTrustedCloudTenantImportError(req: Request) {
