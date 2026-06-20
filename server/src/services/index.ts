@@ -52,6 +52,7 @@ export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
 export { resourceMembershipService, type ResourceMembershipPolicyHook } from "./resource-memberships.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
+export { crossCompanyMessageService } from "./cross-company-messages.js";
 export { accessService } from "./access.js";
 export {
   backfillPrincipalAccessCompatibility,

@@ -736,6 +736,13 @@
       "when": 1781733000000,
       "tag": "0104_issue_watchdogs",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1781910000000,
+      "tag": "0105_cross_company_messages",
+      "breakpoints": true
     }
   ]
 }
