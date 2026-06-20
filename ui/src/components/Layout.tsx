@@ -17,6 +17,7 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
+import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell";
 import { SecondarySidebar } from "./SecondarySidebar";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
@@ -468,7 +469,11 @@ export function Layout() {
       <div
       className={cn(
         "bg-background text-foreground pt-[env(safe-area-inset-top)]",
-        isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-clip",
+        // overflow-x-clip on mobile keeps a stray wide descendant from making the
+        // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
+        // computed as visible, so native body scroll + the sticky breadcrumb keep
+        // working.
+        isMobile ? "min-h-dvh overflow-x-clip" : "flex h-dvh flex-col overflow-clip",
       )}
       >
       <a
@@ -566,7 +571,9 @@ export function Layout() {
                   requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
                 />
               ) : (
-                <Outlet />
+                <RouteErrorBoundary>
+                  <Outlet />
+                </RouteErrorBoundary>
               )}
             </main>
             <PropertiesPanel />

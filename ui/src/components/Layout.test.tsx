@@ -442,14 +442,15 @@ describe("Layout", () => {
     const selector = container.querySelector("select");
     expect(selector).not.toBeNull();
     expect(selector?.value).toBe("secrets");
-    expect(selector?.textContent).toContain("General");
-    expect(selector?.textContent).toContain("Environments");
-    expect(selector?.textContent).toContain("Cloud upstream");
-    expect(selector?.textContent).toContain("Members");
-    expect(selector?.textContent).toContain("Invites");
-    expect(selector?.textContent).toContain("Secrets");
-    expect(selector?.textContent).toContain("Instance general");
-    expect(selector?.textContent).toContain("Instance plugins");
+    const selectorText = selector?.textContent?.toLowerCase() ?? "";
+    expect(selectorText).toContain("general");
+    expect(selectorText).toContain("cloud upstream");
+    expect(selectorText).toContain("members");
+    expect(selectorText).toContain("invites");
+    expect(selectorText).toContain("secrets");
+    expect(selectorText).toContain("instance general");
+    expect(selectorText).toContain("instance environments");
+    expect(selectorText).toContain("instance plugins");
 
     await act(async () => {
       root.unmount();
@@ -718,6 +719,53 @@ describe("Layout", () => {
     // No secondary pane, so the route must not force the sidebar collapsed.
     expect(mockSetForceCollapsed).not.toHaveBeenCalledWith(true);
     expect(mockSetForceCollapsed).toHaveBeenCalledWith(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  async function renderLayoutRoot(): Promise<{ root: ReturnType<typeof createRoot>; rootEl: HTMLElement }> {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    const rootEl = container.firstElementChild as HTMLElement;
+    return { root, rootEl };
+  }
+
+  it("clips horizontal overflow on the mobile layout root so the viewport can't scroll sideways", async () => {
+    mockSidebarState.isMobile = true;
+    mockSidebarState.sidebarOpen = false;
+    const { root, rootEl } = await renderLayoutRoot();
+
+    expect(rootEl.tagName).toBe("DIV");
+    expect(rootEl.className).toContain("bg-background");
+    // The mobile root must clip horizontal overflow to prevent a stray wide
+    // descendant from making the whole viewport scroll sideways. clip (not
+    // hidden) keeps overflow-y visible so body scroll keeps working.
+    expect(rootEl.classList.contains("overflow-x-clip")).toBe(true);
+    expect(rootEl.classList.contains("overflow-hidden")).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("clips overflow on the desktop layout root", async () => {
+    mockSidebarState.isMobile = false;
+    const { root, rootEl } = await renderLayoutRoot();
+
+    expect(rootEl.className).toContain("bg-background");
+    expect(rootEl.classList.contains("overflow-clip")).toBe(true);
 
     await act(async () => {
       root.unmount();

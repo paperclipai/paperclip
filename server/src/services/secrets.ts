@@ -865,13 +865,13 @@ export function secretService(db: Db) {
           status: environments.status,
         })
         .from(environments)
-        .where(and(eq(environments.companyId, companyId), inArray(environments.id, environmentIds)));
+        .where(inArray(environments.id, environmentIds));
       for (const row of rows) {
         setTarget({
           type: "environment",
           id: row.id,
           label: row.name,
-          href: "/company/settings/environments",
+          href: "/company/settings/instance/environments",
           status: row.status,
         });
       }
@@ -2180,6 +2180,20 @@ export function secretService(db: Db) {
       });
       return normalizedRefs;
     },
+
+    listBindingCompanyIdsForTarget: async (
+      target: { targetType: SecretBindingTargetType; targetId: string },
+    ): Promise<string[]> =>
+      db
+        .select({ companyId: companySecretBindings.companyId })
+        .from(companySecretBindings)
+        .where(
+          and(
+            eq(companySecretBindings.targetType, target.targetType),
+            eq(companySecretBindings.targetId, target.targetId),
+          ),
+        )
+        .then((rows) => [...new Set(rows.map((row) => row.companyId))]),
 
     syncEnvBindingsForTarget: async (
       companyId: string,

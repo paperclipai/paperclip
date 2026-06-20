@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { nextCronFires, parseCronExpression } from "../lib/cron-fires";
 
-type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
+export type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
 
 const PRESETS: { value: SchedulePreset; label: string }[] = [
   { value: "every_minute", label: "Every minute" },
@@ -41,7 +41,11 @@ const DAYS_OF_MONTH = Array.from({ length: 31 }, (_, i) => ({
   label: String(i + 1),
 }));
 
-function parseCronToPreset(cron: string): {
+function hasOption(options: Array<{ value: string }>, value: string): boolean {
+  return options.some((option) => option.value === value);
+}
+
+export function parseCronToPreset(cron: string): {
   preset: SchedulePreset;
   hour: string;
   minute: string;
@@ -59,42 +63,44 @@ function parseCronToPreset(cron: string): {
     return { preset: "custom", ...defaults };
   }
 
-  const [min, hr, dom, , dow] = parts;
+  const [min, hr, dom, month, dow] = parts;
+  const selectableMinute = hasOption(MINUTES, min);
+  const selectableHour = hasOption(HOURS, hr);
 
   // Every minute: "* * * * *"
-  if (min === "*" && hr === "*" && dom === "*" && dow === "*") {
+  if (min === "*" && hr === "*" && dom === "*" && month === "*" && dow === "*") {
     return { preset: "every_minute", ...defaults };
   }
 
   // Every hour: "0 * * * *"
-  if (hr === "*" && dom === "*" && dow === "*") {
-    return { preset: "every_hour", ...defaults, minute: min === "*" ? "0" : min };
+  if (hr === "*" && dom === "*" && month === "*" && dow === "*" && selectableMinute) {
+    return { preset: "every_hour", ...defaults, minute: min };
   }
 
   // Every day: "M H * * *"
-  if (dom === "*" && dow === "*" && hr !== "*") {
-    return { preset: "every_day", ...defaults, hour: hr, minute: min === "*" ? "0" : min };
+  if (dom === "*" && month === "*" && dow === "*" && selectableHour && selectableMinute) {
+    return { preset: "every_day", ...defaults, hour: hr, minute: min };
   }
 
   // Weekdays: "M H * * 1-5"
-  if (dom === "*" && dow === "1-5" && hr !== "*") {
-    return { preset: "weekdays", ...defaults, hour: hr, minute: min === "*" ? "0" : min };
+  if (dom === "*" && month === "*" && dow === "1-5" && selectableHour && selectableMinute) {
+    return { preset: "weekdays", ...defaults, hour: hr, minute: min };
   }
 
   // Weekly: "M H * * D" (single day)
-  if (dom === "*" && /^\d$/.test(dow) && hr !== "*") {
-    return { preset: "weekly", ...defaults, hour: hr, minute: min === "*" ? "0" : min, dayOfWeek: dow };
+  if (dom === "*" && month === "*" && hasOption(DAYS_OF_WEEK, dow) && selectableHour && selectableMinute) {
+    return { preset: "weekly", ...defaults, hour: hr, minute: min, dayOfWeek: dow };
   }
 
   // Monthly: "M H D * *"
-  if (/^\d{1,2}$/.test(dom) && dow === "*" && hr !== "*") {
-    return { preset: "monthly", ...defaults, hour: hr, minute: min === "*" ? "0" : min, dayOfMonth: dom };
+  if (month === "*" && hasOption(DAYS_OF_MONTH, dom) && dow === "*" && selectableHour && selectableMinute) {
+    return { preset: "monthly", ...defaults, hour: hr, minute: min, dayOfMonth: dom };
   }
 
   return { preset: "custom", ...defaults };
 }
 
-function buildCron(preset: SchedulePreset, hour: string, minute: string, dayOfWeek: string, dayOfMonth: string): string {
+export function buildCron(preset: SchedulePreset, hour: string, minute: string, dayOfWeek: string, dayOfMonth: string): string {
   switch (preset) {
     case "every_minute":
       return "* * * * *";
@@ -146,12 +152,53 @@ function ordinalSuffix(n: number): string {
 
 export { describeSchedule };
 
+export function getScheduleCronValidation(cron: string): {
+  valid: boolean;
+  message: string;
+  nextFires: Date[];
+} {
+  const trimmed = cron.trim();
+  if (!trimmed) {
+    return {
+      valid: false,
+      message: "Enter a 5-field cron expression.",
+      nextFires: [],
+    };
+  }
+
+  const fields = trimmed.split(/\s+/);
+  if (fields.length !== 5) {
+    return {
+      valid: false,
+      message: `Use exactly 5 fields; this has ${fields.length}.`,
+      nextFires: [],
+    };
+  }
+
+  if (!parseCronExpression(trimmed)) {
+    return {
+      valid: false,
+      message: "Cron fields must use valid numbers, ranges, lists, wildcards, or steps.",
+      nextFires: [],
+    };
+  }
+
+  const nextFires = nextCronFires(trimmed, 3, { timeZone: "UTC" });
+  return {
+    valid: true,
+    message: nextFires.length > 0 ? "Valid cron." : "Valid cron, but no upcoming fires were found.",
+    nextFires,
+  };
+}
+
 export function ScheduleEditor({
   value,
   onChange,
+  onValidityChange,
 }: {
   value: string;
   onChange: (cron: string) => void;
+  onValidityChange?: (valid: boolean) => void;
 }) {
   const parsed = useMemo(() => parseCronToPreset(value), [value]);
   const [preset, setPreset] = useState<SchedulePreset>(parsed.preset);
@@ -160,6 +207,11 @@ export function ScheduleEditor({
   const [dayOfWeek, setDayOfWeek] = useState(parsed.dayOfWeek);
   const [dayOfMonth, setDayOfMonth] = useState(parsed.dayOfMonth);
   const [customCron, setCustomCron] = useState(preset === "custom" ? value : "");
+  const customValidation = useMemo(() => getScheduleCronValidation(customCron), [customCron]);
+
+  useEffect(() => {
+    onValidityChange?.(preset !== "custom" || customValidation.valid);
+  }, [customValidation.valid, onValidityChange, preset]);
 
   // Sync from external value changes
   useEffect(() => {
@@ -195,7 +247,7 @@ export function ScheduleEditor({
   return (
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
-        <SelectTrigger className="w-full">
+        <SelectTrigger className="w-full" aria-label="Schedule frequency">
           <SelectValue placeholder="Choose frequency..." />
         </SelectTrigger>
         <SelectContent>
@@ -212,14 +264,28 @@ export function ScheduleEditor({
           <Input
             value={customCron}
             onChange={(e) => {
-              setCustomCron(e.target.value);
-              emitChange("custom", hour, minute, dayOfWeek, dayOfMonth, e.target.value);
+              const nextCron = e.target.value;
+              setCustomCron(nextCron);
+              if (getScheduleCronValidation(nextCron).valid) {
+                emitChange("custom", hour, minute, dayOfWeek, dayOfMonth, nextCron);
+              }
             }}
             placeholder="0 10 * * *"
+            aria-label="Cron expression"
+            aria-invalid={!customValidation.valid}
             className="font-mono text-sm"
           />
           <p className="text-xs text-muted-foreground">
             Five fields: minute hour day-of-month month day-of-week
+          </p>
+          <p
+            className={customValidation.valid ? "text-xs text-muted-foreground" : "text-xs text-destructive"}
+            aria-live="polite"
+          >
+            {customValidation.message}
+            {customValidation.valid && customValidation.nextFires.length > 0
+              ? ` Next: ${customValidation.nextFires.map((fire) => fire.toLocaleString()).join(", ")}.`
+              : null}
           </p>
         </div>
       ) : (

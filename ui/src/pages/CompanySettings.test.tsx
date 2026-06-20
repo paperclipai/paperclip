@@ -165,6 +165,110 @@ describe("CompanyEnvironments", () => {
     });
   });
 
+  it("omits the Local driver option and lists Sandbox before SSH", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(
+      getEnvironmentCapabilities(AGENT_ADAPTER_TYPES, {
+        sandboxProviders: {
+          "secure-plugin": {
+            status: "supported",
+            supportsSavedProbe: true,
+            supportsUnsavedProbe: true,
+            supportsRunExecution: true,
+            supportsReusableLeases: true,
+            displayName: "Secure Sandbox",
+            configSchema: { type: "object", properties: {} },
+          },
+        },
+      }),
+    );
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const driverSelect = Array.from(container.querySelectorAll("select"))
+      .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
+      | HTMLSelectElement
+      | undefined;
+    expect(driverSelect).toBeTruthy();
+
+    const driverOptionValues = Array.from(driverSelect!.options).map((option) => option.value);
+    expect(driverOptionValues).not.toContain("local");
+    expect(driverOptionValues).toEqual(["sandbox", "ssh"]);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the Local driver option when editing an existing local environment", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      {
+        id: "env-local",
+        companyId: "company-1",
+        name: "Local host",
+        description: null,
+        driver: "local",
+        status: "active",
+        config: {},
+        metadata: null,
+        createdAt: new Date("2026-04-25T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-25T00:00:00.000Z"),
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const editButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Edit");
+    expect(editButton).toBeTruthy();
+
+    await act(async () => {
+      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const driverSelect = Array.from(container.querySelectorAll("select"))
+      .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
+      | HTMLSelectElement
+      | undefined;
+    expect(driverSelect).toBeTruthy();
+
+    const driverOptionValues = Array.from(driverSelect!.options).map((option) => option.value);
+    expect(driverOptionValues).toContain("local");
+    expect(driverSelect!.value).toBe("local");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("preserves sandbox config when re-selecting the same provider while editing", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({

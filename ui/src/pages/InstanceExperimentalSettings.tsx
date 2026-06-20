@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock, FlaskConical, Play, Search } from "lucide-react";
+import { AlertTriangle, Clock, FlaskConical, Play, Search } from "lucide-react";
 import type {
+  InstanceExperimentalSettings,
   IssueGraphLivenessAutoRecoveryPreview,
   PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
@@ -142,17 +143,39 @@ export function InstanceExperimentalSettings() {
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
 
-  const toggleMutation = useMutation({
+  const toggleMutation = useMutation<
+    InstanceExperimentalSettings,
+    Error,
+    PatchInstanceExperimentalSettings,
+    { previousSettings?: InstanceExperimentalSettings }
+  >({
     mutationFn: async (patch: PatchInstanceExperimentalSettings) =>
       instanceSettingsApi.updateExperimental(patch),
-    onSuccess: async () => {
+    onMutate: async (patch) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.instance.experimentalSettings });
+      const previousSettings = queryClient.getQueryData<InstanceExperimentalSettings>(
+        queryKeys.instance.experimentalSettings,
+      );
+      if (previousSettings) {
+        queryClient.setQueryData<InstanceExperimentalSettings>(
+          queryKeys.instance.experimentalSettings,
+          { ...previousSettings, ...patch },
+        );
+      }
+      return { previousSettings };
+    },
+    onSuccess: async (updatedSettings) => {
       setActionError(null);
+      queryClient.setQueryData(queryKeys.instance.experimentalSettings, updatedSettings);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
       ]);
     },
-    onError: (error) => {
+    onError: (error, _patch, context) => {
+      if (context?.previousSettings) {
+        queryClient.setQueryData(queryKeys.instance.experimentalSettings, context.previousSettings);
+      }
       setActionError(error instanceof Error ? error.message : "Failed to update experimental settings.");
     },
   });
@@ -216,6 +239,7 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
   const enableExperimentalFileViewer =
     experimentalQuery.data?.enableExperimentalFileViewer === true;
+  const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
@@ -266,6 +290,22 @@ export function InstanceExperimentalSettings() {
         <p className="text-sm text-muted-foreground">
           Opt into features that are still being evaluated before they become default behavior.
         </p>
+      </div>
+
+      <div
+        role="alert"
+        className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3"
+      >
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+          <div className="space-y-1 text-sm">
+            <p className="font-medium text-foreground">Experimental features may break at any time.</p>
+            <p className="text-muted-foreground">
+              These features are opt-in and come with no compatibility guarantees. They may change, break, or be
+              removed without notice. Avoid relying on them for critical or production workflows.
+            </p>
+          </div>
+        </div>
       </div>
 
       {actionError && (
@@ -396,6 +436,28 @@ export function InstanceExperimentalSettings() {
             }
             disabled={toggleMutation.isPending}
             aria-label="Toggle task plan decomposition panel experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Task Watchdogs</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show task detail controls for configuring watchdog agents that verify stopped task subtrees and restore
+              live paths when work should continue.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableTaskWatchdogs}
+            onCheckedChange={(checked) =>
+              toggleMutation.mutate({
+                enableTaskWatchdogs: checked,
+              })
+            }
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle task watchdogs experimental setting"
           />
         </div>
       </section>
