@@ -667,6 +667,12 @@ export function secretService(db: Db) {
         throw unprocessable(`Invalid environment variable name: ${key}`);
       }
 
+      if (key.startsWith("PAPERCLIP_")) {
+        throw unprocessable(
+          `Environment variable names with the PAPERCLIP_ prefix are reserved: ${key}`,
+        );
+      }
+
       const parsed = envBindingSchema.safeParse(rawBinding);
       if (!parsed.success) {
         throw unprocessable(`Invalid environment binding for key: ${key}`);
@@ -2263,6 +2269,11 @@ export function secretService(db: Db) {
         if (!ENV_KEY_RE.test(key)) {
           throw unprocessable(`Invalid environment variable name: ${key}`);
         }
+        if (key.startsWith("PAPERCLIP_")) {
+          throw unprocessable(
+            `Environment variable names with the PAPERCLIP_ prefix are reserved: ${key}`,
+          );
+        }
         const parsed = envBindingSchema.safeParse(rawBinding);
         if (!parsed.success) {
           throw unprocessable(`Invalid environment binding for key: ${key}`);
@@ -2305,6 +2316,11 @@ export function secretService(db: Db) {
       for (const [key, rawBinding] of Object.entries(record)) {
         if (!ENV_KEY_RE.test(key)) {
           throw unprocessable(`Invalid environment variable name: ${key}`);
+        }
+        if (key.startsWith("PAPERCLIP_")) {
+          throw unprocessable(
+            `Environment variable names with the PAPERCLIP_ prefix are reserved: ${key}`,
+          );
         }
         const parsed = envBindingSchema.safeParse(rawBinding);
         if (!parsed.success) {
