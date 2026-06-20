@@ -666,7 +666,7 @@ Every watchdog-triggered mutation must write activity with the watchdog id, sour
 
 A task watchdog must not:
 
-- mutate issues outside the watched subtree, except for comments or newly created follow-up issues that are children of included subtree issues
+- mutate issues outside the watched subtree, except for comments, newly created follow-up issues that are children of included subtree issues, or creating watchdog-discovered product/platform bug follow-up issues outside the watched subtree via the `watchdogDiscovery` field (using origin kind `task_watchdog_product_bug` or `task_watchdog_platform_bug` respectively)
 - mutate company, project, goal, agent, auth, API key, budget, secret, environment, plugin, or deployment settings
 - approve or reject rows in the `approvals` table, including hiring, CEO strategy, spend, budget override, or `request_board_approval` decisions
 - resolve execution-policy decisions unless the watchdog agent is the typed participant under that policy outside of its watchdog capacity

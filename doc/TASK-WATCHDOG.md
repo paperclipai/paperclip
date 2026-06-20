@@ -111,7 +111,7 @@ On wake, the watchdog agent reads a fixed default mandate plus your custom instr
 
 The mandate also enforces safety constraints that custom instructions **cannot override**:
 
-- Stay inside the watched subtree. No cross-company mutations, no mutations outside the watched issue and its non-watchdog descendants.
+- Stay inside the watched subtree. No cross-company mutations, no mutations outside the watched issue and its non-watchdog descendants, except for creating watchdog-discovered product or platform bug follow-up issues outside the watched subtree through the guarded `watchdogDiscovery` create-issue path.
 - No impersonating board-only approvals, accepting spend or hiring decisions, accepting security-sensitive interactions, or bypassing execution-policy stages that require a typed reviewer or approver.
 - No creating another watchdog for the watched subtree. No waking itself. Exactly one reusable review task per watched issue.
 - Custom instructions can narrow focus or veto specific shortcuts. They cannot grant authority the server does not already give the watchdog.

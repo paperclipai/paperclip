@@ -927,7 +927,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
 | GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
-| POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
+| POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies, and `watchdogDiscovery` for task-watchdog agent runs creating product/platform bug follow-ups) |
 | PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set). **Done Transition Guard:** on guarded projects, status changes to `done` are server-gated (require merged PR + No Mistakes proof already on the issue, returning 422 if missing). **Agent Restrictions:** agent requests cannot mutate structural fields (`projectId`, `goalId`, `parentId`, `labelIds`) or inject bypass keywords in title/description (returns 403). |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
