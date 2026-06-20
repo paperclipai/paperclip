@@ -189,6 +189,7 @@ export const GATE_WAKE_SOURCES: ReadonlySet<string> = new Set([
   "plan.activated.gate", // W5a — routes/plans.ts plan-approval wake
   "issue.in_review.gate", // W5b — routes/issues.ts review wake
   "issue.review_gates_complete.critic", // W5c — routes/approvals.ts critic wake
+  "plan.plan_review.gate", // W5d — routes/approvals.ts plan-level code-review wake
 ]);
 
 // Pure predicate for the heartbeat staleness evaluator: is this queued run a

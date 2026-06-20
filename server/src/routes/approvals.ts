@@ -24,6 +24,7 @@ import {
   isGateApprovalType,
   criticGateWakeTarget,
   CRITIC_GATE_WAKE_REASON,
+  REVIEW_GATE_WAKE_REASON,
   buildGateWorkspaceContext,
 } from "../services/plan-gates.js";
 import { redactEventPayload } from "../redaction.js";
@@ -142,6 +143,37 @@ export function approvalRoutes(
       entityId: approval.id,
       details: { type: approval.type, issueIds: uniqueIssueIds },
     });
+
+    // W5d: when an agent creates a plan-level code-review gate (planRootIssueId set,
+    // no linked leaf issues), auto-wake the designated reviewer so the board doesn't
+    // need to manually intervene.
+    const planRootIssueId =
+      typeof approval.payload?.planRootIssueId === "string" ? approval.payload.planRootIssueId : null;
+    const designatedAgentId =
+      typeof approval.payload?.designatedAgentId === "string" ? approval.payload.designatedAgentId : null;
+    if (
+      approval.type === GATE_APPROVAL_TYPES.codeReview &&
+      planRootIssueId &&
+      designatedAgentId &&
+      uniqueIssueIds.length === 0
+    ) {
+      heartbeat
+        .wakeup(designatedAgentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: REVIEW_GATE_WAKE_REASON,
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            approvalId: approval.id,
+            planRootIssueId,
+            source: "plan.plan_review.gate",
+          },
+        })
+        .catch((err) =>
+          logger.warn({ err, approvalId: approval.id, designatedAgentId }, "failed to wake plan reviewer"),
+        );
+    }
 
     res.status(201).json(redactApprovalPayload(approval));
   });
@@ -358,6 +390,33 @@ export function approvalRoutes(
         decidedByAgentId: req.actor.agentId,
       },
     });
+
+    // W5d: when a plan-level code-review gate is decided (planRootIssueId in payload,
+    // no linked leaf issues), wake the requesting agent (CTO) to continue assignment.
+    const planGateRootId =
+      typeof updated.payload?.planRootIssueId === "string" ? updated.payload.planRootIssueId : null;
+    if (updated.type === GATE_APPROVAL_TYPES.codeReview && planGateRootId && updated.requestedByAgentId) {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(updated.id);
+      if (linkedIssues.length === 0) {
+        heartbeat
+          .wakeup(updated.requestedByAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "plan_review_gate_decided",
+            payload: { approvalId: updated.id, decision, planRootIssueId: planGateRootId },
+            requestedByActorType: "agent",
+            requestedByActorId: req.actor.agentId,
+            contextSnapshot: {
+              issueId: planGateRootId,
+              approvalId: updated.id,
+              decision,
+            },
+          })
+          .catch((err) =>
+            logger.warn({ err, approvalId: updated.id }, "failed to wake CTO after plan review gate"),
+          );
+      }
+    }
 
     // B2 W5c: when a code-review or wiring-review gate approves, check if all
     // prerequisite gates on the same leaf are now approved. If so, wake the
