@@ -11,7 +11,7 @@ import {
   projects,
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, isUuidLike, type LowTrustBoundary } from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -557,7 +557,14 @@ export function authorizationService(db: Db) {
   }
 
   async function loadRunPolicy(runId: string | null | undefined, companyId: string, agentId: string) {
-    if (!runId) return null;
+    // Service/cron tokens (e.g. adapter_type "cron_service") carry synthetic,
+    // non-UUID run ids. heartbeat_runs.id is a uuid column, so passing such an
+    // id straight into the lookup makes Postgres throw "invalid input syntax
+    // for type uuid", which 500s the entire authorization path (QUA-3802).
+    // Guard the lookup: a non-UUID run id has no heartbeat_runs row by
+    // definition, so skip the query and fall back to the service-token trust
+    // path (run policy = null).
+    if (!runId || !isUuidLike(runId)) return null;
     const row = await db
       .select({
         id: heartbeatRuns.id,
