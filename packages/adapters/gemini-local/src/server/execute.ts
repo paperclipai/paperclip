@@ -71,6 +71,18 @@ function resolveGeminiBillingType(env: Record<string, string>): "api" | "subscri
     : "subscription";
 }
 
+function applyGeminiHeadlessEnv(env: Record<string, string>): void {
+  const term = env.TERM?.trim().toLowerCase();
+  if (!term || term === "dumb" || term === "vt100") {
+    env.TERM = "xterm-256color";
+  }
+  if (!env.COLORTERM?.trim()) {
+    env.COLORTERM = "truecolor";
+  }
+  env.NO_BROWSER = "1";
+  env.NO_COLOR = "";
+}
+
 function renderPaperclipEnvNote(env: Record<string, string>): string {
   const paperclipKeys = Object.keys(env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
@@ -269,6 +281,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  applyGeminiHeadlessEnv(env);
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -354,6 +367,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         executionTargetIsRemote,
         executionCwd: effectiveExecutionCwd,
       });
+      applyGeminiHeadlessEnv(env);
       remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
       const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
       const managedRemoteHomeDir =
@@ -434,6 +448,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
     if (paperclipBridge) {
       Object.assign(env, paperclipBridge.env);
+      applyGeminiHeadlessEnv(env);
       loggedEnv = buildInvocationEnvForLogs(env, {
         runtimeEnv: ensurePathInEnv({ ...process.env, ...env }),
         includeRuntimeKeys: ["HOME"],
@@ -484,6 +499,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const commandNotes = (() => {
     const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
     notes.push("Added --approval-mode yolo for unattended execution.");
+    notes.push("Set headless terminal/browser env so Gemini fails fast instead of opening interactive auth or color prompts.");
     if (executionTargetIsRemote) {
       notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
     }
