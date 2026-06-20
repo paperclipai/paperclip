@@ -38,11 +38,13 @@ export type InboxWorkItemGroupBy = "none" | "type" | "assignee" | "project" | "w
 export const inboxIssueColumns = [
   "status",
   "id",
+  "priority",
   "assignee",
   "project",
   "workspace",
   "parent",
   "labels",
+  "dueDate",
   "updated",
 ] as const;
 export type InboxIssueColumn = (typeof inboxIssueColumns)[number];

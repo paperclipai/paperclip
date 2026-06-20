@@ -918,6 +918,114 @@ describe("claude execute", () => {
     }
   }, 15_000);
 
+  it("reports DeepSeek provider accounting when Claude Code runs through DeepSeek", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-deepseek-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+
+    try {
+      const result = await execute({
+        runId: "run-claude-deepseek",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "claude-sonnet-4-5",
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+            ANTHROPIC_AUTH_TOKEN: "sk-deepseek",
+            ANTHROPIC_MODEL: "deepseek-v4-pro",
+            ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro",
+            ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-flash",
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash",
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).toContain("--model");
+      expect(capture.argv).toContain("deepseek-v4-flash");
+      expect(result.exitCode).toBe(0);
+      expect(result.provider).toBe("deepseek");
+      expect(result.biller).toBe("deepseek");
+      expect(result.billingType).toBe("api");
+      expect(result.model).toBe("deepseek-v4-flash");
+      expect(result.costUsd).toBeGreaterThan(0);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports MiMo provider accounting when Claude Code runs through MiMo", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-mimo-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+
+    try {
+      const result = await execute({
+        runId: "run-claude-mimo",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            ANTHROPIC_BASE_URL: "https://token-plan-sgp.xiaomimimo.com/anthropic",
+            ANTHROPIC_AUTH_TOKEN: "sk-mimo",
+            ANTHROPIC_MODEL: "mimo-v2.5",
+            ANTHROPIC_DEFAULT_OPUS_MODEL: "mimo-v2.5-pro",
+            ANTHROPIC_DEFAULT_SONNET_MODEL: "mimo-v2.5",
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: "mimo-v2.5",
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).not.toContain("claude-sonnet");
+      expect(result.exitCode).toBe(0);
+      expect(result.provider).toBe("mimo");
+      expect(result.biller).toBe("mimo");
+      expect(result.billingType).toBe("credits");
+      expect(result.model).toBe("mimo-v2.5");
+      expect(result.costUsd).toBeGreaterThan(0);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("classifies Claude 'out of extra usage' failures as transient upstream errors", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-transient-"));
     const workspace = path.join(root, "workspace");

@@ -4,14 +4,17 @@ import { and, eq, gt, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentCredentials, agents, costEvents, providerCredentials } from "@paperclipai/db";
 import type {
+  CredentialType,
   ProviderCredentialUsage,
   ProviderCredentialUsageModel,
   ProviderCredentialUsageWindow,
+  QuotaWindow,
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
 import { estimateApiEquivalentCostCents, isSubscriptionBillingType } from "./api-equivalent-cost.js";
 import { resolveCodexAccountId } from "./codex-account-id.js";
+import { getReusableQuotaCache } from "./credential-quota-cache.js";
 import {
   decryptCredential,
   encryptCredential,
@@ -1115,6 +1118,20 @@ function hasNonEmptyEnvValue(env: Record<string, unknown>, key: string): boolean
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
+function readAnthropicBaseUrl(env: Record<string, unknown>): string {
+  const raw = env.ANTHROPIC_BASE_URL;
+  return typeof raw === "string" ? raw.trim().toLowerCase() : "";
+}
+
+function anthropicBaseUrlUsesDeepSeek(env: Record<string, unknown>): boolean {
+  const base = readAnthropicBaseUrl(env);
+  return base.includes("api.deepseek.com") || base.includes("deepseek.com/anthropic");
+}
+
+function anthropicBaseUrlUsesMimo(env: Record<string, unknown>): boolean {
+  return readAnthropicBaseUrl(env).includes("xiaomimimo.com");
+}
+
 const PI_PROVIDER_CREDENTIAL_TYPES: Record<string, readonly string[]> = {
   "openai-codex": ["codex_oauth"],
   openai: ["openai_api_key"],
@@ -1164,6 +1181,33 @@ function selectPiActiveCredential(input: {
   return input.chosen.find((choice) => piChoiceHasRuntimeEnv(choice, input.env)) ?? null;
 }
 
+function selectClaudeCodeActiveCredential(input: {
+  chosen: ResolvedCredentialChoice[];
+  env: Record<string, unknown>;
+}): ResolvedCredentialChoice | null {
+  if (anthropicBaseUrlUsesDeepSeek(input.env)) {
+    return hasNonEmptyEnvValue(input.env, "ANTHROPIC_AUTH_TOKEN")
+      ? input.chosen.find((choice) => choice.type === "deepseek_api_key") ?? null
+      : null;
+  }
+
+  if (anthropicBaseUrlUsesMimo(input.env)) {
+    return hasNonEmptyEnvValue(input.env, "ANTHROPIC_AUTH_TOKEN")
+      ? input.chosen.find((choice) => choice.type === "mimo_api_key") ?? null
+      : null;
+  }
+
+  if (hasNonEmptyEnvValue(input.env, "ANTHROPIC_API_KEY")) {
+    return input.chosen.find((choice) => choice.type === "claude_api_key") ?? null;
+  }
+
+  if (hasNonEmptyEnvValue(input.env, "HOME")) {
+    return input.chosen.find((choice) => choice.type === "claude_oauth") ?? null;
+  }
+
+  return input.chosen[0] ?? null;
+}
+
 /**
  * Attribute a run to the managed credential that the adapter will actually use.
  * Codex is special because an API key wins over native CODEX_HOME auth, and
@@ -1181,6 +1225,13 @@ export function selectActiveCredentialForAdapter(input: {
   const adapterConfig = input.adapterConfig ?? null;
   const eligibleTypes = new Set(credentialTypesForAdapterRuntime(input.adapterType, adapterConfig));
   const eligible = input.chosen.filter((choice) => eligibleTypes.has(choice.type));
+
+  if (CLAUDE_CODE_ADAPTER_TYPES.has(input.adapterType)) {
+    return selectClaudeCodeActiveCredential({
+      chosen: eligible,
+      env: input.env,
+    });
+  }
 
   if (isCodexCredentialRuntime({ adapterType: input.adapterType, adapterConfig })) {
     const openAiChoice = eligible.find((choice) => choice.type === "openai_api_key") ?? null;
@@ -1206,7 +1257,37 @@ type RotationCandidate = {
   type: string;
   cooldownUntil: Date | null;
   lastUsedAt: Date | null;
+  updatedAt: Date;
 };
+
+const QUOTA_AWARE_CREDENTIAL_TYPES = new Set<CredentialType>(["claude_oauth", "codex_oauth"]);
+const UNKNOWN_QUOTA_PRESSURE = 75;
+const QUOTA_PRESSURE_BUCKET_SIZE = 10;
+
+function isQuotaAwareCredentialType(type: string): type is Extract<CredentialType, "claude_oauth" | "codex_oauth"> {
+  return QUOTA_AWARE_CREDENTIAL_TYPES.has(type as CredentialType);
+}
+
+function quotaPressureFromWindows(windows: QuotaWindow[]): number | null {
+  let pressure: number | null = null;
+  for (const window of windows) {
+    if (window.usedPercent == null || !Number.isFinite(window.usedPercent)) continue;
+    const usedPercent = Math.max(0, Math.min(100, window.usedPercent));
+    pressure = pressure == null ? usedPercent : Math.max(pressure, usedPercent);
+  }
+  return pressure;
+}
+
+function quotaPressureForCandidate(candidate: RotationCandidate, nowMs: number): number | null {
+  if (!isQuotaAwareCredentialType(candidate.type)) return null;
+  const cached = getReusableQuotaCache({
+    id: candidate.credentialId,
+    type: candidate.type,
+    updatedAt: candidate.updatedAt,
+  }, nowMs);
+  if (!cached) return UNKNOWN_QUOTA_PRESSURE;
+  return quotaPressureFromWindows(cached.quotaWindows) ?? UNKNOWN_QUOTA_PRESSURE;
+}
 
 /**
  * Pick one credential from a same-type pool: prefer credentials not on cooldown,
@@ -1220,7 +1301,20 @@ function pickPoolCredential(candidates: RotationCandidate[], nowMs: number): Rot
   const available = candidates.filter(
     (c) => !c.cooldownUntil || c.cooldownUntil.getTime() <= nowMs,
   );
-  if (available.length > 0) return [...available].sort(byLru)[0];
+  if (available.length > 0) {
+    const ranked = available.map((candidate) => ({
+      candidate,
+      pressure: quotaPressureForCandidate(candidate, nowMs),
+    }));
+    if (ranked.every((entry) => entry.pressure == null)) return [...available].sort(byLru)[0];
+    return [...ranked].sort((a, b) => {
+      const aPressure = a.pressure ?? UNKNOWN_QUOTA_PRESSURE;
+      const bPressure = b.pressure ?? UNKNOWN_QUOTA_PRESSURE;
+      const aBucket = Math.floor(aPressure / QUOTA_PRESSURE_BUCKET_SIZE);
+      const bBucket = Math.floor(bPressure / QUOTA_PRESSURE_BUCKET_SIZE);
+      return aBucket - bBucket || byLru(a.candidate, b.candidate);
+    })[0].candidate;
+  }
   return [...candidates].sort(
     (a, b) => (a.cooldownUntil?.getTime() ?? 0) - (b.cooldownUntil?.getTime() ?? 0),
   )[0];
@@ -1539,6 +1633,7 @@ export async function resolveAllCredentialEnv(
         type: providerCredentials.type,
         cooldownUntil: providerCredentials.cooldownUntil,
         lastUsedAt: providerCredentials.lastUsedAt,
+        updatedAt: providerCredentials.updatedAt,
       })
       .from(agentCredentials)
       .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
@@ -1550,6 +1645,7 @@ export async function resolveAllCredentialEnv(
             type: providerCredentials.type,
             cooldownUntil: providerCredentials.cooldownUntil,
             lastUsedAt: providerCredentials.lastUsedAt,
+            updatedAt: providerCredentials.updatedAt,
           })
           .from(providerCredentials)
           .where(and(

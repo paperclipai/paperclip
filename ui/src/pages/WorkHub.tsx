@@ -14,10 +14,21 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { BriefcaseBusiness, Users, ArrowLeftRight } from "lucide-react";
+import type { InboxIssueColumn } from "../lib/inbox";
 import type { Issue, IssueWorkItemType } from "@paperclipai/shared";
 
 const WORK_HUB_PAGE_SIZE = 500;
 const WORK_HUB_WORK_ITEM_TYPES = ["initiative", "human_task"] as const satisfies readonly IssueWorkItemType[];
+const WORK_HUB_DEFAULT_COLUMNS: InboxIssueColumn[] = [
+  "status",
+  "id",
+  "assignee",
+  "project",
+  "priority",
+  "dueDate",
+  "labels",
+  "updated",
+];
 
 type WorkItemFilter = "all" | "initiative" | "human_task";
 
@@ -196,6 +207,7 @@ export function WorkHub() {
           searchFilters={{ workItemType: workItemTypeParam, excludeRoutineExecutions: true }}
           baseCreateIssueDefaults={{ workItemType: createWorkItemType }}
           createIssueLabel={createIssueLabel}
+          defaultIssueColumns={WORK_HUB_DEFAULT_COLUMNS}
           hasMoreIssues={hasMore}
           onLoadMoreIssues={loadMoreIssues}
           onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}

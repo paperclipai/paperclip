@@ -32,7 +32,7 @@ vi.mock("../services/index.js", () => ({
 }));
 
 import { errorHandler } from "../middleware/index.js";
-import { credentialRoutes } from "../routes/credentials.js";
+import { activeCredentialCooldownUntil, credentialRoutes } from "../routes/credentials.js";
 
 function createApp() {
   const app = express();
@@ -52,7 +52,7 @@ function createApp() {
   return app;
 }
 
-function claudeCredential(id: string) {
+function claudeCredential(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
     companyId: "company-1",
@@ -67,6 +67,7 @@ function claudeCredential(id: string) {
     disabledReason: null,
     createdAt: new Date("2026-06-20T00:00:00Z"),
     updatedAt: new Date("2026-06-20T00:00:00Z"),
+    ...overrides,
   };
 }
 
@@ -110,6 +111,44 @@ describe("credential quota route caching", () => {
       source: "anthropic-oauth-usage",
       quotaWindows: [{ label: "Current session", usedPercent: 42 }],
     });
+  });
+
+  it("does not report an expired credential cooldown as active display state", async () => {
+    const app = createApp();
+    mockCredentialService.list.mockResolvedValue([
+      claudeCredential("claude-expired-cooldown", {
+        cooldownUntil: new Date(Date.now() - 60_000),
+        cooldownReason: "claude_rate_limit",
+      }),
+    ]);
+    mockFetchClaudeQuota.mockResolvedValue([
+      {
+        label: "Current session",
+        usedPercent: 42,
+        resetsAt: "2026-06-20T05:00:00Z",
+        valueLabel: null,
+        detail: null,
+      },
+    ]);
+
+    const response = await request(app).get("/api/companies/company-1/credentials/quota-windows").expect(200);
+
+    expect(response.body[0]).toMatchObject({
+      ok: true,
+      cooldownUntil: null,
+      cooldownReason: null,
+    });
+  });
+
+  it("formats only future credential cooldowns as active", () => {
+    const now = new Date("2026-06-20T10:00:00.000Z").getTime();
+
+    expect(activeCredentialCooldownUntil(new Date("2026-06-20T10:05:00.000Z"), now)).toBe(
+      "2026-06-20T10:05:00.000Z",
+    );
+    expect(activeCredentialCooldownUntil(new Date("2026-06-20T10:00:00.000Z"), now)).toBeNull();
+    expect(activeCredentialCooldownUntil(new Date("2026-06-20T09:59:59.000Z"), now)).toBeNull();
+    expect(activeCredentialCooldownUntil(null, now)).toBeNull();
   });
 
   it("bypasses a recent successful quota cache when refresh=true is requested", async () => {

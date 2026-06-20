@@ -97,6 +97,12 @@ function formatQuotaResetOrDetail(window: { resetsAt: string | null; detail?: st
   return formatQuotaResetTime(window.resetsAt) ?? window.detail ?? null;
 }
 
+function isCredentialCooldownActive(cooldownUntil: string | null | undefined): boolean {
+  if (!cooldownUntil) return false;
+  const cooldownMs = new Date(cooldownUntil).getTime();
+  return Number.isFinite(cooldownMs) && cooldownMs > Date.now();
+}
+
 function DottedUsageBar({
   usedPercent,
   className,
@@ -524,11 +530,12 @@ export function Dashboard() {
                   const visibleQuotaWindows = row.quotaWindows
                     .filter((entry) => entry.usedPercent != null || entry.valueLabel)
                     .slice(0, 4);
+                  const isCooling = isCredentialCooldownActive(row.cooldownUntil);
                   const quotaStatusLabel = row.stale
                     ? "stale"
                     : row.disabledAt
                       ? "disabled"
-                      : row.cooldownUntil
+                      : isCooling
                         ? "cooling"
                         : !row.ok
                           ? "retrying"
@@ -546,7 +553,7 @@ export function Dashboard() {
                             ? "bg-amber-500/10 text-amber-600"
                             : row.disabledAt
                             ? "bg-destructive/10 text-destructive"
-                            : row.cooldownUntil
+                            : isCooling
                               ? "bg-sky-500/10 text-sky-600"
                               : "bg-muted text-muted-foreground",
                         )}

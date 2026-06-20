@@ -36,6 +36,10 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
   parseClaudeStreamJson,
+  resolveClaudeGatewayAttribution,
+  resolveGatewayCostUsd,
+  resolveGatewayModelOverride,
+  resolveGatewayReportedModel,
 } from "@paperclipai/adapter-claude-local/server";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
@@ -54,24 +58,6 @@ function buildPermissionArgs(input: {
   if (!input.dangerouslySkipPermissions) return [];
   if (input.targetIsSandbox) return ["--allowedTools", SANDBOX_ALLOWED_TOOLS];
   return ["--dangerously-skip-permissions"];
-}
-
-function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
-  const raw = env[key];
-  return typeof raw === "string" && raw.trim().length > 0;
-}
-
-function isBedrockAuth(env: Record<string, string>): boolean {
-  return (
-    env.CLAUDE_CODE_USE_BEDROCK === "1" ||
-    env.CLAUDE_CODE_USE_BEDROCK === "true" ||
-    hasNonEmptyEnvValue(env, "ANTHROPIC_BEDROCK_BASE_URL")
-  );
-}
-
-function resolveBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
-  if (isBedrockAuth(env)) return "metered_api";
-  return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -166,7 +152,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const billingType = resolveBillingType(effectiveEnv);
+  const attribution = resolveClaudeGatewayAttribution(effectiveEnv);
 
   // ---- timeouts -------------------------------------------------------------
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
@@ -270,7 +256,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(...buildPermissionArgs({ dangerouslySkipPermissions, targetIsSandbox: executionTargetIsSandbox }));
-    if (model) args.push("--model", model);
+    const effectiveModel = resolveGatewayModelOverride(model, effectiveEnv) ?? model;
+    if (effectiveModel) args.push("--model", effectiveModel);
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
     // On resumed sessions the instructions are already in the session; skip
@@ -391,6 +378,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
     };
 
+    const reportedModel = resolveGatewayReportedModel({
+      env: effectiveEnv,
+      configuredModel: model,
+      parsedModel: parsedStream.model || asString(parsed.model, "") || null,
+    });
+    const costUsd = resolveGatewayCostUsd({
+      env: effectiveEnv,
+      model: reportedModel,
+      usage,
+      cliCostUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
+    });
+
     return {
       exitCode: proc.exitCode,
       signal: proc.signal,
@@ -401,11 +400,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
-      provider: "anthropic",
-      biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
-      model: parsedStream.model || asString(parsed.model, model),
-      billingType,
-      costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
+      provider: attribution.provider,
+      biller: attribution.biller,
+      model: reportedModel,
+      billingType: attribution.billingType,
+      costUsd,
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:

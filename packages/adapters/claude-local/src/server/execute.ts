@@ -61,6 +61,13 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import {
+  isBedrockAuth,
+  resolveClaudeGatewayAttribution,
+  resolveGatewayCostUsd,
+  resolveGatewayModelOverride,
+  resolveGatewayReportedModel,
+} from "./gateway-attribution.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -102,79 +109,6 @@ function buildLoginResult(input: {
     stderr: input.proc.stderr,
     loginUrl: input.loginUrl,
   };
-}
-
-function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
-  const raw = env[key];
-  return typeof raw === "string" && raw.trim().length > 0;
-}
-
-function isBedrockAuth(env: Record<string, string>): boolean {
-  return (
-    env.CLAUDE_CODE_USE_BEDROCK === "1" ||
-    env.CLAUDE_CODE_USE_BEDROCK === "true" ||
-    hasNonEmptyEnvValue(env, "ANTHROPIC_BEDROCK_BASE_URL")
-  );
-}
-
-function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
-  if (isBedrockAuth(env)) return "metered_api";
-  return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
-}
-
-/**
- * Detect a third-party Anthropic-compatible gateway (DeepSeek `/anthropic`,
- * Xiaomi MiMo `/anthropic`, LiteLLM, etc.) — i.e. an ANTHROPIC_BASE_URL that is
- * not Anthropic's own host. On these gateways the upstream model ids are the
- * provider's (`deepseek-*`, `mimo-*`), not `claude-*`.
- */
-function isThirdPartyAnthropicGateway(env: Record<string, string>): boolean {
-  const base = (env.ANTHROPIC_BASE_URL ?? "").trim().toLowerCase();
-  if (!base) return false;
-  return !/(^https?:\/\/)?([a-z0-9-]+\.)*anthropic\.com(\/|$)/.test(base);
-}
-
-// Xiaomi MiMo TokenPlan is a flat subscription billed in credits, and the Claude
-// Code CLI reports total_cost_usd: 0 against it (it doesn't know MiMo's rates).
-// The user's plan is ~$6 for ~6B tokens, i.e. a flat $1 per 1M tokens, which we
-// use as a single blended ratio to surface an estimated $ value for MiMo runs.
-// This is an ESTIMATE of plan burn (all token types weighted equally), not a
-// per-call invoice.
-const MIMO_USD_PER_MILLION_TOKENS = 1.0; // $6 / 6,000M tokens
-
-function isMimoGateway(env: Record<string, string>): boolean {
-  return (env.ANTHROPIC_BASE_URL ?? "").toLowerCase().includes("xiaomimimo.com");
-}
-
-function estimateMimoCostUsd(usage: { inputTokens?: number; outputTokens?: number }): number {
-  const total = Math.max(0, usage.inputTokens ?? 0) + Math.max(0, usage.outputTokens ?? 0);
-  return (total * MIMO_USD_PER_MILLION_TOKENS) / 1_000_000;
-}
-
-/**
- * When pointed at a third-party gateway, a `claude-*` model id selected in the
- * agent's Model dropdown would be sent verbatim and rejected (MiMo returns
- * 400 "Param Incorrect"; DeepSeek silently remaps). Translate such an id to the
- * gateway's configured tier model (ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL)
- * so the dropdown can't break a gateway-bound agent. Non-claude ids (already a
- * provider id) and native-Anthropic runs pass through unchanged.
- */
-function resolveGatewayModelOverride(model: string, env: Record<string, string>): string | null {
-  if (!model || !isThirdPartyAnthropicGateway(env)) return null;
-  const lower = model.toLowerCase();
-  if (!lower.startsWith("claude-")) return null;
-  const pick = (key: string) => {
-    const v = (env[key] ?? "").trim();
-    return v.length > 0 ? v : null;
-  };
-  if (lower.startsWith("claude-opus")) {
-    return pick("ANTHROPIC_DEFAULT_OPUS_MODEL") ?? pick("ANTHROPIC_MODEL");
-  }
-  if (lower.startsWith("claude-haiku")) {
-    return pick("ANTHROPIC_DEFAULT_HAIKU_MODEL") ?? pick("ANTHROPIC_MODEL");
-  }
-  // sonnet + anything else claude-* → the main/sonnet tier
-  return pick("ANTHROPIC_DEFAULT_SONNET_MODEL") ?? pick("ANTHROPIC_MODEL");
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -478,7 +412,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const billingType = resolveClaudeBillingType(effectiveEnv);
+  const attribution = resolveClaudeGatewayAttribution(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
   // When instructionsFilePath is configured, build a stable content-addressed
@@ -966,6 +900,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
     };
 
+    const reportedModel = resolveGatewayReportedModel({
+      env: effectiveEnv,
+      configuredModel: model,
+      parsedModel: parsedStream.model || asString(parsed.model, "") || null,
+    });
+    const costUsd = resolveGatewayCostUsd({
+      env: effectiveEnv,
+      model: reportedModel,
+      usage,
+      cliCostUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
+    });
+
     return {
       exitCode: proc.exitCode,
       signal: proc.signal,
@@ -979,18 +925,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
-      provider: isMimoGateway(effectiveEnv) ? "mimo" : "anthropic",
-      biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
-      model: parsedStream.model || asString(parsed.model, model),
-      billingType,
-      // MiMo reports no cost via the CLI; estimate plan burn from the flat
-      // $6/6B-token ratio so the per-credential usage UI shows a real number.
-      costUsd: (() => {
-        const cliCost = parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0);
-        if (cliCost > 0) return cliCost;
-        if (isMimoGateway(effectiveEnv)) return estimateMimoCostUsd(usage);
-        return cliCost;
-      })(),
+      provider: attribution.provider,
+      biller: attribution.biller,
+      model: reportedModel,
+      billingType: attribution.billingType,
+      costUsd,
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),

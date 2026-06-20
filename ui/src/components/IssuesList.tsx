@@ -202,15 +202,15 @@ function getIssueColumnsStorageKey(key: string): string {
   return `${key}:issue-columns`;
 }
 
-function loadIssueColumns(key: string): InboxIssueColumn[] {
+function loadIssueColumns(key: string, defaultColumns: InboxIssueColumn[] = DEFAULT_INBOX_ISSUE_COLUMNS): InboxIssueColumn[] {
   try {
     const raw = localStorage.getItem(getIssueColumnsStorageKey(key));
-    if (raw === null) return DEFAULT_INBOX_ISSUE_COLUMNS;
+    if (raw === null) return defaultColumns;
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return DEFAULT_INBOX_ISSUE_COLUMNS;
+    if (!Array.isArray(parsed)) return defaultColumns;
     return normalizeInboxIssueColumns(parsed);
   } catch {
-    return DEFAULT_INBOX_ISSUE_COLUMNS;
+    return defaultColumns;
   }
 }
 
@@ -373,6 +373,7 @@ interface IssuesListProps {
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
   allowCreateIssue?: boolean;
+  defaultIssueColumns?: InboxIssueColumn[];
   defaultSortField?: IssueSortField;
   showProgressSummary?: boolean;
   /**
@@ -586,6 +587,7 @@ export function IssuesList({
   baseCreateIssueDefaults,
   createIssueLabel,
   allowCreateIssue = true,
+  defaultIssueColumns = DEFAULT_INBOX_ISSUE_COLUMNS,
   defaultSortField,
   showProgressSummary = false,
   parentIssueIdForCostSummary,
@@ -630,7 +632,9 @@ export function IssuesList({
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
   const [renderedIssueRowLimit, setRenderedIssueRowLimit] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
-  const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
+  const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() =>
+    loadIssueColumns(scopedKey, defaultIssueColumns),
+  );
   const renderedIssueIdsRef = useRef("");
   const initialServerFillRequestedRef = useRef(false);
   const deferredIssueSearch = useDeferredValue(issueSearch);
@@ -654,9 +658,9 @@ export function IssuesList({
   useEffect(() => {
     if (prevColumnsScopedKey.current !== scopedKey) {
       prevColumnsScopedKey.current = scopedKey;
-      setVisibleIssueColumns(loadIssueColumns(scopedKey));
+      setVisibleIssueColumns(loadIssueColumns(scopedKey, defaultIssueColumns));
     }
-  }, [scopedKey]);
+  }, [scopedKey, defaultIssueColumns]);
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     setViewState((prev) => {
@@ -1342,7 +1346,7 @@ export function IssuesList({
             availableColumns={availableIssueColumns}
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
-            onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
+            onResetColumns={() => setIssueColumns(defaultIssueColumns)}
             title="Choose which issue columns stay visible"
             iconOnly
           />

@@ -528,6 +528,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [cheapModelOpen, setCheapModelOpen] = useState(false);
+  const [cheapRouteModelOpen, setCheapRouteModelOpen] = useState(false);
+  const [backupRouteModelOpen, setBackupRouteModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
   const [credentialOpen, setCredentialOpen] = useState(false);
 
@@ -1297,15 +1299,26 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                                 }
                               />
                             </Field>
-                            <Field label="Model">
-                              <DraftInput
-                                value={state.model}
-                                onCommit={(model) => updateRuntimeRoute(routeKey, { model })}
-                                immediate
-                                className={inputClass}
-                                placeholder="Default model"
+                            <RouteModelDropdown
+                              companyId={selectedCompanyId ?? null}
+                              adapterType={state.adapterType}
+                              environmentId={currentDefaultEnvironmentId || null}
+                              model={state.model}
+                              onModelChange={(model) => updateRuntimeRoute(routeKey, { model })}
+                              open={routeKey === "cheap" ? cheapRouteModelOpen : backupRouteModelOpen}
+                              onOpenChange={routeKey === "cheap" ? setCheapRouteModelOpen : setBackupRouteModelOpen}
+                              defaultLabel="Default model"
+                              fetchErrorLabel={
+                                routeKey === "cheap"
+                                  ? "Failed to load cheap route models."
+                                  : "Failed to load backup route models."
+                              }
+                              refreshErrorLabel={
+                                routeKey === "cheap"
+                                  ? "Failed to refresh cheap route models."
+                                  : "Failed to refresh backup route models."
+                              }
                               />
-                            </Field>
                             {routeCredentials.length > 0 && (
                               <Field label="Credentials">
                                 <div className="space-y-1 rounded-md border border-border/60 px-2 py-1.5">
@@ -1699,6 +1712,98 @@ function ExperimentalBadge() {
     <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-700 dark:text-amber-200">
       Experimental
     </span>
+  );
+}
+
+function RouteModelDropdown({
+  companyId,
+  adapterType,
+  environmentId,
+  model,
+  onModelChange,
+  open,
+  onOpenChange,
+  defaultLabel,
+  fetchErrorLabel,
+  refreshErrorLabel,
+}: {
+  companyId: string | null;
+  adapterType: string;
+  environmentId: string | null;
+  model: string;
+  onModelChange: (next: string) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  defaultLabel: string;
+  fetchErrorLabel: string;
+  refreshErrorLabel: string;
+}) {
+  const queryClient = useQueryClient();
+  const routeModelQueryKey = companyId
+    ? queryKeys.agents.adapterModels(companyId, adapterType, environmentId)
+    : ["agents", "none", "adapter-models", adapterType, environmentId];
+  const {
+    data: routeModels,
+    error: routeModelsError,
+  } = useQuery({
+    queryKey: routeModelQueryKey,
+    queryFn: () =>
+      agentsApi.adapterModels(companyId!, adapterType, {
+        environmentId,
+      }),
+    enabled: Boolean(companyId),
+  });
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
+
+  async function handleRefreshModels() {
+    if (!companyId) return;
+    setRefreshingModels(true);
+    setRefreshModelsError(null);
+    try {
+      const refreshed = await agentsApi.adapterModels(companyId, adapterType, {
+        environmentId,
+        refresh: true,
+      });
+      queryClient.setQueryData(routeModelQueryKey, refreshed);
+    } catch (error) {
+      setRefreshModelsError(error instanceof Error ? error.message : refreshErrorLabel);
+    } finally {
+      setRefreshingModels(false);
+    }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <ModelDropdown
+        models={routeModels ?? []}
+        value={model}
+        onChange={onModelChange}
+        open={open}
+        onOpenChange={onOpenChange}
+        allowDefault={adapterType !== "opencode_local"}
+        required={adapterType === "opencode_local"}
+        groupByProvider={adapterType === "opencode_local"}
+        creatable
+        detectedModel={null}
+        detectedModelCandidates={[]}
+        onRefreshModels={
+          adapterType === "codex_local" || adapterType === "acpx_local"
+            ? handleRefreshModels
+            : undefined
+        }
+        refreshingModels={refreshingModels}
+        defaultLabel={defaultLabel}
+      />
+      {(refreshModelsError || routeModelsError) && (
+        <p className="text-xs text-destructive">
+          {refreshModelsError
+            ?? (routeModelsError instanceof Error
+              ? routeModelsError.message
+              : fetchErrorLabel)}
+        </p>
+      )}
+    </div>
   );
 }
 

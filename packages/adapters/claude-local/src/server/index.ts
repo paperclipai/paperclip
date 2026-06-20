@@ -9,6 +9,17 @@ export {
   isClaudeUnknownSessionError,
 } from "./parse.js";
 export {
+  hasNonEmptyEnvValue,
+  isBedrockAuth,
+  isDeepSeekGateway,
+  isMimoGateway,
+  isThirdPartyAnthropicGateway,
+  resolveClaudeGatewayAttribution,
+  resolveGatewayCostUsd,
+  resolveGatewayModelOverride,
+  resolveGatewayReportedModel,
+} from "./gateway-attribution.js";
+export {
   getQuotaWindows,
   readClaudeAuthStatus,
   readClaudeToken,

@@ -1127,19 +1127,36 @@ describe("inbox helpers", () => {
     saveInboxIssueColumns(["labels", "updated", "status", "workspace", "labels", "assignee"]);
 
     expect(loadInboxIssueColumns()).toEqual(["status", "assignee", "workspace", "labels", "updated"]);
-    expect(normalizeInboxIssueColumns(["project", "workspace", "wat", "id"])).toEqual(["id", "project", "workspace"]);
+    expect(normalizeInboxIssueColumns(["project", "workspace", "wat", "id", "priority"])).toEqual([
+      "id",
+      "priority",
+      "project",
+      "workspace",
+    ]);
   });
 
   it("hides the workspace column option unless isolated workspaces are enabled", () => {
-    expect(getAvailableInboxIssueColumns(false)).toEqual(["status", "id", "assignee", "project", "parent", "labels", "updated"]);
+    expect(getAvailableInboxIssueColumns(false)).toEqual([
+      "status",
+      "id",
+      "priority",
+      "assignee",
+      "project",
+      "parent",
+      "labels",
+      "dueDate",
+      "updated",
+    ]);
     expect(getAvailableInboxIssueColumns(true)).toEqual([
       "status",
       "id",
+      "priority",
       "assignee",
       "project",
       "workspace",
       "parent",
       "labels",
+      "dueDate",
       "updated",
     ]);
   });

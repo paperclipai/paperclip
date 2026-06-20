@@ -18,29 +18,43 @@ import type { InboxIssueColumn } from "../lib/inbox";
 import { cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Identity } from "./Identity";
+import { PriorityIcon } from "./PriorityIcon";
 import { StatusIcon } from "./StatusIcon";
 
-export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "parent", "labels", "updated"];
+export const issueTrailingColumns: InboxIssueColumn[] = [
+  "priority",
+  "assignee",
+  "project",
+  "workspace",
+  "parent",
+  "labels",
+  "dueDate",
+  "updated",
+];
 
 const issueColumnLabels: Record<InboxIssueColumn, string> = {
   status: "Status",
   id: "ID",
+  priority: "Priority",
   assignee: "Assignee",
   project: "Project",
   workspace: "Workspace",
   parent: "Parent issue",
   labels: "Tags",
+  dueDate: "Due",
   updated: "Last updated",
 };
 
 const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
   status: "Issue state chip on the left edge.",
   id: "Ticket identifier like PAP-1009.",
+  priority: "Critical, high, medium, or low planning signal.",
   assignee: "Assigned agent or board user.",
   project: "Linked project pill with its color.",
   workspace: "Execution or project workspace used for the issue.",
   parent: "Parent issue identifier and title.",
   labels: "Issue labels and tags.",
+  dueDate: "Due date when one is set.",
   updated: "Latest visible activity time.",
 };
 
@@ -51,14 +65,46 @@ export function issueActivityText(issue: Issue): string {
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
   return columns
     .map((column) => {
+      if (column === "priority") return "minmax(3.75rem, 5rem)";
       if (column === "assignee") return "minmax(6rem, 8rem)";
       if (column === "project") return "minmax(4.5rem, 7rem)";
       if (column === "workspace") return "minmax(6rem, 9rem)";
       if (column === "parent") return "minmax(3.5rem, 5.5rem)";
       if (column === "labels") return "minmax(3rem, 6rem)";
+      if (column === "dueDate") return "minmax(4rem, 5rem)";
       return "minmax(3.5rem, 4.5rem)";
     })
     .join(" ");
+}
+
+function formatIssueDueDate(value: Issue["dueDate"]): {
+  label: string;
+  title: string;
+  tone: string;
+} | null {
+  if (!value) return null;
+  const due = new Date(value);
+  if (Number.isNaN(due.getTime())) return null;
+
+  const now = new Date();
+  const dueDay = Date.UTC(due.getUTCFullYear(), due.getUTCMonth(), due.getUTCDate());
+  const nowDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const diffDays = Math.round((dueDay - nowDay) / 86_400_000);
+  const label = diffDays === 0
+    ? "Today"
+    : diffDays === 1
+      ? "Tomorrow"
+      : diffDays === -1
+        ? "1d late"
+        : diffDays < -1
+          ? `${Math.abs(diffDays)}d late`
+          : due.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+  return {
+    label,
+    title: `Due ${due.toLocaleDateString()}`,
+    tone: diffDays < 0 ? "text-red-500" : diffDays <= 3 ? "text-orange-500" : "text-muted-foreground",
+  };
 }
 
 export function IssueColumnPicker({
@@ -235,6 +281,15 @@ export function InboxIssueTrailingColumns({
       style={{ gridTemplateColumns: issueTrailingGridTemplate(columns) }}
     >
       {columns.map((column) => {
+        if (column === "priority") {
+          return (
+            <span key={column} className="inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+              <PriorityIcon priority={issue.priority} />
+              <span className="truncate capitalize">{issue.priority}</span>
+            </span>
+          );
+        }
+
         if (column === "assignee") {
           if (assigneeContent) {
             return <span key={column} className="min-w-0">{assigneeContent}</span>;
@@ -379,6 +434,23 @@ export function InboxIssueTrailingColumns({
           return (
             <span key={column} className="min-w-0 truncate text-right text-[11px] font-medium text-muted-foreground">
               {activityText}
+            </span>
+          );
+        }
+
+        if (column === "dueDate") {
+          const dueDate = formatIssueDueDate(issue.dueDate);
+          if (!dueDate) {
+            return <span key={column} className="min-w-0" aria-hidden="true" />;
+          }
+
+          return (
+            <span
+              key={column}
+              className={`min-w-0 truncate text-right text-[11px] font-medium ${dueDate.tone}`}
+              title={dueDate.title}
+            >
+              {dueDate.label}
             </span>
           );
         }

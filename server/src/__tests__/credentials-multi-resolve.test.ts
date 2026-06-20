@@ -21,6 +21,7 @@ import {
   resolveAllCredentialEnv,
   selectActiveCredentialForAdapter,
 } from "../services/credentials.js";
+import { clearCredentialQuotaCacheForTest, setQuotaSuccessCache } from "../services/credential-quota-cache.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -37,6 +38,7 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
   }, 30_000);
 
   afterEach(async () => {
+    clearCredentialQuotaCacheForTest();
     await db.delete(costEvents);
     await db.delete(agentCredentials);
     await db.delete(agents);
@@ -137,6 +139,64 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
     expect(resolved2.chosen[0].credentialId).not.toBe(firstChoice);
   });
 
+  it("prioritizes healthier cached quota windows over least-recently-used OAuth credentials", async () => {
+    const { company, agent } = await setupCompanyAndAgent("codex_local");
+    const svc = credentialService(db);
+
+    const lowQuota = await svc.create(company.id, {
+      name: "codex-low-quota",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-low-quota-token" },
+    });
+    const healthyQuota = await svc.create(company.id, {
+      name: "codex-healthy-quota",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-healthy-quota-token" },
+    });
+
+    const setResult = await svc.setForAgent(agent.id, [lowQuota.id, healthyQuota.id]);
+    expect(setResult.ok).toBe(true);
+
+    await db
+      .update(providerCredentials)
+      .set({ lastUsedAt: new Date("2026-04-20T10:00:00.000Z") })
+      .where(eq(providerCredentials.id, lowQuota.id));
+    await db
+      .update(providerCredentials)
+      .set({ lastUsedAt: new Date("2026-04-20T11:00:00.000Z") })
+      .where(eq(providerCredentials.id, healthyQuota.id));
+
+    setQuotaSuccessCache(lowQuota.id, {
+      type: "codex_oauth",
+      credentialUpdatedAtMs: lowQuota.updatedAt.getTime(),
+      source: "test",
+      quotaWindows: [
+        { label: "5h", usedPercent: 94, resetsAt: null, valueLabel: null },
+        { label: "Weekly", usedPercent: 45, resetsAt: null, valueLabel: null },
+      ],
+      sampledAt: new Date().toISOString(),
+    });
+    setQuotaSuccessCache(healthyQuota.id, {
+      type: "codex_oauth",
+      credentialUpdatedAtMs: healthyQuota.updatedAt.getTime(),
+      source: "test",
+      quotaWindows: [
+        { label: "5h", usedPercent: 18, resetsAt: null, valueLabel: null },
+        { label: "Weekly", usedPercent: 34, resetsAt: null, valueLabel: null },
+      ],
+      sampledAt: new Date().toISOString(),
+    });
+
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+
+    expect(resolved.chosen).toEqual([{ credentialId: healthyQuota.id, type: "codex_oauth" }]);
+    expect(JSON.parse(await fs.readFile(`${resolved.env.CODEX_HOME}/auth.json`, "utf8"))).toMatchObject({
+      tokens: {
+        access_token: "codex-healthy-quota-token",
+      },
+    });
+  });
+
   it("rejects mixed Codex OAuth and OpenAI API-key credentials for codex agents", async () => {
     const { company, agent } = await setupCompanyAndAgent("codex_local");
     const svc = credentialService(db);
@@ -232,6 +292,69 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
     expect(thirtyDay?.apiEquivalentCostCents).toBe(row?.apiEquivalentCostCents);
   });
 
+  it("keeps DeepSeek and MiMo gateway usage attributed to their real providers", async () => {
+    const { company, agent } = await setupCompanyAndAgent("claude_local");
+    const svc = credentialService(db);
+    const deepSeekCred = await svc.create(company.id, {
+      name: "deepseek",
+      type: "deepseek_api_key",
+      credential: { apiKey: "sk-deepseek" },
+    });
+    const mimoCred = await svc.create(company.id, {
+      name: "mimo",
+      type: "mimo_api_key",
+      credential: { apiKey: "sk-mimo" },
+    });
+
+    await db.insert(costEvents).values([
+      {
+        companyId: company.id,
+        agentId: agent.id,
+        credentialId: deepSeekCred.id,
+        provider: "deepseek",
+        biller: "deepseek",
+        billingType: "metered_api",
+        model: "deepseek-v4-flash",
+        inputTokens: 1_000_000,
+        cachedInputTokens: 100_000,
+        outputTokens: 500_000,
+        costCents: 28,
+        occurredAt: new Date(),
+      },
+      {
+        companyId: company.id,
+        agentId: agent.id,
+        credentialId: mimoCred.id,
+        provider: "mimo",
+        biller: "mimo",
+        billingType: "credits",
+        model: "mimo-v2.5",
+        inputTokens: 2_000_000,
+        cachedInputTokens: 250_000,
+        outputTokens: 1_000_000,
+        costCents: 325,
+        occurredAt: new Date(),
+      },
+    ]);
+
+    const usage = await svc.usageByCredential(company.id, 30 * 24 * 60 * 60 * 1000);
+    const deepSeek = usage.find((entry) => entry.credentialId === deepSeekCred.id);
+    const mimo = usage.find((entry) => entry.credentialId === mimoCred.id);
+
+    expect(deepSeek?.models[0]).toMatchObject({
+      provider: "deepseek",
+      biller: "deepseek",
+      model: "deepseek-v4-flash",
+    });
+    expect(deepSeek?.apiEquivalentCostCents).toBeGreaterThan(0);
+    expect(mimo?.models[0]).toMatchObject({
+      provider: "mimo",
+      biller: "mimo",
+      model: "mimo-v2.5",
+    });
+    expect(mimo?.apiEquivalentCostCents).toBeGreaterThan(0);
+  });
+
   it("attributes codex OpenAI API-key auth to the selected OpenAI credential", () => {
     const active = selectActiveCredentialForAdapter({
       adapterType: "codex_local",
@@ -259,6 +382,44 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
     });
 
     expect(active).toEqual({ credentialId: "codex-cred", type: "codex_oauth" });
+  });
+
+  it("attributes claude_local Anthropic-compatible gateways to DeepSeek or MiMo credentials", () => {
+    const chosen = [
+      { credentialId: "claude-oauth", type: "claude_oauth" },
+      { credentialId: "claude-api", type: "claude_api_key" },
+      { credentialId: "deepseek-cred", type: "deepseek_api_key" },
+      { credentialId: "mimo-cred", type: "mimo_api_key" },
+    ];
+
+    expect(selectActiveCredentialForAdapter({
+      adapterType: "claude_local",
+      chosen,
+      env: {
+        ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+        ANTHROPIC_AUTH_TOKEN: "sk-deepseek",
+        HOME: "/tmp/claude-oauth-home",
+      },
+    })).toEqual({ credentialId: "deepseek-cred", type: "deepseek_api_key" });
+
+    expect(selectActiveCredentialForAdapter({
+      adapterType: "claude_tui",
+      chosen,
+      env: {
+        ANTHROPIC_BASE_URL: "https://token-plan-sgp.xiaomimimo.com/anthropic",
+        ANTHROPIC_AUTH_TOKEN: "sk-mimo",
+        HOME: "/tmp/claude-oauth-home",
+      },
+    })).toEqual({ credentialId: "mimo-cred", type: "mimo_api_key" });
+
+    expect(selectActiveCredentialForAdapter({
+      adapterType: "claude_local",
+      chosen,
+      env: {
+        ANTHROPIC_API_KEY: "sk-ant-api",
+        HOME: "/tmp/claude-oauth-home",
+      },
+    })).toEqual({ credentialId: "claude-api", type: "claude_api_key" });
   });
 
   it("rotates same-type codex OAuth credentials and writes the selected login to CODEX_HOME", async () => {
