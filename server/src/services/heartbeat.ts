@@ -462,6 +462,8 @@ export async function resolveExecutionRunAdapterConfig(input: {
   executionRunConfig: Record<string, unknown>;
   projectEnv: unknown;
   routineEnv?: unknown;
+  environmentId?: string | null;
+  environmentEnv?: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
   trustPreset?: TrustPresetResolution;
 }) {
@@ -475,6 +477,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
     assertLowTrustEnvConfigAllowed(executionRunConfig.env, "agent.env");
     assertLowTrustEnvConfigAllowed(projectEnv, "project.env");
     assertLowTrustEnvConfigAllowed(routineEnv, "routine.env");
+    assertLowTrustEnvConfigAllowed(input.environmentEnv, "environment.env");
   }
   // Pre-dispatch binding-validation gate: detect declared secret refs that have
   // no binding before resolving any secret value. Missing bindings short-circuit
@@ -591,6 +594,33 @@ export async function resolveExecutionRunAdapterConfig(input: {
       secretKeys.add(key);
     }
   }
+  const environmentEnv = stripPaperclipRuntimeEnvBindings(input.environmentEnv);
+  const environmentEnvResolution = environmentEnv
+    ? await input.secretsSvc.resolveEnvBindings(
+        input.companyId,
+        environmentEnv,
+        input.environmentId
+          ? {
+              consumerType: "environment",
+              consumerId: input.environmentId,
+              actorType: "agent",
+              actorId: input.agentId ?? null,
+              issueId: input.issueId ?? null,
+              heartbeatRunId: input.heartbeatRunId ?? null,
+              ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
+            }
+          : undefined,
+      )
+    : { env: {}, secretKeys: new Set<string>(), manifest: [] };
+  if (Object.keys(environmentEnvResolution.env).length > 0) {
+    resolvedConfig.env = {
+      ...parseObject(resolvedConfig.env),
+      ...environmentEnvResolution.env,
+    };
+    for (const key of environmentEnvResolution.secretKeys) {
+      secretKeys.add(key);
+    }
+  }
   return {
     resolvedConfig,
     secretKeys,
@@ -598,6 +628,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
       ...(manifest ?? []),
       ...(projectEnvResolution.manifest ?? []),
       ...(routineEnvResolution.manifest ?? []),
+      ...(environmentEnvResolution.manifest ?? []),
     ],
   };
 }
@@ -8609,6 +8640,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+    const selectedEnvironmentRecord = selectedEnvironmentId
+      ? await environmentsSvc.getById(selectedEnvironmentId)
+      : null;
+    const selectedEnvironmentEnv = selectedEnvironmentRecord
+      ? parseObject(parseObject(selectedEnvironmentRecord.config).env)
+      : null;
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
@@ -8619,6 +8656,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       executionRunConfig,
       projectEnv: projectContext?.env ?? null,
       routineEnv: routineEnvContext.env,
+      environmentId: selectedEnvironmentId,
+      environmentEnv: selectedEnvironmentEnv,
       secretsSvc,
       trustPreset,
     });
