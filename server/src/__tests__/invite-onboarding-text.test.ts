@@ -179,4 +179,32 @@ describe("buildInviteOnboardingTextDocument", () => {
       networkSpy.mockRestore();
     }
   });
+
+  it("excludes allowed hostnames from onboarding candidates when the server is loopback-bound", () => {
+    const req = buildReq("127.0.0.1:3100");
+    const invite = {
+      id: "invite-5",
+      companyId: "company-1",
+      inviteType: "company_join",
+      allowedJoinTypes: "agent",
+      tokenHash: "hash",
+      defaultsPayload: null,
+      expiresAt: new Date("2026-03-05T00:00:00.000Z"),
+      invitedByUserId: null,
+      revokedAt: null,
+      acceptedAt: null,
+      createdAt: new Date("2026-03-04T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-04T00:00:00.000Z"),
+    } as const;
+
+    const text = buildInviteOnboardingTextDocument(req, "token-loopback", invite as any, {
+      deploymentMode: "local_trusted",
+      deploymentExposure: "private",
+      bindHost: "127.0.0.1",
+      allowedHostnames: ["cb-threadripper.tail3a8e2d.ts.net"],
+    });
+
+    expect(text).toContain("http://127.0.0.1:3100");
+    expect(text).not.toContain("http://cb-threadripper.tail3a8e2d.ts.net:3100");
+  });
 });
