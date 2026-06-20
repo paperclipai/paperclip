@@ -35,6 +35,7 @@ import {
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
+  documents,
   issueDocuments,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -1977,6 +1978,36 @@ export function decideSessionRotation(input: {
   }
 
   return null;
+}
+
+// Pure formatter for the plan-state handoff lines (DB fetch lives in the
+// heartbeat closure). Tells a rotated plan-root CTO: the plan doc is already at
+// revision N (don't rewrite) and which children still need assignment (don't
+// re-create already-ticketed work — prevents duplicate child issues).
+export function formatPlanStateHandoffLines(
+  planRevisionNumber: number | null,
+  children: Array<{ identifier: string | null; status: string; assigneeAgentId: string | null }>,
+): string[] {
+  const lines: string[] = [];
+  if (planRevisionNumber != null) {
+    lines.push(
+      `- Plan doc: "plan" is at revision ${planRevisionNumber}. Do not rewrite it unless the plan itself is changing.`,
+    );
+  }
+  if (children.length > 0) {
+    const unassigned = children.filter(
+      (child) => !child.assigneeAgentId && child.status !== "done" && child.status !== "cancelled",
+    );
+    const childLabel = (child: (typeof children)[number]) =>
+      `${child.identifier ?? "?"} (${child.status}${child.assigneeAgentId ? ", assigned" : ", unassigned"})`;
+    lines.push(
+      `- Children (${children.length}): ${children.map(childLabel).join(", ")}. ` +
+        (unassigned.length > 0
+          ? `Assign the ${unassigned.length} pending leaf/leaves; do NOT create new child issues for already-ticketed work.`
+          : "All children are assigned or resolved; do NOT create new child issues for already-ticketed work."),
+    );
+  }
+  return lines;
 }
 
 export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect): SessionCompactionPolicy {
@@ -4092,6 +4123,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  // For a plan-root issue, summarize the live plan state so a rotated (fresh)
+  // session resumes orchestration instead of re-deriving it. Runs only on actual
+  // rotation. Pure formatting lives in formatPlanStateHandoffLines (tested).
+  async function buildPlanStateHandoffLines(
+    companyId: string,
+    issueId: string,
+  ): Promise<string[]> {
+    const issue = await db
+      .select({ workMode: issues.workMode })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || issue.workMode !== "planning") return [];
+
+    const [planDoc] = await db
+      .select({ revisionNumber: documents.latestRevisionNumber })
+      .from(issueDocuments)
+      .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+      .where(
+        and(
+          eq(issueDocuments.companyId, companyId),
+          eq(issueDocuments.issueId, issueId),
+          eq(issueDocuments.key, "plan"),
+        ),
+      );
+
+    const children = await db
+      .select({
+        identifier: issues.identifier,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.parentId, issueId), eq(issues.companyId, companyId)));
+
+    return formatPlanStateHandoffLines(planDoc?.revisionNumber ?? null, children);
+  }
+
   async function evaluateSessionCompaction(input: {
     agent: typeof agents.$inferSelect;
     sessionId: string | null;
@@ -4188,6 +4257,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       readNonEmptyString(latestSummary?.message) ??
       readNonEmptyString(latestRun.error);
 
+    const planStateLines = issueId
+      ? await buildPlanStateHandoffLines(agent.companyId, issueId)
+      : [];
+
     const handoffMarkdown = [
       "Paperclip session handoff:",
       `- Previous session: ${sessionId}`,
@@ -4197,6 +4270,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       input.continuationSummaryBody
         ? `- Issue continuation summary: ${input.continuationSummaryBody.slice(0, 1_500)}`
         : "",
+      ...planStateLines,
       "Continue from the current task state. Rebuild only the minimum context you need.",
     ]
       .filter(Boolean)
