@@ -52,6 +52,20 @@ describe("isProductionIncidentIssue", () => {
   it("ignores ordinary issues", () => {
     expect(isProductionIncidentIssue(ordinaryIssue, envWith())).toBe(false);
   });
+
+  it("does not match a marker embedded inside another word (regression: greptile #8358)", () => {
+    // "reproduction" contains "production"; "p0lish" contains "p0" — substring
+    // matching would wrongly trip the gate and block these during an outage.
+    expect(isProductionIncidentIssue({ title: "Update reproduction steps for QA", labels: [] }, envWith())).toBe(
+      false,
+    );
+    expect(isProductionIncidentIssue({ title: "p0lish the settings UI", labels: [] }, envWith())).toBe(false);
+  });
+
+  it("still matches a whole-word marker next to punctuation", () => {
+    expect(isProductionIncidentIssue({ title: "P0: production is down", labels: [] }, envWith())).toBe(true);
+    expect(isProductionIncidentIssue({ title: "x", labels: ["p0"] }, envWith())).toBe(true);
+  });
 });
 
 describe("assertProductionHealthyForClosure", () => {

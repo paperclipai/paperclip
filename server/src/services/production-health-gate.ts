@@ -98,6 +98,8 @@ export function getProductionHealthTargets(env: NodeJS.ProcessEnv = process.env)
     .filter((t): t is ProductionHealthTarget => t !== null);
 }
 
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** Issue is a production incident when a configured marker appears in its labels or title. */
 export function isProductionIncidentIssue(
   issue: { title?: string | null; labels?: unknown },
@@ -115,7 +117,10 @@ export function isProductionIncidentIssue(
   ]
     .join(" ")
     .toLowerCase();
-  return markers.some((m) => haystack.includes(m));
+  // Word-boundary match, not substring: a substring `includes` would classify
+  // "Update reproduction steps" or "p0lish the UI" as production incidents and,
+  // during a real outage, block closing those unrelated issues with a 409.
+  return markers.some((m) => new RegExp(`\\b${escapeRegExp(m)}\\b`).test(haystack));
 }
 
 async function probe(target: ProductionHealthTarget): Promise<ProductionHealthResult> {
