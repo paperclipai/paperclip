@@ -68,6 +68,8 @@ export interface RealizedExecutionWorkspace extends ExecutionWorkspaceInput {
   warnings: string[];
   created: boolean;
   baseRefSha?: string | null;
+  /** True when this run owns an isolated git worktree keyed by heartbeatRunId. */
+  runScopedWorktree?: boolean;
 }
 
 export interface RuntimeServiceRef {
@@ -1015,7 +1017,10 @@ async function provisionExecutionWorktree(input: {
   created: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }) {
-  const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
+  let provisionCommand = asString(input.strategy.provisionCommand, "").trim();
+  if (!provisionCommand) {
+    provisionCommand = (await resolveDefaultMavenProvisionCommand(input.repoRoot)) ?? "";
+  }
   if (!provisionCommand) return;
   const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
 
@@ -1094,12 +1099,65 @@ async function resolveGitRepoRootForWorkspaceCleanup(
   return path.dirname(resolvedGitDir);
 }
 
+/** Auto-provision JDK8 + Maven when a repo root contains pom.xml and no explicit command is set. */
+export const AUTO_MAVEN_PROVISION_COMMAND = [
+  "bash -lc 'set -euo pipefail;",
+  "if command -v mvn >/dev/null 2>&1; then mvn -version; exit 0; fi;",
+  "if command -v sdk >/dev/null 2>&1; then",
+  "  sdk install java 8.0.392-zulu 2>/dev/null || true;",
+  "  sdk install maven 3.9.6 2>/dev/null || true;",
+  "  sdk default java 8.0.392-zulu 2>/dev/null || true;",
+  "  sdk default maven 3.9.6 2>/dev/null || true;",
+  "elif command -v apt-get >/dev/null 2>&1; then",
+  "  if command -v sudo >/dev/null 2>&1; then",
+  "    sudo apt-get update -qq && sudo apt-get install -y -qq openjdk-8-jdk-headless maven;",
+  "  else",
+  "    apt-get update -qq && apt-get install -y -qq openjdk-8-jdk-headless maven;",
+  "  fi;",
+  "else",
+  "  echo \"No supported package manager found to install JDK8 + Maven\" >&2; exit 1;",
+  "fi;",
+  "mvn -version'",
+].join(" ");
+
+export async function resolveDefaultMavenProvisionCommand(repoRoot: string): Promise<string | null> {
+  try {
+    await fs.access(path.join(repoRoot, "pom.xml"));
+    return AUTO_MAVEN_PROVISION_COMMAND;
+  } catch {
+    return null;
+  }
+}
+
+/** Isolate concurrent runs by giving each heartbeat run its own worktree path + branch. */
+export function resolveRunScopedWorktree(
+  worktreeParentDir: string,
+  branchName: string,
+  heartbeatRunId: string | null | undefined,
+): { worktreePath: string; branchName: string; runScoped: boolean } {
+  if (!heartbeatRunId) {
+    return {
+      worktreePath: path.join(worktreeParentDir, branchName),
+      branchName,
+      runScoped: false,
+    };
+  }
+  const runSuffix = heartbeatRunId.replace(/-/g, "").slice(0, 8);
+  const scopedBranch = `${branchName}-run-${runSuffix}`;
+  return {
+    worktreePath: path.join(worktreeParentDir, scopedBranch),
+    branchName: scopedBranch,
+    runScoped: true,
+  };
+}
+
 export async function realizeExecutionWorkspace(input: {
   base: ExecutionWorkspaceInput;
   config: Record<string, unknown>;
   issue: ExecutionWorkspaceIssueRef | null;
   agent: ExecutionWorkspaceAgentRef;
   recorder?: WorkspaceOperationRecorder | null;
+  heartbeatRunId?: string | null;
 }): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
@@ -1129,7 +1187,13 @@ export async function realizeExecutionWorkspace(input: {
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
     : path.join(repoRoot, ".paperclip", "worktrees");
-  const worktreePath = path.join(worktreeParentDir, branchName);
+  const runScopedWorktree = resolveRunScopedWorktree(
+    worktreeParentDir,
+    branchName,
+    input.heartbeatRunId,
+  );
+  const effectiveBranchName = runScopedWorktree.branchName;
+  const worktreePath = runScopedWorktree.worktreePath;
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
@@ -1145,7 +1209,7 @@ export async function realizeExecutionWorkspace(input: {
     const baseDrift = await inspectExecutionWorkspaceBaseDrift({
       repoRoot,
       worktreePath: reusablePath,
-      branchName,
+      branchName: effectiveBranchName,
       baseRef,
       recordedBaseRefSha: null,
       skipRefresh: true,
@@ -1157,12 +1221,13 @@ export async function realizeExecutionWorkspace(input: {
         metadata: {
           repoRoot,
           worktreePath: reusablePath,
-          branchName,
+          branchName: effectiveBranchName,
           baseRef,
           currentBaseRefSha: baseDrift.currentBaseRefSha,
           branchBaseRefSha: baseDrift.branchBaseRefSha,
           created: false,
           reused: true,
+          runScoped: runScopedWorktree.runScoped,
         },
         run: async () => ({
           status: "succeeded",
@@ -1176,7 +1241,7 @@ export async function realizeExecutionWorkspace(input: {
       base: input.base,
       repoRoot,
       worktreePath: reusablePath,
-      branchName,
+      branchName: effectiveBranchName,
       issue: input.issue,
       agent: input.agent,
       created: false,
@@ -1186,11 +1251,12 @@ export async function realizeExecutionWorkspace(input: {
       ...input.base,
       strategy: "git_worktree" as const,
       cwd: reusablePath,
-      branchName,
+      branchName: effectiveBranchName,
       worktreePath: reusablePath,
       warnings: [...baseRefreshWarnings, ...baseDrift.warnings],
       created: false,
       baseRefSha: baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha,
+      runScopedWorktree: runScopedWorktree.runScoped,
     };
   }
 
@@ -1198,7 +1264,7 @@ export async function realizeExecutionWorkspace(input: {
     return await validateLinkedGitWorktree({
       repoRoot,
       worktreePath: reusablePath,
-      expectedBranchName: branchName,
+      expectedBranchName: effectiveBranchName,
     }).catch(() => null);
   }
 
@@ -1212,28 +1278,31 @@ export async function realizeExecutionWorkspace(input: {
     throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
   }
 
-  const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
-  if (registeredBranchWorktree) {
-    const validation = await validateReusableWorktree(registeredBranchWorktree);
-    if (validation?.valid) {
-      return await reuseExistingWorktree(registeredBranchWorktree);
+  if (!runScopedWorktree.runScoped) {
+    const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, effectiveBranchName);
+    if (registeredBranchWorktree) {
+      const validation = await validateReusableWorktree(registeredBranchWorktree);
+      if (validation?.valid) {
+        return await reuseExistingWorktree(registeredBranchWorktree);
+      }
+      const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
+      throw new Error(`Registered worktree for branch "${effectiveBranchName}" at "${registeredBranchWorktree}" is not reusable${reason}.`);
     }
-    const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
-    throw new Error(`Registered worktree for branch "${branchName}" at "${registeredBranchWorktree}" is not reusable${reason}.`);
   }
 
   try {
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
-      args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
+      args: ["worktree", "add", "-b", effectiveBranchName, worktreePath, baseRef],
       cwd: repoRoot,
       metadata: {
         repoRoot,
         worktreePath,
-        branchName,
+        branchName: effectiveBranchName,
         baseRef,
         baseRefSha: currentBaseRefSha,
         created: true,
+        runScoped: runScopedWorktree.runScoped,
       },
       successMessage: `Created git worktree at ${worktreePath}\n`,
       failureLabel: `git worktree add ${worktreePath}`,
@@ -1245,25 +1314,26 @@ export async function realizeExecutionWorkspace(input: {
     try {
       await recordGitOperation(input.recorder, {
         phase: "worktree_prepare",
-        args: ["worktree", "add", worktreePath, branchName],
+        args: ["worktree", "add", worktreePath, effectiveBranchName],
         cwd: repoRoot,
         metadata: {
           repoRoot,
           worktreePath,
-          branchName,
+          branchName: effectiveBranchName,
           baseRef,
           baseRefSha: currentBaseRefSha,
           created: false,
           reusedExistingBranch: true,
+          runScoped: runScopedWorktree.runScoped,
         },
-        successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
+        successMessage: `Attached existing branch ${effectiveBranchName} at ${worktreePath}\n`,
         failureLabel: `git worktree add ${worktreePath}`,
       });
     } catch (attachError) {
       if (!gitErrorIncludes(attachError, "already checked out")) {
         throw attachError;
       }
-      const reusablePath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+      const reusablePath = await findRegisteredGitWorktreeByBranch(repoRoot, effectiveBranchName);
       if (!reusablePath || !await isGitCheckout(reusablePath)) {
         throw attachError;
       }
@@ -1275,7 +1345,7 @@ export async function realizeExecutionWorkspace(input: {
     base: input.base,
     repoRoot,
     worktreePath,
-    branchName,
+    branchName: effectiveBranchName,
     issue: input.issue,
     agent: input.agent,
     created: true,
@@ -1286,11 +1356,12 @@ export async function realizeExecutionWorkspace(input: {
     ...input.base,
     strategy: "git_worktree",
     cwd: worktreePath,
-    branchName,
+    branchName: effectiveBranchName,
     worktreePath,
     warnings: baseRefreshWarnings,
     created: true,
     baseRefSha: currentBaseRefSha,
+    runScopedWorktree: runScopedWorktree.runScoped,
   };
 }
 

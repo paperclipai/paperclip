@@ -9,6 +9,7 @@ import {
   buildPersistentSkillSnapshot,
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
+  commitDirtyWorkspaceWipAutosave,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -1467,5 +1468,48 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("commitDirtyWorkspaceWipAutosave", () => {
+  async function createTempGitRepo(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-wip-autosave-"));
+    const { spawnSync } = await import("node:child_process");
+    spawnSync("git", ["init"], { cwd: dir });
+    spawnSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
+    spawnSync("git", ["config", "user.name", "Test"], { cwd: dir });
+    await fs.writeFile(path.join(dir, "init.txt"), "init");
+    spawnSync("git", ["add", "."], { cwd: dir });
+    spawnSync("git", ["commit", "--no-verify", "-m", "init"], { cwd: dir });
+    return dir;
+  }
+
+  it("commits dirty files with a WIP autosave message and returns true", async () => {
+    const dir = await createTempGitRepo();
+    await fs.writeFile(path.join(dir, "dirty.txt"), "uncommitted change");
+
+    const result = commitDirtyWorkspaceWipAutosave({
+      cwd: dir,
+      runId: "run-abc123",
+      issueId: "CODA-2526",
+    });
+
+    expect(result).toBe(true);
+
+    const { spawnSync } = await import("node:child_process");
+    const log = spawnSync("git", ["log", "--oneline", "-1"], { cwd: dir, encoding: "utf8" });
+    expect(log.stdout).toContain("WIP: detach autosave CODA-2526 run-abc123");
+  });
+
+  it("returns false when the working tree is clean", async () => {
+    const dir = await createTempGitRepo();
+    const result = commitDirtyWorkspaceWipAutosave({ cwd: dir, runId: "run-clean" });
+    expect(result).toBe(false);
+  });
+
+  it("returns false when cwd is not a git repository", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-notgit-"));
+    const result = commitDirtyWorkspaceWipAutosave({ cwd: dir, runId: "run-notgit" });
+    expect(result).toBe(false);
   });
 });
