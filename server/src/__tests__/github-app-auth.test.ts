@@ -129,12 +129,20 @@ describe("githubHasReviewerEvidenceForPr", () => {
     reviewsStatus?: number;
     comments?: unknown[];
     prHead?: string;
+    // BLO-10878 cause #2: map of "base...head" → compare status ("ahead" |
+    // "behind" | "identical" | "diverged"). Absent pairs 404 (unknown SHA).
+    compares?: Record<string, string>;
   }) {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string | URL) => {
         const u = String(url);
         if (u.includes("/access_tokens")) return jsonResponse({ token: "ghs_test", expires_at: FUTURE_ISO });
+        if (u.includes("/compare/")) {
+          const seg = decodeURIComponent(u.split("/compare/")[1]!.split("?")[0]!);
+          const status = routes.compares?.[seg];
+          return status ? jsonResponse({ status }) : jsonResponse({}, false, 404);
+        }
         if (u.includes("/pulls/") && u.includes("/reviews")) {
           if (routes.reviewsStatus && routes.reviewsStatus >= 400) {
             return jsonResponse([], false, routes.reviewsStatus);
@@ -240,6 +248,78 @@ describe("githubHasReviewerEvidenceForPr", () => {
         { user: { login: "allyblockcast[bot]" }, commit_id: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" },
       ],
       comments: [{ user: { login: "allyblockcast[bot]" }, body: "no sha referenced here" }],
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: false,
+    });
+  });
+
+  // BLO-10878 cause #2 — at-or-newer head: the bot frequently reviews a DESCENDANT
+  // of the wake head (the PR advanced between wake and review). An exact-head match
+  // fails, so fall back to a `compare` check and credit a review/comment whose head
+  // is the wake head or a descendant ("ahead"/"identical"), but not older/diverged.
+  const DESCENDANT = "aaaaaaaa1111111111111111111111111111aaaa";
+  const ANCESTOR = "bbbbbbbb2222222222222222222222222222bbbb";
+  const DIVERGED = "cccccccc3333333333333333333333333333cccc";
+
+  it("BLO-10878: credits a bot formal review at a descendant head (at-or-newer)", async () => {
+    setCreds();
+    stubGithub({
+      reviews: [{ user: { login: "allyblockcast[bot]" }, commit_id: DESCENDANT }],
+      comments: [],
+      compares: { [`${headSha}...${DESCENDANT}`]: "ahead" },
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: true,
+      via: "review",
+    });
+  });
+
+  it("BLO-10878: credits a comment-mode review embedding a descendant head (at-or-newer)", async () => {
+    setCreds();
+    stubGithub({
+      reviews: [],
+      comments: [
+        { user: { login: "allyblockcast[bot]" }, body: `## Ally — Consolidated PR Review\n_reviewed head: ${DESCENDANT}_` },
+      ],
+      compares: { [`${headSha}...${DESCENDANT}`]: "ahead" },
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: true,
+      via: "comment",
+    });
+  });
+
+  it("BLO-10878: does NOT credit a bot review at a strictly-older head (behind)", async () => {
+    setCreds();
+    stubGithub({
+      reviews: [{ user: { login: "allyblockcast[bot]" }, commit_id: ANCESTOR }],
+      comments: [],
+      compares: { [`${headSha}...${ANCESTOR}`]: "behind" },
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: false,
+    });
+  });
+
+  it("BLO-10878: does NOT credit a diverged head", async () => {
+    setCreds();
+    stubGithub({
+      reviews: [{ user: { login: "allyblockcast[bot]" }, commit_id: DIVERGED }],
+      comments: [],
+      compares: { [`${headSha}...${DIVERGED}`]: "diverged" },
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: false,
+    });
+  });
+
+  it("BLO-10878: skips a candidate whose compare 404s (bogus hex) without erroring", async () => {
+    setCreds();
+    stubGithub({
+      reviews: [{ user: { login: "allyblockcast[bot]" }, commit_id: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" }],
+      comments: [],
+      // no `compares` entry → the candidate 404s and is skipped (not a fatal error).
     });
     await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
       found: false,
