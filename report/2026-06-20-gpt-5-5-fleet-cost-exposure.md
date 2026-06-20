@@ -2,30 +2,42 @@
 
 Date: 2026-06-20
 
-Issues: LIB-638, LIB-641
+Issue: LIB-617
+
+Corroborating issues: LIB-638, LIB-641
 
 ## Summary
 
-The FinOps alert is valid. GPT-5.5 usage is present in the current Codex local fleet, with high token volume over a short window, weak OpenAI prompt-cache reuse in newer telemetry, and no dollar-cost accounting recorded in Paperclip.
+The FinOps alert is valid. LIB-617 reported fleet-wide GPT-5.5 usage with roughly 47-49% prompt-cache reuse, far below the 92-99% Anthropic cache-hit range reported for comparable same-day agent work. Current Paperclip API checks also show high subscription-token volume with no nonzero dollar-cost accounting recorded in Paperclip.
 
-The immediate risk is not just model choice. Paperclip is currently reporting token volume with `costCents: 0`, `budgetMonthlyCents: 0`, and `spentMonthlyCents: 0`, so budget enforcement cannot catch this exposure. The cache-prefix implementation path is already represented by PR #8392 from LIB-636; this report remains the audit and review artifact for Alex.
+The immediate risk is not just model choice. Paperclip is currently reporting token volume with `costCents: 0`, `budgetMonthlyCents: 0`, and `spentMonthlyCents: 0`, so budget enforcement cannot catch this exposure. The cache-prefix implementation path is already represented by PR #8392 from LIB-636; this report remains the LIB-617 audit and approval artifact for Alex.
 
 ## Evidence
 
-The LIB-638 issue payload reported this 5-hour GPT-5.5 window on 2026-06-20:
+LIB-617 reported this 5-hour GPT-5.5 window on 2026-06-20:
 
 | Agent | Input | Cached input | Cache ratio |
 | --- | ---: | ---: | ---: |
-| Software Engineer | 80M | 72M | 90% |
-| Site Reliability Engineer | 49M | 44M | 90% |
-| Code Reviewer | 44M | 41M | 92% |
-| CTO | 44M | 42M | 95% |
-| Security Engineer | 41M | 37M | 91% |
-| Memory & Context Engineer | 30M | 27M | 89% |
+| Software Engineer | 79.9M | 37.6M | 47% |
+| Site Reliability Engineer | 46.0M | 22.1M | 48% |
+| CTO | 44.2M | 21.6M | 49% |
+| Code Reviewer | 40.1M | 19.2M | 48% |
+| Security Engineer | 39.0M | 18.7M | 48% |
+| Software Engineer, model empty | 28.8M | 13.8M | 48% |
+| Memory & Context Engineer | 28.6M | 13.4M | 47% |
+| FinOps Analyst | 19.1M | 9.2M | 48% |
 
-Total: about 288M input tokens in 5 hours, with about 263M cached input tokens.
+The rows listed in LIB-617 total about 325.6M input tokens in 5 hours, with about 155.7M cached input tokens and about 170.0M fresh input tokens. The issue summary reports about 370M total GPT-5.5 input tokens for the broader 5-hour window.
 
-LIB-641 later reported a broader same-day `openai/gpt-5.5` exposure row:
+For comparison, the same LIB-617 payload reported Anthropic agents in the 95-99% cache-hit range over the same day:
+
+| Agent | Model | Input | Cache ratio |
+| --- | --- | ---: | ---: |
+| FinOps Analyst | claude-opus-4-8 | 5.1M | 95% |
+| Memory & Context Engineer | claude-opus-4-8 | 2.7M | 99% |
+| CTO | claude-opus-4-8 | 1.8M | 99% |
+
+LIB-641 later reported a broader same-day `openai/gpt-5.5` aggregate exposure row:
 
 | Metric | Value |
 | --- | ---: |
@@ -46,7 +58,7 @@ Paperclip API checks during this review showed:
 | Company cost summary | `spendCents: 0`, `budgetCents: 0`, `utilizationPercent: 0` |
 | By-agent cost rows | Large token counts present, all `costCents: 0` |
 | CTO detailed config | `adapterType: codex_local`, `adapterConfig.model: gpt-5.5` |
-| Other five named agents | `adapterType: codex_local`, no explicit `adapterConfig.model` |
+| Other five named agents | `adapterType: codex_local`, no explicit `adapterConfig.model` in the reviewed agent payloads |
 | Codex local adapter default | Code default is `gpt-5.3-codex`; empty model omits `--model`, allowing the Codex CLI subscription default to select GPT-5.5 |
 | Available cheap profile | `gpt-5.3-codex-spark` with `modelReasoningEffort: high` |
 
@@ -69,25 +81,27 @@ Sources:
 
 ## Exposure Estimate
 
-Input-side cost for the 5-hour LIB-638 window:
+Input-side cost for the listed LIB-617 rows:
 
 | Agent | Uncached input | Cached input | Estimated input-side cost |
 | --- | ---: | ---: | ---: |
-| Software Engineer | 8M | 72M | $76.00 |
-| Site Reliability Engineer | 5M | 44M | $47.00 |
-| Code Reviewer | 3M | 41M | $35.50 |
-| CTO | 2M | 42M | $31.00 |
-| Security Engineer | 4M | 37M | $38.50 |
-| Memory & Context Engineer | 3M | 27M | $28.50 |
+| Software Engineer | 42.3M | 37.6M | $230.52 |
+| Site Reliability Engineer | 23.9M | 22.1M | $130.76 |
+| CTO | 22.5M | 21.6M | $123.44 |
+| Code Reviewer | 20.8M | 19.2M | $113.85 |
+| Security Engineer | 20.3M | 18.7M | $110.62 |
+| Software Engineer, model empty | 15.0M | 13.8M | $81.83 |
+| Memory & Context Engineer | 15.1M | 13.4M | $82.44 |
+| FinOps Analyst | 9.9M | 9.2M | $54.17 |
 
-Total input-side estimate for the 5-hour window: $256.50.
+Total input-side estimate for the listed LIB-617 rows: about $927.63 for 5 hours at standard short-context GPT-5.5 rates, excluding output tokens.
 
 Linearized run rate from that 5-hour window:
 
 | Period | Input-side estimate |
 | --- | ---: |
-| 24 hours | $1,231.20 |
-| 30 days | $36,936.00 |
+| 24 hours | $4,452.63 |
+| 30 days | $133,578.86 |
 
 This excludes output tokens, long-context multipliers, priority/fast processing, tool charges, and any non-listed agents. It is therefore a lower-bound exposure estimate.
 
