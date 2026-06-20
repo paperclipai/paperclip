@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  costEvents,
   documentRevisions,
   environmentLeases,
   environments,
@@ -479,6 +480,27 @@ export function activityService(db: Db) {
         }
       }
 
+      const costRows = await db
+        .select({
+          runId: costEvents.heartbeatRunId,
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          model: sql<string | null>`(array_agg(${costEvents.model} order by ${costEvents.costCents} desc))[1]`,
+          provider: sql<string | null>`(array_agg(${costEvents.provider} order by ${costEvents.costCents} desc))[1]`,
+        })
+        .from(costEvents)
+        .where(
+          and(
+            eq(costEvents.companyId, companyId),
+            inArray(costEvents.heartbeatRunId, runIds),
+          ),
+        )
+        .groupBy(costEvents.heartbeatRunId);
+
+      const costByRunId = new Map<string, (typeof costRows)[number]>();
+      for (const row of costRows) {
+        if (row.runId) costByRunId.set(row.runId, row);
+      }
+
       return runs.map((run) => {
         const leaseRow = leaseByRunId.get(run.runId);
         const leaseMetadata = leaseRow?.lease.metadata ?? null;
@@ -513,6 +535,9 @@ export function activityService(db: Db) {
               }
             : null,
           retryExhaustedReason: retryExhaustedReasonByRunId.get(run.runId) ?? null,
+          costCents: costByRunId.get(run.runId)?.costCents ?? null,
+          model: costByRunId.get(run.runId)?.model ?? null,
+          provider: costByRunId.get(run.runId)?.provider ?? null,
         };
       });
     },

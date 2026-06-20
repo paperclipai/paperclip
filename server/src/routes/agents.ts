@@ -1517,6 +1517,18 @@ export function agentRoutes(
     };
   }
 
+  function buildAgentTelemetryMeta(agent: { adapterType: string; adapterConfig: unknown; runtimeConfig: unknown }) {
+    const adapterCfg = asRecord(agent.adapterConfig) ?? {};
+    const runtimeCfg = asRecord(agent.runtimeConfig) ?? {};
+    const profiles = asRecord(runtimeCfg.modelProfiles) ?? {};
+    const profileKeys = Object.keys(profiles);
+    return {
+      adapterName: agent.adapterType,
+      modelId: typeof adapterCfg.model === "string" && adapterCfg.model ? adapterCfg.model : null,
+      modelProfile: profileKeys.length > 0 ? profileKeys[0] : null,
+    };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -1854,10 +1866,10 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => ({ ...agent, ...buildAgentTelemetryMeta(agent) })));
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    res.json(result.map((agent) => ({ ...redactForRestrictedAgentView(agent), ...buildAgentTelemetryMeta(agent) })));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
