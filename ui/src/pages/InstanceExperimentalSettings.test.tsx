@@ -101,6 +101,16 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     vi.clearAllMocks();
   });
 
+  it("renders a page-level warning about instability and lack of guarantees", async () => {
+    await renderPage();
+
+    const warning = [...container.querySelectorAll('[role="alert"]')].find((alert) =>
+      alert.textContent?.includes("Experimental features may break at any time."),
+    );
+    expect(warning?.textContent).toContain("Experimental features may break at any time.");
+    expect(warning?.textContent).toContain("no compatibility guarantees");
+  });
+
   it("does not render the Conference Room Chat experimental setting for now", async () => {
     await renderPage();
 

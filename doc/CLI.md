@@ -651,6 +651,8 @@ pnpm paperclipai auth revoke-current
 
 `--token <challenge-secret>` is still supported for compatibility, but `--token-env` avoids putting challenge secrets in shell history or process arguments.
 
+## Instance Settings Commands
+
 ```sh
 pnpm paperclipai instance scheduler-heartbeats
 pnpm paperclipai instance settings:general
@@ -658,6 +660,11 @@ pnpm paperclipai instance settings:general:update --payload-json '{...}'
 pnpm paperclipai instance settings:experimental
 pnpm paperclipai instance settings:experimental:update --payload-json '{...}'
 pnpm paperclipai instance database-backup
+```
+
+Experimental features are opt-in and are provided without compatibility guarantees. They may break, change, or be removed at any time. Use them at your own risk.
+
+```sh
 pnpm paperclipai sidebar preferences
 pnpm paperclipai sidebar preferences:update --payload-json '{...}'
 pnpm paperclipai sidebar project-preferences --company-id <company-id>

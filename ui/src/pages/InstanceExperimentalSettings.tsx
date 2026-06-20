@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock, FlaskConical, Play, Search } from "lucide-react";
+import { AlertTriangle, Clock, FlaskConical, Play, Search } from "lucide-react";
 import type {
   InstanceExperimentalSettings,
   IssueGraphLivenessAutoRecoveryPreview,
@@ -290,6 +290,22 @@ export function InstanceExperimentalSettings() {
         <p className="text-sm text-muted-foreground">
           Opt into features that are still being evaluated before they become default behavior.
         </p>
+      </div>
+
+      <div
+        role="alert"
+        className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3"
+      >
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+          <div className="space-y-1 text-sm">
+            <p className="font-medium text-foreground">Experimental features may break at any time.</p>
+            <p className="text-muted-foreground">
+              These features are opt-in and come with no compatibility guarantees. They may change, break, or be
+              removed without notice. Avoid relying on them for critical or production workflows.
+            </p>
+          </div>
+        </div>
       </div>
 
       {actionError && (
