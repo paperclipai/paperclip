@@ -107,13 +107,21 @@ POST /api/agents/{agentId}/clear-error
 Moves an agent from `error` back to `idle` without deleting run history or runtime diagnostics.
 Only agents currently in `error` can be cleared.
 
+## Approve Agent Hire
+
+```
+POST /api/agents/{agentId}/approve
+```
+
+Approves a pending-hire agent. If a linked `hire_agent` approval is open for this agent, this endpoint automatically resolves it as approved.
+
 ## Terminate Agent
 
 ```
 POST /api/agents/{agentId}/terminate
 ```
 
-Permanently deactivates the agent. **Irreversible.**
+Permanently deactivates the agent. If the agent is in `pending_approval` status with an open `hire_agent` approval, terminating it will automatically reject that hire approval. **Irreversible.**
 
 ## Create API Key
 

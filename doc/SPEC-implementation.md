@@ -680,7 +680,9 @@ When the safe next action needs one of these disallowed mutations, the watchdog 
 
 ### Interaction resolution
 
-The initial V1 watchdog resolver may resolve exactly one interaction family: `request_confirmation` interactions that are eligible task-level plan confirmations. The watchdog may accept a coherent eligible plan or reject/request changes with a reason. It may not resolve `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`, linked approvals, board approvals, or ad hoc document comments.
+(Note: Interaction resolution is currently restricted to human users; agent-driven watchdog runs attempting to resolve interactions will receive a `403 Forbidden` response in this release).
+
+The watchdog may not resolve plan confirmations, `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`, linked approvals, board approvals, or ad hoc document comments.
 
 A plan confirmation is eligible only when all of these are true:
 
@@ -701,7 +703,7 @@ Implementation, security, UI, and QA work for task watchdogs must prove these co
 - server tests deny cross-company watched issues, watchdog agents, watchdog issues, blockers, interactions, and assignment targets
 - server tests deny paused, terminated, pending-approval, budget-blocked, or otherwise uninvokable watchdog agents
 - watchdog-scoped mutations can touch only the watched subtree and the reusable watchdog issue, with activity records for each mutation
-- interaction tests prove only eligible `request_confirmation` plan confirmations are accepted or rejected, and all other interaction kinds remain unavailable to watchdogs
+- interaction tests prove all interaction resolution attempts by watchdog agents are denied with `403`, and all interaction kinds remain unavailable to watchdogs
 - plan-confirmation tests cover stale document revisions, missing purpose markers, outside-subtree targets, governed actions, newer user comments, and explicit human/CTO/Security reservations
 - scheduler tests prove live runs, queued wakes, and scheduled retries suppress watchdog wakeups, while terminal, cancelled, blocked, and review leaves are still verified when the subtree has no live path
 - tests prove `task_watchdog` origin issues and descendants are excluded from scans so watchdogs do not trigger themselves
@@ -710,7 +712,7 @@ Implementation, security, UI, and QA work for task watchdogs must prove these co
 - prompt/context tests prove custom instructions are appended after non-overridable safety constraints and cannot expand authority
 - QA validates a full create/edit/remove/run/reuse flow with screenshots for UI changes
 
-No unresolved policy decision blocks implementation once CTO and Security accept this contract. Deliberately deferred and disallowed for the first implementation: resolving interaction kinds beyond eligible plan confirmations, letting watchdogs cancel active runs, approving board/governance actions, mutating outside the watched subtree, or allowing watchdog agents to modify their own watchdog configuration. Any expansion requires a new product/security review.
+No unresolved policy decision blocks implementation once CTO and Security accept this contract. Deliberately deferred and disallowed for the first implementation: resolving plan confirmations or any other interaction kinds, letting watchdogs cancel active runs, approving board/governance actions, mutating outside the watched subtree, or allowing watchdog agents to modify their own watchdog configuration. Any expansion requires a new product/security review.
 
 ## 10. API Contract (REST)
 

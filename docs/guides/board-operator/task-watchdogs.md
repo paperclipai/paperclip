@@ -29,4 +29,4 @@ A single issue can hold **at most one active watchdog**.
 1. **Periodic Scans**: Paperclip runs a watchdog reconciliation scan at startup, periodically (on a background server loop), and on demand after relevant issue mutations.
 2. **Subtree Walk**: The tick walks down parent-child chains from the watched issue, checking if all leaves have stalled.
 3. **Trigger**: If no active run, queued run, or scheduled retry exists for any of the subtree leaves, the subtree is marked as stalled, and the watchdog agent is woken up to investigate.
-4. **Resolution**: The watchdog agent reviews the stalled leaf issues, files a follow-up finding task, and returns recommendations or continues the pipeline.
+4. **Resolution**: The watchdog agent reviews the stalled leaf issues, verifies completeness, and restores a live path inside the subtree by reopening/reassigning tasks, commenting, creating in-subtree follow-up child issues, or creating watchdog-discovered product/platform bug follow-ups outside the watched subtree through the guarded `watchdogDiscovery` field.

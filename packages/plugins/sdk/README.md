@@ -1186,6 +1186,34 @@ Requires capabilities: `agent.sessions.create`, `agent.sessions.list`, `agent.se
 
 Exported types: `AgentSession`, `AgentSessionEvent`, `AgentSessionSendResult`, `PluginAgentSessionsClient`.
 
+## Environment Drivers
+
+Plugins can register execution environment drivers to provide custom runtimes (e.g. cloud sandboxes). When implementing a custom driver, you can define the environment lifecycle hooks:
+
+```ts
+const plugin = definePlugin({
+  async setup(ctx) {
+    // ...
+  },
+  async onEnvironmentAcquireLease(params: PluginEnvironmentAcquireLeaseParams) {
+    const { runId, agentId, executionWorkspaceId, adapterType } = params;
+    // agentId identifies the agent executing the task
+    // executionWorkspaceId identifies the execution workspace for this run
+    // ...
+    return {
+      providerLeaseId: "lease-123",
+      metadata: { url: "https://sandbox-url" }
+    };
+  }
+});
+```
+
+Exported parameters and types:
+- `PluginEnvironmentAcquireLeaseParams`: carries `runId`, `agentId`, `executionWorkspaceId`, and `adapterType` context.
+- `PluginEnvironmentResumeLeaseParams`
+- `PluginEnvironmentReleaseLeaseParams`
+- `PluginEnvironmentDestroyLeaseParams`
+
 ## Testing utilities
 
 ```ts

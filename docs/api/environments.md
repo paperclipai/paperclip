@@ -8,7 +8,7 @@ Configure and inspect the execution runtimes (such as Local, SSH, Sandbox, or Pl
 Note: Environments are **instance-scoped** rather than company-scoped. However, company-prefixed routes (e.g. `/api/companies/{companyId}/environments`) are used to supply the necessary company context for verifying permissions and resolving company secret bindings.
 
 ### Permissions & Redaction
-List and get environment endpoints are readable by any board organization member. However, if the requester is not an instance admin, the `config`, `envVars`, and `metadata` fields are redacted (returned as empty/null). Creating, updating, deleting, or probing environments requires local implicit board or instance admin access (returns `403` otherwise). The route `{companyId}` is used for secret-binding validation context rather than restricting access to that company's environments.
+List and get environment endpoints are readable by any board organization member. However, if the requester is not an instance admin, the `config`, `envVars`, and `metadata` fields are redacted (returned as empty/null). Creating, updating, deleting, or probing environments requires local implicit board or instance admin access (returns `403` otherwise). The route `{companyId}` is used only as a secret-binding context and does not filter environments by company.
 
 ## List Environments
 

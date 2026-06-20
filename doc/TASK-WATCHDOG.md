@@ -138,7 +138,7 @@ Every watchdog-originated mutation is gated by a server-side scope check derived
 
 - mutations on issues outside the watched subtree (parent-chain walk, depth-limited)
 - mutations on issues whose company id does not match the watchdog's company
-- attempts to resolve interactions other than eligible task-level `request_confirmation` plan confirmations (see SPEC §9.9 for eligibility)
+- attempts to resolve interactions (all interaction resolution, including plan confirmations, is board-only/unsupported for watchdog agents in this release due to security constraints; the agent will receive a 403 Forbidden)
 - changes to the watchdog configuration itself (a watchdog cannot edit its own row or create another watchdog)
 - direct edits to active-run output or execution-policy decisions that require a typed participant
 

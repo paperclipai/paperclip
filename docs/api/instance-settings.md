@@ -44,7 +44,7 @@ PATCH /api/instance/settings
 }
 ```
 
-Updates the default environment or other core settings.
+Updates the default environment ID.
 
 ## Get General Preferences
 
