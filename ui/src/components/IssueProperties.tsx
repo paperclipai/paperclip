@@ -9,7 +9,6 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -486,6 +485,7 @@ export function IssueProperties({
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
+  const prLinksEnabled = experimentalSettings?.enablePrLinks === true;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -558,11 +558,6 @@ export function IssueProperties({
     enabled: !!companyId,
   });
 
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
-  const prLinksEnabled = experimentalSettings?.enablePrLinks === true;
   const prLinks = useMemo<IssuePrLink[]>(() => issue.prLinks ?? [], [issue.prLinks]);
 
   const [addPrOpen, setAddPrOpen] = useState(false);

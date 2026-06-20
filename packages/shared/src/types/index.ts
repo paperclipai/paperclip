@@ -269,7 +269,6 @@ export type {
   Issue,
   IssuePrLink,
   IssuePrLinkState,
-  IssuePrLinkChecks,
   IssueWorkMode,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,

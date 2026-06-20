@@ -525,7 +525,6 @@ export type {
   Issue,
   IssuePrLink,
   IssuePrLinkState,
-  IssuePrLinkChecks,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,
   IssueBlockerAttentionReason,

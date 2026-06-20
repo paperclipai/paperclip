@@ -88,14 +88,11 @@ export interface IssueAssigneeAdapterOverrides {
 
 export type IssuePrLinkState = "open" | "draft" | "merged" | "closed";
 
-export type IssuePrLinkChecks = "passing" | "failing" | "pending" | "neutral";
-
 export interface IssuePrLink {
   url: string;
   title?: string | null;
   // Server-populated cached status; clients/agents never set these.
   state?: IssuePrLinkState | null;
-  checks?: IssuePrLinkChecks | null;
   statusFetchedAt?: string | null;
   statusError?: string | null;
 }

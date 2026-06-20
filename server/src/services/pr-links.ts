@@ -67,8 +67,8 @@ function prLinkKey(link: Pick<IssuePrLink, "url">): string {
 
 // Merges incoming user-settable `{ url, title }` entries with any previously
 // cached status for the same PR. Incoming entries that match an existing URL keep
-// their fetched `state` / `checks` / `statusFetchedAt` / `statusError`; brand-new
-// entries start with no cached status.
+// their fetched `state` / `statusFetchedAt` / `statusError`; brand-new entries
+// start with no cached status.
 export function mergePrLinkStatus(
   existing: IssuePrLink[],
   incoming: Array<Pick<IssuePrLink, "url" | "title">>,
@@ -85,7 +85,6 @@ export function mergePrLinkStatus(
     };
     if (prior) {
       if (prior.state !== undefined) merged.state = prior.state;
-      if (prior.checks !== undefined) merged.checks = prior.checks;
       if (prior.statusFetchedAt !== undefined) merged.statusFetchedAt = prior.statusFetchedAt;
       if (prior.statusError !== undefined) merged.statusError = prior.statusError;
     }

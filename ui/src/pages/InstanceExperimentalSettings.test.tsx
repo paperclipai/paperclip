@@ -52,6 +52,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableTaskWatchdogs: false,
+    enablePrLinks: false,
     enableCloudSync: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
