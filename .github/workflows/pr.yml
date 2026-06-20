@@ -55,6 +55,9 @@ jobs:
       - name: Test no-git-push check
         run: node --test ./scripts/check-no-git-push.test.mjs
 
+      - name: Test general-server shard partition
+        run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
@@ -135,8 +138,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The server suite is pinned to maxWorkers=1 (server/vitest.config.ts),
+          # so it can only be parallelized across runners. Shard it to keep this
+          # lane off the PR critical path.
           - group: general-server
-            group_label: server
+            group_label: server (1/3)
+            shard_index: 0
+            shard_count: 3
+          - group: general-server
+            group_label: server (2/3)
+            shard_index: 1
+            shard_count: 3
+          - group: general-server
+            group_label: server (3/3)
+            shard_index: 2
+            shard_count: 3
           - group: general-workspaces-a
             group_label: workspaces-a
           - group: general-workspaces-b
@@ -168,7 +184,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run grouped general test suites
-        run: pnpm test:run:general -- --group '${{ matrix.group }}'
+        run: |
+          if [ -n "${{ matrix.shard_count }}" ]; then
+            pnpm test:run:general -- --group '${{ matrix.group }}' \
+              --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
+          else
+            pnpm test:run:general -- --group '${{ matrix.group }}'
+          fi
 
   verify:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
