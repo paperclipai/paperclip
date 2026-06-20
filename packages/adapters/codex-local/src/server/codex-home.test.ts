@@ -2,7 +2,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensureSymlink, prepareManagedCodexHome } from "./codex-home.js";
+import {
+  codexHomeHasUsableAuth,
+  ensureSymlink,
+  isManagedCodexHomePath,
+  prepareManagedCodexHome,
+  seedManagedCodexHome,
+} from "./codex-home.js";
 
 describe("codex managed home", () => {
   afterEach(() => {
@@ -193,4 +199,118 @@ describe("codex managed home", () => {
     }
   });
 
+});
+
+describe("isManagedCodexHomePath", () => {
+  const env = {
+    PAPERCLIP_HOME: "/srv/paperclip",
+    PAPERCLIP_INSTANCE_ID: "default",
+  } satisfies NodeJS.ProcessEnv;
+  const companyRoot = path.resolve(
+    "/srv/paperclip/instances/default/companies/company-1",
+  );
+
+  it("treats the per-agent managed home as managed", () => {
+    expect(
+      isManagedCodexHomePath(
+        env,
+        "company-1",
+        path.join(companyRoot, "agents", "agent-7", "codex-home"),
+      ),
+    ).toBe(true);
+  });
+
+  it("treats the shared company home as managed", () => {
+    expect(
+      isManagedCodexHomePath(env, "company-1", path.join(companyRoot, "codex-home")),
+    ).toBe(true);
+  });
+
+  it("treats a path outside the company tree as an external override", () => {
+    expect(isManagedCodexHomePath(env, "company-1", "/home/dev/.codex")).toBe(false);
+    expect(
+      isManagedCodexHomePath(
+        env,
+        "company-1",
+        path.resolve("/srv/paperclip/instances/default/companies/company-2/codex-home"),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false without a companyId", () => {
+    expect(isManagedCodexHomePath(env, undefined, path.join(companyRoot, "codex-home"))).toBe(
+      false,
+    );
+  });
+});
+
+describe("codexHomeHasUsableAuth", () => {
+  it("is true for a real auth.json and false when missing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-"));
+    try {
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+      await fs.writeFile(path.join(root, "auth.json"), "{}", "utf8");
+      expect(await codexHomeHasUsableAuth(root)).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("is false for a dangling auth.json symlink", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-dangling-"));
+    try {
+      await fs.symlink(path.join(root, "missing-source.json"), path.join(root, "auth.json"));
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("seedManagedCodexHome", () => {
+  it("symlinks auth.json from the shared source into an explicit per-agent home", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const agentHome = path.join(
+        root,
+        "instances",
+        "default",
+        "companies",
+        "company-1",
+        "agents",
+        "agent-7",
+        "codex-home",
+      );
+      const sharedAuth = path.join(sharedCodexHome, "auth.json");
+      const agentAuth = path.join(agentHome, "auth.json");
+
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(sharedAuth, '{"token":"shared"}', "utf8");
+
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      expect((await fs.lstat(agentAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(agentAuth)).toBe(await fs.realpath(sharedAuth));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writes an API-key auth.json into the home when an apiKey is supplied", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-apikey-"));
+    try {
+      const agentHome = path.join(root, "agent-home");
+      const emptyShared = path.join(root, "empty-shared");
+      await fs.mkdir(emptyShared, { recursive: true });
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: emptyShared }, async () => {}, {
+        apiKey: "sk-test-123",
+      });
+
+      const written = JSON.parse(await fs.readFile(path.join(agentHome, "auth.json"), "utf8"));
+      expect(written).toEqual({ OPENAI_API_KEY: "sk-test-123" });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

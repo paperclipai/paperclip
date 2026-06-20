@@ -41,6 +41,38 @@ export function resolveManagedCodexHomeDir(
     : path.resolve(instanceRoot, "codex-home");
 }
 
+/**
+ * True when `homePath` lives under the Paperclip-managed company tree
+ * (`<instanceRoot>/companies/<companyId>/...`). This covers both the shared
+ * company `codex-home` and the per-agent `agents/<agentId>/codex-home` set by
+ * the server-side isolation guard. A path outside that tree is a genuine
+ * external/user-supplied override that Paperclip must not seed or overwrite.
+ */
+export function isManagedCodexHomePath(
+  env: NodeJS.ProcessEnv,
+  companyId: string | undefined,
+  homePath: string,
+): boolean {
+  if (!companyId) return false;
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  const companyRoot = path.resolve(instanceRoot, "companies", companyId);
+  const resolved = path.resolve(homePath);
+  return resolved === companyRoot || resolved.startsWith(companyRoot + path.sep);
+}
+
+/**
+ * True when the Codex home has a usable `auth.json`. Uses `fs.access` (follows
+ * symlinks), so a dangling auth symlink whose source has been removed counts as
+ * no usable credentials.
+ */
+export async function codexHomeHasUsableAuth(home: string): Promise<boolean> {
+  return pathExists(path.join(home, "auth.json"));
+}
+
 async function ensureParentDir(target: string): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true });
 }
@@ -116,13 +148,20 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
 }
 
-export async function prepareManagedCodexHome(
+/**
+ * Seeds auth/config into an explicit Paperclip-managed `targetHome`. Symlinks
+ * `auth.json` from the shared source home (so ChatGPT-subscription credentials
+ * stay live and single-use refresh tokens are not copied), copies the static
+ * shared config files, and — when an API key is supplied — writes an API-key
+ * `auth.json` instead. Used both for the default company home and for the
+ * per-agent home set by the server isolation guard.
+ */
+export async function seedManagedCodexHome(
+  targetHome: string,
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
-  companyId?: string,
   options: { apiKey?: string | null } = {},
-): Promise<string> {
-  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+): Promise<void> {
   const apiKey = nonEmpty(options.apiKey ?? undefined);
 
   const sourceHome = resolveSharedCodexHomeDir(env);
@@ -168,6 +207,15 @@ export async function prepareManagedCodexHome(
       `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
     );
   }
+}
 
+export async function prepareManagedCodexHome(
+  env: NodeJS.ProcessEnv,
+  onLog: AdapterExecutionContext["onLog"],
+  companyId?: string,
+  options: { apiKey?: string | null } = {},
+): Promise<string> {
+  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+  await seedManagedCodexHome(targetHome, env, onLog, options);
   return targetHome;
 }
