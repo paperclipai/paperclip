@@ -105,3 +105,38 @@ describe("approvalService resolution idempotency", () => {
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("approvalService.cancel", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("cancels a pending approval owned by the requesting agent", async () => {
+    const cancelled = { ...createApproval("cancelled") };
+    const dbStub = createDbStub([[createApproval("pending")]], [cancelled]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.cancel("approval-1", "requester-1", "duplicate card");
+
+    expect(result.status).toBe("cancelled");
+    expect(dbStub.returning).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects cancel from a non-owner agent", async () => {
+    const dbStub = createDbStub([[createApproval("pending")]], []);
+    const svc = approvalService(dbStub.db as any);
+
+    await expect(svc.cancel("approval-1", "someone-else")).rejects.toThrow(
+      /requesting agent/i,
+    );
+    expect(dbStub.returning).not.toHaveBeenCalled();
+  });
+
+  it("rejects cancel of a non-pending approval", async () => {
+    const dbStub = createDbStub([[createApproval("approved")]], []);
+    const svc = approvalService(dbStub.db as any);
+
+    await expect(svc.cancel("approval-1", "requester-1")).rejects.toThrow(
+      /pending approvals can be cancelled/i,
+    );
+    expect(dbStub.returning).not.toHaveBeenCalled();
+  });
+});

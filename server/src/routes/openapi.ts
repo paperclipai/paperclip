@@ -2139,6 +2139,18 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/approvals/{id}/cancel",
+  tags: ["approvals"],
+  summary: "Cancel a pending approval you created (requesting agent only)",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ reason: z.string().optional() })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/approvals/{id}/comments",
   tags: ["approvals"],

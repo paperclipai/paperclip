@@ -495,6 +495,43 @@ export function approvalRoutes(
     res.json(redactApprovalPayload(approval));
   });
 
+  // Agent-side withdrawal of a still-pending approval the agent itself created.
+  // Without this, an agent that posts a mistaken/duplicate confirmation card has
+  // no way off it (only the board can approve/reject) and burns turns hunting for
+  // a non-existent cleanup path. Agent-only, ownership-checked, no side effects.
+  router.post("/approvals/:id/cancel", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(403).json({ error: "Only the requesting agent can cancel an approval" });
+      return;
+    }
+    if (req.actor.agentId !== existing.requestedByAgentId) {
+      res.status(403).json({ error: "Only the requesting agent can cancel this approval" });
+      return;
+    }
+
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : null;
+    const approval = await svc.cancel(id, req.actor.agentId, reason);
+    await logActivity(db, {
+      companyId: approval.companyId,
+      actorType: "agent",
+      actorId: req.actor.agentId,
+      agentId: req.actor.agentId,
+      action: "approval.cancelled",
+      entityType: "approval",
+      entityId: approval.id,
+      details: { type: approval.type },
+    });
+    res.json(redactApprovalPayload(approval));
+  });
+
   router.get("/approvals/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const approval = await svc.getById(id);

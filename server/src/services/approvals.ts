@@ -227,6 +227,35 @@ export function approvalService(db: Db) {
       return resolveApproval(id, decision, { agentId }, decisionNote);
     },
 
+    // Withdraw a still-pending approval. Used by the agent that created it to
+    // retract a mistaken/duplicate confirmation card so it isn't a dead end
+    // (there is otherwise no agent-side path off a pending approval). Ownership
+    // (requestedByAgentId === agentId) is enforced at the route layer; here we
+    // only guard the status transition. Carries no side effects.
+    cancel: async (id: string, agentId: string, reason?: string | null) => {
+      const existing = await getExistingApproval(id);
+      if (existing.status !== "pending") {
+        throw unprocessable("Only pending approvals can be cancelled");
+      }
+      if (existing.requestedByAgentId !== agentId) {
+        throw unprocessable("Only the requesting agent can cancel this approval");
+      }
+
+      const now = new Date();
+      return db
+        .update(approvals)
+        .set({
+          status: "cancelled",
+          decisionNote: reason ?? null,
+          decidedByAgentId: agentId,
+          decidedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(approvals.id, id), eq(approvals.status, "pending")))
+        .returning()
+        .then((rows) => rows[0]);
+    },
+
     resubmit: async (id: string, payload?: Record<string, unknown>) => {
       const existing = await getExistingApproval(id);
       if (existing.status !== "revision_requested") {
