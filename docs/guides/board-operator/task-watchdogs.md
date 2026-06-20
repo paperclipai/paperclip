@@ -7,7 +7,7 @@ Task watchdogs allow you to configure automated monitoring for specific issues a
 
 ## Prerequisite
 
-Task watchdogs are an experimental control plane feature. They are only visible in the UI and active in the background if `enableTaskWatchdogs` is enabled under **Instance Settings > Experimental** (or the `enableTaskWatchdogs` flag is set to true in the instance settings database).
+The watchdog configuration UI elements in the New Issue dialog and Issue Properties panel are only visible if `enableTaskWatchdogs` is enabled under **Instance Settings > Experimental** (or the `enableTaskWatchdogs` flag is set to true in the instance settings database). Note that the background server-side watchdog reconciliation walks active watchdogs regardless of this UI experimental flag.
 
 ## Configuration
 
@@ -26,7 +26,7 @@ A single issue can hold **at most one active watchdog**.
 
 ## How it Works
 
-1. **Periodic Scans**: Paperclip runs a watchdog reconciliation scan at startup and after mutations.
+1. **Periodic Scans**: Paperclip runs a watchdog reconciliation scan at startup, periodically (on a background server loop), and on demand after relevant issue mutations.
 2. **Subtree Walk**: The tick walks down parent-child chains from the watched issue, checking if all leaves have stalled.
 3. **Trigger**: If no active run, queued run, or scheduled retry exists for any of the subtree leaves, the subtree is marked as stalled, and the watchdog agent is woken up to investigate.
 4. **Resolution**: The watchdog agent reviews the stalled leaf issues, files a follow-up finding task, and returns recommendations or continues the pipeline.
