@@ -31,6 +31,14 @@ function hasUsableAuthPayload(authPayload: unknown): boolean {
   return false;
 }
 
+function readApiKeyFromAuthPayload(authPayload: unknown): string | null {
+  if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
+    return null;
+  }
+  const raw = (authPayload as Record<string, unknown>).OPENAI_API_KEY;
+  return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+}
+
 export function resolveSharedCodexHomeDir(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -91,6 +99,19 @@ export async function codexHomeHasUsableAuth(home: string): Promise<boolean> {
     const raw = await fs.readFile(authPath, "utf8");
     const parsed = JSON.parse(raw);
     return hasUsableAuthPayload(parsed);
+  } catch {
+    return false;
+  }
+}
+
+async function codexHomeHasMatchingApiKeyAuth(home: string, apiKey: string): Promise<boolean> {
+  const authPath = path.join(home, "auth.json");
+  const existing = await fs.lstat(authPath).catch(() => null);
+  if (!existing || existing.isSymbolicLink()) return false;
+  try {
+    const raw = await fs.readFile(authPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return readApiKeyFromAuthPayload(parsed) === apiKey.trim();
   } catch {
     return false;
   }
@@ -307,11 +328,15 @@ export async function reconcileManagedCodexHome(
     return { status: "already_seeded", home: resolved };
   }
 
+  if (apiKey && await codexHomeHasMatchingApiKeyAuth(resolved, apiKey)) {
+    return { status: "already_seeded", home: resolved };
+  }
+
   await seedManagedCodexHome(resolved, env, input.onLog ?? noopOnLog, { apiKey });
 
-  // Seeding always (re)writes when an API key is supplied; otherwise it only
-  // changes disk state when auth was missing. Report accordingly so callers can
-  // distinguish a real backfill from a verified no-op.
+  // Without an API key, seeding only changes disk state when auth was missing.
+  // With an API key, the matching-file short-circuit above filters out the
+  // already-seeded case before this write path.
   const status: ReconcileManagedCodexHomeStatus =
     !apiKey && hadUsableAuth ? "already_seeded" : "seeded";
   return { status, home: resolved };

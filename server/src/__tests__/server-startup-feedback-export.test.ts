@@ -168,6 +168,15 @@ vi.mock("../services/index.js", () => ({
     })),
   })),
   reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
+  reconcileCodexLocalManagedHomesOnStartup: vi.fn(async () => ({
+    scanned: 0,
+    seeded: 0,
+    alreadySeeded: 0,
+    externalOverride: 0,
+    noManagedHome: 0,
+    failed: 0,
+    seededAgentIds: [],
+  })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),

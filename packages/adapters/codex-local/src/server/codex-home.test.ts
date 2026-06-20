@@ -468,6 +468,17 @@ describe("reconcileManagedCodexHome", () => {
       expect(result.status).toBe("seeded");
       const written = JSON.parse(await fs.readFile(fx.agentAuth, "utf8"));
       expect(written).toEqual({ OPENAI_API_KEY: "sk-reconcile-1" });
+
+      const second = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        apiKey: "sk-reconcile-1",
+        env: fx.env,
+      });
+      expect(second.status).toBe("already_seeded");
+      expect(JSON.parse(await fs.readFile(fx.agentAuth, "utf8"))).toEqual({
+        OPENAI_API_KEY: "sk-reconcile-1",
+      });
     } finally {
       await fs.rm(fx.root, { recursive: true, force: true });
     }

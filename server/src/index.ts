@@ -733,7 +733,7 @@ export async function startServer(): Promise<StartedServer> {
   // Backfill auth.json into any already-isolated codex_local managed home that
   // was created by the #8272 isolation guard before the Phase 1 seeding fix.
   // Idempotent; the Phase 1 execute-time seeding covers new strandings.
-  void reconcileCodexLocalManagedHomesOnStartup(db as any)
+  void reconcileCodexLocalManagedHomesOnStartup(db)
     .then((result) => {
       if (result.seeded > 0 || result.failed > 0) {
         logger.warn(

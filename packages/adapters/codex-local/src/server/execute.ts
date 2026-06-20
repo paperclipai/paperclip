@@ -381,7 +381,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   ) {
     throw new Error(
       `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
-        `(no usable ${path.basename(effectiveCodexHome)}/auth.json and OPENAI_API_KEY is empty). ` +
+        `(no usable auth.json and OPENAI_API_KEY is empty). ` +
         `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
         `OPENAI_API_KEY.`,
     );

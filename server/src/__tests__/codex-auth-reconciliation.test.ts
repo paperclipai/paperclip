@@ -179,5 +179,11 @@ describe("reconcileCodexLocalManagedHomesOnStartup", () => {
     expect(summary).toMatchObject({ scanned: 1, seeded: 1, failed: 0 });
     const written = JSON.parse(await fs.readFile(path.join(agentHome, "auth.json"), "utf8"));
     expect(written).toEqual({ OPENAI_API_KEY: "sk-plain-1" });
+
+    const second = await reconcileCodexLocalManagedHomesOnStartup(makeDb(rows));
+    expect(second).toMatchObject({ scanned: 1, seeded: 0, alreadySeeded: 1, failed: 0 });
+    expect(JSON.parse(await fs.readFile(path.join(agentHome, "auth.json"), "utf8"))).toEqual({
+      OPENAI_API_KEY: "sk-plain-1",
+    });
   });
 });
