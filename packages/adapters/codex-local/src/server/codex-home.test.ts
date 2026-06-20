@@ -246,11 +246,15 @@ describe("isManagedCodexHomePath", () => {
 });
 
 describe("codexHomeHasUsableAuth", () => {
-  it("is true for a real auth.json and false when missing", async () => {
+  it("is true for credential-bearing auth.json and false when missing", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-"));
     try {
       expect(await codexHomeHasUsableAuth(root)).toBe(false);
       await fs.writeFile(path.join(root, "auth.json"), "{}", "utf8");
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+      await fs.writeFile(path.join(root, "auth.json"), '{"foo":"bar"}', "utf8");
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+      await fs.writeFile(path.join(root, "auth.json"), '{"token":"shared"}', "utf8");
       expect(await codexHomeHasUsableAuth(root)).toBe(true);
     } finally {
       await fs.rm(root, { recursive: true, force: true });

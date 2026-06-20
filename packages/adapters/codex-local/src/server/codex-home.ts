@@ -7,6 +7,7 @@ import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-uti
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
+const AUTH_CREDENTIAL_KEYS = /(?:openai[_-]?key|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|session|auth)/i;
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -14,6 +15,20 @@ function nonEmpty(value: string | undefined): string | null {
 
 export async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
+}
+
+function hasUsableAuthPayload(authPayload: unknown): boolean {
+  if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
+    return false;
+  }
+
+  for (const [key, value] of Object.entries(authPayload as Record<string, unknown>)) {
+    if (!AUTH_CREDENTIAL_KEYS.test(key)) continue;
+    if (key.toLowerCase() === "token_type") continue;
+    if (typeof value === "string" && value.trim().length > 0) return true;
+  }
+
+  return false;
 }
 
 export function resolveSharedCodexHomeDir(
@@ -70,7 +85,15 @@ export function isManagedCodexHomePath(
  * no usable credentials.
  */
 export async function codexHomeHasUsableAuth(home: string): Promise<boolean> {
-  return pathExists(path.join(home, "auth.json"));
+  const authPath = path.join(home, "auth.json");
+  if (!(await pathExists(authPath))) return false;
+  try {
+    const raw = await fs.readFile(authPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return hasUsableAuthPayload(parsed);
+  } catch {
+    return false;
+  }
 }
 
 async function ensureParentDir(target: string): Promise<void> {
