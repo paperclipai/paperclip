@@ -20,7 +20,9 @@ import { forbidden } from "../errors.js";
 import { accessService, credentialService, logActivity } from "../services/index.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const QUOTA_CACHE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+export const QUOTA_PROVIDER_REFRESH_MS = 15 * 60 * 1000;
+export const QUOTA_ERROR_COOLDOWN_MS = 15 * 60 * 1000;
+export const QUOTA_CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 type CredentialQuotaCacheEntry = {
   type: CredentialType;
@@ -30,7 +32,15 @@ type CredentialQuotaCacheEntry = {
   sampledAt: string;
 };
 
+type CredentialQuotaErrorCacheEntry = {
+  type: CredentialType;
+  credentialUpdatedAtMs: number;
+  error: string;
+  failedAt: string;
+};
+
 const credentialQuotaCache = new Map<string, CredentialQuotaCacheEntry>();
+const credentialQuotaErrorCache = new Map<string, CredentialQuotaErrorCacheEntry>();
 
 function normalizeQuotaError(provider: "claude" | "codex", error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -53,17 +63,65 @@ function normalizeQuotaError(provider: "claude" | "codex", error: unknown): stri
   return message;
 }
 
-function getFreshQuotaCache(credential: {
+function isCredentialQuotaCacheValid(
+  cached: CredentialQuotaCacheEntry | CredentialQuotaErrorCacheEntry | undefined,
+  credential: {
+    type: CredentialType;
+    updatedAt: Date;
+  },
+): cached is CredentialQuotaCacheEntry | CredentialQuotaErrorCacheEntry {
+  if (!cached) return false;
+  if (cached.type !== credential.type) return false;
+  if (cached.credentialUpdatedAtMs !== credential.updatedAt.getTime()) return false;
+  return true;
+}
+
+export function getReusableQuotaCache(credential: {
   id: string;
   type: CredentialType;
   updatedAt: Date;
-}): CredentialQuotaCacheEntry | null {
+}, now = Date.now()): CredentialQuotaCacheEntry | null {
   const cached = credentialQuotaCache.get(credential.id);
-  if (!cached) return null;
-  if (cached.type !== credential.type) return null;
-  if (cached.credentialUpdatedAtMs !== credential.updatedAt.getTime()) return null;
-  if (Date.now() - new Date(cached.sampledAt).getTime() > QUOTA_CACHE_MAX_AGE_MS) return null;
+  if (!isCredentialQuotaCacheValid(cached, credential)) return null;
+  if (now - new Date(cached.sampledAt).getTime() > QUOTA_PROVIDER_REFRESH_MS) return null;
   return cached;
+}
+
+export function getFreshQuotaCache(credential: {
+  id: string;
+  type: CredentialType;
+  updatedAt: Date;
+}, now = Date.now()): CredentialQuotaCacheEntry | null {
+  const cached = credentialQuotaCache.get(credential.id);
+  if (!isCredentialQuotaCacheValid(cached, credential)) return null;
+  if (now - new Date(cached.sampledAt).getTime() > QUOTA_CACHE_MAX_AGE_MS) return null;
+  return cached;
+}
+
+export function getRecentQuotaErrorCache(credential: {
+  id: string;
+  type: CredentialType;
+  updatedAt: Date;
+}, now = Date.now()): CredentialQuotaErrorCacheEntry | null {
+  const cached = credentialQuotaErrorCache.get(credential.id);
+  if (!isCredentialQuotaCacheValid(cached, credential)) return null;
+  if (now - new Date(cached.failedAt).getTime() > QUOTA_ERROR_COOLDOWN_MS) return null;
+  return cached;
+}
+
+function setQuotaSuccessCache(
+  credentialId: string,
+  entry: CredentialQuotaCacheEntry,
+) {
+  credentialQuotaCache.set(credentialId, entry);
+  credentialQuotaErrorCache.delete(credentialId);
+}
+
+function setQuotaErrorCache(
+  credentialId: string,
+  entry: CredentialQuotaErrorCacheEntry,
+) {
+  credentialQuotaErrorCache.set(credentialId, entry);
 }
 
 export function credentialRoutes(db: Db) {
@@ -142,6 +200,47 @@ export function credentialRoutes(db: Db) {
       }
       const credentialType: Extract<CredentialType, "claude_oauth" | "codex_oauth"> =
         credential.type === "claude_oauth" ? "claude_oauth" : "codex_oauth";
+      const source = credentialType === "claude_oauth" ? "anthropic-oauth-usage" : "chatgpt-wham-usage";
+      const reusableCached = getReusableQuotaCache({
+        id: credential.id,
+        type: credentialType,
+        updatedAt: credential.updatedAt,
+      });
+      if (reusableCached) {
+        return {
+          ...base,
+          sampledAt: reusableCached.sampledAt,
+          supported: true,
+          ok: true,
+          quotaWindows: reusableCached.quotaWindows,
+          source: reusableCached.source,
+          stale: false,
+          cachedAt: reusableCached.sampledAt,
+        };
+      }
+      const recentError = getRecentQuotaErrorCache({
+        id: credential.id,
+        type: credentialType,
+        updatedAt: credential.updatedAt,
+      });
+      if (recentError) {
+        const cached = getFreshQuotaCache({
+          id: credential.id,
+          type: credentialType,
+          updatedAt: credential.updatedAt,
+        });
+        return {
+          ...base,
+          sampledAt: recentError.failedAt,
+          supported: true,
+          ok: false,
+          quotaWindows: cached?.quotaWindows ?? [],
+          source: cached?.source ?? source,
+          error: recentError.error,
+          stale: Boolean(cached),
+          cachedAt: cached?.sampledAt ?? null,
+        };
+      }
       try {
         const payload = await svc.getDecryptedPayload(credential.id);
         const accessToken = typeof payload?.accessToken === "string" ? payload.accessToken : "";
@@ -152,16 +251,16 @@ export function credentialRoutes(db: Db) {
             supported: true,
             ok: true,
             quotaWindows: await fetchClaudeQuota(accessToken).then((quotaWindows) => {
-              credentialQuotaCache.set(credential.id, {
+              setQuotaSuccessCache(credential.id, {
                 type: credentialType,
                 credentialUpdatedAtMs: credential.updatedAt.getTime(),
-                source: "anthropic-oauth-usage",
+                source,
                 quotaWindows,
                 sampledAt,
               });
               return quotaWindows;
             }),
-            source: "anthropic-oauth-usage",
+            source,
             stale: false,
             cachedAt: null,
           };
@@ -174,33 +273,40 @@ export function credentialRoutes(db: Db) {
           supported: true,
           ok: true,
           quotaWindows: await fetchCodexQuota(accessToken, accountId).then((quotaWindows) => {
-            credentialQuotaCache.set(credential.id, {
+            setQuotaSuccessCache(credential.id, {
               type: credentialType,
               credentialUpdatedAtMs: credential.updatedAt.getTime(),
-              source: "chatgpt-wham-usage",
+              source,
               quotaWindows,
               sampledAt,
             });
             return quotaWindows;
           }),
-          source: "chatgpt-wham-usage",
+          source,
           stale: false,
           cachedAt: null,
         };
       } catch (error) {
+        const provider = credentialType === "claude_oauth" ? "claude" : "codex";
+        const normalizedError = normalizeQuotaError(provider, error);
+        setQuotaErrorCache(credential.id, {
+          type: credentialType,
+          credentialUpdatedAtMs: credential.updatedAt.getTime(),
+          error: normalizedError,
+          failedAt: sampledAt,
+        });
         const cached = getFreshQuotaCache({
           id: credential.id,
           type: credentialType,
           updatedAt: credential.updatedAt,
         });
-        const provider = credentialType === "claude_oauth" ? "claude" : "codex";
         return {
           ...base,
           supported: true,
           ok: false,
           quotaWindows: cached?.quotaWindows ?? [],
-          source: cached?.source ?? (credentialType === "claude_oauth" ? "anthropic-oauth-usage" : "chatgpt-wham-usage"),
-          error: normalizeQuotaError(provider, error),
+          source: cached?.source ?? source,
+          error: normalizedError,
           stale: Boolean(cached),
           cachedAt: cached?.sampledAt ?? null,
         };

@@ -214,7 +214,9 @@ export function Dashboard() {
       : ["credentials", "none", "quota-windows"],
     queryFn: () => credentialsApi.quotaWindows(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: 60_000,
+    staleTime: 5 * 60_000,
+    refetchInterval: 5 * 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: credentialUsageResp } = useQuery({
@@ -496,10 +498,12 @@ export function Dashboard() {
                       ? "disabled"
                       : row.cooldownUntil
                         ? "cooling"
-                        : row.type;
+                        : !row.ok
+                          ? "retrying"
+                          : row.type;
                   const quotaStatusTitle = row.stale && row.cachedAt
                     ? `Showing last successful quota sample from ${new Date(row.cachedAt).toLocaleString()}`
-                    : undefined;
+                    : row.error;
                   return (
                     <div key={row.credentialId} className="rounded-md border border-border/60 bg-muted/20 px-3 py-3">
                       <div className="flex items-center justify-between gap-2">
@@ -558,7 +562,9 @@ export function Dashboard() {
                         {!row.supported ? (
                           <p className="text-[10px] text-muted-foreground">quota n/a</p>
                         ) : !row.ok && visibleQuotaWindows.length === 0 ? (
-                          <p className="text-[10px] text-amber-600">{row.error ?? "quota unavailable"}</p>
+                          <p className="text-[10px] text-amber-600" title={row.error ?? "quota unavailable"}>
+                            quota retrying
+                          </p>
                         ) : visibleQuotaWindows.length === 0 ? (
                           <p className="text-[10px] text-muted-foreground">quota ok</p>
                         ) : (
