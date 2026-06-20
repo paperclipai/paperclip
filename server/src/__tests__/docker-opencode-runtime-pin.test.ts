@@ -10,7 +10,9 @@ const dockerAgentWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/
 
 describe("production Dockerfile k8s adapter runtime pins", () => {
   it("pins opencode-ai and asserts the installed version", () => {
-    expect(dockerfile).toContain("ARG OPENCODE_AI_VERSION=1.4.3");
+    expect(dockerfile).toContain("ARG OPENCODE_AI_VERSION=1.15.12");
+    expect(dockerfile).toContain("reasoning output items");
+    expect(dockerfile).toContain("UnknownError/exit 1");
     expect(dockerfile).toContain('"opencode-ai@${OPENCODE_AI_VERSION}"');
     expect(dockerfile).toContain('test "$(opencode --version)" = "${OPENCODE_AI_VERSION}"');
     expect(dockerfile).not.toMatch(/npm install[^\n]*\sopencode-ai(?:\s|\\)/);

@@ -300,7 +300,10 @@ COPY --from=github-mcp /server/github-mcp-server /usr/local/bin/github-mcp-serve
 # image, so `opencode-ai@latest` lets unrelated rebuilds pick up parser/runtime
 # changes that can crash every OpenCode-backed agent. Bump only after adapter
 # smoke/regression tests pass.
-ARG OPENCODE_AI_VERSION=1.4.3
+# Bumped 2026-06-20 to 1.15.12: opencode 1.4.3 fails OpenAI Responses streams
+# that include reasoning output items before the assistant message, surfacing as
+# UnknownError/exit 1 in opencode_k8s review runs while ccrotate returned 200.
+ARG OPENCODE_AI_VERSION=1.15.12
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
