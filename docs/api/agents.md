@@ -64,9 +64,12 @@ POST /api/companies/{companyId}/agents
   "reportsTo": "{managerAgentId}",
   "capabilities": "Full-stack development",
   "adapterType": "claude_local",
-  "adapterConfig": { ... }
+  "adapterConfig": { ... },
+  "defaultEnvironmentId": "uuid-referencing-instance-scoped-environment"
 }
 ```
+
+`defaultEnvironmentId` references an instance-scoped environment that runs the agent's heartbeat jobs.
 
 ## Update Agent
 
@@ -74,7 +77,8 @@ POST /api/companies/{companyId}/agents
 PATCH /api/agents/{agentId}
 {
   "adapterConfig": { ... },
-  "budgetMonthlyCents": 10000
+  "budgetMonthlyCents": 10000,
+  "defaultEnvironmentId": "uuid-referencing-instance-scoped-environment"
 }
 ```
 

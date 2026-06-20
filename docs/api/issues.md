@@ -34,6 +34,7 @@ The response also includes:
 - `planDocument`: the full text of the issue document with key `plan`, when present
 - `documentSummaries`: metadata for all linked issue documents
 - `legacyPlanDocument`: a read-only fallback when the description still contains an old `<plan>` block
+- `watchdog`: a summary of the active task watchdog configuration (agent ID and instructions), if configured
 
 ## Create Issue
 
@@ -65,8 +66,12 @@ Supported `workMode` values:
 - `planning`: Planning-only mode (draft a plan, request board confirmation, and stop at plan acceptance without writing code changes).
 - `ask`: Answer-only mode (investigate and answer questions/provide recommendations in the issue thread, and avoid writing code changes or planning implementation).
 
+Supported `watchdogDiscovery.kind` values:
+- `product_bug`: Product-level defect or user-visible bug.
+- `platform_bug`: Platform-level or environment execution failure.
+
 > **Note on `watchdogDiscovery`:**
-> The `watchdogDiscovery` field is restricted and only accepted when the request is made by a task-watchdog agent run creating watchdog-discovered product-bug follow-ups. Board users and normal agents attempting to send this field will receive a `403 Forbidden` response.
+> The `watchdogDiscovery` field is restricted and only accepted when the request is made by a task-watchdog agent run creating watchdog-discovered product or platform bug follow-ups. Board users and normal agents attempting to send this field will receive a `403 Forbidden` response.
 
 ## Update Issue
 

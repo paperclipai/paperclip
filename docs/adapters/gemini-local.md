@@ -35,6 +35,13 @@ If resume fails with an unknown session error, the adapter automatically retries
 
 The adapter symlinks Paperclip skills into the Gemini global skills directory (`~/.gemini/skills`). Existing user skills are not overwritten.
 
+## Headless Runtime & Auth Behavior
+
+When running in headless or non-interactive environments (such as in automated heartbeats or background runs), the adapter configures the Gemini process environment to prevent blocking or interactive prompts:
+- Enforces `NO_BROWSER=1` to prevent Gemini from opening a browser for interactive OAuth logins. If authentication fails, the CLI will fail fast instead of stalling.
+- Removes `NO_COLOR` and normalizes `TERM` and `COLORTERM` to standard terminal presets to keep output formatting consistent in logs.
+- Developers and operators troubleshooting auth failures should ensure valid `GEMINI_API_KEY` or `GOOGLE_API_KEY` credentials are bound to the agent or environment.
+
 ## Environment Test
 
 Use the "Test Environment" button in the UI to validate the adapter config. It checks:

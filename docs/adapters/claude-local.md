@@ -77,6 +77,17 @@ pnpm paperclipai agent local-cli claudecoder --company-id <company-id>
 
 This installs Paperclip skills in `~/.claude/skills`, creates an agent API key, and prints shell exports to run as that agent.
 
+## Error Handling & Refusals
+
+### Model Refusals (`claude_refusal`)
+
+When Claude Code CLI explicitly refuses to execute a request (for example, due to safety filters, system-prompt restrictions, or content policy violations), the adapter detects the clean refusal state and reports it back to the control plane.
+- The run result is categorized with:
+  - `errorCode`: `"claude_refusal"`
+  - `stopReason`: `"refusal"`
+  - `errorFamily`: `"model_refusal"`
+- This allows the heartbeat orchestrator to immediately transition the task into an error/review state rather than retrying or getting stuck in a loop.
+
 ## Environment Test
 
 Use the "Test Environment" button in the UI to validate the adapter config. It checks:

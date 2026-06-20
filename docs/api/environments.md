@@ -7,6 +7,9 @@ Configure and inspect the execution runtimes (such as Local, SSH, Sandbox, or Pl
 
 Note: Environments are **instance-scoped** rather than company-scoped. However, company-prefixed routes (e.g. `/api/companies/{companyId}/environments`) are used to supply the necessary company context for verifying permissions and resolving company secret bindings.
 
+### Permissions & Redaction
+List and get environment endpoints are readable by company board members, but non-instance-admin readers will receive redacted values for `config`, `envVars`, and `metadata`. Creating, updating, deleting, or probing environments requires local implicit board or instance admin access.
+
 ## List Environments
 
 ```
@@ -68,7 +71,7 @@ Returns a single environment configuration by ID.
 ## Update Environment
 
 ```
-PATCH /api/environments/{id}
+PATCH /api/environments/{id}?companyId={companyId}
 {
   "name": "Updated Sandbox Name",
   "config": {},
@@ -78,7 +81,7 @@ PATCH /api/environments/{id}
 }
 ```
 
-Updates an existing environment runtime configuration.
+Updates an existing environment runtime configuration. Probing/updating requires the optional `companyId` query parameter if you need to resolve secret-backed environment configurations.
 
 ## Delete Environment
 
@@ -99,7 +102,7 @@ Returns active leases (which agents are currently using the environment).
 ## Probe Saved Environment
 
 ```
-POST /api/environments/{id}/probe
+POST /api/environments/{id}/probe?companyId={companyId}
 ```
 
-Triggers a heartbeat check to verify the host connection and credentials of the saved environment driver.
+Triggers a heartbeat check to verify the host connection and credentials of the saved environment driver. The `companyId` query parameter is required to provide the company/secret context to resolve credentials.
