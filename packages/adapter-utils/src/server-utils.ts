@@ -1618,7 +1618,7 @@ export async function listPaperclipSkillEntries(
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
     const dirs = entries.filter((entry) => entry.isDirectory());
-    return Promise.all(dirs.map(async (entry) => {
+    const results = await Promise.allSettled(dirs.map(async (entry) => {
       const skillDir = path.join(root, entry.name);
       const required = await readSkillRequired(skillDir);
       return {
@@ -1631,6 +1631,13 @@ export async function listPaperclipSkillEntries(
           : null,
       };
     }));
+    const fulfilled: PaperclipSkillEntry[] = [];
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        fulfilled.push(result.value);
+      }
+    }
+    return fulfilled;
   } catch {
     return [];
   }

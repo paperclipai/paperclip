@@ -10,6 +10,7 @@ import {
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  listPaperclipSkillEntries,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -1467,5 +1468,56 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("listPaperclipSkillEntries", () => {
+  it("returns one entry per skill subdirectory, ignoring non-directories", async () => {
+    const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "skill-entries-test-"));
+    try {
+      const skillNames = ["skill-a", "skill-b", "skill-c"];
+      for (const name of skillNames) {
+        await fs.mkdir(path.join(skillsRoot, name), { recursive: true });
+      }
+      await fs.writeFile(path.join(skillsRoot, "not-a-dir.txt"), "ignored");
+
+      // Pass the skillsRoot as an additionalCandidate so resolvePaperclipSkillsDir finds it
+      const entries = await listPaperclipSkillEntries("/dummy", [skillsRoot]);
+      expect(entries).toHaveLength(3);
+      const names = entries.map((e) => e.runtimeName).sort();
+      expect(names).toEqual(["skill-a", "skill-b", "skill-c"]);
+      for (const entry of entries) {
+        expect(entry.key).toBe(`paperclipai/paperclip/${entry.runtimeName}`);
+        expect(entry.source).toBe(path.join(skillsRoot, entry.runtimeName));
+        expect(typeof entry.required).toBe("boolean");
+      }
+    } finally {
+      await fs.rm(skillsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns empty array when the skills root directory does not exist", async () => {
+    const nonExistentDir = path.join(os.tmpdir(), `no-such-skills-dir-${randomUUID()}`);
+    const entries = await listPaperclipSkillEntries("/dummy", [nonExistentDir]);
+    expect(entries).toEqual([]);
+  });
+
+  it("reads required:false from SKILL.md frontmatter", async () => {
+    const skillsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "skill-entries-required-"));
+    try {
+      const skillDir = path.join(skillsRoot, "optional-skill");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        "---\nrequired: false\n---\n# Optional Skill\n",
+      );
+
+      const entries = await listPaperclipSkillEntries("/dummy", [skillsRoot]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.required).toBe(false);
+      expect(entries[0]!.requiredReason).toBeNull();
+    } finally {
+      await fs.rm(skillsRoot, { recursive: true, force: true });
+    }
   });
 });
