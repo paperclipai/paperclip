@@ -56,11 +56,13 @@ import {
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
+import { redactEventPayload } from "../redaction.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import { approvalService } from "./approvals.js";
 import { assetService } from "./assets.js";
 import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
@@ -2986,6 +2988,7 @@ export function parseGitHubSourceUrl(rawUrl: string) {
 export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companies = companyService(db);
   const agents = agentService(db);
+  const approvals = approvalService(db);
   const assetRecords = assetService(db);
   const instructions = agentInstructionsService();
   const access = accessService(db);
@@ -4605,7 +4608,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             continue;
           }
 
-          const createdStatus = "idle";
+          const requiresApproval = Boolean(targetCompany.requireBoardApprovalForNewAgents);
+          const createdStatus = requiresApproval ? "pending_approval" : "idle";
           let created = await agents.create(targetCompany.id, {
             ...patch,
             status: createdStatus,
@@ -4627,6 +4631,33 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          if (requiresApproval) {
+            await approvals.create(targetCompany.id, {
+              type: "hire_agent",
+              requestedByAgentId: null,
+              requestedByUserId: actorUserId ?? null,
+              status: "pending",
+              payload: {
+                name: created.name,
+                role: created.role,
+                title: created.title,
+                icon: created.icon,
+                reportsTo: created.reportsTo,
+                capabilities: created.capabilities,
+                adapterType: created.adapterType,
+                adapterConfig: redactEventPayload(created.adapterConfig as Record<string, unknown>) ?? {},
+                runtimeConfig: redactEventPayload(created.runtimeConfig as Record<string, unknown>) ?? {},
+                budgetMonthlyCents: created.budgetMonthlyCents,
+                metadata: redactEventPayload((created.metadata ?? {}) as Record<string, unknown>) ?? {},
+                agentId: created.id,
+                requestedByAgentId: null,
+              },
+              decisionNote: null,
+              decidedByUserId: null,
+              decidedAt: null,
+              updatedAt: new Date(),
+            });
           }
           agentStatusById.set(created.id, created.status ?? createdStatus);
           await secrets.syncEnvBindingsForTarget?.(
