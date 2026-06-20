@@ -20,7 +20,7 @@ import {
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import path from "node:path";
-import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { describeClaudeFailure, detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -49,7 +49,15 @@ function commandLooksLike(command: string, expected: string): boolean {
   return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
 }
 
-function summarizeProbeDetail(stdout: string, stderr: string): string | null {
+function summarizeProbeDetail(
+  stdout: string,
+  stderr: string,
+  parsedResult?: Record<string, unknown> | null,
+): string | null {
+  if (parsedResult) {
+    const failureDesc = describeClaudeFailure(parsedResult);
+    if (failureDesc) return failureDesc.slice(0, 240);
+  }
   const raw = firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
   if (!raw) return null;
   const clean = raw.replace(/\s+/g, " ").trim();
@@ -145,7 +153,12 @@ export async function testEnvironment(
     (considerHostEnv && isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL));
 
   const configApiKey = env.ANTHROPIC_API_KEY;
-  const hostApiKey = considerHostEnv ? process.env.ANTHROPIC_API_KEY : undefined;
+  const configExplicitlyDefinesAnthropicKey =
+    Object.prototype.hasOwnProperty.call(envConfig, "ANTHROPIC_API_KEY");
+  const hostApiKey =
+    considerHostEnv && !configExplicitlyDefinesAnthropicKey
+      ? process.env.ANTHROPIC_API_KEY
+      : undefined;
   if (hasBedrock) {
     const source =
       env.CLAUDE_CODE_USE_BEDROCK === "1" ||
@@ -242,9 +255,67 @@ export async function testEnvironment(
         stdout: probe.stdout,
         stderr: probe.stderr,
       });
-      const detail = summarizeProbeDetail(probe.stdout, probe.stderr);
+      let detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsedStream.resultJson);
+      let resolvedProbe = probe;
 
-      if (probe.timedOut) {
+      // Auto-retry: when the probe fails and the host has ANTHROPIC_API_KEY
+      // but the config doesn't explicitly set one, try again without the host
+      // env var so subscription-based auth can be used.
+      const shouldRetryWithoutHostKey =
+        considerHostEnv &&
+        isNonEmpty(process.env.ANTHROPIC_API_KEY) &&
+        !isNonEmpty(configApiKey) &&
+        !configExplicitlyDefinesAnthropicKey &&
+        (probe.exitCode ?? 1) !== 0 &&
+        !probe.timedOut &&
+        !loginMeta.requiresLogin;
+
+      if (shouldRetryWithoutHostKey) {
+        const retryProbe = await runAdapterExecutionTargetProcess(
+          runId,
+          target,
+          command,
+          args,
+          {
+            cwd,
+            env: { ...env, ANTHROPIC_API_KEY: "" },
+            timeoutSec: helloProbeTimeoutSec,
+            graceSec: 5,
+            stdin: "Respond with hello.",
+            onLog: async () => {},
+          },
+        );
+        const retryParsedStream = parseClaudeStreamJson(retryProbe.stdout);
+        const retryLoginMeta = detectClaudeLoginRequired({
+          parsed: retryParsedStream.resultJson,
+          stdout: retryProbe.stdout,
+          stderr: retryProbe.stderr,
+        });
+        const retryDetail = summarizeProbeDetail(
+          retryProbe.stdout,
+          retryProbe.stderr,
+          retryParsedStream.resultJson,
+        );
+
+        if ((retryProbe.exitCode ?? 1) === 0 && !retryLoginMeta.requiresLogin) {
+          checks.push({
+            code: "claude_hello_probe_passed_without_host_key",
+            level: "info",
+            message:
+              "Claude hello probe succeeded after disabling host ANTHROPIC_API_KEY (subscription auth used).",
+            ...(retryDetail ? { detail: retryDetail } : {}),
+            hint: "To avoid this fallback, unset ANTHROPIC_API_KEY in your shell or configure " +
+              "the agent env to explicitly clear it.",
+          });
+        }
+        resolvedProbe = retryProbe;
+        detail = retryDetail;
+        const retryParsed = retryParsedStream.resultJson;
+        parsedStream.resultJson = retryParsed;
+        parsedStream.summary = retryParsedStream.summary;
+      }
+
+      if (resolvedProbe.timedOut) {
         checks.push({
           code: "claude_hello_probe_timed_out",
           level: "warn",
@@ -261,7 +332,7 @@ export async function testEnvironment(
             ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
             : "Run `claude login` in this environment, then retry the probe.",
         });
-      } else if ((probe.exitCode ?? 1) === 0) {
+      } else if ((resolvedProbe.exitCode ?? 1) === 0) {
         const summary = parsedStream.summary.trim();
         const hasHello = /\bhello\b/i.test(summary);
         checks.push({
