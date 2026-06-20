@@ -163,11 +163,13 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { extractSkillMentionIds, isUuidLike, type AgentRole } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
+import { resolveModelPolicy } from "./model-policy.js";
+import { getCompanyModelPolicy } from "./model-policy-config.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -7161,10 +7163,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         "Failed to resolve adapter model profiles; falling back to primary adapter config",
       );
     }
+    const modelPolicyDecision = resolveModelPolicy(
+      getCompanyModelPolicy(agent.companyId),
+      {
+        agentRole: agent.role as AgentRole,
+        wakeReason: readNonEmptyString(context.wakeReason) ?? undefined,
+        issuePriority: issueContext?.priority ?? undefined,
+        workMode: issueContext?.workMode ?? undefined,
+      },
+    );
+    const requestedModelProfile =
+      issueAssigneeOverrides?.modelProfile ?? modelPolicyDecision.modelProfile ?? null;
+    if (
+      !issueAssigneeOverrides?.modelProfile &&
+      modelPolicyDecision.modelProfile
+    ) {
+      context.paperclipModelPolicyReason = modelPolicyDecision.reason;
+    }
     const modelProfileApplication = resolveModelProfileApplication({
       adapterModelProfiles,
       agentRuntimeConfig: agent.runtimeConfig,
-      issueModelProfile: issueAssigneeOverrides?.modelProfile ?? null,
+      issueModelProfile: requestedModelProfile,
       contextSnapshot: context,
       profileResolutionFallbackReason,
     });

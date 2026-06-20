@@ -65,3 +65,26 @@ describe("resolveModelPolicy", () => {
     ).toEqual({ modelProfile: null, reason: "no_policy_match" });
   });
 });
+
+describe("policy/override precedence (contract)", () => {
+  it("explicit issue override is chosen over the policy decision", () => {
+    // Mirrors heartbeat.ts: requestedModelProfile = issueOverride ?? policy ?? null
+    const policy = resolveModelPolicy(
+      [{ when: {}, modelProfile: "bulk" }],
+      { agentRole: "general" },
+    );
+    const issueOverride = "deep" as const;
+    const requested = issueOverride ?? policy.modelProfile ?? null;
+    expect(requested).toBe("deep");
+  });
+
+  it("policy decision is used when there is no explicit override", () => {
+    const policy = resolveModelPolicy(
+      [{ when: {}, modelProfile: "bulk" }],
+      { agentRole: "general" },
+    );
+    const issueOverride: "deep" | null = null;
+    const requested = issueOverride ?? policy.modelProfile ?? null;
+    expect(requested).toBe("bulk");
+  });
+});
