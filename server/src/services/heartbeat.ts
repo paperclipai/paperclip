@@ -4246,7 +4246,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueProjectId = issueProjectRef?.projectId ?? null;
     const preferredProjectWorkspaceId =
       issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
-    const resolvedProjectId = issueProjectId ?? contextProjectId;
+    // If issue.projectId is NULL but context provides projectWorkspaceId,
+    // recover projectId from the projectWorkspaces table so the downstream
+    // workspace query has a projectId to filter on.
+    let recoveredProjectId: string | null = null;
+    if (!issueProjectId && contextProjectWorkspaceId) {
+      const pwRow = await db
+        .select({ projectId: projectWorkspaces.projectId })
+        .from(projectWorkspaces)
+        .where(
+          and(
+            eq(projectWorkspaces.companyId, agent.companyId),
+            eq(projectWorkspaces.id, contextProjectWorkspaceId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      recoveredProjectId = pwRow?.projectId ?? null;
+    }
+    const resolvedProjectId = issueProjectId ?? contextProjectId ?? recoveredProjectId;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
 
