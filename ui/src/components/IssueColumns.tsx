@@ -153,7 +153,7 @@ export function InboxIssueMetaLeading({
   return (
     <>
       {showStatus ? (
-        <span className="hidden shrink-0 sm:inline-flex">
+        <span className="hidden shrink-0 items-center sm:inline-flex">
           {statusSlot ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />}
         </span>
       ) : null}
