@@ -125,6 +125,7 @@ import { redactSensitiveText } from "../redaction.js";
 import {
   assertProductionHealthyForClosure,
   ProductionHealthGateError,
+  toPublicUnhealthy,
 } from "../services/production-health-gate.js";
 import {
   createCompanySearchRateLimiter,
@@ -5846,15 +5847,12 @@ export function issueRoutes(
       });
     } catch (gateErr) {
       if (gateErr instanceof ProductionHealthGateError) {
-        // Omit each target's `url` — it points at internal production
-        // infrastructure and must not be disclosed to issue-closers. Return
-        // only the non-identifying name/status/reason.
+        // toPublicUnhealthy() strips each target's `url` (internal production
+        // infrastructure) so it is never disclosed to issue-closers.
         res.status(409).json({
           error: gateErr.message,
           code: "production_health_gate_failed",
-          unhealthy: gateErr.results
-            .filter((r) => !r.healthy)
-            .map((r) => ({ name: r.name, status: r.status, reason: r.reason })),
+          unhealthy: toPublicUnhealthy(gateErr.results),
         });
         return;
       }

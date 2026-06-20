@@ -4,6 +4,7 @@ import {
   getProductionHealthTargets,
   isProductionIncidentIssue,
   ProductionHealthGateError,
+  toPublicUnhealthy,
   type ProductionHealthResult,
   type ProductionHealthTarget,
 } from "../services/production-health-gate.js";
@@ -156,5 +157,38 @@ describe("probe (real fetch path)", () => {
     // which would yield an opaque status 0 and falsely fail a healthy endpoint).
     expect(inits).toHaveLength(2);
     expect(inits.every((init) => init.redirect === "follow")).toBe(true);
+  });
+});
+
+describe("toPublicUnhealthy (409 response projection)", () => {
+  const results: ProductionHealthResult[] = [
+    { name: "pulse-web", url: "https://pulse-web-prod.internal.example", healthy: true, status: 200 },
+    {
+      name: "pulse",
+      url: "https://getpulse-app.internal.example",
+      healthy: false,
+      status: 401,
+      reason: "got 401, expected 200",
+    },
+  ];
+
+  it("never leaks the internal target url (regression: superagent-security #8358)", () => {
+    const projected = toPublicUnhealthy(results);
+    for (const entry of projected) {
+      expect(entry).not.toHaveProperty("url");
+    }
+    // Defensive: no value in the payload contains the internal host either.
+    expect(JSON.stringify(projected)).not.toContain("internal.example");
+  });
+
+  it("returns only the unhealthy targets with name/status/reason", () => {
+    expect(toPublicUnhealthy(results)).toEqual([
+      { name: "pulse", status: 401, reason: "got 401, expected 200" },
+    ]);
+  });
+
+  it("returns an empty array when every target is healthy", () => {
+    const healthy = results.map((r) => ({ ...r, healthy: true }));
+    expect(toPublicUnhealthy(healthy)).toEqual([]);
   });
 });

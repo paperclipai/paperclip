@@ -27,6 +27,24 @@ export type ProductionHealthResult = {
   reason?: string;
 };
 
+/**
+ * Public, API-safe projection of an unhealthy target. Deliberately omits `url`,
+ * which points at internal production infrastructure and must not be disclosed
+ * to issue-closers in an error response.
+ */
+export type PublicUnhealthyTarget = {
+  name: string;
+  status: number;
+  reason?: string;
+};
+
+/** Project gate results down to the unhealthy targets, stripping internal URLs. */
+export function toPublicUnhealthy(results: ProductionHealthResult[]): PublicUnhealthyTarget[] {
+  return results
+    .filter((r) => !r.healthy)
+    .map((r) => ({ name: r.name, status: r.status, reason: r.reason }));
+}
+
 export class ProductionHealthGateError extends Error {
   readonly results: ProductionHealthResult[];
   constructor(results: ProductionHealthResult[]) {
