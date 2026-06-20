@@ -4450,6 +4450,7 @@ export function issueService(db: Db) {
           next.push({
             ...link,
             statusError: "Status refresh is only supported for github.com PR links",
+            statusFetchedAt: new Date(now).toISOString(),
           });
           continue;
         }

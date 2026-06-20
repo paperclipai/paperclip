@@ -59,6 +59,58 @@ describe("issue list limit helpers", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService.refreshPrLinkStatuses", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-pr-links-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("stamps non-refreshable GitHub Enterprise links so the TTL guard can skip them", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Refresh PR links",
+      status: "todo",
+      priority: "medium",
+      prLinks: [{ url: "https://git.corp.example.com/team/service/pull/7", title: "service#7" }],
+    });
+
+    const first = await svc.refreshPrLinkStatuses(issueId, { ttlMs: 60_000 });
+    expect(first[0]).toMatchObject({
+      url: "https://git.corp.example.com/team/service/pull/7",
+      statusError: "Status refresh is only supported for github.com PR links",
+    });
+    expect(first[0]?.statusFetchedAt).toEqual(expect.any(String));
+
+    const second = await svc.refreshPrLinkStatuses(issueId, { ttlMs: 60_000 });
+    expect(second).toEqual(first);
+  });
+});
+
 describe("deriveIssueCommentRunLogAttribution", () => {
   it("recovers agent attribution from run logs that printed the posted comment id", () => {
     const commentId = randomUUID();

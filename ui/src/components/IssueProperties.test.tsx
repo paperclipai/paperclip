@@ -14,6 +14,7 @@ import type {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../api/client";
 import { IssueProperties } from "./IssueProperties";
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -32,6 +33,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   createLabel: vi.fn(),
   upsertWatchdog: vi.fn(),
   deleteWatchdog: vi.fn(),
+  refreshPrLinks: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -398,6 +400,7 @@ describe("IssueProperties", () => {
     }));
     mockIssuesApi.upsertWatchdog.mockResolvedValue({});
     mockIssuesApi.deleteWatchdog.mockResolvedValue({ ok: true });
+    mockIssuesApi.refreshPrLinks.mockResolvedValue({ prLinks: [] });
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableTaskWatchdogs: false,
@@ -405,6 +408,7 @@ describe("IssueProperties", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     document.body.innerHTML = "";
   });
 
@@ -518,6 +522,41 @@ describe("IssueProperties", () => {
 
     expect(container.textContent).not.toContain("No assignee");
     expect(container.textContent).toContain("No matches.");
+
+    act(() => root.unmount());
+  });
+
+  it("stops PR status polling after a 403 refresh response", async () => {
+    vi.useFakeTimers();
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+      enablePrLinks: true,
+    });
+    mockIssuesApi.refreshPrLinks.mockRejectedValue(
+      new ApiError("Issue is outside this actor's authorization boundary", 403, {
+        error: "Issue is outside this actor's authorization boundary",
+      }),
+    );
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        prLinks: [{ url: "https://github.com/acme/repo/pull/12", title: "acme/repo#12" }],
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(mockIssuesApi.refreshPrLinks).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+
+    expect(mockIssuesApi.refreshPrLinks).toHaveBeenCalledTimes(1);
 
     act(() => root.unmount());
   });

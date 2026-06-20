@@ -7,6 +7,7 @@ import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { ApiError } from "../api/client";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
@@ -564,14 +565,30 @@ export function IssueProperties({
   const [newPrUrl, setNewPrUrl] = useState("");
   const [newPrTitle, setNewPrTitle] = useState("");
   const [prUrlError, setPrUrlError] = useState<string | null>(null);
+  const [prRefreshForbidden, setPrRefreshForbidden] = useState(false);
+
+  useEffect(() => {
+    setPrRefreshForbidden(false);
+  }, [issue.id]);
 
   // Live PR status: poll the refresh route while the panel is open so badges
   // reflect the current GitHub state without a global background poller.
   const { data: refreshedPrLinks } = useQuery({
     queryKey: ["issues", issue.id, "pr-link-status"],
-    queryFn: () => issuesApi.refreshPrLinks(issue.id).then((res) => res.prLinks),
+    queryFn: async () => {
+      try {
+        const res = await issuesApi.refreshPrLinks(issue.id);
+        return res.prLinks;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 403) {
+          setPrRefreshForbidden(true);
+          return prLinks;
+        }
+        throw error;
+      }
+    },
     enabled: prLinksEnabled && prLinks.length > 0,
-    refetchInterval: 30_000,
+    refetchInterval: prRefreshForbidden ? false : 30_000,
     refetchOnWindowFocus: false,
   });
 
