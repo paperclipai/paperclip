@@ -1,14 +1,12 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  AGENT_ADAPTER_TYPES,
-  getAdapterEnvironmentSupport,
   type EnvBinding,
   type Environment,
   type EnvironmentProbeResult,
   type JsonSchema,
 } from "@paperclipai/shared";
-import { Check, Settings } from "lucide-react";
+import { Settings } from "lucide-react";
 import { environmentsApi } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { secretsApi } from "@/api/secrets";
@@ -30,7 +28,6 @@ import { queryKeys } from "@/lib/queryKeys";
 import {
   Field,
   ToggleField,
-  adapterLabels,
 } from "../components/agent-config-primitives";
 
 type EnvironmentFormState = {
@@ -49,11 +46,6 @@ type EnvironmentFormState = {
   sandboxConfig: Record<string, unknown>;
   envVars: Record<string, EnvBinding>;
 };
-
-const ENVIRONMENT_SUPPORT_ROWS = AGENT_ADAPTER_TYPES.map((adapterType) => ({
-  adapterType,
-  support: getAdapterEnvironmentSupport(adapterType),
-}));
 
 function buildEnvironmentPayload(form: EnvironmentFormState) {
   return {
@@ -171,17 +163,6 @@ function summarizeSandboxConfig(config: Record<string, unknown>): string | null 
     }
   }
   return null;
-}
-
-function SupportMark({ supported }: { supported: boolean }) {
-  return supported ? (
-    <span className="inline-flex items-center gap-1 text-green-700 dark:text-green-400">
-      <Check className="h-3 w-3" />
-      Yes
-    </span>
-  ) : (
-    <span className="text-muted-foreground">No</span>
-  );
 }
 
 export function CompanyEnvironments() {
@@ -440,7 +421,6 @@ export function CompanyEnvironments() {
     }))
     .sort((left, right) => left.displayName.localeCompare(right.displayName));
   const sandboxCreationEnabled = discoveredPluginSandboxProviders.length > 0;
-  const sandboxSupportVisible = sandboxCreationEnabled;
   const pluginSandboxProviders =
     environmentForm.sandboxProvider.trim().length > 0 &&
     environmentForm.sandboxProvider !== "fake" &&
@@ -560,62 +540,6 @@ export function CompanyEnvironments() {
               </div>
             </div>
           </div>
-        </div>
-        <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-          Environment choices use the same adapter support matrix as agent defaults. SSH is always available for
-          remote-managed adapters, and sandbox environments appear only when a run-capable sandbox provider plugin is
-          installed.
-        </div>
-        {sandboxCreationEnabled ? (
-          <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-            Installed sandbox providers:{" "}
-            <span className="font-medium text-foreground">
-              {discoveredPluginSandboxProviders.map((provider) => provider.displayName).join(", ")}
-            </span>
-            . These are not adapter types. They back the Sandbox driver for adapters that support sandbox execution.
-          </div>
-        ) : null}
-
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[34rem] text-left text-xs">
-            <caption className="sr-only">Environment support by adapter</caption>
-            <thead className="border-b border-border text-muted-foreground">
-              <tr>
-                <th className="py-2 pr-3 font-medium">Adapter</th>
-                <th className="px-3 py-2 font-medium">Local</th>
-                <th className="px-3 py-2 font-medium">SSH</th>
-                {sandboxSupportVisible ? (
-                  <th className="px-3 py-2 font-medium">Sandbox via plugin</th>
-                ) : null}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/60">
-              {(environmentCapabilities?.adapters.map((support) => ({
-                adapterType: support.adapterType,
-                support,
-              })) ?? ENVIRONMENT_SUPPORT_ROWS).map(({ adapterType, support }) => (
-                <tr key={adapterType}>
-                  <td className="py-2 pr-3 font-medium">
-                    {adapterLabels[adapterType] ?? adapterType}
-                  </td>
-                  <td className="px-3 py-2">
-                    <SupportMark supported={support.drivers.local === "supported"} />
-                  </td>
-                  <td className="px-3 py-2">
-                    <SupportMark supported={support.drivers.ssh === "supported"} />
-                  </td>
-                  {sandboxSupportVisible ? (
-                    <td className="px-3 py-2">
-                      <SupportMark
-                        supported={discoveredPluginSandboxProviders.some((provider) =>
-                          support.sandboxProviders[provider.provider] === "supported")}
-                      />
-                    </td>
-                  ) : null}
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
 
         <div className="space-y-3">
