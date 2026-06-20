@@ -6,6 +6,7 @@ export {
   parseClaudeStreamJson,
   describeClaudeFailure,
   isClaudeMaxTurnsResult,
+  isClaudeRefusalResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
 export {
