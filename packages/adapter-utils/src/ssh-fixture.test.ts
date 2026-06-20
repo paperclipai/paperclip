@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  _createSshDialPacingQueueForTests,
   buildSshSpawnTarget,
   buildSshEnvLabFixtureConfig,
   getSshEnvLabSupport,
@@ -164,6 +165,191 @@ describe("ssh env-lab fixture", () => {
         },
       }),
     ).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
+  });
+
+  it("emits ControlMaster=auto, ControlPath, and ControlPersist on every SSH invocation (non-Windows only; REI-510 gates it on win32)", async () => {
+    const target = await buildSshSpawnTarget({
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----",
+        knownHosts: null,
+        strictHostKeyChecking: false,
+      },
+      command: "true",
+      args: [],
+      env: {},
+    });
+    try {
+      const args = target.args;
+      const indexOfOption = (value: string) => {
+        for (let i = 0; i < args.length - 1; i += 1) {
+          if (args[i] === "-o" && args[i + 1] === value) return i;
+        }
+        return -1;
+      };
+      if (process.platform === "win32") {
+        // Windows OpenSSH 9.5p2 ControlMaster is broken (REI-510). The fix
+        // gates the multiplexing flags off on win32 and falls back to the
+        // dial-pacing queue to stay under the IONOS rate limit instead.
+        expect(indexOfOption("ControlMaster=auto")).toBe(-1);
+        expect(args.findIndex((entry) => entry.startsWith("ControlPath="))).toBe(-1);
+        expect(indexOfOption("ControlPersist=60s")).toBe(-1);
+        return;
+      }
+      expect(indexOfOption("ControlMaster=auto")).toBeGreaterThanOrEqual(0);
+      const controlPathIdx = args.findIndex(
+        (entry, idx) => idx > 0 && args[idx - 1] === "-o" && entry.startsWith("ControlPath="),
+      );
+      expect(controlPathIdx).toBeGreaterThanOrEqual(0);
+      const controlPathValue = args[controlPathIdx];
+      expect(controlPathValue).toContain("paperclip-ssh-cm-");
+      expect(controlPathValue.endsWith("%C")).toBe(true);
+      expect(controlPathValue.startsWith("ControlPath=")).toBe(true);
+      expect(path.isAbsolute(controlPathValue.slice("ControlPath=".length))).toBe(true);
+      expect(indexOfOption("ControlPersist=60s")).toBeGreaterThanOrEqual(0);
+    } finally {
+      await target.cleanup();
+    }
+  });
+
+  it(
+    "reuses a single TCP connection across 10 sequential SSH commands via ControlMaster",
+    async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+      cleanupDirs.push(rootDir);
+      const statePath = path.join(rootDir, "state.json");
+
+      const started = await startSshEnvLabFixtureOrSkip(
+        statePath,
+        "ControlMaster connection-reuse test",
+      );
+      if (!started) return;
+      const config = await buildSshEnvLabFixtureConfig(started);
+
+      // Drain any "Connection from" lines emitted by fixture readiness probes
+      // so we measure only the connections opened by the loop below.
+      const baselineLog = await readFile(started.sshdLogPath, "utf8").catch(() => "");
+      const baselineAccepts = (baselineLog.match(/Connection from /g) ?? []).length;
+
+      for (let i = 0; i < 10; i += 1) {
+        // runSshCommand rejects on non-zero exit, so a passing await is enough
+        // to assert each call succeeded.
+        await runSshCommand(config, "true");
+      }
+
+      // sshd flushes accept events to the log file synchronously enough for
+      // the count to be stable by the time runSshCommand returns, but give
+      // the kernel a beat to flush before reading.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const finalLog = await readFile(started.sshdLogPath, "utf8");
+      const finalAccepts = (finalLog.match(/Connection from /g) ?? []).length;
+      const delta = finalAccepts - baselineAccepts;
+
+      // Without ControlMaster, 10 sequential runSshCommand calls would emit 10
+      // "Connection from" lines (one per TCP+SSH handshake). With ControlMaster
+      // the first call establishes the master and the remaining 9 multiplex
+      // over the same TCP connection.
+      expect(delta).toBe(1);
+
+      await stopSshEnvLabFixture(statePath);
+    },
+    SSH_FIXTURE_TEST_TIMEOUT_MS,
+  );
+
+  it("emits ControlMaster args even without a privateKey (non-Windows only)", async () => {
+    const target = await buildSshSpawnTarget({
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: false,
+      },
+      command: "true",
+      args: [],
+      env: {},
+    });
+    try {
+      if (process.platform === "win32") {
+        expect(target.args).not.toContain("ControlMaster=auto");
+        expect(target.args).not.toContain("ControlPersist=60s");
+        expect(target.args.some((entry) => entry.startsWith("ControlPath="))).toBe(false);
+        return;
+      }
+      expect(target.args).toContain("ControlMaster=auto");
+      expect(target.args).toContain("ControlPersist=60s");
+      expect(target.args.some((entry) => entry.startsWith("ControlPath="))).toBe(true);
+    } finally {
+      await target.cleanup();
+    }
+  });
+
+  it("serializes Windows SSH dials through a FIFO queue with a post-completion pacing delay (REI-510)", async () => {
+    const pacingMs = 50;
+    const queue = _createSshDialPacingQueueForTests({ isWindows: true, pacingMs });
+    const events: Array<{ kind: "start" | "end"; id: number; at: number }> = [];
+    const start = Date.now();
+    const stamp = () => Date.now() - start;
+    const task = (id: number, durationMs: number) => async () => {
+      events.push({ kind: "start", id, at: stamp() });
+      await new Promise((resolve) => setTimeout(resolve, durationMs));
+      events.push({ kind: "end", id, at: stamp() });
+      return id;
+    };
+
+    const all = await Promise.all([
+      queue(task(1, 30)),
+      queue(task(2, 30)),
+      queue(task(3, 30)),
+    ]);
+    expect(all).toEqual([1, 2, 3]);
+
+    const startEvents = events.filter((e) => e.kind === "start").sort((a, b) => a.at - b.at);
+    const endEvents = events.filter((e) => e.kind === "end").sort((a, b) => a.at - b.at);
+
+    // Task ids must start in submission order — no overlap, FIFO.
+    expect(startEvents.map((e) => e.id)).toEqual([1, 2, 3]);
+    expect(endEvents.map((e) => e.id)).toEqual([1, 2, 3]);
+
+    // Second task starts no earlier than first task's end + pacingMs - jitter.
+    const jitterMs = 15;
+    expect(startEvents[1].at).toBeGreaterThanOrEqual(endEvents[0].at + pacingMs - jitterMs);
+    expect(startEvents[2].at).toBeGreaterThanOrEqual(endEvents[1].at + pacingMs - jitterMs);
+  });
+
+  it("does not serialize SSH dials on non-Windows platforms (queue is a passthrough)", async () => {
+    const queue = _createSshDialPacingQueueForTests({ isWindows: false, pacingMs: 500 });
+    const overlaps: number[] = [];
+    let active = 0;
+    const task = async () => {
+      active += 1;
+      overlaps.push(active);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      active -= 1;
+    };
+    await Promise.all([queue(task), queue(task), queue(task)]);
+    // On non-Windows the queue is a no-op, so we must observe concurrent
+    // execution — at least one tick must report >1 active operations.
+    expect(Math.max(...overlaps)).toBeGreaterThan(1);
+  });
+
+  it("releases the Windows FIFO chain when a queued task rejects so subsequent dials proceed", async () => {
+    const queue = _createSshDialPacingQueueForTests({ isWindows: true, pacingMs: 20 });
+    await expect(queue(async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+    // Without finally-release the next task would hang forever. Race against
+    // a 1s timeout so an unreleased chain shows up as a test failure.
+    const result = await Promise.race([
+      queue(async () => "ok"),
+      new Promise<string>((_, reject) => setTimeout(() => reject(new Error("queue stuck")), 1_000)),
+    ]);
+    expect(result).toBe("ok");
   });
 
   it("syncs a local directory into the remote fixture workspace", async () => {
