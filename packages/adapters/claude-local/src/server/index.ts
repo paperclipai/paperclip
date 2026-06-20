@@ -2,7 +2,10 @@ export { claudeSessionCwdMatchesExecutionTarget, execute, runClaudeLogin } from 
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels, refreshClaudeModels, resetClaudeModelsCacheForTests } from "./models.js";
 export { testEnvironment } from "./test.js";
-export { resetClaudeCliCapabilitiesCacheForTests } from "./cli-capabilities.js";
+export {
+  claudeCommandSupportsEffortFlag,
+  resetClaudeCliCapabilitiesCacheForTests,
+} from "./cli-capabilities.js";
 export {
   parseClaudeStreamJson,
   describeClaudeFailure,

@@ -78,9 +78,12 @@ export async function claudeCommandSupportsEffortFlag(input: {
   const cached = effortFlagSupportCache.get(key);
   if (cached) return cached;
 
-  const probe = probeClaudeCommandSupportsEffortFlag(input).catch((error) => {
+  // A thrown probe (e.g. sandbox connection error, ENOENT spawning the binary)
+  // must degrade to the conservative fallback rather than killing the run, so we
+  // resolve to null and drop the cache entry to retry on the next lease.
+  const probe = probeClaudeCommandSupportsEffortFlag(input).catch(() => {
     effortFlagSupportCache.delete(key);
-    throw error;
+    return null;
   });
   effortFlagSupportCache.set(key, probe);
   return probe;

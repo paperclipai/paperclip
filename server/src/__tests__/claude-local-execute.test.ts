@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import {
+  claudeCommandSupportsEffortFlag,
   claudeSessionCwdMatchesExecutionTarget,
   execute,
   resetClaudeCliCapabilitiesCacheForTests,
@@ -946,6 +947,48 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   }, 10_000);
+
+  it("degrades to the conservative fallback (returns null) when the sandbox probe throws, and retries on the next lease", async () => {
+    let calls = 0;
+    const throwingRunner = {
+      execute: async () => {
+        calls += 1;
+        throw new Error("sandbox connection error");
+      },
+    };
+    const target = {
+      kind: "remote" as const,
+      transport: "sandbox" as const,
+      providerKey: "daytona",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd: "/remote/workspace",
+      timeoutMs: 30_000,
+      runner: throwingRunner,
+    };
+    const probeInput = {
+      runId: "run-probe-throws",
+      command: "/usr/local/bin/claude",
+      cwd: "/host/workspace",
+      env: {},
+      timeoutSec: 20,
+      graceSec: 5,
+    };
+
+    // A thrown probe must resolve to null (unknown) rather than reject and kill the run.
+    await expect(
+      claudeCommandSupportsEffortFlag({ ...probeInput, target }),
+    ).resolves.toBeNull();
+
+    // The failed result is not cached: a second lease re-probes instead of reusing the rejection.
+    await expect(
+      claudeCommandSupportsEffortFlag({
+        ...probeInput,
+        target: { ...target, leaseId: "lease-2" },
+      }),
+    ).resolves.toBeNull();
+    expect(calls).toBe(2);
+  });
 
   it("allows remote session resumes when saved cwd is the host workspace", () => {
     expect(claudeSessionCwdMatchesExecutionTarget({
