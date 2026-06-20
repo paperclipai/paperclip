@@ -174,6 +174,7 @@ vi.mock("../services/index.js", () => ({
     alreadySeeded: 0,
     externalOverride: 0,
     noManagedHome: 0,
+    sourceAuthMissing: 0,
     failed: 0,
     seededAgentIds: [],
   })),
