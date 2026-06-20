@@ -684,10 +684,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const prompt = joinPromptSections([
       promptInstructionsPrefix,
       renderedBootstrapPrompt,
+      renderedPrompt,
       wakePrompt,
       codexFallbackHandoffNote,
       sessionHandoffNote,
-      renderedPrompt,
     ]);
     const promptMetrics = {
       promptChars: prompt.length,

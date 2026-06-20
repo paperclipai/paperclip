@@ -478,6 +478,9 @@ describe("codex execute", () => {
         latestCommentId: "comment-2",
         commentIds: ["comment-1", "comment-2"],
       });
+      expect(capture.prompt.indexOf("You are agent agent-1 (Codex Coder).")).toBeLessThan(
+        capture.prompt.indexOf("## Paperclip Wake Payload"),
+      );
       expect(capture.prompt).toContain("## Paperclip Wake Payload");
       expect(capture.prompt).toContain("Treat this wake payload as the highest-priority change for the current heartbeat.");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
