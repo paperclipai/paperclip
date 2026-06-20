@@ -405,6 +405,53 @@ describe("reconcileManagedCodexHome", () => {
     }
   });
 
+  it("preserves an existing API-key auth.json when the key is secret-bound", async () => {
+    const fx = await makeFixture();
+    try {
+      // A prior execute-time run resolved the secret and wrote a regular-file
+      // auth.json containing the key.
+      await fs.mkdir(fx.agentHome, { recursive: true });
+      await fs.writeFile(
+        fx.agentAuth,
+        JSON.stringify({ OPENAI_API_KEY: "sk-secret-resolved" }),
+        { mode: 0o600 },
+      );
+
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        apiKeySecretBound: true,
+        env: fx.env,
+      });
+
+      expect(result.status).toBe("already_seeded");
+      expect((await fs.lstat(fx.agentAuth)).isSymbolicLink()).toBe(false);
+      expect(JSON.parse(await fs.readFile(fx.agentAuth, "utf8"))).toEqual({
+        OPENAI_API_KEY: "sk-secret-resolved",
+      });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds the shared symlink for a secret-bound key when no auth exists yet", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        apiKeySecretBound: true,
+        env: fx.env,
+      });
+
+      expect(result.status).toBe("seeded");
+      expect((await fs.lstat(fx.agentAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(fx.agentAuth)).toBe(await fs.realpath(fx.sharedAuth));
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
   it("writes an API-key auth.json into a managed home when an apiKey is supplied", async () => {
     const fx = await makeFixture();
     try {

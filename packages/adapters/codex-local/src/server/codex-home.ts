@@ -230,6 +230,14 @@ export interface ReconcileManagedCodexHomeInput {
   companyId: string | undefined;
   configuredCodexHome: string | null | undefined;
   apiKey?: string | null;
+  /**
+   * Set when the agent's persisted `OPENAI_API_KEY` is a secret binding that
+   * could not be resolved in this context (e.g. startup reconciliation, which
+   * never resolves secrets). When true and the home already has usable auth,
+   * reconciliation preserves that auth instead of downgrading it to the shared
+   * subscription symlink.
+   */
+  apiKeySecretBound?: boolean;
   env?: NodeJS.ProcessEnv;
   onLog?: AdapterExecutionContext["onLog"];
 }
@@ -265,6 +273,17 @@ export async function reconcileManagedCodexHome(
 
   const apiKey = nonEmpty(input.apiKey ?? undefined);
   const hadUsableAuth = await codexHomeHasUsableAuth(resolved);
+
+  // A secret-bound OPENAI_API_KEY cannot be resolved here, so we cannot rewrite
+  // it into auth.json. If the home already has usable auth — typically an
+  // API-key auth.json written at execute time when the secret WAS resolved —
+  // preserve it. Re-seeding without the key would delete that file and restore
+  // the shared subscription symlink, silently changing the agent's credentials
+  // on every boot while the persisted config still says "use the secret key".
+  if (input.apiKeySecretBound && hadUsableAuth) {
+    return { status: "already_seeded", home: resolved };
+  }
+
   await seedManagedCodexHome(resolved, env, input.onLog ?? noopOnLog, { apiKey });
 
   // Seeding always (re)writes when an API key is supplied; otherwise it only

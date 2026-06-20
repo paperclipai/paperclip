@@ -37,6 +37,31 @@ function readPlainEnvValue(value: unknown): string | null {
   return readPlainEnvValue(record.value);
 }
 
+type ApiKeyBinding =
+  | { kind: "plain"; value: string }
+  | { kind: "secret" }
+  | { kind: "none" };
+
+/**
+ * Classifies an `OPENAI_API_KEY` env binding so reconciliation can tell the
+ * difference between three states it must treat differently:
+ *  - `plain`: a literal value we can write into auth.json.
+ *  - `secret`: a secret binding (e.g. `{ type: "secret_ref", ... }`) we cannot
+ *    resolve at startup; the resolved value may already exist on disk from a
+ *    prior execute-time run, so reconciliation must not clobber it.
+ *  - `none`: no key configured (chatgpt-subscription mode); seed the shared
+ *    auth symlink.
+ */
+function classifyApiKeyBinding(value: unknown): ApiKeyBinding {
+  const plain = readPlainEnvValue(value);
+  if (plain) return { kind: "plain", value: plain };
+  const record = asRecord(value);
+  if (record && typeof record.type === "string" && record.type !== "plain") {
+    return { kind: "secret" };
+  }
+  return { kind: "none" };
+}
+
 /**
  * Startup backfill for PAPA-910 Phase 2: seed `auth.json` into any already-
  * isolated `codex_local` managed home that was created (by the #8272 isolation
@@ -71,13 +96,14 @@ export async function reconcileCodexLocalManagedHomesOnStartup(
     summary.scanned += 1;
     const env = asRecord(asRecord(row.adapterConfig)?.env);
     const configuredCodexHome = env ? readPlainEnvValue(env.CODEX_HOME) : null;
-    const apiKey = env ? readPlainEnvValue(env.OPENAI_API_KEY) : null;
+    const apiKeyBinding = classifyApiKeyBinding(env?.OPENAI_API_KEY);
 
     try {
       const result = await reconcileManagedCodexHome({
         companyId: row.companyId,
         configuredCodexHome,
-        apiKey,
+        apiKey: apiKeyBinding.kind === "plain" ? apiKeyBinding.value : null,
+        apiKeySecretBound: apiKeyBinding.kind === "secret",
       });
       switch (result.status) {
         case "seeded":

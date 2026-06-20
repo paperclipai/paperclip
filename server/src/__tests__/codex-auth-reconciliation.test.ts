@@ -129,6 +129,42 @@ describe("reconcileCodexLocalManagedHomesOnStartup", () => {
     );
   });
 
+  it("preserves a preexisting API-key auth.json when the key is secret-bound", async () => {
+    const agentHome = managedAgentHome("company-4", "agent-secret");
+    // Simulate an agent that previously ran with a RESOLVED secret API key:
+    // execute-time seeding wrote a regular-file auth.json containing the key.
+    await fs.mkdir(agentHome, { recursive: true });
+    await fs.writeFile(
+      path.join(agentHome, "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "sk-secret-resolved" }),
+      { mode: 0o600 },
+    );
+    const rows: AgentRow[] = [
+      {
+        id: "agent-secret",
+        companyId: "company-4",
+        adapterConfig: {
+          env: {
+            CODEX_HOME: agentHome,
+            // Canonical secret binding shape; unresolvable at startup.
+            OPENAI_API_KEY: { type: "secret_ref", secretId: "11111111-1111-1111-1111-111111111111" },
+          },
+        },
+      },
+    ];
+
+    const summary = await reconcileCodexLocalManagedHomesOnStartup(makeDb(rows));
+    expect(summary).toMatchObject({ scanned: 1, seeded: 0, alreadySeeded: 1, failed: 0 });
+
+    const agentAuth = path.join(agentHome, "auth.json");
+    // The resolved-key file must remain a regular file, not be downgraded to the
+    // shared subscription symlink.
+    expect((await fs.lstat(agentAuth)).isSymbolicLink()).toBe(false);
+    expect(JSON.parse(await fs.readFile(agentAuth, "utf8"))).toEqual({
+      OPENAI_API_KEY: "sk-secret-resolved",
+    });
+  });
+
   it("writes a plain OPENAI_API_KEY into the managed home", async () => {
     const agentHome = managedAgentHome("company-3", "agent-5");
     const rows: AgentRow[] = [
