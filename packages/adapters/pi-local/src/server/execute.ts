@@ -417,6 +417,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           workspaceLocalDir: cwd,
           installCommand: SANDBOX_INSTALL_COMMAND,
           detectCommand: command,
+          onProgress: (line) => onLog("stdout", line),
           assets: [
             {
               key: "skills",
@@ -431,7 +432,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               : []),
           ],
         });
-        restoreRemoteWorkspace = () => preparedRemoteRuntime.restoreWorkspace();
+        restoreRemoteWorkspace = () =>
+          preparedRemoteRuntime.restoreWorkspace((line) => onLog("stdout", line));
         effectiveExecutionCwd = preparedRemoteRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
         refreshPaperclipWorkspaceEnvForExecution({
           env,
