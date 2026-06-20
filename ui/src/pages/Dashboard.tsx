@@ -20,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Siren } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -57,6 +57,13 @@ export function Dashboard() {
     queryKey: queryKeys.dashboard(selectedCompanyId!),
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const { data: controlRoom } = useQuery({
+    queryKey: [...queryKeys.dashboard(selectedCompanyId!), "ceo-control-room"],
+    queryFn: () => dashboardApi.ceoControlRoom(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 60_000,
   });
 
   const { data: activity } = useQuery({
@@ -234,6 +241,53 @@ export function Dashboard() {
               <Link to="/costs" className="text-sm underline underline-offset-2 text-red-100">
                 Open budgets
               </Link>
+            </div>
+          ) : null}
+
+          {controlRoom && controlRoom.categories.some((entry) => entry.count > 0) ? (
+            <div className="rounded-xl border border-amber-500/25 bg-[linear-gradient(180deg,rgba(255,184,77,0.12),rgba(255,255,255,0.02))] p-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-start gap-2.5">
+                  <Siren className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                  <div>
+                    <p className="text-sm font-medium text-amber-50">CEO Control Room</p>
+                    <p className="text-xs text-amber-100/70">
+                      Read-only escalation scan · {controlRoom.summary.unavailableSources} unavailable source{controlRoom.summary.unavailableSources === 1 ? "" : "s"}
+                    </p>
+                  </div>
+                </div>
+                <span className="text-xs text-amber-100/60">
+                  {new Date(controlRoom.generatedAt).toLocaleTimeString()}
+                </span>
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                {controlRoom.categories.map((entry) => (
+                  <div key={entry.key} className="rounded-lg border border-white/10 bg-black/10 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-foreground">{entry.label}</span>
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-xs font-medium",
+                          entry.severity === "critical"
+                            ? "bg-red-500/20 text-red-100"
+                            : entry.severity === "warning"
+                              ? "bg-amber-500/20 text-amber-100"
+                              : entry.severity === "info"
+                                ? "bg-blue-500/20 text-blue-100"
+                                : "bg-emerald-500/20 text-emerald-100",
+                        )}
+                      >
+                        {entry.count}
+                      </span>
+                    </div>
+                    {entry.items[0] ? (
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{entry.items[0].summary}</p>
+                    ) : (
+                      <p className="mt-1 text-xs text-muted-foreground">Clear</p>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           ) : null}
 
