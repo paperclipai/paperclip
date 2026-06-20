@@ -65,6 +65,7 @@ async function deleteHeartbeatRunsAfterActivityLogDrains(db: Db) {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 10; attempt += 1) {
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     try {
       await db.delete(heartbeatRuns);
       return;

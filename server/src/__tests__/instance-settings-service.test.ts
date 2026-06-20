@@ -22,6 +22,7 @@ describe("instance settings service", () => {
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
+      enablePrLinks: false,
       enableCloudSync: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,

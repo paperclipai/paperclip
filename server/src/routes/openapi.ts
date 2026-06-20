@@ -4458,6 +4458,13 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/issues/{id}/pr-links/refresh",
+  tags: ["issues"],
+  summary: "Refresh cached PR link statuses for an issue",
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/cancel",
   tags: ["issues"],
   summary: "Cancel an issue question interaction",
