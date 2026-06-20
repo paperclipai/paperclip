@@ -6,9 +6,21 @@ request's inbound `Authorization: Bearer pcp_*` to the Paperclip REST API, so th
 server acts **as the calling user** (multi-tenant). Falls back to a baked
 `PAPERCLIP_API_KEY` only when no inbound bearer is present.
 
-> Status: FOUNDATION ONLY. Tool surface is `get_agent`. Remaining tools land in
-> follow-on plans. Do not deploy as the canonical external server until tool
-> parity + cutover plans complete.
+> Status: WAVE 1. Tool surface: `get_agent` + issues/projects/goals CRUD
+> (list_issues, get_issue, create_issue, update_issue, checkout_issue,
+> release_issue, delete_issue, comment_on_issue, paperclip_search_issues,
+> list_projects, get_project, create_project, update_project, list_goals,
+> create_goal, update_goal). Remaining tools (agents list / heartbeat,
+> approvals, dashboard, cost, activity) land in Wave 2. Not the
+> canonical external server until tool parity + cutover complete.
+
+> Known limitation (parity-faithful): `checkout_issue` / `release_issue` mirror
+> the Python external server's bodyless `POST`, but the current backend's
+> `checkoutIssueSchema` requires `agentId` + `expectedStatuses`, so these `400`
+> against current `master` — a **pre-existing bug in the Python external surface**
+> (an external user bearer has no agent identity: `GET /agents/me` → 401). Making
+> them work needs an external-checkout design decision (which agent does a user
+> check out as?), tracked as a cutover follow-up — not a wave-1 port change.
 
 ## Run
 
@@ -28,6 +40,6 @@ server acts **as the calling user** (multi-tenant). Falls back to a baked
 ## Auth model
 
 Per request: inbound `Authorization` (verbatim) > `Bearer ${PAPERCLIP_API_KEY}` >
-error. Mirrors the Python server's `_headers` precedence. The bearer is carried
+error. Mirrors the Python server's `_headers` precedence, minus its baked session-token (Cookie) tier. The bearer is carried
 through an `AsyncLocalStorage` (`auth-context.ts`) so concurrent sessions never
 cross identities.

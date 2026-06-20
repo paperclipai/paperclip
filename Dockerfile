@@ -50,6 +50,7 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/mcp-server/package.json packages/mcp-server/
+COPY packages/mcp-external/package.json packages/mcp-external/
 COPY packages/mcp-gateway/package.json packages/mcp-gateway/
 COPY packages/skills-catalog/package.json packages/skills-catalog/
 COPY packages/teams-catalog/package.json packages/teams-catalog/

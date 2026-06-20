@@ -19,6 +19,17 @@ beforeAll(async () => {
       res.end(JSON.stringify({ id: `agent-for:${auth}`, authSeen: auth }));
       return;
     }
+    if (req.url?.startsWith("/api/companies/co-int/issues") && req.method === "GET") {
+      const reqUrl = new URL(req.url, "http://x");
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        company: req.headers["x-paperclip-company"] ?? null,
+        authSeen: auth,
+        status: reqUrl.searchParams.get("status"),
+        limit: reqUrl.searchParams.get("limit"),
+      }));
+      return;
+    }
     res.writeHead(404).end();
   });
   await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", () => r()));
@@ -27,7 +38,7 @@ beforeAll(async () => {
   mcp = createHttpServer({
     apiUrl: `http://127.0.0.1:${upstreamPort}`, // factory normalizes → .../api
     apiKey: null,
-    companyId: null,
+    companyId: "co-int",
   });
   await new Promise<void>((r) => mcp.listen(0, "127.0.0.1", () => r()));
   mcpUrl = `http://127.0.0.1:${(mcp.address() as AddressInfo).port}/mcp`;
@@ -54,6 +65,20 @@ async function callGetAgentAs(token: string): Promise<string> {
   }
 }
 
+async function callToolAs(token: string, name: string, args: Record<string, unknown>): Promise<string> {
+  const client = new Client({ name: "test", version: "0.0.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
+    requestInit: { headers: { Authorization: token } },
+  });
+  await client.connect(transport);
+  try {
+    const result: any = await client.callTool({ name, arguments: args });
+    return result.content[0].text as string;
+  } finally {
+    await client.close();
+  }
+}
+
 describe("multi-tenant streamable-HTTP", () => {
   it("two different bearers resolve to two different identities", async () => {
     const a = await callGetAgentAs("Bearer pcp_AAAA");
@@ -72,6 +97,42 @@ describe("multi-tenant streamable-HTTP", () => {
     try {
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name)).toContain("get_agent");
+    } finally {
+      await client.close();
+    }
+  }, 15000);
+});
+
+describe("company-scoped tool wiring (list_issues)", () => {
+  it("scopes by company + forwards bearer + query per tenant", async () => {
+    const a = JSON.parse(await callToolAs("Bearer pcp_AAAA", "list_issues", { limit: 7 }));
+    const b = JSON.parse(await callToolAs("Bearer pcp_BBBB", "list_issues", {}));
+    expect(a.company).toBe("co-int");
+    expect(a.authSeen).toBe("Bearer pcp_AAAA");
+    expect(a.status).toBe("todo,in_progress");
+    expect(a.limit).toBe("7");
+    expect(b.authSeen).toBe("Bearer pcp_BBBB");
+    expect(b.company).toBe("co-int");
+    expect(b.limit).toBe("50");
+  }, 15000);
+
+  it("tools/list advertises the wave-1 surface", async () => {
+    const client = new Client({ name: "test", version: "0.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
+      requestInit: { headers: { Authorization: "Bearer pcp_X" } },
+    });
+    await client.connect(transport);
+    try {
+      const { tools } = await client.listTools();
+      const names = tools.map((t) => t.name);
+      for (const expected of [
+        "list_issues", "get_issue", "create_issue", "update_issue",
+        "checkout_issue", "release_issue", "delete_issue", "comment_on_issue",
+        "paperclip_search_issues", "list_projects", "get_project",
+        "create_project", "update_project", "list_goals", "create_goal", "update_goal",
+      ]) {
+        expect(names).toContain(expected);
+      }
     } finally {
       await client.close();
     }
