@@ -15,6 +15,7 @@ export { costRoutes } from "./costs.js";
 export { activityRoutes } from "./activity.js";
 export { dashboardRoutes } from "./dashboard.js";
 export { ceoControlRoomRoutes } from "./ceo-control-room.js";
+export { microRegistryRoutes } from "./micro-registry.js";
 export { sidebarBadgeRoutes } from "./sidebar-badges.js";
 export { sidebarPreferenceRoutes } from "./sidebar-preferences.js";
 export { resourceMembershipRoutes } from "./resource-memberships.js";
