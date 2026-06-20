@@ -940,20 +940,67 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   text-decoration: none;
 }
 
-.paperclip-markdown a.paperclip-mention-chip[data-mention-kind="issue"] {
+.paperclip-markdown a.paperclip-mention-chip[data-mention-kind="issue"],
+.paperclip-mdxeditor-content a.paperclip-mention-chip[data-mention-kind="issue"],
+a.paperclip-mention-chip.paperclip-mention-chip--issue,
+span.paperclip-mention-chip.paperclip-mention-chip--issue {
   border-color: color-mix(in oklab, var(--foreground) 14%, var(--border) 86%);
-  background: color-mix(in oklab, var(--accent) 42%, transparent);
+  border-radius: 0.25rem;
+  background: color-mix(in oklab, var(--accent) 58%, var(--background) 42%);
+  color: color-mix(in oklab, var(--foreground) 88%, var(--muted-foreground) 12%);
 }
 
-/* Inline issue references in markdown: no pill chrome, just a status icon
-   beside the link label — keeps the pair from splitting across lines. */
+/* Inline issue references in markdown use a compact Asana-style token:
+   readable as a mention, but without the noisy underline of regular links. */
 .paperclip-markdown-issue-ref {
-  display: inline;
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0 0.06rem;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid color-mix(in oklab, var(--foreground) 14%, var(--border) 86%);
+  border-radius: 0.25rem;
+  background: color-mix(in oklab, var(--accent) 58%, var(--background) 42%);
+  color: color-mix(in oklab, var(--foreground) 88%, var(--muted-foreground) 12%);
+  font-weight: 500;
+  line-height: 1.45;
+  text-decoration: none;
+  vertical-align: middle;
   white-space: nowrap;
+}
+
+.paperclip-markdown a.paperclip-markdown-issue-ref {
+  color: color-mix(in oklab, var(--foreground) 88%, var(--muted-foreground) 12%);
+  text-decoration: none;
+}
+
+.paperclip-markdown a.paperclip-markdown-issue-ref:hover {
+  background: color-mix(in oklab, var(--accent) 76%, var(--background) 24%);
+  color: var(--foreground);
+  text-decoration: none;
+}
+
+.paperclip-markdown a.paperclip-markdown-issue-ref:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.paperclip-markdown a.paperclip-markdown-issue-ref code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
 }
 
 .dark .paperclip-markdown a {
   color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
+}
+
+.dark .paperclip-markdown a.paperclip-markdown-issue-ref {
+  color: color-mix(in oklab, var(--foreground) 90%, var(--muted-foreground) 10%);
+  text-decoration: none;
 }
 
 .paperclip-markdown blockquote {
@@ -1119,6 +1166,19 @@ span.paperclip-project-mention-chip {
 
 .pr-safe {
   padding-right: env(safe-area-inset-right);
+}
+
+.paperclip-mobile-header-surface {
+  background-color: color-mix(in oklab, var(--background) 97%, var(--foreground) 3%);
+  box-shadow: 0 1px 0 color-mix(in oklab, var(--border) 72%, transparent);
+}
+
+@supports (backdrop-filter: blur(0)) {
+  .paperclip-mobile-header-surface {
+    background-color: color-mix(in oklab, var(--background) 98%, transparent);
+    backdrop-filter: blur(18px) saturate(1.35);
+    -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  }
 }
 
 /* Glass-blur surface helpers used by sidebar bottom sheet and properties panel

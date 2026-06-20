@@ -126,8 +126,8 @@ export function BreadcrumbBar() {
       <div
         className={cn(
           "border-b border-border/60 px-2 h-12 shrink-0 flex items-center",
-          // Glass-blur sticky bar
-          "glass-surface",
+          // Opaque enough for sticky mobile chrome over scrolling content.
+          "paperclip-mobile-header-surface",
           // Collapse on scroll: translate up and fade slightly
           "transition-[transform,opacity] duration-200 ease-out",
           scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
@@ -145,8 +145,8 @@ export function BreadcrumbBar() {
       <div
         className={cn(
           "border-b border-border/60 px-4 md:px-6 h-12 shrink-0 flex items-center",
-          isMobile && "glass-surface transition-[transform,opacity] duration-200 ease-out",
-          isMobile && scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
+          isNarrow && "paperclip-mobile-header-surface transition-[transform,opacity] duration-200 ease-out",
+          isNarrow && scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
         )}
       >
         {menuButton}
@@ -162,8 +162,8 @@ export function BreadcrumbBar() {
       <div
         className={cn(
           "border-b border-border/60 px-4 md:px-6 h-12 shrink-0 flex items-center",
-          isMobile && "glass-surface transition-[transform,opacity] duration-200 ease-out",
-          isMobile && scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
+          isNarrow && "paperclip-mobile-header-surface transition-[transform,opacity] duration-200 ease-out",
+          isNarrow && scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
         )}
       >
         {menuButton}
@@ -183,8 +183,8 @@ export function BreadcrumbBar() {
     <div
       className={cn(
         "border-b border-border/60 px-4 md:px-6 h-12 shrink-0 flex items-center",
-        isMobile && "glass-surface transition-[transform,opacity] duration-200 ease-out",
-        isMobile && scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
+        isNarrow && "paperclip-mobile-header-surface transition-[transform,opacity] duration-200 ease-out",
+        isNarrow && scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
       )}
     >
       {menuButton}

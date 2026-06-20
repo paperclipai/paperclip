@@ -59,13 +59,11 @@ function MarkdownIssueLink({
       title={labelParts.text}
       aria-label={labelParts.ariaLabel}
     >
-      {status ? (
-        <StatusIcon status={status} className="mr-1 h-3 w-3 align-[-0.125em]" />
-      ) : null}
+      {status ? <StatusIcon status={status} className="h-3 w-3 shrink-0 align-[-0.125em]" /> : null}
       {labelParts.identifierSuffix ? (
         <>
-          <span>{labelParts.title}</span>
-          <span className="ml-1 font-mono text-[0.88em] text-muted-foreground">
+          <span className="min-w-0">{labelParts.title}</span>
+          <span className="shrink-0 font-mono text-[0.88em] text-muted-foreground">
             {labelParts.identifierSuffix}
           </span>
         </>
