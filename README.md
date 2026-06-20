@@ -150,7 +150,7 @@ Paperclip handles the hard orchestration details correctly.
 | **Governance with rollback.**     | Approval gates are enforced, config changes are revisioned, and bad changes can be rolled back safely.        |
 | **Goal-aware execution.**         | Tasks carry full goal ancestry so agents consistently see the "why," not just a title.                        |
 | **Portable company templates.**   | Export/import orgs, agents, and skills with secret scrubbing and collision handling.                          |
-| **True multi-company isolation.** | Every entity is company-scoped, so one deployment can run many companies with separate data and audit trails. |
+| **True multi-company isolation.** | Every entity (except instance-scoped settings and execution environments) is company-scoped, so one deployment can run many companies with separate data and audit trails. |
 
 <br/>
 

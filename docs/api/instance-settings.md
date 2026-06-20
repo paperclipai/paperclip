@@ -11,7 +11,25 @@ Configure instance-level options, general preferences, and experimental feature 
 GET /api/instance/settings
 ```
 
-Returns the root settings object containing general preferences, company configurations, and experimental flags.
+Returns the root settings object containing `defaultEnvironmentId`, general preferences, and experimental flags.
+
+**Response:**
+
+```json
+{
+  "id": "settings-id",
+  "defaultEnvironmentId": "env-uuid",
+  "general": {
+    "censorUsernameInLogs": false
+  },
+  "experimental": {
+    "enableTaskWatchdogs": true,
+    "enableIsolatedWorkspaces": true
+  },
+  "createdAt": "2026-06-21T00:00:00.000Z",
+  "updatedAt": "2026-06-21T00:00:00.000Z"
+}
+```
 
 ## Update Instance Settings
 

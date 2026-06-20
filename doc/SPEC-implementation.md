@@ -461,7 +461,7 @@ Instance-scoped environments represent the execution environments (such as Local
   - `driver` text not null (e.g. `process`, `e2b`, `daytona`)
   - `status` text not null
   - `config` jsonb not null default '{}'
-  - `env_vars` jsonb not null default '[]' (stores environment-level variables)
+  - `env_vars` jsonb not null default '{}' (stores environment-level variables)
   - Note: `company_id` was removed to make environments instance-scoped instead of company-scoped.
 - `instance_settings` table:
   - `default_environment_id` uuid fk `environments.id` null

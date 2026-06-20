@@ -16,7 +16,7 @@ List and get environment endpoints are readable by company board members, but no
 GET /api/companies/{companyId}/environments
 ```
 
-Returns the list of configured runtime environments.
+Returns the list of configured runtime environments. Note that environments are instance-wide, so this list returns all environments configured on the instance and does not filter by `{companyId}`.
 
 ## Create Environment
 
