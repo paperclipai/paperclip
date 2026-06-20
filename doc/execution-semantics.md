@@ -226,6 +226,8 @@ The accepted interaction by itself is only evidence that the plan was approved. 
 
 If the live run disappears, Paperclip must repair, resume, or visibly block the existing claim. It must not leave the source issue in a state where a second run can interpret the same acceptance as fresh permission to create sibling issues again.
 
+Once decomposition completes and the umbrella's remaining work is "wait for the children to finish," the umbrella must hold a first-class waiting path — a `blocked`-by-children state — not merely `in_progress` resting on `parentId` rollup. `parentId` is not a dependency (§6), so an `in_progress` umbrella with no run, no wake, and no blockers looks stranded to recovery. If the executor instead parks the continuation as waiting-for-review, recovery converts that park into the missing dependency wait (§9.2, "Deliberate wait is not a lost run").
+
 ### Concurrent and repeat attempts
 
 Every later run that encounters the same accepted-plan fingerprint must consult the durable claim/result before creating children.
@@ -467,6 +469,17 @@ Recovery rule:
 - if that continuation wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates an explicit recovery action when a bounded owner/action is known; the visible comment is evidence, not the recovery path by itself
 
 This is an active-work continuity recovery.
+
+#### Deliberate wait is not a lost run
+
+A continuation that the staleness gate cancelled with `issue_continuation_waiting_on_review` is a *deliberate park*, not a disappeared execution path. The latest run reported that the issue is waiting for review/approval (for example, an umbrella issue whose work was just decomposed into sub-tasks). Treating that park as a stranded run would retry it, then escalate it to `blocked` with a recovery action and an operator-facing failure notice — even though nothing failed and there is nothing for a human to do.
+
+Recovery rule for a parked-for-review continuation:
+
+- if the issue has a real waiting target — open (non-terminal) sub-tasks or existing unresolved blockers — Paperclip converts the deliberate wait into a first-class dependency wait: it sets the issue `blocked` by those issues, keeps the original assignee, and posts a plain-language comment explaining that the task will resume automatically when its dependencies finish. The issue then self-resumes through the normal `issue_blockers_resolved` path; no recovery action or escalation owner is involved
+- if the issue has no waiting target, the park is indistinguishable from a genuine strand and falls through to the standard §9.2 escalation, preserving stranded detection
+
+This keeps the post-decomposition umbrella (§7) on a real waiting path instead of relying on `parentId` rollup, which §6 does not treat as a dependency.
 
 ### 9.3 Recovery model-profile lane
 
