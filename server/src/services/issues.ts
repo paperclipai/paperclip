@@ -5972,6 +5972,83 @@ export function issueService(db: Db) {
         };
       }),
 
+    /**
+     * Force-release a stale checkout/execution lock on behalf of a supervisor agent (CTO or CEO).
+     * Only succeeds when the existing checkout run is terminal and the execution run is either
+     * terminal or in scheduled_retry state (i.e. the agent is not actively running).
+     * Returns null if the issue doesn't exist.
+     * Throws if the lock is still live (active run in progress).
+     */
+    supervisorForceRelease: async (id: string) =>
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
+        );
+        const existing = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+
+        // Verify the checkout lock is stale (terminal or missing run).
+        if (existing.checkoutRunId) {
+          const checkoutRun = await tx
+            .select({ status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, existing.checkoutRunId))
+            .then((rows) => rows[0] ?? null);
+          if (checkoutRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(checkoutRun.status)) {
+            return { issue: null, previous: null, reason: "checkout_run_still_active" as const };
+          }
+        }
+
+        // Verify the execution lock is stale: terminal, missing, or a not-yet-started scheduled_retry.
+        if (existing.executionRunId) {
+          const execRun = await tx
+            .select({ status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, existing.executionRunId))
+            .then((rows) => rows[0] ?? null);
+          const isStale =
+            !execRun ||
+            TERMINAL_HEARTBEAT_RUN_STATUSES.has(execRun.status) ||
+            execRun.status === "scheduled_retry";
+          if (!isStale) {
+            return { issue: null, previous: null, reason: "execution_run_still_active" as const };
+          }
+        }
+
+        const previous = {
+          checkoutRunId: existing.checkoutRunId,
+          executionRunId: existing.executionRunId,
+        };
+
+        const updated = await tx
+          .update(issues)
+          .set({
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return { issue: enriched, previous, reason: null };
+      }),
+
     listLabels: (companyId: string) =>
       db.select().from(labels).where(eq(labels.companyId, companyId)).orderBy(asc(labels.name), asc(labels.id)),
 

@@ -6741,6 +6741,79 @@ export function issueRoutes(
     res.json(result);
   });
 
+  /**
+   * POST /issues/:id/supervisor-release
+   *
+   * Allows a supervisor agent (role: cto or ceo) to break a stale checkout/execution
+   * lock on an issue whose original assignee's session has ended.  The lock is only
+   * released when it is genuinely stale — the checkout run must be terminal and the
+   * execution run must be terminal or in scheduled_retry (not actively executing).
+   *
+   * On success the issue's assigneeAgentId, checkoutRunId, and executionRunId are
+   * all cleared so the supervisor (or any eligible agent) can immediately re-checkout.
+   *
+   * Intended caller: the "Slack Picker Upper" routine agent that recovers stalled
+   * in-progress work after a session-limited agent's heartbeat run ends.
+   */
+  router.post("/issues/:id/supervisor-release", async (req, res) => {
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Agent access required" });
+      return;
+    }
+    if (!req.actor.agentId) {
+      res.status(403).json({ error: "Agent identity required" });
+      return;
+    }
+
+    const actorAgent = await agentsSvc.getById(req.actor.agentId);
+    if (!actorAgent || !["cto", "ceo"].includes(actorAgent.role ?? "")) {
+      res.status(403).json({ error: "Supervisor role (cto or ceo) required" });
+      return;
+    }
+
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const result = await svc.supervisorForceRelease(id);
+    if (!result) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!result.issue) {
+      res.status(409).json({
+        error: "Checkout lock is still active and cannot be released",
+        details: { reason: result.reason },
+      });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: result.issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.supervisor_force_release",
+      entityType: "issue",
+      entityId: result.issue.id,
+      details: {
+        issueId: result.issue.id,
+        supervisorAgentId: req.actor.agentId,
+        supervisorRole: actorAgent.role,
+        prevCheckoutRunId: result.previous?.checkoutRunId ?? null,
+        prevExecutionRunId: result.previous?.executionRunId ?? null,
+      },
+    });
+
+    res.json(result.issue);
+  });
+
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
