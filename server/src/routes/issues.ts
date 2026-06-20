@@ -1876,6 +1876,16 @@ export function issueRoutes(
     return false;
   }
 
+  async function assertIssueMutationAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
+    if (req.actor.type === "agent") {
+      return assertAgentIssueMutationAllowed(req, res, issue);
+    }
+    const decision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+    return false;
+  }
+
   async function assertAgentIssueCommentAllowed(
     req: Request,
     res: Response,
@@ -5503,6 +5513,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (!(await assertIssueMutationAllowed(req, res, issue))) return;
     const prLinks = await svc.refreshPrLinkStatuses(issue.id, {
       resolveToken: async () => null,
     });

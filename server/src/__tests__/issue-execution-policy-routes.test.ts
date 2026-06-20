@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   createChild: vi.fn(),
   addComment: vi.fn(),
+  refreshPrLinkStatuses: vi.fn(),
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -45,6 +46,19 @@ const mockDb = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({
+    id: "instance-settings-1",
+    general: {
+      censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "prompt",
+    },
+  })),
+  getExperimental: vi.fn(async () => ({
+    enablePrLinks: true,
+  })),
+  listCompanyIds: vi.fn(async () => ["company-1"]),
+}));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
@@ -54,6 +68,9 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+  }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -87,16 +104,7 @@ function registerModuleMocks() {
     environmentService: () => ({
       getById: vi.fn(async () => null),
     }),
-    instanceSettingsService: () => ({
-      get: vi.fn(async () => ({
-        id: "instance-settings-1",
-        general: {
-          censorUsernameInLogs: false,
-          feedbackDataSharingPreference: "prompt",
-        },
-      })),
-      listCompanyIds: vi.fn(async () => ["company-1"]),
-    }),
+    instanceSettingsService: () => mockInstanceSettingsService,
     issueApprovalService: () => mockIssueApprovalService,
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
@@ -173,12 +181,26 @@ describe("issue execution policy routes", () => {
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.refreshPrLinkStatuses.mockResolvedValue([
+      { url: "https://github.com/acme/repo/pull/12", title: "acme/repo#12", state: "open" },
+    ]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
+    mockInstanceSettingsService.get.mockResolvedValue({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    });
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enablePrLinks: true,
+    });
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
@@ -515,6 +537,69 @@ describe("issue execution policy routes", () => {
         agentId: null,
       }),
     );
+  });
+
+  it("refreshes PR links for a mutating actor", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      parentId: null,
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Refresh PR links",
+      executionPolicy: null,
+      executionState: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/pr-links/refresh")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      prLinks: [{ url: "https://github.com/acme/repo/pull/12", title: "acme/repo#12", state: "open" }],
+    });
+    expect(mockIssueService.refreshPrLinkStatuses).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        resolveToken: expect.any(Function),
+      }),
+    );
+  });
+
+  it("rejects PR link refresh for a read-only actor", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "issue:read",
+      action: input.action,
+      reason: input.action === "issue:read" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "issue:read" ? "Allowed by test grant." : `Missing permission: ${input.action ?? "action"}`,
+    }));
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      parentId: null,
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Refresh PR links",
+      executionPolicy: null,
+      executionState: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/pr-links/refresh")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.refreshPrLinkStatuses).not.toHaveBeenCalled();
   });
 
   it("lets a board user create a child issue with a scheduled monitor", async () => {
