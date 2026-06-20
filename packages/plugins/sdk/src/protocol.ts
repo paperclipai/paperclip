@@ -478,6 +478,8 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
   runId: string;
   workspaceMode?: string;
   requestedCwd?: string;
+  agentId?: string;
+  executionWorkspaceId?: string | null;
   /**
    * The harness/adapter type for THIS run (the agent's adapter), so a single
    * environment can serve mixed harnesses. When omitted, the driver falls back to

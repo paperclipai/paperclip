@@ -110,6 +110,7 @@ import {
   // Instance settings
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
   updateResourceMembershipSchema,
@@ -2457,6 +2458,23 @@ registry.registerPath({
 });
 
 // ─── Instance settings ────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/settings",
+  tags: ["instance"],
+  summary: "Get instance settings",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/instance/settings",
+  tags: ["instance"],
+  summary: "Update instance settings",
+  request: { body: jsonBody(patchInstanceSettingsSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
 
 registry.registerPath({
   method: "get",

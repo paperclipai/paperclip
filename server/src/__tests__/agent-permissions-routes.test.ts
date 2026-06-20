@@ -1285,7 +1285,7 @@ describe.sequential("agent permission routes", () => {
     }));
   });
 
-  it("rejects creating an agent with an environment from another company", async () => {
+  it("allows creating an agent with an instance-scoped environment referenced from another company", async () => {
     const environmentId = "33333333-3333-4333-8333-333333333333";
     mockEnvironmentService.getById.mockResolvedValue({
       id: environmentId,
@@ -1312,9 +1312,13 @@ describe.sequential("agent permission routes", () => {
         defaultEnvironmentId: environmentId,
       }));
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toContain("Environment not found");
-    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        defaultEnvironmentId: environmentId,
+      }),
+    );
   });
 
   it("rejects creating an agent with an unsupported default environment driver", async () => {

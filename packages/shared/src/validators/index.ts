@@ -1,13 +1,16 @@
 export {
+  instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
+  type PatchInstanceSettings,
   type IssueGraphLivenessAutoRecoveryRequest,
 } from "./instance.js";
 

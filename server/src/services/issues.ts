@@ -4975,9 +4975,8 @@ export function issueService(db: Db) {
           issueData.projectId = workspace.projectId;
         }
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
-        // Cache the project policy lookup for this insert. Both the
-        // default-settings block and the assignee-environment-promotion block
-        // need the same row; without caching they'd issue two round-trips.
+        // Cache the project policy lookup for this insert so the default
+        // workspace-settings block does not re-query the project row.
         let projectPolicyCached: ReturnType<typeof parseProjectExecutionWorkspacePolicy> | null = null;
         let projectPolicyLoaded = false;
         const loadProjectPolicyOnce = async () => {
@@ -5005,37 +5004,6 @@ export function issueService(db: Db) {
                 isolatedWorkspacesEnabled,
               ),
             ) as Record<string, unknown> | null;
-        }
-        if (data.assigneeAgentId && isolatedWorkspacesEnabled) {
-          const currentWorkspaceSettings = executionWorkspaceSettings == null
-            ? {}
-            : parseObject(executionWorkspaceSettings);
-          const issueHasEnvironmentSelection =
-            Object.prototype.hasOwnProperty.call(currentWorkspaceSettings, "environmentId");
-          // Don't promote the assignee agent's defaultEnvironmentId if either
-          // the issue or the project policy already specifies an environment.
-          // resolveExecutionWorkspaceEnvironmentId treats issue settings as
-          // higher priority than project policy, so promoting the agent's
-          // default to issue settings would invert the documented priority
-          // (project policy must win over agent default when explicitly set).
-          let projectHasEnvironmentSelection = false;
-          if (!issueHasEnvironmentSelection && issueData.projectId) {
-            const projectPolicy = await loadProjectPolicyOnce();
-            projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
-          }
-          if (!issueHasEnvironmentSelection && !projectHasEnvironmentSelection) {
-            const assigneeAgent = await tx
-              .select({ defaultEnvironmentId: agents.defaultEnvironmentId })
-              .from(agents)
-              .where(and(eq(agents.id, data.assigneeAgentId), eq(agents.companyId, companyId)))
-              .then((rows) => rows[0] ?? null);
-            if (typeof assigneeAgent?.defaultEnvironmentId === "string" && assigneeAgent.defaultEnvironmentId.length > 0) {
-              executionWorkspaceSettings = {
-                ...currentWorkspaceSettings,
-                environmentId: assigneeAgent.defaultEnvironmentId,
-              };
-            }
-          }
         }
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
@@ -5236,6 +5204,11 @@ export function issueService(db: Db) {
         issueData.executionWorkspaceSettings !== undefined
           ? parseIssueExecutionWorkspaceSettings(issueData.executionWorkspaceSettings)
           : parseIssueExecutionWorkspaceSettings(existing.executionWorkspaceSettings);
+      if (issueData.executionWorkspaceSettings !== undefined) {
+        patch.executionWorkspaceSettings = nextExecutionWorkspaceSettings
+          ? { ...nextExecutionWorkspaceSettings }
+          : null;
+      }
       let validatedProjectWorkspace: { projectId: string } | null = null;
       let validatedExecutionWorkspace: { projectId: string } | null = null;
       if (!nextProjectId && nextProjectWorkspaceId) {
@@ -5294,93 +5267,6 @@ export function issueService(db: Db) {
             issueData.projectId !== undefined ? issueData.projectId : existing.projectId,
           ),
         ]);
-
-        // Mirror the create() path: when the assignee changes to a non-null
-        // agent, default the issue's executionWorkspaceSettings.environmentId
-        // to the new agent's defaultEnvironmentId. Skip when:
-        //   - this update explicitly sets executionWorkspaceSettings.environmentId
-        //     (caller is making a deliberate override; respect it), OR
-        //   - the project policy already specifies an environmentId (project
-        //     policy must win over agent default per the documented priority
-        //     order in resolveExecutionWorkspaceEnvironmentId), OR
-        //   - the issue already has an environmentId that was *not* the prior
-        //     assignee's default (i.e., the operator set it explicitly in an
-        //     earlier update; preserve their choice). When the existing
-        //     environmentId matches the prior assignee's default, treat it as
-        //     auto-promoted and refresh it to the new assignee's default.
-        const assigneeChanged =
-          issueData.assigneeAgentId !== undefined &&
-          issueData.assigneeAgentId !== null &&
-          issueData.assigneeAgentId !== existing.assigneeAgentId;
-        const explicitEnvInThisUpdate =
-          issueData.executionWorkspaceSettings !== undefined &&
-          Object.prototype.hasOwnProperty.call(
-            parseObject(issueData.executionWorkspaceSettings),
-            "environmentId",
-          );
-        if (assigneeChanged && isolatedWorkspacesEnabled && !explicitEnvInThisUpdate) {
-          let projectHasEnvironmentSelection = false;
-          if (nextProjectId) {
-            const projectRow = await tx
-              .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-              .from(projects)
-              .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)))
-              .then((rows: Array<{ executionWorkspacePolicy: unknown }>) => rows[0] ?? null);
-            const projectPolicy = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
-            projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
-          }
-          if (!projectHasEnvironmentSelection) {
-            const baseSettings = nextExecutionWorkspaceSettings == null
-              ? {}
-              : parseObject(nextExecutionWorkspaceSettings);
-            const existingEnvId = typeof baseSettings.environmentId === "string"
-              ? baseSettings.environmentId
-              : null;
-
-            // Look up both the prior assignee (to detect auto-promoted env)
-            // and the new assignee in a single query.
-            type AgentRow = { id: string; defaultEnvironmentId: string | null };
-            const agentRows: AgentRow[] = await tx
-              .select({ id: agents.id, defaultEnvironmentId: agents.defaultEnvironmentId })
-              .from(agents)
-              .where(
-                and(
-                  eq(agents.companyId, existing.companyId),
-                  inArray(
-                    agents.id,
-                    [issueData.assigneeAgentId!, existing.assigneeAgentId].filter(
-                      (value): value is string => typeof value === "string",
-                    ),
-                  ),
-                ),
-              );
-
-            const newAssignee = agentRows.find((row: AgentRow) => row.id === issueData.assigneeAgentId);
-            const previousAssignee = existing.assigneeAgentId
-              ? agentRows.find((row: AgentRow) => row.id === existing.assigneeAgentId)
-              : null;
-
-            const newDefaultEnvId =
-              typeof newAssignee?.defaultEnvironmentId === "string" && newAssignee.defaultEnvironmentId.length > 0
-                ? newAssignee.defaultEnvironmentId
-                : null;
-            const previousDefaultEnvId =
-              typeof previousAssignee?.defaultEnvironmentId === "string" && previousAssignee.defaultEnvironmentId.length > 0
-                ? previousAssignee.defaultEnvironmentId
-                : null;
-
-            const existingEnvWasAutoPromoted =
-              existingEnvId === null ||
-              (previousDefaultEnvId !== null && existingEnvId === previousDefaultEnvId);
-
-            if (newDefaultEnvId && existingEnvWasAutoPromoted) {
-              patch.executionWorkspaceSettings = {
-                ...baseSettings,
-                environmentId: newDefaultEnvId,
-              };
-            }
-          }
-        }
 
         patch.goalId = resolveNextIssueGoalId({
           currentProjectId: existing.projectId,
