@@ -14,6 +14,13 @@ export const SANDBOX_INSTALL_COMMAND = "curl https://cursor.com/install -fsS | b
 
 export const DEFAULT_CURSOR_LOCAL_MODEL = "auto";
 
+/** Cloudflare Workers AI OpenAI-compatible base URL. Substitute the real
+ * account id for {ACCOUNT_ID} when configuring an agent's OPENAI_BASE_URL.
+ * Cursor passes the configured `model` string verbatim to the CLI, so the
+ * raw `@cf/...` ids below work with no provider wrapper. */
+export const WORKERS_AI_OPENAI_BASE_URL_TEMPLATE =
+  "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1";
+
 const CURSOR_FALLBACK_MODEL_IDS = [
   "auto",
   "composer-1.5",
@@ -56,7 +63,19 @@ const CURSOR_FALLBACK_MODEL_IDS = [
   "kimi-k2.5",
 ];
 
-export const models = CURSOR_FALLBACK_MODEL_IDS.map((id) => ({ id, label: id }));
+// Curated Cloudflare Workers AI targets. Cursor passes `model` verbatim to the
+// CLI, so these RAW `@cf/...` ids are used unwrapped (no `cloudflare/` prefix).
+const WORKERS_AI_MODELS: { id: string; label: string }[] = [
+  { id: "@cf/moonshotai/kimi-k2.7-code", label: "Kimi K2.7-Code (Cloudflare Workers AI)" },
+  { id: "@cf/zhipu/glm-5.2", label: "GLM-5.2 (Cloudflare Workers AI)" },
+  { id: "@cf/openai/gpt-oss-120b", label: "GPT-OSS-120B (Cloudflare Workers AI)" },
+  { id: "@cf/qwen/qwen3-30b", label: "Qwen3-30B (Cloudflare Workers AI)" },
+];
+
+export const models = [
+  ...CURSOR_FALLBACK_MODEL_IDS.map((id) => ({ id, label: id })),
+  ...WORKERS_AI_MODELS,
+];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
