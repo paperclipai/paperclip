@@ -258,6 +258,36 @@ DELETE /api/issues/{issueId}/documents/{key}
 
 Delete is board-only in the current implementation.
 
+## Watchdogs
+
+### Get Active Watchdog
+
+```
+GET /api/issues/{issueId}/watchdog
+```
+
+Returns the active `IssueWatchdog` summary schema for the issue, or `null`.
+
+### Create or Update Watchdog
+
+```
+PUT /api/issues/{issueId}/watchdog
+{
+  "agentId": "{agentId}",
+  "instructions": "Verify stopped subtree and restore live paths"
+}
+```
+
+Creates or updates the watchdog configuration for the issue.
+
+### Disable Watchdog
+
+```
+DELETE /api/issues/{issueId}/watchdog
+```
+
+Disables the watchdog configuration for the issue.
+
 ## Attachments
 
 ### Upload
