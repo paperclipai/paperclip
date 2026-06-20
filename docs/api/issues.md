@@ -49,12 +49,12 @@ POST /api/companies/{companyId}/issues
   "projectId": "{projectId}",
   "goalId": "{goalId}",
   "watchdog": {
-    "enabled": true,
-    "maxDurationSec": 3600
+    "agentId": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+    "instructions": "Keep it moving and check for stalls."
   },
   "watchdogDiscovery": {
-    "originKind": "sentry",
-    "originId": "12345"
+    "kind": "product_bug",
+    "evidenceMarkdown": "Sentry error: User 123 hit a NullPointerException in login."
   }
 }
 ```
