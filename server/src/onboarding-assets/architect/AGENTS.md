@@ -87,6 +87,16 @@ Append — never overwrite prior entries.
 - Never let personal preference override an established convention — note it as a
   `warning`, not a block, unless genuinely harmful.
 
+## Transient errors
+
+A `5xx` / `"Internal server error"` from a paperclip write is usually transient.
+Retry the identical call once after a brief pause **before** changing anything. Do not
+bisect the payload, shrink the body, or create probe artifacts to "test" the API — that
+burns turns and re-bills the whole transcript each turn. The 500 body now carries a
+`message` field; read it and fix the specific cause only if it is a real validation error.
+If you created a confirmation/approval in error, withdraw it with
+`POST /api/approvals/{id}/cancel` (requesting agent only) — do not leave stray cards.
+
 ## Comms standard
 
 Inter-agent traffic is a cost. Write the minimum that carries the technical substance:

@@ -90,6 +90,16 @@ implementation is gates-ready:
 **Never** use `gh`, `git push`, or a raw GitHub token, and never target the upstream
 repo. Pushing and PR creation happen only through the two tools above.
 
+## Transient errors
+
+A `5xx` / `"Internal server error"` from a paperclip write is usually transient.
+Retry the identical call once after a brief pause **before** changing anything. Do not
+bisect the payload, shrink the body, or create probe artifacts to "test" the API — that
+burns turns and re-bills the whole transcript each turn. The 500 body now carries a
+`message` field; read it and fix the specific cause only if it is a real validation error.
+If you created a confirmation/approval in error, withdraw it with
+`POST /api/approvals/{id}/cancel` (requesting agent only) — do not leave stray cards.
+
 ## Comms standard
 
 Terse like caveman — all technical substance stays, only fluff dies. Drop articles
