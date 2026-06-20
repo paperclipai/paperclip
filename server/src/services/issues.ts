@@ -4494,8 +4494,25 @@ export function issueService(db: Db) {
         }
       }
 
-      await db.update(issues).set({ prLinks: next }).where(eq(issues.id, issueId));
-      return next;
+      const merged = await db.transaction(async (tx) => {
+        await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
+        const current = await tx
+          .select({ prLinks: issues.prLinks })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null);
+        if (!current) throw notFound("Issue not found");
+
+        const latestLinks = current.prLinks ?? [];
+        const mergedLinks = mergePrLinkStatus(
+          next,
+          latestLinks.map((link) => ({ url: link.url, title: link.title ?? null })),
+        );
+        await tx.update(issues).set({ prLinks: mergedLinks }).where(eq(issues.id, issueId));
+        return mergedLinks;
+      });
+
+      return merged;
     },
 
     getCurrentScheduledRetry: async (issueId: string) => {

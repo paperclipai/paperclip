@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -108,6 +108,78 @@ describeEmbeddedPostgres("issueService.refreshPrLinkStatuses", () => {
 
     const second = await svc.refreshPrLinkStatuses(issueId, { ttlMs: 60_000 });
     expect(second).toEqual(first);
+  });
+
+  it("preserves PR links added while a status refresh is in flight", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const fetchStarted = deferred<void>();
+    const releaseFetch = deferred<void>();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Refresh PR links",
+      status: "todo",
+      priority: "medium",
+      prLinks: [{ url: "https://github.com/acme/repo/pull/12", title: "acme/repo#12" }],
+    });
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      fetchStarted.resolve();
+      await releaseFetch.promise;
+      return new Response(JSON.stringify({ state: "open" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    try {
+      const refreshPromise = svc.refreshPrLinkStatuses(issueId, { ttlMs: 60_000 });
+      await fetchStarted.promise;
+
+      await db
+        .update(issues)
+        .set({
+          prLinks: [
+            { url: "https://github.com/acme/repo/pull/12", title: "acme/repo#12" },
+            { url: "https://github.com/acme/repo/pull/34", title: "acme/repo#34" },
+          ],
+        })
+        .where(eq(issues.id, issueId));
+
+      releaseFetch.resolve();
+
+      const refreshed = await refreshPromise;
+      expect(refreshed).toHaveLength(2);
+      expect(refreshed[0]).toMatchObject({
+        url: "https://github.com/acme/repo/pull/12",
+        title: "acme/repo#12",
+        state: "open",
+        statusError: null,
+      });
+      expect(refreshed[0]?.statusFetchedAt).toEqual(expect.any(String));
+      expect(refreshed[1]).toEqual({
+        url: "https://github.com/acme/repo/pull/34",
+        title: "acme/repo#34",
+      });
+
+      const persisted = await db
+        .select({ prLinks: issues.prLinks })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]?.prLinks ?? null);
+      expect(persisted).toEqual(refreshed);
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 });
 
