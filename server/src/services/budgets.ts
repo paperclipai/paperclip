@@ -48,6 +48,32 @@ export type BudgetServiceHooks = {
   cancelWorkForScope?: (scope: BudgetEnforcementScope) => Promise<void>;
 };
 
+export type BudgetServiceOptions = {
+  /**
+   * Headroom above a hard cap within which an automatic (cost-event-driven)
+   * hard-stop pauses the scope WITHOUT cancelling in-flight runs — letting the
+   * current flow finish at its natural boundary instead of being killed
+   * mid-assignment. Once observed spend reaches `cap * graceFactor` the full
+   * pause-and-cancel fires (runaway ceiling). `1.0` reproduces the pre-grace
+   * behavior exactly. Clamped to `>= 1.0`.
+   */
+  hardStopGraceFactor?: number;
+};
+
+const DEFAULT_HARD_STOP_GRACE_FACTOR = 1.25;
+
+/**
+ * Resolve the hard-stop grace factor from an explicit override, else the
+ * `PAPERCLIP_BUDGET_HARDSTOP_GRACE_FACTOR` env var, else the default. Never
+ * returns a value below 1.0 (a sub-1 factor would pause before the cap is even
+ * reached, which is never intended).
+ */
+function resolveHardStopGraceFactor(override?: number): number {
+  const raw = override ?? Number(process.env.PAPERCLIP_BUDGET_HARDSTOP_GRACE_FACTOR);
+  const value = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_HARD_STOP_GRACE_FACTOR;
+  return Math.max(1, value);
+}
+
 function currentUtcMonthWindow(now = new Date()) {
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth();
@@ -251,7 +277,9 @@ async function markApprovalStatus(
     .where(eq(approvals.id, approvalId));
 }
 
-export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
+export function budgetService(db: Db, hooks: BudgetServiceHooks = {}, options: BudgetServiceOptions = {}) {
+  const hardStopGraceFactor = resolveHardStopGraceFactor(options.hardStopGraceFactor);
+
   async function pauseScopeForBudget(policy: PolicyRow) {
     const now = new Date();
     if (policy.scopeType === "agent") {
@@ -773,7 +801,18 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         if (policy.hardStopEnabled && observedAmount >= policy.amount) {
           await resolveOpenSoftIncidents(policy.id);
           const hardIncident = await createIncidentIfNeeded(policy, "hard", observedAmount);
-          await pauseAndCancelScopeForBudget(policy);
+          // Grace band: between the cap and `cap * graceFactor`, pause the scope
+          // (block the next wake) but let the in-flight run finish at its natural
+          // boundary instead of cancelling it mid-flow. The agent pause survives
+          // run completion (finalizeAgentStatus bails on "paused"); a stopped
+          // plan blocks new subtree work but does not cancel running subtree
+          // runs. Past the grace ceiling we fall back to full pause-and-cancel.
+          const withinGrace = observedAmount < policy.amount * hardStopGraceFactor;
+          if (withinGrace) {
+            await pauseScopeForBudget(policy);
+          } else {
+            await pauseAndCancelScopeForBudget(policy);
+          }
           publishLiveEvent({
             companyId: policy.companyId,
             type: "budget.threshold",
