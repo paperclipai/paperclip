@@ -234,7 +234,7 @@ export function environmentService(db: Db) {
 
     /**
      * Idempotently ensure a managed Kubernetes sandbox environment exists for a
-     * company/instance, configured from operator-supplied config. Mirrors
+     * instance, configured from operator-supplied config. Mirrors
      * `ensureLocalEnvironment`, with a DB-level partial unique index for the
      * canonical managed row plus a cleanup path for legacy duplicate rows that
      * predate that invariant.
@@ -267,11 +267,7 @@ export function environmentService(db: Db) {
         const managedRows = await tx
           .select()
           .from(environments)
-          .where(
-            companyId
-              ? and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox"))
-              : eq(environments.driver, "sandbox"),
-          )
+          .where(eq(environments.driver, "sandbox"))
           .orderBy(asc(environments.createdAt), asc(environments.id))
           .then((rows) =>
             rows.filter(
@@ -312,11 +308,7 @@ export function environmentService(db: Db) {
               );
             await tx
               .delete(environments)
-              .where(
-                companyId
-                  ? and(eq(environments.companyId, companyId), inArray(environments.id, duplicateIds))
-                  : inArray(environments.id, duplicateIds),
-              );
+              .where(inArray(environments.id, duplicateIds));
           }
           return toEnvironment(updated);
         }
@@ -324,7 +316,6 @@ export function environmentService(db: Db) {
         const row = await tx
           .insert(environments)
           .values({
-            ...(companyId ? { companyId } : {}),
             name: DEFAULT_KUBERNETES_ENVIRONMENT_NAME,
             description: DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION,
             driver: "sandbox",
@@ -336,7 +327,7 @@ export function environmentService(db: Db) {
             updatedAt: now,
           })
           .onConflictDoNothing({
-            target: companyId ? [environments.companyId] : [environments.driver],
+            target: [environments.driver],
             where:
               sql`${environments.driver} = 'sandbox' AND (${environments.metadata} ->> 'managedByPaperclip')::boolean = true`,
           })
@@ -348,11 +339,7 @@ export function environmentService(db: Db) {
         const winner = await tx
           .select()
           .from(environments)
-          .where(
-            companyId
-              ? and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox"))
-              : eq(environments.driver, "sandbox"),
-          )
+          .where(eq(environments.driver, "sandbox"))
           .orderBy(asc(environments.createdAt), asc(environments.id))
           .then(
             (rows) =>

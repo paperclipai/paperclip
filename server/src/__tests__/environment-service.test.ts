@@ -364,7 +364,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(original?.name).toBe("Lease Fixture");
   });
 
-  it("rejects a second managed-sandbox row for the same company at the DB level", async () => {
+  it("rejects a second managed-sandbox row for the instance at the DB level", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -385,9 +385,9 @@ describeEmbeddedPostgres("environmentService leases", () => {
       updatedAt: now,
     });
 
-    // Partial unique index environments_company_managed_sandbox_idx rejects a
+    // Partial unique index environments_managed_sandbox_idx rejects a
     // second row matching driver='sandbox' AND managedByPaperclip=true for the
-    // same company. This is the DB-level invariant that replaced the previous
+    // instance. This is the DB-level invariant that replaced the previous
     // application-side post-insert convergence loop.
     const secondInsert = db.insert(environments).values({
       name: "Second",
@@ -445,7 +445,6 @@ describeEmbeddedPostgres("environmentService leases", () => {
       .insert(environments)
       .values([
         {
-          companyId,
           name: "Kubernetes Sandbox",
           description: "Oldest managed row",
           driver: "sandbox",
@@ -456,7 +455,6 @@ describeEmbeddedPostgres("environmentService leases", () => {
           updatedAt: olderCreatedAt,
         },
         {
-          companyId,
           name: "Kubernetes Sandbox Duplicate",
           description: "Legacy duplicate row missing managedByPaperclip",
           driver: "sandbox",
@@ -496,7 +494,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
     const rows = await db
       .select()
       .from(environments)
-      .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+      .where(eq(environments.driver, "sandbox"))
       .orderBy(asc(environments.createdAt), asc(environments.id));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.id).toBe(older?.id);
