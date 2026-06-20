@@ -400,6 +400,19 @@ const ErrorSchema = registry.register(
   z.object({ error: z.string() }),
 );
 
+const FilesystemListResponseSchema = registry.register(
+  "FilesystemListResponse",
+  z.object({
+    path: z.string(),
+    parent: z.string().nullable(),
+    entries: z.array(z.object({
+      name: z.string(),
+      isDir: z.boolean(),
+      isSymlink: z.boolean(),
+    })),
+  }),
+);
+
 const responses = {
   ok: (schema: z.ZodTypeAny = z.record(z.unknown())) => ({
     description: "Success",
@@ -768,6 +781,26 @@ registry.registerPath({
   tags: ["health"],
   summary: "Get the generated OpenAPI document",
   responses: { 200: r.ok() },
+});
+
+// ─── Local filesystem ────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/filesystem/list",
+  tags: ["access"],
+  summary: "List local filesystem roots or directory entries",
+  request: {
+    query: z.object({
+      path: z.string().optional(),
+    }),
+  },
+  responses: {
+    200: r.ok(FilesystemListResponseSchema),
+    400: r.badRequest,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 // ─── Companies ───────────────────────────────────────────────────────────────
