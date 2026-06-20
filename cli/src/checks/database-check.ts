@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
@@ -37,6 +38,17 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
 
   if (config.database.mode === "embedded-postgres") {
     const dataDir = resolveRuntimeLikePath(config.database.embeddedPostgresDataDir, configPath);
+
+    // Warn when dataDir is inside the OS temp dir — usually means PAPERCLIP_HOME /
+    // PAPERCLIP_IN_WORKTREE leaked from a worktree env into the primary instance.
+    if (dataDir.startsWith(os.tmpdir())) {
+      return {
+        name: "Database",
+        status: "warn",
+        message: `Embedded PostgreSQL data dir is inside the OS temp directory (${dataDir}). This is usually caused by PAPERCLIP_HOME / PAPERCLIP_IN_WORKTREE leaking from a worktree environment. The primary instance will boot against an empty database — existing users will not be visible. Unset PAPERCLIP_HOME and PAPERCLIP_IN_WORKTREE for the primary instance, or pass --data-dir to point at the real data directory.`,
+      };
+    }
+
     const reportedPath = dataDir;
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(reportedPath, { recursive: true });

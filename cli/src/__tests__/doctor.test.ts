@@ -5,11 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { doctor } from "../commands/doctor.js";
 import { writeConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
+import { databaseCheck } from "../checks/database-check.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
 function createTempConfig(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-doctor-"));
+  const root = fs.mkdtempSync(path.join(os.homedir(), ".paperclip-doctor-test-"));
   const configPath = path.join(root, ".paperclip", "config.json");
   const runtimeRoot = path.join(root, "runtime");
 
@@ -84,6 +85,30 @@ describe("doctor", () => {
 
   afterEach(() => {
     process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("warns when embedded-postgres dataDir is inside os.tmpdir()", async () => {
+    const tmpDataDir = path.join(os.tmpdir(), "paperclip-test-db");
+    const config: PaperclipConfig = {
+      $meta: { version: 1, updatedAt: "2026-01-01T00:00:00.000Z", source: "configure" },
+      database: {
+        mode: "embedded-postgres",
+        embeddedPostgresDataDir: tmpDataDir,
+        embeddedPostgresPort: 55432,
+        backup: { enabled: false, intervalMinutes: 60, retentionDays: 30, dir: "/tmp/bak" },
+      },
+      logging: { mode: "file", logDir: "/tmp/logs" },
+      server: { deploymentMode: "local_trusted", exposure: "private", host: "127.0.0.1", port: 3199, allowedHostnames: [], serveUi: true },
+      auth: { baseUrlMode: "auto", disableSignUp: false },
+      telemetry: { enabled: false },
+      storage: { provider: "local_disk", localDisk: { baseDir: "/tmp/storage" }, s3: { bucket: "x", region: "us-east-1", prefix: "", forcePathStyle: false } },
+      secrets: { provider: "local_encrypted", strictMode: false, localEncrypted: { keyFilePath: "/tmp/master.key" } },
+    };
+
+    const result = await databaseCheck(config, "/tmp/config.json");
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain(tmpDataDir);
+    expect(result.message).toContain("temp directory");
   });
 
   it("re-runs repairable checks so repaired failures do not remain blocking", async () => {
