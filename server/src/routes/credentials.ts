@@ -11,7 +11,7 @@ import {
   type QuotaWindow,
   updateProviderCredentialSchema,
 } from "@paperclipai/shared";
-import { fetchClaudeQuota } from "@paperclipai/adapter-claude-local/server";
+import { fetchClaudeCliQuotaForOAuth, fetchClaudeQuota } from "@paperclipai/adapter-claude-local/server";
 import { fetchCodexQuota, runCodexLogin } from "@paperclipai/adapter-codex-local/server";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
@@ -243,23 +243,34 @@ export function credentialRoutes(db: Db) {
       }
       try {
         const payload = await svc.getDecryptedPayload(credential.id);
-        const accessToken = typeof payload?.accessToken === "string" ? payload.accessToken : "";
+        const payloadRecord = payload ?? {};
+        const accessToken = typeof payloadRecord.accessToken === "string" ? payloadRecord.accessToken : "";
         if (!accessToken) throw new Error("credential has no accessToken");
         if (credentialType === "claude_oauth") {
+          let source = "anthropic-oauth-usage";
+          let quotaWindows: QuotaWindow[];
+          try {
+            quotaWindows = await fetchClaudeQuota(accessToken);
+          } catch (oauthError) {
+            try {
+              quotaWindows = await fetchClaudeCliQuotaForOAuth(payloadRecord, { timeoutMs: 35_000 });
+              source = "claude-cli-usage";
+            } catch {
+              throw oauthError;
+            }
+          }
+          setQuotaSuccessCache(credential.id, {
+            type: credentialType,
+            credentialUpdatedAtMs: credential.updatedAt.getTime(),
+            source,
+            quotaWindows,
+            sampledAt,
+          });
           return {
             ...base,
             supported: true,
             ok: true,
-            quotaWindows: await fetchClaudeQuota(accessToken).then((quotaWindows) => {
-              setQuotaSuccessCache(credential.id, {
-                type: credentialType,
-                credentialUpdatedAtMs: credential.updatedAt.getTime(),
-                source,
-                quotaWindows,
-                sampledAt,
-              });
-              return quotaWindows;
-            }),
+            quotaWindows,
             source,
             stale: false,
             cachedAt: null,

@@ -14,6 +14,7 @@ export {
   readClaudeToken,
   fetchClaudeQuota,
   fetchClaudeCliQuota,
+  fetchClaudeCliQuotaForOAuth,
   captureClaudeCliUsageText,
   parseClaudeCliUsageText,
   toPercent,

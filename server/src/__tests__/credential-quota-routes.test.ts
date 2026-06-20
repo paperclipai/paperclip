@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFetchClaudeQuota = vi.hoisted(() => vi.fn());
+const mockFetchClaudeCliQuotaForOAuth = vi.hoisted(() => vi.fn());
 const mockFetchCodexQuota = vi.hoisted(() => vi.fn());
 const mockRunCodexLogin = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -16,6 +17,7 @@ const mockCredentialService = vi.hoisted(() => ({
 
 vi.mock("@paperclipai/adapter-claude-local/server", () => ({
   fetchClaudeQuota: mockFetchClaudeQuota,
+  fetchClaudeCliQuotaForOAuth: mockFetchClaudeCliQuotaForOAuth,
 }));
 
 vi.mock("@paperclipai/adapter-codex-local/server", () => ({
@@ -71,6 +73,7 @@ function claudeCredential(id: string) {
 describe("credential quota route caching", () => {
   beforeEach(() => {
     mockFetchClaudeQuota.mockReset();
+    mockFetchClaudeCliQuotaForOAuth.mockReset();
     mockFetchCodexQuota.mockReset();
     mockRunCodexLogin.mockReset();
     mockLogActivity.mockReset();
@@ -113,11 +116,13 @@ describe("credential quota route caching", () => {
     const app = createApp();
     mockCredentialService.list.mockResolvedValue([claudeCredential("claude-cache-429")]);
     mockFetchClaudeQuota.mockRejectedValue(new Error("anthropic usage api returned 429"));
+    mockFetchClaudeCliQuotaForOAuth.mockRejectedValue(new Error("Could not parse Claude CLI usage output."));
 
     const first = await request(app).get("/api/companies/company-1/credentials/quota-windows").expect(200);
     const second = await request(app).get("/api/companies/company-1/credentials/quota-windows").expect(200);
 
     expect(mockFetchClaudeQuota).toHaveBeenCalledTimes(1);
+    expect(mockFetchClaudeCliQuotaForOAuth).toHaveBeenCalledTimes(1);
     expect(first.body[0]).toMatchObject({
       ok: false,
       quotaWindows: [],
@@ -127,6 +132,53 @@ describe("credential quota route caching", () => {
       ok: false,
       quotaWindows: [],
       error: "Anthropic usage endpoint is rate limited (HTTP 429). OAuth can still be active; showing the last successful quota sample when available.",
+    });
+  });
+
+  it("falls back to parsing Claude CLI /usage when the OAuth usage endpoint is rate limited", async () => {
+    const app = createApp();
+    mockCredentialService.list.mockResolvedValue([claudeCredential("claude-cli-fallback")]);
+    mockCredentialService.getDecryptedPayload.mockResolvedValue({
+      accessToken: "claude-token",
+      refreshToken: "refresh-token",
+      subscriptionType: "max",
+    });
+    mockFetchClaudeQuota.mockRejectedValue(new Error("anthropic usage api returned 429"));
+    mockFetchClaudeCliQuotaForOAuth.mockResolvedValue([
+      {
+        label: "Current session",
+        usedPercent: 12,
+        resetsAt: null,
+        valueLabel: null,
+        detail: "Resets 5pm",
+      },
+      {
+        label: "Current week (all models)",
+        usedPercent: 34,
+        resetsAt: null,
+        valueLabel: null,
+        detail: "Resets Monday",
+      },
+    ]);
+
+    const response = await request(app).get("/api/companies/company-1/credentials/quota-windows").expect(200);
+
+    expect(mockFetchClaudeQuota).toHaveBeenCalledTimes(1);
+    expect(mockFetchClaudeCliQuotaForOAuth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accessToken: "claude-token",
+        refreshToken: "refresh-token",
+        subscriptionType: "max",
+      }),
+      { timeoutMs: 35_000 },
+    );
+    expect(response.body[0]).toMatchObject({
+      ok: true,
+      source: "claude-cli-usage",
+      quotaWindows: [
+        { label: "Current session", usedPercent: 12 },
+        { label: "Current week (all models)", usedPercent: 34 },
+      ],
     });
   });
 });

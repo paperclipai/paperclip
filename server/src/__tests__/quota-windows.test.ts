@@ -357,6 +357,12 @@ describe("parseClaudeCliUsageText", () => {
       "Claude CLI could not load usage data. Open the CLI and retry `/usage`.",
     );
   });
+
+  it("rejects an incomplete Claude usage panel that has no parsed percentages", () => {
+    expect(() => parseClaudeCliUsageText("Settings: Status Config Usage\nCurrent session\nRetrying...")).toThrow(
+      "Could not parse Claude CLI usage percentages.",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

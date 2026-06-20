@@ -28,11 +28,13 @@ function createClaudeQuotaEnv(): Record<string, string> {
     if (key.startsWith("ANTHROPIC_")) continue;
     env[key] = value;
   }
-  // Suppress the auto-updater + telemetry chatter so the TUI reaches its prompt faster
-  // and stdout isn't polluted with update/feedback noise that confuses panel detection.
-  env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+  // Suppress updater + telemetry chatter while still allowing the `/usage`
+  // command to contact Claude's usage service.
   env.DISABLE_AUTOUPDATER = "1";
   env.DISABLE_TELEMETRY = "1";
+  env.TERM = env.TERM || "xterm-256color";
+  env.COLUMNS = env.COLUMNS || "100";
+  env.LINES = env.LINES || "40";
   return env;
 }
 
@@ -426,22 +428,132 @@ export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
   if (!windows.some((window) => normalizeForLabelSearch(window.label) === "currentsession")) {
     throw new Error("Could not parse Claude CLI usage output.");
   }
+  if (!windows.some((window) => window.usedPercent != null)) {
+    throw new Error("Could not parse Claude CLI usage percentages.");
+  }
   return windows;
 }
 
-// The Claude CLI `/usage` probe spawned an interactive TUI through `script(1)` to scrape
-// the rendered usage panel. The PTY-driven approach was inherently fragile (CLI dialog
-// changes, auto-updater chatter, trust prompts, ESC/Ctrl-C ordering) and held a shell
-// pipeline open for ~25s per call, which had no place inside a production HTTP handler.
-// It is disabled by design — `getQuotaWindows` falls through to OAuth API polling, which
-// is the only supported source for subscription quota now. The exports are kept so
-// stale imports continue to compile.
-export async function captureClaudeCliUsageText(): Promise<string> {
-  throw new Error("Claude CLI /usage probe is disabled");
+type ClaudeCliQuotaOptions = {
+  command?: string;
+  cwd?: string;
+  timeoutMs?: number;
+  oauth?: Record<string, unknown>;
+};
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-export async function fetchClaudeCliQuota(): Promise<QuotaWindow[]> {
-  throw new Error("Claude CLI /usage probe is disabled");
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeClaudeOauthPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const accessToken = readString(payload.accessToken);
+  if (!accessToken) throw new Error("credential has no accessToken");
+  const refreshToken = readString(payload.refreshToken) ?? "";
+  const expiresAt = typeof payload.expiresAt === "number" ? payload.expiresAt : 4102444800000;
+  const scopes = Array.isArray(payload.scopes) && payload.scopes.every((scope) => typeof scope === "string")
+    ? payload.scopes
+    : ["user:inference", "user:profile", "user:sessions:claude_code", "user:file_upload", "user:mcp_servers"];
+  const subscriptionType = readString(payload.subscriptionType) ?? "max";
+  const oauth: Record<string, unknown> = {
+    accessToken,
+    refreshToken,
+    expiresAt,
+    scopes,
+    subscriptionType,
+  };
+  const rateLimitTier = readString(payload.rateLimitTier);
+  if (rateLimitTier) oauth.rateLimitTier = rateLimitTier;
+  return oauth;
+}
+
+async function prepareClaudeQuotaHome(oauth: Record<string, unknown>): Promise<string> {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-usage-"));
+  const claudeDir = path.join(home, ".claude");
+  await fs.mkdir(claudeDir, { recursive: true });
+  await fs.writeFile(
+    path.join(claudeDir, ".credentials.json"),
+    JSON.stringify({ claudeAiOauth: normalizeClaudeOauthPayload(oauth) }),
+    "utf-8",
+  );
+  await fs.chmod(path.join(claudeDir, ".credentials.json"), 0o600).catch(() => undefined);
+  await fs.writeFile(
+    path.join(home, ".claude.json"),
+    JSON.stringify({ hasCompletedOnboarding: true, lastOnboardingVersion: "2.1.141" }),
+    "utf-8",
+  );
+  await fs.chmod(path.join(home, ".claude.json"), 0o600).catch(() => undefined);
+  await fs.writeFile(
+    path.join(claudeDir, "settings.json"),
+    JSON.stringify({
+      skipDangerousModePermissionPrompt: true,
+      skipAutoPermissionPrompt: true,
+    }),
+    "utf-8",
+  );
+  await fs.chmod(path.join(claudeDir, "settings.json"), 0o600).catch(() => undefined);
+  return home;
+}
+
+export async function captureClaudeCliUsageText(options: ClaudeCliQuotaOptions = {}): Promise<string> {
+  const command = options.command ?? "claude";
+  const timeoutMs = Math.max(10_000, Math.min(options.timeoutMs ?? 35_000, 60_000));
+  const preparedHome = options.oauth ? await prepareClaudeQuotaHome(options.oauth) : null;
+  const env = createClaudeQuotaEnv();
+  if (preparedHome) {
+    env.HOME = preparedHome;
+    env.CLAUDE_CONFIG_DIR = path.join(preparedHome, ".claude");
+  }
+
+  const commandLine = `${shellQuote(command)} --dangerously-skip-permissions`;
+  const driver = [
+    "set -euo pipefail",
+    "(",
+    "  sleep 4",
+    "  printf '/usage\\r'",
+    "  sleep 24",
+    "  printf '\\033'",
+    "  sleep 0.5",
+    "  printf '\\003'",
+    "  sleep 0.5",
+    "  printf '\\003'",
+    `) | script -q -e -c ${shellQuote(commandLine)} /dev/null`,
+  ].join("\n");
+
+  try {
+    const { stdout, stderr } = await execFileAsync("bash", ["-lc", driver], {
+      cwd: options.cwd ?? process.cwd(),
+      env,
+      timeout: timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return `${stdout}${stderr}`;
+  } catch (error) {
+    const partialOutput = [
+      typeof (error as { stdout?: unknown }).stdout === "string" ? (error as { stdout: string }).stdout : "",
+      typeof (error as { stderr?: unknown }).stderr === "string" ? (error as { stderr: string }).stderr : "",
+    ].join("");
+    if (usageOutputLooksRelevant(partialOutput)) return partialOutput;
+    throw error;
+  } finally {
+    if (preparedHome) {
+      await fs.rm(preparedHome, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+}
+
+export async function fetchClaudeCliQuota(options: ClaudeCliQuotaOptions = {}): Promise<QuotaWindow[]> {
+  return parseClaudeCliUsageText(await captureClaudeCliUsageText(options));
+}
+
+export async function fetchClaudeCliQuotaForOAuth(
+  oauth: Record<string, unknown>,
+  options: Omit<ClaudeCliQuotaOptions, "oauth"> = {},
+): Promise<QuotaWindow[]> {
+  return fetchClaudeCliQuota({ ...options, oauth });
 }
 
 function formatProviderError(source: string, error: unknown): string {
@@ -470,6 +582,12 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
       return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_OAUTH, ok: true, windows };
     } catch (error) {
       errors.push(formatProviderError("Anthropic OAuth usage", error));
+      try {
+        const windows = await fetchClaudeCliQuota();
+        return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_CLI, ok: true, windows };
+      } catch (cliError) {
+        errors.push(formatProviderError("Claude CLI /usage", cliError));
+      }
     }
   }
 
