@@ -107,7 +107,17 @@ Use the cheap local default unless you are specifically working on browser flows
 pnpm test
 ```
 
-`pnpm test` runs the Vitest suite only. For interactive Vitest watch mode use:
+`pnpm test` is a conditional wrapper:
+- Inside No Mistakes validation worktrees (where the working directory path contains `.no-mistakes`), it runs only the focused Done status transition guard route tests (`server/src/__tests__/issue-done-guard-routes.test.ts`) to speed up push-time checks.
+- Outside of No Mistakes worktrees, it runs the standard server test runner.
+
+To run the full stable server test suite regardless of the worktree path, use:
+
+```sh
+pnpm test:run
+```
+
+For interactive Vitest watch mode use:
 
 ```sh
 pnpm test:watch

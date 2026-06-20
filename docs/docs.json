@@ -125,7 +125,9 @@
               "api/costs",
               "api/secrets",
               "api/activity",
-              "api/dashboard"
+              "api/dashboard",
+              "api/instance-settings",
+              "api/environments"
             ]
           }
         ]

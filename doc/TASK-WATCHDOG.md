@@ -61,6 +61,9 @@ A single watched issue holds **at most one active watchdog**. Re-assigning the a
 
 ### From the UI
 
+> **Prerequisite:**
+> The watchdog UI elements in the New Issue dialog and Issue Properties panel are only visible if `enableTaskWatchdogs` is enabled under `Instance Settings > Experimental` (or `enableTaskWatchdogs: true` in the instance settings DB table).
+
 Two surfaces edit the watchdog:
 
 - **New issue dialog** — the three-dot menu reveals a **Watchdog** row. Pick an agent and (optionally) type instructions. The chip in the dialog footer shows the chosen agent and a snippet of the instructions. The watchdog is created together with the issue.

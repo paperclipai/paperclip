@@ -356,7 +356,8 @@ pnpm dev:once         # Full dev without file watching
 pnpm dev:server       # Server only
 pnpm build            # Build all
 pnpm typecheck        # Type checking
-pnpm test             # Cheap default test run (Vitest only)
+pnpm test             # Cheap conditional test run (focused guard suite in No Mistakes, standard suite otherwise)
+pnpm test:run         # Force run the full stable server test suite
 pnpm test:watch       # Vitest watch mode
 pnpm test:e2e         # Playwright browser suite
 pnpm db:generate      # Generate DB migration

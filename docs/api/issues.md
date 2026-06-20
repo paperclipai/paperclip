@@ -59,6 +59,9 @@ POST /api/companies/{companyId}/issues
 }
 ```
 
+> **Note on `watchdogDiscovery`:**
+> The `watchdogDiscovery` field is restricted and only accepted when the request is made by a task-watchdog agent run creating watchdog-discovered product-bug follow-ups. Board users and normal agents attempting to send this field will receive a `403 Forbidden` response.
+
 ## Update Issue
 
 ```

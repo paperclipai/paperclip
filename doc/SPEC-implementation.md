@@ -451,6 +451,27 @@ The current implementation includes additional V1-control-plane tables beyond th
 - Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, `routines`, `routine_revisions`, `routine_triggers`, and `routine_runs`.
 - Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
 
+## 7.17 Instance-scoped Environments
+
+Instance-scoped environments represent the execution environments (such as Local process, Daytona, E2B, etc.) configured for the entire Paperclip instance:
+- `environments` table:
+  - `id` uuid pk
+  - `name` text not null
+  - `description` text null
+  - `driver` text not null (e.g. `process`, `e2b`, `daytona`)
+  - `status` text not null
+  - `config` jsonb not null default '{}'
+  - `env_vars` jsonb not null default '[]' (stores environment-level variables)
+  - Note: `company_id` was removed to make environments instance-scoped instead of company-scoped.
+- `instance_settings` table:
+  - `default_environment_id` uuid fk `environments.id` null
+  
+Merge Precedence Order (from lowest to highest):
+1. Environment env vars
+2. Agent adapter env vars
+3. Project env vars
+4. Routine env vars
+
 ## 8. State Machines
 
 ## 8.1 Agent Status

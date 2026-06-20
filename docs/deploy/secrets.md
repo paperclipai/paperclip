@@ -47,9 +47,13 @@ At runtime, Paperclip resolves the selected secret server-side and injects the
 resolved value under the env key from the binding row. The stored secret name
 can be human-readable; the binding key is what the agent process receives.
 
-Project env applies to every issue run in that project. Environment env applies to every run that selects that environment. When a project/environment env key
-matches an agent env key, the project/environment value wins before Paperclip injects its
-own `PAPERCLIP_*` runtime variables.
+At runtime, environment variables are merged in the following precedence order (from lowest to highest):
+1. Environment env vars (baseline configured in `Instance Settings > Environments`)
+2. Agent adapter env vars
+3. Project env vars
+4. Routine env vars (highest override)
+
+When env keys match, the higher-precedence configuration wins before Paperclip injects its own `PAPERCLIP_*` runtime variables.
 
 ## Default Provider: `local_encrypted`
 
