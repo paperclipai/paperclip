@@ -13,6 +13,14 @@ import { environmentsApi } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { secretsApi } from "@/api/secrets";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { EnvVarEditor } from "@/components/EnvVarEditor";
 import { JsonSchemaForm, getDefaultValues, validateJsonSchemaForm } from "@/components/JsonSchemaForm";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -181,6 +189,7 @@ export function CompanyEnvironments() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const [environmentDialogOpen, setEnvironmentDialogOpen] = useState(false);
   const [editingEnvironmentId, setEditingEnvironmentId] = useState<string | null>(null);
   const [environmentForm, setEnvironmentForm] = useState<EnvironmentFormState>(createEmptyEnvironmentForm);
   const [probeResults, setProbeResults] = useState<Record<string, EnvironmentProbeResult | null>>({});
@@ -245,13 +254,17 @@ export function CompanyEnvironments() {
       return await environmentsApi.create(selectedCompanyId!, body);
     },
     onSuccess: async (environment) => {
+      const wasEditing = editingEnvironmentId !== null;
       await queryClient.invalidateQueries({
         queryKey: queryKeys.environments.list(selectedCompanyId!),
       });
+      setEnvironmentDialogOpen(false);
       setEditingEnvironmentId(null);
       setEnvironmentForm(createEmptyEnvironmentForm());
+      environmentMutation.reset();
+      draftEnvironmentProbeMutation.reset();
       pushToast({
-        title: editingEnvironmentId ? "Environment updated" : "Environment created",
+        title: wasEditing ? "Environment updated" : "Environment created",
         body: `${environment.name} is ready.`,
         tone: "success",
       });
@@ -345,14 +358,26 @@ export function CompanyEnvironments() {
   });
 
   useEffect(() => {
+    setEnvironmentDialogOpen(false);
     setEditingEnvironmentId(null);
     setEnvironmentForm(createEmptyEnvironmentForm());
     setProbeResults({});
     setTestingEnvironmentId(null);
   }, [selectedCompanyId]);
 
+  function handleStartCreateEnvironment() {
+    setEditingEnvironmentId(null);
+    setEnvironmentForm(createEmptyEnvironmentForm());
+    environmentMutation.reset();
+    draftEnvironmentProbeMutation.reset();
+    setEnvironmentDialogOpen(true);
+  }
+
   function handleEditEnvironment(environment: Environment) {
+    environmentMutation.reset();
+    draftEnvironmentProbeMutation.reset();
     setEditingEnvironmentId(environment.id);
+    setEnvironmentDialogOpen(true);
     if (environment.driver === "ssh") {
       const ssh = readSshConfig(environment);
       setEnvironmentForm({
@@ -396,9 +421,13 @@ export function CompanyEnvironments() {
     });
   }
 
-  function handleCancelEnvironmentEdit() {
+  function closeEnvironmentDialog() {
+    if (environmentMutation.isPending) return;
+    setEnvironmentDialogOpen(false);
     setEditingEnvironmentId(null);
     setEnvironmentForm(createEmptyEnvironmentForm());
+    environmentMutation.reset();
+    draftEnvironmentProbeMutation.reset();
   }
 
   const discoveredPluginSandboxProviders = Object.entries(environmentCapabilities?.sandboxProviders ?? {})
@@ -590,6 +619,12 @@ export function CompanyEnvironments() {
         </div>
 
         <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm font-medium">Saved environments</div>
+            <Button size="sm" onClick={handleStartCreateEnvironment}>
+              Add environment
+            </Button>
+          </div>
           {savedEnvironments.length === 0 ? (
             <div className="text-sm text-muted-foreground">No saved environments yet. Local remains the default until you add another target.</div>
           ) : (
@@ -672,256 +707,269 @@ export function CompanyEnvironments() {
             })
           )}
         </div>
+      </div>
 
-        <div className="border-t border-border/60 pt-4">
-          <div className="mb-3 text-sm font-medium">
-            {editingEnvironmentId ? "Edit environment" : "Add environment"}
-          </div>
-          <div className="space-y-3">
-            <Field label="Name" hint="Operator-facing name for this execution target.">
-              <input
-                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                type="text"
-                value={environmentForm.name}
-                onChange={(e) => setEnvironmentForm((current) => ({ ...current, name: e.target.value }))}
-              />
-            </Field>
-            <Field label="Description" hint="Optional note about what this machine is for.">
-              <input
-                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                type="text"
-                value={environmentForm.description}
-                onChange={(e) => setEnvironmentForm((current) => ({ ...current, description: e.target.value }))}
-              />
-            </Field>
-            <Field label="Driver" hint="Sandbox stores plugin-backed provider config on the shared environment seam. SSH stores a remote machine target.">
-              <select
-                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                value={environmentForm.driver}
-                onChange={(e) =>
-                  setEnvironmentForm((current) => ({
-                    ...current,
-                    sandboxProvider:
-                      e.target.value === "sandbox"
-                        ? current.sandboxProvider.trim() || discoveredPluginSandboxProviders[0]?.provider || ""
-                        : current.sandboxProvider,
-                    sandboxConfig:
-                      e.target.value === "sandbox"
-                        ? (
-                            current.sandboxProvider.trim().length > 0 && current.driver === "sandbox"
-                              ? current.sandboxConfig
-                              : discoveredPluginSandboxProviders[0]?.configSchema
-                                ? getDefaultValues(discoveredPluginSandboxProviders[0].configSchema as any)
-                                : {}
-                          )
-                        : current.sandboxConfig,
-                    driver: e.target.value === "sandbox" ? "sandbox" : "ssh",
-                  }))}
-              >
-                {sandboxCreationEnabled || environmentForm.driver === "sandbox" ? (
-                  <option value="sandbox">Sandbox</option>
-                ) : null}
-                <option value="ssh">SSH</option>
-                {environmentForm.driver === "local" ? (
-                  <option value="local">Local</option>
-                ) : null}
-              </select>
-            </Field>
+      <Dialog
+        open={environmentDialogOpen}
+        onOpenChange={(open) => {
+          if (open) {
+            setEnvironmentDialogOpen(true);
+            return;
+          }
+          closeEnvironmentDialog();
+        }}
+      >
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+          <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
+            <DialogTitle>{editingEnvironmentId ? "Edit environment" : "Add environment"}</DialogTitle>
+            <DialogDescription>
+              Configure a reusable execution target for your agents.
+            </DialogDescription>
+          </DialogHeader>
 
-            {environmentForm.driver === "ssh" ? (
-              <div className="grid gap-3 md:grid-cols-2">
-                <Field label="Host" hint="DNS name or IP address for the remote machine.">
-                  <input
-                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                    type="text"
-                    value={environmentForm.sshHost}
-                    onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshHost: e.target.value }))}
-                  />
-                </Field>
-                <Field label="Port" hint="Defaults to 22.">
-                  <input
-                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={environmentForm.sshPort}
-                    onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshPort: e.target.value }))}
-                  />
-                </Field>
-                <Field label="Username" hint="SSH login user.">
-                  <input
-                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                    type="text"
-                    value={environmentForm.sshUsername}
-                    onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshUsername: e.target.value }))}
-                  />
-                </Field>
-                <Field label="Remote workspace path" hint="Absolute path that Paperclip will verify during SSH connection tests.">
-                  <input
-                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                    type="text"
-                    placeholder="/Users/paperclip/workspace"
-                    value={environmentForm.sshRemoteWorkspacePath}
-                    onChange={(e) =>
-                      setEnvironmentForm((current) => ({ ...current, sshRemoteWorkspacePath: e.target.value }))}
-                  />
-                </Field>
-                <Field label="Private key" hint="Optional PEM private key. Leave blank to rely on the server's SSH agent or default keychain.">
-                  <div className="space-y-2">
-                    <select
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+            <div className="space-y-4">
+              <Field label="Name" hint="Operator-facing name for this execution target.">
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                  type="text"
+                  value={environmentForm.name}
+                  onChange={(e) => setEnvironmentForm((current) => ({ ...current, name: e.target.value }))}
+                />
+              </Field>
+              <Field label="Description" hint="Optional note about what this machine is for.">
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                  type="text"
+                  value={environmentForm.description}
+                  onChange={(e) => setEnvironmentForm((current) => ({ ...current, description: e.target.value }))}
+                />
+              </Field>
+              <Field label="Driver" hint="Sandbox stores plugin-backed provider config on the shared environment seam. SSH stores a remote machine target.">
+                <select
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                  value={environmentForm.driver}
+                  onChange={(e) =>
+                    setEnvironmentForm((current) => ({
+                      ...current,
+                      sandboxProvider:
+                        e.target.value === "sandbox"
+                          ? current.sandboxProvider.trim() || discoveredPluginSandboxProviders[0]?.provider || ""
+                          : current.sandboxProvider,
+                      sandboxConfig:
+                        e.target.value === "sandbox"
+                          ? (
+                              current.sandboxProvider.trim().length > 0 && current.driver === "sandbox"
+                                ? current.sandboxConfig
+                                : discoveredPluginSandboxProviders[0]?.configSchema
+                                  ? getDefaultValues(discoveredPluginSandboxProviders[0].configSchema as any)
+                                  : {}
+                            )
+                          : current.sandboxConfig,
+                      driver: e.target.value === "sandbox" ? "sandbox" : "ssh",
+                    }))}
+                >
+                  {sandboxCreationEnabled || environmentForm.driver === "sandbox" ? (
+                    <option value="sandbox">Sandbox</option>
+                  ) : null}
+                  <option value="ssh">SSH</option>
+                  {environmentForm.driver === "local" ? (
+                    <option value="local">Local</option>
+                  ) : null}
+                </select>
+              </Field>
+
+              {environmentForm.driver === "ssh" ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field label="Host" hint="DNS name or IP address for the remote machine.">
+                    <input
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                      value={environmentForm.sshPrivateKeySecretId}
+                      type="text"
+                      value={environmentForm.sshHost}
+                      onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshHost: e.target.value }))}
+                    />
+                  </Field>
+                  <Field label="Port" hint="Defaults to 22.">
+                    <input
+                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={environmentForm.sshPort}
+                      onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshPort: e.target.value }))}
+                    />
+                  </Field>
+                  <Field label="Username" hint="SSH login user.">
+                    <input
+                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                      type="text"
+                      value={environmentForm.sshUsername}
+                      onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshUsername: e.target.value }))}
+                    />
+                  </Field>
+                  <Field label="Remote workspace path" hint="Absolute path that Paperclip will verify during SSH connection tests.">
+                    <input
+                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                      type="text"
+                      placeholder="/Users/paperclip/workspace"
+                      value={environmentForm.sshRemoteWorkspacePath}
                       onChange={(e) =>
-                        setEnvironmentForm((current) => ({
-                          ...current,
-                          sshPrivateKeySecretId: e.target.value,
-                          sshPrivateKey: e.target.value ? "" : current.sshPrivateKey,
-                        }))}
-                    >
-                      <option value="">No saved secret</option>
-                      {(secrets ?? []).map((secret) => (
-                        <option key={secret.id} value={secret.id}>{secret.name}</option>
-                      ))}
-                    </select>
+                        setEnvironmentForm((current) => ({ ...current, sshRemoteWorkspacePath: e.target.value }))}
+                    />
+                  </Field>
+                  <Field label="Private key" hint="Optional PEM private key. Leave blank to rely on the server's SSH agent or default keychain.">
+                    <div className="space-y-2">
+                      <select
+                        className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                        value={environmentForm.sshPrivateKeySecretId}
+                        onChange={(e) =>
+                          setEnvironmentForm((current) => ({
+                            ...current,
+                            sshPrivateKeySecretId: e.target.value,
+                            sshPrivateKey: e.target.value ? "" : current.sshPrivateKey,
+                          }))}
+                      >
+                        <option value="">No saved secret</option>
+                        {(secrets ?? []).map((secret) => (
+                          <option key={secret.id} value={secret.id}>{secret.name}</option>
+                        ))}
+                      </select>
+                      <textarea
+                        className="h-32 w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none"
+                        value={environmentForm.sshPrivateKey}
+                        disabled={!!environmentForm.sshPrivateKeySecretId}
+                        onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshPrivateKey: e.target.value }))}
+                      />
+                    </div>
+                  </Field>
+                  <Field label="Known hosts" hint="Optional known_hosts block used when strict host key checking is enabled.">
                     <textarea
                       className="h-32 w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none"
-                      value={environmentForm.sshPrivateKey}
-                      disabled={!!environmentForm.sshPrivateKeySecretId}
-                      onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshPrivateKey: e.target.value }))}
+                      value={environmentForm.sshKnownHosts}
+                      onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshKnownHosts: e.target.value }))}
+                    />
+                  </Field>
+                  <div className="md:col-span-2">
+                    <ToggleField
+                      label="Strict host key checking"
+                      hint="Keep this on unless you deliberately want probe-time host key acceptance disabled."
+                      checked={environmentForm.sshStrictHostKeyChecking}
+                      onChange={(checked) =>
+                        setEnvironmentForm((current) => ({ ...current, sshStrictHostKeyChecking: checked }))}
                     />
                   </div>
-                </Field>
-                <Field label="Known hosts" hint="Optional known_hosts block used when strict host key checking is enabled.">
-                  <textarea
-                    className="h-32 w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none"
-                    value={environmentForm.sshKnownHosts}
-                    onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshKnownHosts: e.target.value }))}
-                  />
-                </Field>
-                <div className="md:col-span-2">
-                  <ToggleField
-                    label="Strict host key checking"
-                    hint="Keep this on unless you deliberately want probe-time host key acceptance disabled."
-                    checked={environmentForm.sshStrictHostKeyChecking}
-                    onChange={(checked) =>
-                      setEnvironmentForm((current) => ({ ...current, sshStrictHostKeyChecking: checked }))}
-                  />
                 </div>
-              </div>
-            ) : null}
+              ) : null}
 
-            {environmentForm.driver === "sandbox" ? (
-              <div className="space-y-3">
-                <Field label="Provider" hint="Installed run-capable sandbox provider plugins appear here.">
-                  <select
-                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                    value={environmentForm.sandboxProvider}
-                    onChange={(e) => {
-                      const nextProviderKey = e.target.value;
-                      const nextProvider = pluginSandboxProviders.find((provider) => provider.provider === nextProviderKey) ?? null;
-                      setEnvironmentForm((current) => ({
-                        ...current,
-                        sandboxProvider: nextProviderKey,
-                        sandboxConfig:
-                          current.sandboxProvider === nextProviderKey
-                            ? current.sandboxConfig
-                            : nextProvider?.configSchema
-                              ? getDefaultValues(nextProvider.configSchema as any)
-                              : {},
-                      }));
-                    }}
-                  >
-                    {pluginSandboxProviders.map((provider) => (
-                      <option key={provider.provider} value={provider.provider}>
-                        {provider.displayName}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                {selectedSandboxProvider?.description ? (
-                  <div className="text-xs text-muted-foreground">
-                    {selectedSandboxProvider.description}
-                  </div>
-                ) : null}
-                {selectedSandboxSchema ? (
-                  <JsonSchemaForm
-                    schema={selectedSandboxSchema as any}
-                    values={environmentForm.sandboxConfig}
-                    onChange={(values) =>
-                      setEnvironmentForm((current) => ({ ...current, sandboxConfig: values }))}
-                    errors={sandboxConfigErrors}
-                  />
-                ) : (
-                  <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                    This provider does not declare additional configuration fields.
-                  </div>
-                )}
-              </div>
-            ) : null}
+              {environmentForm.driver === "sandbox" ? (
+                <div className="space-y-3">
+                  <Field label="Provider" hint="Installed run-capable sandbox provider plugins appear here.">
+                    <select
+                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                      value={environmentForm.sandboxProvider}
+                      onChange={(e) => {
+                        const nextProviderKey = e.target.value;
+                        const nextProvider = pluginSandboxProviders.find((provider) => provider.provider === nextProviderKey) ?? null;
+                        setEnvironmentForm((current) => ({
+                          ...current,
+                          sandboxProvider: nextProviderKey,
+                          sandboxConfig:
+                            current.sandboxProvider === nextProviderKey
+                              ? current.sandboxConfig
+                              : nextProvider?.configSchema
+                                ? getDefaultValues(nextProvider.configSchema as any)
+                                : {},
+                        }));
+                      }}
+                    >
+                      {pluginSandboxProviders.map((provider) => (
+                        <option key={provider.provider} value={provider.provider}>
+                          {provider.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  {selectedSandboxProvider?.description ? (
+                    <div className="text-xs text-muted-foreground">
+                      {selectedSandboxProvider.description}
+                    </div>
+                  ) : null}
+                  {selectedSandboxSchema ? (
+                    <JsonSchemaForm
+                      schema={selectedSandboxSchema as any}
+                      values={environmentForm.sandboxConfig}
+                      onChange={(values) =>
+                        setEnvironmentForm((current) => ({ ...current, sandboxConfig: values }))}
+                      errors={sandboxConfigErrors}
+                    />
+                  ) : (
+                    <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                      This provider does not declare additional configuration fields.
+                    </div>
+                  )}
+                </div>
+              ) : null}
 
-            <Field
-              label="Environment variables"
-              hint="Injected into runs that resolve through this environment. Use plain values or company secrets."
-            >
-              <EnvVarEditor
-                value={environmentForm.envVars}
-                secrets={secrets ?? []}
-                onCreateSecret={async (name, value) => await createSecret.mutateAsync({ name, value })}
-                onChange={(env) =>
-                  setEnvironmentForm((current) => ({ ...current, envVars: env ?? {} }))}
-              />
-            </Field>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                onClick={() => environmentMutation.mutate(environmentForm)}
-                disabled={environmentMutation.isPending || !environmentFormValid}
+              <Field
+                label="Environment variables"
+                hint="Injected into runs that resolve through this environment. Use plain values or company secrets."
               >
-                {environmentMutation.isPending
-                  ? editingEnvironmentId
-                    ? "Saving..."
-                    : "Creating..."
-                  : editingEnvironmentId
-                    ? "Save environment"
-                    : "Create environment"}
-              </Button>
-              {editingEnvironmentId ? (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={handleCancelEnvironmentEdit}
-                  disabled={environmentMutation.isPending}
-                >
-                  Cancel
-                </Button>
-              ) : null}
-              {environmentForm.driver !== "local" ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => draftEnvironmentProbeMutation.mutate(environmentForm)}
-                  disabled={draftEnvironmentProbeMutation.isPending || !environmentFormValid}
-                >
-                  {draftEnvironmentProbeMutation.isPending ? "Testing..." : "Test"}
-                </Button>
-              ) : null}
+                <EnvVarEditor
+                  value={environmentForm.envVars}
+                  secrets={secrets ?? []}
+                  onCreateSecret={async (name, value) => await createSecret.mutateAsync({ name, value })}
+                  onChange={(env) =>
+                    setEnvironmentForm((current) => ({ ...current, envVars: env ?? {} }))}
+                />
+              </Field>
+
               {environmentMutation.isError ? (
-                <span className="text-xs text-destructive">
+                <div className="text-xs text-destructive">
                   {environmentMutation.error instanceof Error
                     ? environmentMutation.error.message
                     : "Failed to save environment"}
-                </span>
+                </div>
               ) : null}
               {draftEnvironmentProbeMutation.data ? (
-                <span className={draftEnvironmentProbeMutation.data.ok ? "text-xs text-green-600" : "text-xs text-destructive"}>
+                <div className={draftEnvironmentProbeMutation.data.ok ? "text-xs text-green-600" : "text-xs text-destructive"}>
                   {draftEnvironmentProbeMutation.data.summary}
-                </span>
+                </div>
               ) : null}
             </div>
           </div>
-        </div>
-      </div>
+
+          <DialogFooter className="border-t border-border/60 bg-background px-6 py-4">
+            <Button
+              variant="outline"
+              onClick={closeEnvironmentDialog}
+              disabled={environmentMutation.isPending}
+            >
+              Cancel
+            </Button>
+            {environmentForm.driver !== "local" ? (
+              <Button
+                variant="outline"
+                onClick={() => draftEnvironmentProbeMutation.mutate(environmentForm)}
+                disabled={draftEnvironmentProbeMutation.isPending || !environmentFormValid}
+              >
+                {draftEnvironmentProbeMutation.isPending ? "Testing..." : "Test"}
+              </Button>
+            ) : null}
+            <Button
+              onClick={() => environmentMutation.mutate(environmentForm)}
+              disabled={environmentMutation.isPending || !environmentFormValid}
+            >
+              {environmentMutation.isPending
+                ? editingEnvironmentId
+                  ? "Saving..."
+                  : "Creating..."
+                : editingEnvironmentId
+                  ? "Save environment"
+                  : "Create environment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
