@@ -1194,6 +1194,13 @@ export function resolveModelProfileApplication(input: {
     adapterConfig: {
       ...parseObject(adapterProfile.adapterConfig),
       ...runtimeProfile.adapterConfig,
+      ...(() => {
+        const env = deepMergeAdapterEnv(
+          parseObject(adapterProfile.adapterConfig).env,
+          parseObject(runtimeProfile.adapterConfig).env,
+        );
+        return env ? { env } : {};
+      })(),
     },
   };
 }
@@ -1203,11 +1210,39 @@ export function mergeModelProfileAdapterConfig(input: {
   modelProfile: ModelProfileApplication;
   issueAdapterConfig: Record<string, unknown> | null | undefined;
 }): Record<string, unknown> {
-  return {
+  const profileConfig = input.modelProfile.adapterConfig ?? {};
+  const issueConfig = input.issueAdapterConfig ?? {};
+  const merged: Record<string, unknown> = {
     ...input.baseConfig,
-    ...(input.modelProfile.adapterConfig ?? {}),
-    ...(input.issueAdapterConfig ?? {}),
+    ...profileConfig,
+    ...issueConfig,
   };
+  const mergedEnv = deepMergeAdapterEnv(
+    input.baseConfig.env,
+    (profileConfig as Record<string, unknown>).env,
+    (issueConfig as Record<string, unknown>).env,
+  );
+  if (mergedEnv) {
+    merged.env = mergedEnv;
+  } else {
+    delete merged.env;
+  }
+  return merged;
+}
+
+function deepMergeAdapterEnv(
+  ...sources: Array<unknown>
+): Record<string, unknown> | undefined {
+  const merged: Record<string, unknown> = {};
+  let sawAny = false;
+  for (const source of sources) {
+    const env = parseObject(source);
+    for (const [key, value] of Object.entries(env)) {
+      merged[key] = value;
+      sawAny = true;
+    }
+  }
+  return sawAny ? merged : undefined;
 }
 
 function modelProfileRunMetadata(
