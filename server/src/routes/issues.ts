@@ -5846,10 +5846,15 @@ export function issueRoutes(
       });
     } catch (gateErr) {
       if (gateErr instanceof ProductionHealthGateError) {
+        // Omit each target's `url` — it points at internal production
+        // infrastructure and must not be disclosed to issue-closers. Return
+        // only the non-identifying name/status/reason.
         res.status(409).json({
           error: gateErr.message,
           code: "production_health_gate_failed",
-          unhealthy: gateErr.results.filter((r) => !r.healthy),
+          unhealthy: gateErr.results
+            .filter((r) => !r.healthy)
+            .map((r) => ({ name: r.name, status: r.status, reason: r.reason })),
         });
         return;
       }
