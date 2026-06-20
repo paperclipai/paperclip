@@ -753,6 +753,12 @@ registry.registerPath({
     200: r.ok(z.object({
       status: z.enum(["ok", "unhealthy"]),
       version: z.string().optional(),
+      build: z.object({
+        commitSha: z.string(),
+        shortSha: z.string(),
+        branch: z.string(),
+        buildTimestamp: z.string().nullable(),
+      }).optional(),
       deploymentMode: z.string().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),

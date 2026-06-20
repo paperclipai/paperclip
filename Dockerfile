@@ -46,7 +46,7 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 ARG BUILD_SHA=unknown
-ARG BUILD_BRANCH=
+ARG BUILD_BRANCH=unknown
 ARG BUILD_TIMESTAMP=
 ENV BUILD_SHA=${BUILD_SHA} \
   BUILD_BRANCH=${BUILD_BRANCH} \
@@ -62,6 +62,9 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
+ARG BUILD_SHA=unknown
+ARG BUILD_BRANCH=unknown
+ARG BUILD_TIMESTAMP=
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
@@ -83,6 +86,9 @@ ENV NODE_ENV=production \
   PAPERCLIP_INSTANCE_ID=default \
   USER_UID=${USER_UID} \
   USER_GID=${USER_GID} \
+  BUILD_SHA=${BUILD_SHA} \
+  BUILD_BRANCH=${BUILD_BRANCH} \
+  BUILD_TIMESTAMP=${BUILD_TIMESTAMP} \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \

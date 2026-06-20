@@ -19,8 +19,8 @@ Build arguments:
 | `USER_UID` | `1000` | UID for the container `node` user (match your host UID to avoid permission issues on bind mounts) |
 | `USER_GID` | `1000` | GID for the container `node` group |
 | `BUILD_SHA` | `unknown` | Commit SHA embedded into `GET /api/health` build metadata |
-| `BUILD_BRANCH` | empty | Branch or tag embedded into `GET /api/health` build metadata |
-| `BUILD_TIMESTAMP` | empty | Deploy-build timestamp cache buster so `build.buildTimestamp` is regenerated during the server build |
+| `BUILD_BRANCH` | `unknown` | Branch or tag embedded into `GET /api/health` build metadata |
+| `BUILD_TIMESTAMP` | empty | Build timestamp embedded into `GET /api/health` build metadata |
 
 ```sh
 docker build -t paperclip-local \

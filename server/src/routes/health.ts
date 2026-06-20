@@ -7,6 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { getBuildInfo } from "../build-info.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -90,7 +91,7 @@ export function healthRoutes(
     if (!db) {
       res.json(
         exposeFullDetails
-          ? { status: "ok", version: serverVersion }
+          ? { status: "ok", version: serverVersion, build: getBuildInfo() }
           : { status: "ok", deploymentMode: opts.deploymentMode },
       );
       return;
@@ -103,6 +104,7 @@ export function healthRoutes(
       res.status(503).json({
         status: "unhealthy",
         version: serverVersion,
+        build: getBuildInfo(),
         error: "database_unreachable"
       });
       return;
@@ -168,6 +170,7 @@ export function healthRoutes(
     res.json({
       status: "ok",
       version: serverVersion,
+      build: getBuildInfo(),
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,

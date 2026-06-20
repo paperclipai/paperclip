@@ -23,6 +23,9 @@ describe("GET /health", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockReadPersistedDevServerStatus.mockReturnValue(undefined);
+    delete process.env.BUILD_SHA;
+    delete process.env.BUILD_BRANCH;
+    delete process.env.BUILD_TIMESTAMP;
   });
 
   afterEach(() => {
@@ -32,8 +35,38 @@ describe("GET /health", () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion });
+    expect(res.body).toEqual({
+      status: "ok",
+      version: serverVersion,
+      build: {
+        commitSha: "unknown",
+        shortSha: "unknown",
+        branch: "unknown",
+        buildTimestamp: null,
+      },
+    });
   }, 15_000);
+
+  it("returns Docker build metadata when present", async () => {
+    process.env.BUILD_SHA = "0123456789abcdef0123456789abcdef01234567";
+    process.env.BUILD_BRANCH = "test-build-metadata";
+    process.env.BUILD_TIMESTAMP = "2026-06-20T00:00:00Z";
+    const app = createApp();
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: "ok",
+      version: serverVersion,
+      build: {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        shortSha: "0123456789ab",
+        branch: "test-build-metadata",
+        buildTimestamp: "2026-06-20T00:00:00Z",
+      },
+    });
+  });
 
   it("returns 200 when the database probe succeeds", async () => {
     const db = {
@@ -60,6 +93,12 @@ describe("GET /health", () => {
     expect(res.body).toEqual({
       status: "unhealthy",
       version: serverVersion,
+      build: {
+        commitSha: "unknown",
+        shortSha: "unknown",
+        branch: "unknown",
+        buildTimestamp: null,
+      },
       error: "database_unreachable"
     });
   });
@@ -171,6 +210,12 @@ describe("GET /health", () => {
     expect(res.body).toMatchObject({
       status: "ok",
       version: serverVersion,
+      build: {
+        commitSha: "unknown",
+        shortSha: "unknown",
+        branch: "unknown",
+        buildTimestamp: null,
+      },
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       authReady: true,
