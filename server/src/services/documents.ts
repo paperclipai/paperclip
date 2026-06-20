@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { withTransientRetry } from "../lib/db-retry.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -207,7 +208,11 @@ export function documentService(db: Db) {
       createdByRunId?: string | null;
       sourceTrust?: typeof documents.$inferInsert.sourceTrust;
       lockedDocumentStrategy?: "conflict" | "create_new_document";
-    }) => {
+    }) =>
+      // Idempotent on baseRevisionId; safe to re-run on a transient DB blip
+      // (serialization failure / deadlock / connection drop) so the agent
+      // never sees a spurious 5xx on a document save.
+      withTransientRetry(async () => {
       const key = normalizeDocumentKey(input.key);
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
@@ -510,7 +515,7 @@ export function documentService(db: Db) {
       }
 
       throw conflict("Unable to choose a new document key for locked document", { key });
-    },
+      }),
 
     restoreIssueDocumentRevision: async (input: {
       issueId: string;

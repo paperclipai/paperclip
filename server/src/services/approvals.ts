@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { withTransientRetry } from "../lib/db-retry.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
@@ -99,11 +100,13 @@ export function approvalService(db: Db) {
         .then((rows) => rows[0] ?? null),
 
     create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
-      db
-        .insert(approvals)
-        .values({ ...data, companyId })
-        .returning()
-        .then((rows) => rows[0]),
+      withTransientRetry(() =>
+        db
+          .insert(approvals)
+          .values({ ...data, companyId })
+          .returning()
+          .then((rows) => rows[0]),
+      ),
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const { approval: updated, applied } = await resolveApproval(
