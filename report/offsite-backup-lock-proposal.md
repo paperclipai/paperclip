@@ -12,6 +12,23 @@ two schedulers start the same backup script concurrently. If the health monitor
 only checks the scheduler's last-run freshness, it can report the backup as
 healthy even when the backup log contains a recent `failed rc=11` line.
 
+## Incident Evidence
+
+- `~/.hermes/cron/jobs.json` defines the `offsite-backup` no-agent cron job for
+  `offsite-backup.sh` at `30 3 * * *`.
+- `~/Library/LaunchAgents/local.hermes.offsite-backup.plist` also runs
+  `/Users/alex/.hermes/scripts/offsite-backup.sh` at hour `3`, minute `30`.
+- `~/.hermes/logs/offsite-backup.log` records the repository-lock failure:
+  `2026-06-20T01:30:43Z offsite-backup failed rc=11`.
+- The same log later contains `2026-06-20T01:30:05Z offsite-backup ok` and
+  `2026-06-20T22:34:18Z offsite-backup ok`, so a monitor that trusts only
+  scheduler freshness or the latest success can miss the failed same-minute
+  duplicate invocation.
+- `~/.paperclip/bin/hermes-automations-status.py` currently classifies cron
+  health from enablement plus last-run age. It enumerates LaunchAgents as
+  substrate, but does not correlate same-script schedules or inspect backup log
+  terminal failure lines.
+
 ## Recommended Repair
 
 Use the internal cron job as the authoritative scheduler and disable the
@@ -37,6 +54,24 @@ Reasons:
    backup terminal log line is a failure, especially `failed rc=11`.
 5. Add duplicate-schedule detection in the monitor for jobs that point to the
    same script at the same calendar minute across cron and LaunchAgent.
+
+## Draft Patch Shape
+
+Because this touches live backup scheduling, the safe implementation should land
+as a small, reviewable operations patch rather than an agent applying it directly
+on the host:
+
+- Add an approved maintenance script that backs up
+  `~/Library/LaunchAgents/local.hermes.offsite-backup.plist`, unloads the
+  LaunchAgent, and leaves the internal cron registry as the sole scheduler.
+- Update `~/.hermes/scripts/offsite-backup.sh` to take a non-blocking lock before
+  starting restic and to exit non-zero for any restic backup, forget, or prune
+  failure.
+- Update `~/.paperclip/bin/hermes-automations-status.py` to parse the latest
+  terminal `offsite-backup` log line and mark the job RED if it is `failed`,
+  including `rc=11`.
+- Extend the same monitor to detect duplicate cron/LaunchAgent entries that
+  execute the same script at the same calendar minute.
 
 ## Acceptance Criteria
 
