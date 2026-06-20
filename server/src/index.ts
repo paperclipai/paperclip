@@ -41,6 +41,7 @@ import {
   heartbeatService,
   instanceSettingsService,
   reconcileCloudUpstreamRunsOnStartup,
+  reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -728,7 +729,23 @@ export async function startServer(): Promise<StartedServer> {
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
-  
+
+  // Backfill auth.json into any already-isolated codex_local managed home that
+  // was created by the #8272 isolation guard before the Phase 1 seeding fix.
+  // Idempotent; the Phase 1 execute-time seeding covers new strandings.
+  void reconcileCodexLocalManagedHomesOnStartup(db as any)
+    .then((result) => {
+      if (result.seeded > 0 || result.failed > 0) {
+        logger.warn(
+          { seeded: result.seeded, failed: result.failed, scanned: result.scanned },
+          "reconciled codex_local managed homes (backfilled missing auth)",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
+    });
+
   // Force the instance onto the Kubernetes sandbox provider when configured via
   // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
   // queued runs so the policy + managed k8s environments are in place. A bad

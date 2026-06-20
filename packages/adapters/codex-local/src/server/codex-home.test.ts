@@ -7,6 +7,7 @@ import {
   ensureSymlink,
   isManagedCodexHomePath,
   prepareManagedCodexHome,
+  reconcileManagedCodexHome,
   seedManagedCodexHome,
 } from "./codex-home.js";
 
@@ -311,6 +312,113 @@ describe("seedManagedCodexHome", () => {
       expect(written).toEqual({ OPENAI_API_KEY: "sk-test-123" });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// PAPA-910 Phase 2: backfill seeding for already-isolated agent homes.
+describe("reconcileManagedCodexHome", () => {
+  async function makeFixture() {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-reconcile-"));
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const agentHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-7",
+      "codex-home",
+    );
+    const sharedAuth = path.join(sharedCodexHome, "auth.json");
+    const agentAuth = path.join(agentHome, "auth.json");
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.writeFile(sharedAuth, '{"token":"shared"}', "utf8");
+    const env = {
+      CODEX_HOME: sharedCodexHome,
+      PAPERCLIP_HOME: paperclipHome,
+      PAPERCLIP_INSTANCE_ID: "default",
+    } satisfies NodeJS.ProcessEnv;
+    return { root, sharedCodexHome, sharedAuth, agentHome, agentAuth, env };
+  }
+
+  it("seeds a previously-stranded managed home and is a no-op on re-run", async () => {
+    const fx = await makeFixture();
+    try {
+      // The isolation guard created the per-agent home with no auth.json.
+      expect(await codexHomeHasUsableAuth(fx.agentHome)).toBe(false);
+
+      const first = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        env: fx.env,
+      });
+      expect(first.status).toBe("seeded");
+      expect(first.home).toBe(fx.agentHome);
+      expect((await fs.lstat(fx.agentAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(fx.agentAuth)).toBe(await fs.realpath(fx.sharedAuth));
+
+      const second = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        env: fx.env,
+      });
+      expect(second.status).toBe("already_seeded");
+      expect((await fs.lstat(fx.agentAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(fx.agentAuth)).toBe(await fs.realpath(fx.sharedAuth));
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a genuine external override untouched", async () => {
+    const fx = await makeFixture();
+    try {
+      const external = path.join(fx.root, "user-codex");
+      await fs.mkdir(external, { recursive: true });
+
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: external,
+        env: fx.env,
+      });
+      expect(result.status).toBe("external_override");
+      expect(await codexHomeHasUsableAuth(external)).toBe(false);
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports no_managed_home when no CODEX_HOME is configured", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: null,
+        env: fx.env,
+      });
+      expect(result).toEqual({ status: "no_managed_home", home: null });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("writes an API-key auth.json into a managed home when an apiKey is supplied", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        apiKey: "sk-reconcile-1",
+        env: fx.env,
+      });
+      expect(result.status).toBe("seeded");
+      const written = JSON.parse(await fs.readFile(fx.agentAuth, "utf8"));
+      expect(written).toEqual({ OPENAI_API_KEY: "sk-reconcile-1" });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
     }
   });
 });

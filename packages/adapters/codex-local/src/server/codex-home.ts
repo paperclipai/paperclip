@@ -219,3 +219,58 @@ export async function prepareManagedCodexHome(
   await seedManagedCodexHome(targetHome, env, onLog, options);
   return targetHome;
 }
+
+export type ReconcileManagedCodexHomeStatus =
+  | "no_managed_home"
+  | "external_override"
+  | "already_seeded"
+  | "seeded";
+
+export interface ReconcileManagedCodexHomeInput {
+  companyId: string | undefined;
+  configuredCodexHome: string | null | undefined;
+  apiKey?: string | null;
+  env?: NodeJS.ProcessEnv;
+  onLog?: AdapterExecutionContext["onLog"];
+}
+
+export interface ReconcileManagedCodexHomeResult {
+  status: ReconcileManagedCodexHomeStatus;
+  home: string | null;
+}
+
+const noopOnLog: AdapterExecutionContext["onLog"] = async () => {};
+
+/**
+ * Idempotently reconciles a persisted `codex_local` agent home. Phase 1 seeds
+ * managed homes at execute time; this is the backfill for agents that already
+ * carry a persisted (but unseeded) per-agent `CODEX_HOME` and have not run
+ * since the seeding fix landed. Shares the managed-home detection
+ * (`isManagedCodexHomePath`) and seeding (`seedManagedCodexHome`) logic so a
+ * genuine external/user override is never touched. Safe to re-run: when a valid
+ * `auth.json` is already present (and no API-key rewrite is requested) it is a
+ * no-op and reports `already_seeded`.
+ */
+export async function reconcileManagedCodexHome(
+  input: ReconcileManagedCodexHomeInput,
+): Promise<ReconcileManagedCodexHomeResult> {
+  const env = input.env ?? process.env;
+  const configured = nonEmpty(input.configuredCodexHome ?? undefined);
+  if (!configured) return { status: "no_managed_home", home: null };
+
+  const resolved = path.resolve(configured);
+  if (!isManagedCodexHomePath(env, input.companyId, resolved)) {
+    return { status: "external_override", home: resolved };
+  }
+
+  const apiKey = nonEmpty(input.apiKey ?? undefined);
+  const hadUsableAuth = await codexHomeHasUsableAuth(resolved);
+  await seedManagedCodexHome(resolved, env, input.onLog ?? noopOnLog, { apiKey });
+
+  // Seeding always (re)writes when an API key is supplied; otherwise it only
+  // changes disk state when auth was missing. Report accordingly so callers can
+  // distinguish a real backfill from a verified no-op.
+  const status: ReconcileManagedCodexHomeStatus =
+    !apiKey && hadUsableAuth ? "already_seeded" : "seeded";
+  return { status, home: resolved };
+}
