@@ -138,7 +138,12 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  backfillPrincipalAccessCompatibility: vi.fn(async () => ({
+    agentMembershipsInserted: 0,
+    humanGrantsInserted: 0,
+  })),
   feedbackService: feedbackServiceFactoryMock,
+  bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
@@ -162,6 +167,7 @@ vi.mock("../services/index.js", () => ({
       },
     })),
   })),
+  reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
@@ -215,6 +221,35 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("refuses authenticated public startup without an external database URL", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      deploymentExposure: "public",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://tenant.example.com",
+      databaseMode: "embedded-postgres",
+      databaseUrl: undefined,
+    }));
+
+    await expect(startServer()).rejects.toThrow(
+      "authenticated public deployments require DATABASE_URL or config.database.connectionString",
+    );
+    expect(createDbMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses authenticated public startup when DATABASE_URL is not a postgres URL", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      deploymentExposure: "public",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://tenant.example.com",
+      databaseUrl: "secret://paperclip-cloud/stacks/alpha/database/runtime-url",
+    }));
+
+    await expect(startServer()).rejects.toThrow(
+      "authenticated public deployments require DATABASE_URL to be a postgres/postgresql connection string",
+    );
+    expect(createDbMock).not.toHaveBeenCalled();
   });
 });
 
@@ -310,6 +345,21 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     expect(started.apiUrl).toBe("http://127.0.0.1:3210");
     expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
+  });
+
+  it("keeps loopback as the runtime API URL when allowed hostnames are present", async () => {
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      allowedHostnames: ["192.168.1.50"],
+    }));
+
+    const started = await startServer();
+
+    expect(started.apiUrl).toBe("http://127.0.0.1:3210");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3210");
+    expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
+    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual(
+      expect.arrayContaining(["http://127.0.0.1:3210", "http://192.168.1.50:3210"]),
+    );
   });
 
   it("rewrites explicit-port auth public URLs when detect-port selects a new port", async () => {

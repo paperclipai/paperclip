@@ -17,6 +17,7 @@ import {
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   readAdapterExecutionTargetHomeDir,
+  resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
@@ -304,7 +305,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const timeoutSec = asNumber(config.timeoutSec, 0);
+  const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
+    executionTarget,
+    asNumber(config.timeoutSec, 0),
+  );
   const graceSec = asNumber(config.graceSec, 20);
   await ensureAdapterExecutionTargetRuntimeCommandInstalled({
     runId,
@@ -356,16 +360,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         runId,
         target: executionTarget,
         adapterKey: "cursor",
+        timeoutSec,
         workspaceLocalDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
+        onProgress: (line) => onLog("stdout", line),
         assets: [{
           key: "skills",
           localDir: localSkillsDir,
           followSymlinks: true,
         }],
       });
-      restoreRemoteWorkspace = () => preparedExecutionTargetRuntime.restoreWorkspace();
+      restoreRemoteWorkspace = () =>
+        preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
       refreshPaperclipWorkspaceEnvForExecution({
         env,
@@ -437,6 +444,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
     installCommand: SANDBOX_INSTALL_COMMAND,
+    timeoutSec,
   });
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
   let loggedEnv = buildInvocationEnvForLogs(env, {
@@ -450,6 +458,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       target: runtimeExecutionTarget,
       runtimeRootDir: remoteRuntimeRootDir,
       adapterKey: "cursor",
+      timeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
       onLog,
     });

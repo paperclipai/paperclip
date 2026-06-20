@@ -28,19 +28,19 @@ const issueColumnLabels: Record<InboxIssueColumn, string> = {
   assignee: "Assignee",
   project: "Project",
   workspace: "Workspace",
-  parent: "Parent issue",
+  parent: "Parent task",
   labels: "Tags",
   updated: "Last updated",
 };
 
 const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
-  status: "Issue state chip on the left edge.",
+  status: "Task state chip on the left edge.",
   id: "Ticket identifier like PAP-1009.",
   assignee: "Assigned agent or board user.",
   project: "Linked project pill with its color.",
-  workspace: "Execution or project workspace used for the issue.",
-  parent: "Parent issue identifier and title.",
-  labels: "Issue labels and tags.",
+  workspace: "Execution or project workspace used for the task.",
+  parent: "Parent task identifier and title.",
+  labels: "Task labels and tags.",
   updated: "Latest visible activity time.",
 };
 
@@ -94,7 +94,7 @@ export function IssueColumnPicker({
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              Desktop issue rows
+              Desktop task rows
             </div>
             <div className="text-sm font-medium text-foreground">
               {title}
@@ -136,6 +136,7 @@ export function IssueColumnPicker({
 export function InboxIssueMetaLeading({
   issue,
   isLive,
+  subtreeLiveCount = 0,
   showStatus = true,
   showIdentifier = true,
   statusSlot,
@@ -143,6 +144,7 @@ export function InboxIssueMetaLeading({
 }: {
   issue: Issue;
   isLive: boolean;
+  subtreeLiveCount?: number;
   showStatus?: boolean;
   showIdentifier?: boolean;
   statusSlot?: ReactNode;
@@ -151,7 +153,7 @@ export function InboxIssueMetaLeading({
   return (
     <>
       {showStatus ? (
-        <span className="hidden shrink-0 sm:inline-flex">
+        <span className="hidden shrink-0 items-center sm:inline-flex">
           {statusSlot ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />}
         </span>
       ) : null}
@@ -188,6 +190,26 @@ export function InboxIssueMetaLeading({
             )}
           >
             Live
+          </span>
+        </span>
+      )}
+      {!isLive && subtreeLiveCount > 0 && (
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
+            "border-border bg-transparent",
+          )}
+          title={`${subtreeLiveCount} sub-task${subtreeLiveCount === 1 ? "" : "s"} running below`}
+        >
+          <span
+            className={cn(
+              "h-2 w-2 shrink-0 rounded-full border",
+              "border-muted-foreground/60 bg-transparent",
+            )}
+            aria-hidden="true"
+          />
+          <span className="hidden text-[11px] font-medium text-muted-foreground sm:inline">
+            {subtreeLiveCount} live below
           </span>
         </span>
       )}
@@ -369,7 +391,7 @@ export function InboxIssueTrailingColumns({
               {parentIdentifier ? (
                 <span className="font-mono">{parentIdentifier}</span>
               ) : (
-                <span className="italic">Sub-issue</span>
+                <span className="italic">Sub-task</span>
               )}
             </span>
           );

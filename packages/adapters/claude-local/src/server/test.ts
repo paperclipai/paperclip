@@ -19,9 +19,10 @@ import {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
-import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { isBedrockModelId } from "./models.js";
+import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -43,11 +44,6 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function commandLooksLike(command: string, expected: string): boolean {
-  const base = path.basename(command).toLowerCase();
-  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
-}
-
 function summarizeProbeDetail(stdout: string, stderr: string): string | null {
   const raw = firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
   if (!raw) return null;
@@ -64,6 +60,7 @@ export async function testEnvironment(
   const command = asString(config.command, "claude");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
@@ -179,7 +176,7 @@ export async function testEnvironment(
   const canRunProbe =
     checks.every((check) => check.code !== "claude_cwd_invalid" && check.code !== "claude_command_unresolvable");
   if (canRunProbe) {
-    if (!commandLooksLike(command, "claude")) {
+    if (!claudeCommandLooksLike(command, "claude")) {
       checks.push({
         code: "claude_hello_probe_skipped_custom_command",
         level: "info",
@@ -199,16 +196,47 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })();
 
+      let effectiveEffort = effort;
+      if (targetIsSandbox && effort) {
+        const supportsEffort = await claudeCommandSupportsEffortFlag({
+          runId,
+          command,
+          target,
+          cwd,
+          env,
+          timeoutSec: 45,
+          graceSec: 5,
+        });
+        if (supportsEffort === false) {
+          effectiveEffort = "";
+          checks.push({
+            code: "claude_effort_flag_unsupported",
+            level: "warn",
+            message:
+              "Claude CLI in the sandbox does not advertise --effort; the probe omitted the configured reasoning effort.",
+            hint: "Upgrade the sandbox CLI/template to a newer Claude Code release to restore reasoning-effort control.",
+          });
+        }
+      }
+
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
-      if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
+      args.push(...buildClaudeProbePermissionArgs({ dangerouslySkipPermissions, targetIsSandbox }));
       if (chrome) args.push("--chrome");
       // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
       if (model && (!hasBedrock || isBedrockModelId(model))) {
         args.push("--model", model);
       }
-      if (effort) args.push("--effort", effort);
+      if (effectiveEffort) args.push("--effort", effectiveEffort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);
+
+      // Sandbox bridges still add lease warmup and transport overhead, but
+      // the standard-2 Cloudflare tier now probes fast enough that a 90s
+      // budget leaves headroom without masking real hangs.
+      const helloProbeTimeoutSec = Math.max(
+        1,
+        asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
+      );
 
       const probe = await runAdapterExecutionTargetProcess(
         runId,
@@ -218,7 +246,7 @@ export async function testEnvironment(
         {
           cwd,
           env,
-          timeoutSec: 45,
+          timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           stdin: "Respond with hello.",
           onLog: async () => {},

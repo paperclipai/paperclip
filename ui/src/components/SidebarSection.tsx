@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { useSidebarNavExpanded } from "./SidebarNavItem";
 
 type SidebarSectionIcon = ComponentType<{ className?: string }>;
 
@@ -95,6 +96,7 @@ function SidebarSectionHeader({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
+          data-slot="icon-button"
           className={cn(
             "inline-flex min-w-0 max-w-full items-center rounded-md px-1 py-0.5 text-left outline-none transition-colors",
             "hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
@@ -150,12 +152,13 @@ function SidebarSectionHeader({
   );
 
   return (
-    <div className="group/sidebar-section px-3 py-1.5">
+    <div className="group/sidebar-section px-3 py-1.5 pointer-coarse:py-1">
       <div className="relative flex min-h-6 min-w-0 items-center gap-1">
         {collapsible ? (
           <CollapsibleTrigger asChild>
             <button
               type="button"
+              data-slot="icon-button"
               className="absolute -left-4 flex h-5 w-5 items-center justify-center rounded-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
               aria-label={collapsible.open ? `Collapse ${label}` : `Expand ${label}`}
             >
@@ -187,7 +190,33 @@ export function SidebarSection({
   menu,
   headerAction,
 }: SidebarSectionProps) {
+  const { collapsed, peeking } = useSidebar();
+  const forceExpanded = useSidebarNavExpanded();
+  const rail = collapsed && !peeking && !forceExpanded;
   const content = <div className="flex flex-col gap-0.5 mt-0.5">{children}</div>;
+
+  // Collapsed rail: the section header would only show a clipped sliver of its
+  // label, so replace it with a thin divider. The label stays in the a11y tree,
+  // per-section carets/menus are dropped (no room + no toggle target in the
+  // rail), and the items always render so their icons stay reachable.
+  //
+  // The header wrapper mirrors the expanded header's vertical footprint exactly
+  // (outer `px-3 py-1.5 pointer-coarse:py-1` + inner `min-h-6`) so item icons land
+  // at the identical y-position in both states — no movement on collapse/expand
+  // (PAP-10676). The divider is vertically centered within that same row.
+  if (rail) {
+    return (
+      <div>
+        <div className="px-3 py-1.5 pointer-coarse:py-1">
+          <div className="flex min-h-6 items-center">
+            <span className="sr-only">{label}</span>
+            <div className="h-px w-full bg-border/60" aria-hidden="true" />
+          </div>
+        </div>
+        {content}
+      </div>
+    );
+  }
 
   if (collapsible) {
     return (

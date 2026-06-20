@@ -589,6 +589,160 @@
       "when": 1778074536410,
       "tag": "0083_company_secret_provider_configs",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1778355326070,
+      "tag": "0084_issue_recovery_actions",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1778787362162,
+      "tag": "0085_tranquil_the_executioner",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1778976000000,
+      "tag": "0086_routine_env_runtime_contract",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1779360000000,
+      "tag": "0087_backfill_environment_manage_human_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1779446400000,
+      "tag": "0088_backfill_principal_access_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1779129600000,
+      "tag": "0089_cloud_upstreams",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1779573019125,
+      "tag": "0090_resource_memberships",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1778810394522,
+      "tag": "0091_old_swarm",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1779999768200,
+      "tag": "0092_mighty_puma",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1780040470886,
+      "tag": "0093_giant_green_goblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1780533900000,
+      "tag": "0094_backfill_archived_company_agent_pauses",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1780507597454,
+      "tag": "0095_issue_comment_tombstones",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1780507597455,
+      "tag": "0096_document_annotation_issue_comment_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1780534000000,
+      "tag": "0097_low_trust_source_trust",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1780534200000,
+      "tag": "0098_project_icon",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1781130000000,
+      "tag": "0099_skills_store_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1781480000000,
+      "tag": "0100_skill_install_count_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1781490000000,
+      "tag": "0101_plugin_company_id_tenant_isolation",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1781490100000,
+      "tag": "0102_managed_sandbox_dedup_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1781490200000,
+      "tag": "0103_agent_error_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1781733000000,
+      "tag": "0104_issue_watchdogs",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1781902000000,
+      "tag": "0105_instance_scoped_environments",
+      "breakpoints": true
     }
   ]
 }

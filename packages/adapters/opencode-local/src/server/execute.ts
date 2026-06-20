@@ -17,6 +17,7 @@ import {
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   readAdapterExecutionTargetHomeDir,
+  resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
@@ -46,6 +47,7 @@ import {
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
+  isTruthyEnvFlag,
   parseOpenCodeModelsOutput,
   requireOpenCodeModelId,
 } from "./models.js";
@@ -76,8 +78,9 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
 }
 
 const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
+const REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC = 120;
 
-async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
+export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   runId: string;
   executionTarget: NonNullable<AdapterExecutionContext["executionTarget"]>;
   command: string;
@@ -88,9 +91,24 @@ async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   graceSec: number;
 }) {
   const model = requireOpenCodeModelId(input.model);
+
+  // When the caller opts into OPENCODE_ALLOW_ALL_MODELS, OpenCode accepts any
+  // provider/model at run time (e.g. gateway-routed models that never appear in
+  // `opencode models` output). Honour that on the REMOTE path too by skipping the
+  // remote availability probe; we still enforce the provider/model format above.
+  // Mirrors the local ensureOpenCodeModelConfiguredAndAvailable bypass. Prefer the
+  // explicit run env, then the process env.
+  if (isTruthyEnvFlag(input.env.OPENCODE_ALLOW_ALL_MODELS ?? process.env.OPENCODE_ALLOW_ALL_MODELS)) {
+    return;
+  }
+
+  const defaultProbeTimeoutSec =
+    input.executionTarget.kind === "remote" && input.executionTarget.transport === "sandbox"
+      ? REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC
+      : REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC;
   const probeTimeoutSec = input.timeoutSec > 0
-    ? Math.min(input.timeoutSec, REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC)
-    : REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC;
+    ? Math.min(input.timeoutSec, defaultProbeTimeoutSec)
+    : defaultProbeTimeoutSec;
   const probe = await runAdapterExecutionTargetProcess(
     input.runId,
     input.executionTarget,
@@ -300,7 +318,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    const timeoutSec = asNumber(config.timeoutSec, 0);
+    const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
+      executionTarget,
+      asNumber(config.timeoutSec, 0),
+    );
     const graceSec = asNumber(config.graceSec, 20);
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId,
@@ -313,7 +334,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onLog,
     });
-    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, { installCommand: SANDBOX_INSTALL_COMMAND });
+    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
+      installCommand: SANDBOX_INSTALL_COMMAND,
+      timeoutSec,
+    });
     const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
     let loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
       runtimeEnv,
@@ -349,9 +373,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         runId,
         target: executionTarget,
         adapterKey: "opencode",
+        timeoutSec,
         workspaceLocalDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
+        onProgress: (line) => onLog("stdout", line),
         assets: [
           {
             key: "skills",
@@ -366,7 +392,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : []),
         ],
       });
-      restoreRemoteWorkspace = () => preparedExecutionTargetRuntime.restoreWorkspace();
+      restoreRemoteWorkspace = () =>
+        preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
       refreshPaperclipWorkspaceEnvForExecution({
         env: preparedRuntimeConfig.env,
@@ -425,6 +452,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         target: runtimeExecutionTarget,
         runtimeRootDir: remoteRuntimeRootDir,
         adapterKey: "opencode",
+        timeoutSec,
         hostApiToken: preparedRuntimeConfig.env.PAPERCLIP_API_KEY,
         onLog,
       });
@@ -534,8 +562,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedPrompt.length,
     };
 
+    // Optional diagnostic: surface OpenCode's own logs on stderr (captured into the
+    // run result) so failures that OpenCode otherwise wraps as an opaque
+    // "Unexpected server error" can be diagnosed in remote/sandbox runs where the
+    // log file is unreachable. Toggle via PAPERCLIP_OPENCODE_PRINT_LOGS (run env,
+    // then process env).
+    const printLogs = isTruthyEnvFlag(
+      env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
+    );
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];
+      if (printLogs) args.push("--print-logs");
       if (resumeSessionId) args.push("--session", resumeSessionId);
       if (model) args.push("--model", model);
       if (variant) args.push("--variant", variant);

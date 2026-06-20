@@ -42,6 +42,7 @@ import {
   type InboxIssueColumn,
 } from "../lib/inbox";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
+import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import {
   InboxIssueMetaLeading,
   InboxIssueTrailingColumns,
@@ -60,8 +61,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2 } from "lucide-react";
-import { KanbanBoard } from "./KanbanBoard";
+import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, Columns3, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw, ListCollapse } from "lucide-react";
+import {
+  KanbanBoard,
+  KANBAN_BOARD_HIGH_VOLUME_THRESHOLD,
+  KANBAN_COLD_STATUSES,
+  KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
+  KANBAN_COLUMN_PAGE_SIZE_OPTIONS,
+  type KanbanColumnPageSize,
+} from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
@@ -110,6 +118,9 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
 /* ── View state ── */
 
 export type IssueSortField = "status" | "priority" | "title" | "created" | "updated" | "workflow";
+export type BoardCardDensity = "auto" | "compact" | "comfortable";
+export type BoardColdLaneMode = "auto" | "collapsed" | "expanded";
+export type BoardColumnPageSize = KanbanColumnPageSize;
 
 export type IssueViewState = IssueFilterState & {
   sortField: IssueSortField;
@@ -119,6 +130,9 @@ export type IssueViewState = IssueFilterState & {
   nestingEnabled: boolean;
   collapsedGroups: string[];
   collapsedParents: string[];
+  boardCardDensity: BoardCardDensity;
+  boardColdLaneMode: BoardColdLaneMode;
+  boardColumnPageSize: BoardColumnPageSize;
 };
 
 const defaultViewState: IssueViewState = {
@@ -130,14 +144,38 @@ const defaultViewState: IssueViewState = {
   nestingEnabled: true,
   collapsedGroups: [],
   collapsedParents: [],
+  boardCardDensity: "auto",
+  boardColdLaneMode: "auto",
+  boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
 };
+
+function normalizeBoardCardDensity(value: unknown): BoardCardDensity {
+  return value === "compact" || value === "comfortable" || value === "auto" ? value : "auto";
+}
+
+function normalizeBoardColdLaneMode(value: unknown): BoardColdLaneMode {
+  return value === "collapsed" || value === "expanded" || value === "auto" ? value : "auto";
+}
+
+function normalizeBoardColumnPageSize(value: unknown): BoardColumnPageSize {
+  return KANBAN_COLUMN_PAGE_SIZE_OPTIONS.includes(value as BoardColumnPageSize)
+    ? value as BoardColumnPageSize
+    : KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
+}
 
 function getViewState(key: string): IssueViewState {
   try {
     const raw = localStorage.getItem(key);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return { ...defaultViewState, ...parsed, ...normalizeIssueFilterState(parsed) };
+      return {
+        ...defaultViewState,
+        ...parsed,
+        ...normalizeIssueFilterState(parsed),
+        boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
+        boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
+        boardColumnPageSize: normalizeBoardColumnPageSize(parsed.boardColumnPageSize),
+      };
     }
   } catch { /* ignore */ }
   return { ...defaultViewState };
@@ -433,9 +471,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search issues"
+        aria-label="Search tasks"
         data-page-search-target="true"
       />
     </div>
@@ -494,7 +532,7 @@ function SubIssueProgressSummaryStrip({
                   className="text-muted-foreground tabular-nums"
                   title={`${costSummary.runCount.toLocaleString()} run${
                     costSummary.runCount === 1 ? "" : "s"
-                  } across ${costSummary.issueCount} sub-issue${
+                  } across ${costSummary.issueCount} sub-task${
                     costSummary.issueCount === 1 ? "" : "s"
                   }`}
                 >
@@ -508,7 +546,7 @@ function SubIssueProgressSummaryStrip({
           </div>
           <div
             role="progressbar"
-            aria-label="Sub-issues completion progress"
+            aria-label="Sub-tasks completion progress"
             aria-valuemin={0}
             aria-valuenow={summary.doneCount}
             aria-valuemax={summary.totalCount}
@@ -545,11 +583,11 @@ function SubIssueProgressSummaryStrip({
               </Link>
             </>
           ) : summary.totalCount === 0 ? (
-            <div className="text-sm font-medium text-foreground">No active sub-issues</div>
+            <div className="text-sm font-medium text-foreground">No active sub-tasks</div>
           ) : summary.doneCount === summary.totalCount ? (
-            <div className="text-sm font-medium text-foreground">All sub-issues done</div>
+            <div className="text-sm font-medium text-foreground">All sub-tasks done</div>
           ) : (
-            <div className="text-sm font-medium text-foreground">No actionable sub-issues</div>
+            <div className="text-sm font-medium text-foreground">No actionable sub-tasks</div>
           )}
         </div>
       </div>
@@ -883,6 +921,10 @@ export function IssuesList({
     [isolatedWorkspacesEnabled],
   );
   const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [availableIssueColumns]);
+  const subtreeLiveCounts = useMemo(
+    () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>()),
+    [issues, liveIssueIds],
+  );
   const visibleTrailingIssueColumns = useMemo(
     () => issueTrailingColumns.filter((column) => visibleIssueColumnSet.has(column) && availableIssueColumnSet.has(column)),
     [availableIssueColumnSet, visibleIssueColumnSet],
@@ -1007,6 +1049,22 @@ export function IssuesList({
   });
 
   const activeFilterCount = countActiveIssueFilters(viewState, enableRoutineVisibilityFilter);
+  const boardHighVolume = viewState.viewMode === "board" && filtered.length > KANBAN_BOARD_HIGH_VOLUME_THRESHOLD;
+  const boardCompactCards =
+    viewState.boardCardDensity === "compact"
+    || (viewState.boardCardDensity === "auto" && boardHighVolume);
+  const boardCollapsedStatuses = useMemo(
+    () =>
+      viewState.boardColdLaneMode === "collapsed"
+      || (viewState.boardColdLaneMode === "auto" && boardHighVolume)
+        ? [...KANBAN_COLD_STATUSES]
+        : [],
+    [boardHighVolume, viewState.boardColdLaneMode],
+  );
+  const boardDensityCustomized =
+    viewState.boardCardDensity !== "auto"
+    || viewState.boardColdLaneMode !== "auto"
+    || viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -1197,7 +1255,9 @@ export function IssuesList({
       }
       else if (viewState.groupBy === "project" && groupKey !== "__no_project") defaults.projectId = groupKey;
       else if (viewState.groupBy === "workspace" && groupKey !== "__no_workspace") {
-        const representativeIssue = group?.items.find((issue) => issue.executionWorkspaceId === groupKey) ?? null;
+        const representativeIssue = group?.items.find((issue) =>
+          issue.executionWorkspaceId === groupKey || issue.projectWorkspaceId === groupKey,
+        ) ?? null;
         const executionWorkspace = executionWorkspaceById.get(groupKey);
         if (executionWorkspace) {
           defaults.executionWorkspaceId = groupKey;
@@ -1234,8 +1294,8 @@ export function IssuesList({
     viewState.groupBy,
   ]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
+  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Task";
+  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Task";
   const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);
@@ -1324,12 +1384,89 @@ export function IssuesList({
             </Button>
           )}
 
+          {viewState.viewMode === "board" && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className={cn("h-8 w-8 shrink-0", boardCompactCards && "bg-accent")}
+                onClick={() => updateView({ boardCardDensity: boardCompactCards ? "comfortable" : "compact" })}
+                title={boardCompactCards ? "Use comfortable cards" : "Use compact cards"}
+              >
+                <ChevronsDownUp className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className={cn("h-8 w-8 shrink-0", boardCollapsedStatuses.length > 0 && "bg-accent")}
+                onClick={() => updateView({ boardColdLaneMode: boardCollapsedStatuses.length > 0 ? "expanded" : "collapsed" })}
+                title={boardCollapsedStatuses.length > 0 ? "Expand cold lanes" : "Collapse cold lanes"}
+              >
+                <PanelTopClose className="h-3.5 w-3.5" />
+              </Button>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={cn(
+                      "h-8 shrink-0 gap-1.5 px-2",
+                      viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE && "bg-accent",
+                    )}
+                    title="Cards per column"
+                  >
+                    <ListCollapse className="h-3.5 w-3.5" />
+                    <span className="min-w-4 text-xs tabular-nums">{viewState.boardColumnPageSize}</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-40 p-0">
+                  <div className="p-2 space-y-0.5">
+                    {KANBAN_COLUMN_PAGE_SIZE_OPTIONS.map((pageSize) => (
+                      <button
+                        key={pageSize}
+                        type="button"
+                        className={cn(
+                          "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
+                          viewState.boardColumnPageSize === pageSize
+                            ? "bg-accent/50 text-foreground"
+                            : "text-muted-foreground hover:bg-accent/50",
+                        )}
+                        onClick={() => updateView({ boardColumnPageSize: pageSize })}
+                      >
+                        <span>{pageSize} per column</span>
+                        {viewState.boardColumnPageSize === pageSize && <Check className="h-3.5 w-3.5" />}
+                      </button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                onClick={() => updateView({
+                  boardCardDensity: "auto",
+                  boardColdLaneMode: "auto",
+                  boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
+                })}
+                disabled={!boardDensityCustomized}
+                title="Reset board density"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </Button>
+            </>
+          )}
+
           <IssueColumnPicker
             availableColumns={availableIssueColumns}
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which issue columns stay visible"
+            title="Choose which task columns stay visible"
             iconOnly
           />
 
@@ -1407,7 +1544,7 @@ export function IssuesList({
                     ["assignee", "Assignee"],
                     ["project", "Project"],
                     ["workspace", "Workspace"],
-                    ["parent", "Parent Issue"],
+                    ["parent", "Parent Task"],
                     ["none", "None"],
                   ] as const).map(([value, label]) => (
                     <button
@@ -1437,13 +1574,13 @@ export function IssuesList({
       )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
-          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} issues. Refine filters or search to reveal the rest.
+          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
         </p>
       )}
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
+          message="No tasks match the current filters or search."
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
@@ -1454,6 +1591,10 @@ export function IssuesList({
           issues={filtered}
           agents={agents}
           liveIssueIds={liveIssueIds}
+          compactCards={boardCompactCards}
+          collapsedStatuses={boardCollapsedStatuses}
+          initialVisibleCount={viewState.boardColumnPageSize}
+          revealIncrement={viewState.boardColumnPageSize}
           onUpdateIssue={onUpdateIssue}
         />
       ) : (
@@ -1489,8 +1630,8 @@ export function IssuesList({
                     variant="ghost"
                     size="icon-xs"
                     className="-mr-2 text-muted-foreground"
-                    title={`New issue in ${group.label}`}
-                    aria-label={`New issue in ${group.label}`}
+                    title={`New task in ${group.label}`}
+                    aria-label={`New task in ${group.label}`}
                     onClick={() => openCreateIssueDialog(group)}
                   >
                     <Plus className="h-3 w-3" />
@@ -1570,6 +1711,7 @@ export function IssuesList({
                     <button
                       key={firstVisibleBlockerChip.blockerId}
                       type="button"
+                      data-slot="icon-button"
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -1634,7 +1776,7 @@ export function IssuesList({
                               <span
                                 className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
                                 aria-label="Needs next step"
-                                title="This issue needs a next step"
+                                title="This task needs a next step"
                               >
                                 <CircleDot className="h-3 w-3" />
                                 Needs next step
@@ -1645,11 +1787,11 @@ export function IssuesList({
                         className={isMutedIssue ? "opacity-70" : undefined}
                         mobileLeading={
                           hasChildren ? (
-                            <button type="button" onClick={toggleCollapse}>
+                            <button type="button" data-slot="icon-button" onClick={toggleCollapse}>
                               <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                             </button>
                           ) : (
-                            <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                            <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
                               <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                             </span>
                           )
@@ -1659,6 +1801,7 @@ export function IssuesList({
                             {hasChildren ? (
                               <button
                                 type="button"
+                                data-slot="icon-button"
                                 className="hidden shrink-0 items-center sm:inline-flex"
                                 onClick={toggleCollapse}
                               >
@@ -1670,11 +1813,12 @@ export function IssuesList({
                             <InboxIssueMetaLeading
                               issue={issue}
                               isLive={liveIssueIds?.has(issue.id) === true}
+                              subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
                               showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
                               showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
                               checklistStepNumber={checklistStepNumber}
                               statusSlot={(
-                                <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                                <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
                                   <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                                 </span>
                               )}
@@ -1821,10 +1965,10 @@ export function IssuesList({
             <div className="py-2" data-testid="issues-load-more-sentinel">
               <p className="text-xs text-muted-foreground">
                 {isLoadingMoreIssues
-                  ? "Loading more issues..."
+                  ? "Loading more tasks..."
                   : remainingIssueRowCount > 0
-                    ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} issues`
-                    : "Scroll to load more issues"}
+                    ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} tasks`
+                    : "Scroll to load more tasks"}
               </p>
             </div>
           )}

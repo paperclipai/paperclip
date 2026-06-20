@@ -1,11 +1,19 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
+
+function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  return result;
+}
 
 const useQueryMock = vi.fn();
 
@@ -127,7 +135,7 @@ describe("IssueWorkspaceCard", () => {
     container.remove();
   });
 
-  it("locks the environment selector and clears the issue override when reusing a workspace", () => {
+  it("clears the legacy issue environment override when reusing a workspace", () => {
     const root = createRoot(container);
     const onUpdate = vi.fn();
     const reusableWorkspace = createExecutionWorkspace();
@@ -172,12 +180,7 @@ describe("IssueWorkspaceCard", () => {
     });
 
     const selects = container.querySelectorAll("select");
-    expect(selects).toHaveLength(3);
-
-    const environmentSelect = selects[2] as HTMLSelectElement;
-    expect(environmentSelect.disabled).toBe(true);
-    expect(environmentSelect.value).toBe("env-workspace");
-    expect(container.textContent).toContain("Environment selection is locked while reusing an existing workspace.");
+    expect(selects).toHaveLength(2);
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save"));
     expect(saveButton).not.toBeUndefined();

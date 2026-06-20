@@ -8,6 +8,7 @@ import {
   type AgentRuntimeState,
   type CompanySecret,
   type EnvBinding,
+  type Environment,
 } from "@paperclipai/shared";
 import { ActiveAgentsPanel } from "@/components/ActiveAgentsPanel";
 import { AgentConfigForm, type CreateConfigValues } from "@/components/AgentConfigForm";
@@ -774,3 +775,88 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const ManagementMatrix: Story = {};
+
+/* ---- Forced Kubernetes execution (instance executionMode=kubernetes) ---- */
+
+const managedKubernetesEnvironment: Environment = {
+  id: "env-k8s-storybook",
+  name: "Kubernetes Sandbox",
+  description: "Managed Kubernetes sandbox environment for hosted tenant execution.",
+  driver: "sandbox",
+  status: "active",
+  config: {
+    provider: "kubernetes",
+    backend: "job",
+    inCluster: true,
+    runtimeClassName: "gvisor",
+    egressMode: "cilium",
+  },
+  envVars: {},
+  metadata: { managedByPaperclip: true, managedKubernetesSandbox: true },
+  createdAt: recent(2_000),
+  updatedAt: recent(60),
+};
+
+function ForcedKubernetesFixtures({
+  environmentFixtures,
+  children,
+}: {
+  environmentFixtures: Environment[];
+  children: ReactNode;
+}) {
+  const queryClient = useQueryClient();
+
+  queryClient.setQueryData(queryKeys.agents.list(COMPANY_ID), agentManagementAgents);
+  queryClient.setQueryData(queryKeys.secrets.list(COMPANY_ID), storybookSecrets);
+  queryClient.setQueryData(queryKeys.adapters.all, adapterFixtures);
+  // The instance-level execution policy that forces all agent execution onto
+  // the managed Kubernetes sandbox (PAPERCLIP_EXECUTION_MODE=kubernetes).
+  queryClient.setQueryData(queryKeys.instance.generalSettings, {
+    censorUsernameInLogs: false,
+    executionMode: "kubernetes",
+  });
+  queryClient.setQueryData(queryKeys.environments.list(COMPANY_ID), environmentFixtures);
+  queryClient.setQueryData(queryKeys.agents.adapterModels(COMPANY_ID, "codex_local"), [
+    { id: "gpt-5.4", label: "GPT-5.4" },
+    { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
+  ]);
+
+  return children;
+}
+
+function ForcedKubernetesStory({ environmentFixtures }: { environmentFixtures: Environment[] }) {
+  return (
+    <ForcedKubernetesFixtures environmentFixtures={environmentFixtures}>
+      <div className="min-h-screen bg-background text-foreground">
+        <main className="mx-auto max-w-4xl space-y-8 px-6 py-10">
+          <Section
+            eyebrow="AgentConfigForm"
+            title="Execution pinned to the managed Kubernetes sandbox (executionMode=kubernetes)"
+          >
+            <div className="max-w-4xl">
+              <AgentConfigFormStory />
+            </div>
+          </Section>
+        </main>
+      </div>
+    </ForcedKubernetesFixtures>
+  );
+}
+
+/**
+ * Instance execution policy forces Kubernetes and the company has a managed
+ * Kubernetes sandbox environment: the Execution section renders the
+ * environment read-only (no local/SSH picker).
+ */
+export const ForcedKubernetesExecution: Story = {
+  render: () => <ForcedKubernetesStory environmentFixtures={[managedKubernetesEnvironment]} />,
+};
+
+/**
+ * Instance execution policy forces Kubernetes but no managed environment is
+ * available for the company yet: the Execution section shows the warning
+ * notice instead of silently falling back to local execution.
+ */
+export const ForcedKubernetesMissingEnvironment: Story = {
+  render: () => <ForcedKubernetesStory environmentFixtures={[]} />,
+};

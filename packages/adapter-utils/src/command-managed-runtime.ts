@@ -8,8 +8,16 @@ import {
 } from "./sandbox-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
+import type { RuntimeProgressSink } from "./runtime-progress.js";
 
 export interface CommandManagedRuntimeRunner {
+  /**
+   * True only when `execute({ stdin })` can surface useful in-flight progress
+   * for a single stdin-backed command. Provider-backed sandbox runners usually
+   * complete the entire RPC before returning, so they should leave this false
+   * and let the caller choose a chunked upload path when progress is requested.
+   */
+  supportsSingleStreamStdinProgress?: boolean;
   execute(input: {
     command: string;
     args?: string[];
@@ -40,7 +48,14 @@ function mergeRuntimeExcludes(entries: string[] | undefined): string[] {
   return [...new Set([".paperclip-runtime", ...(entries ?? [])])];
 }
 
-const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
+// Largest base64 body we hand to the runner as a single stdin string. Normal
+// multi-MB workspace/asset tarballs stay well under this and upload in one
+// round-trip; anything larger uses the bounded chunked-append fallback so a
+// runaway stdin string can't blow the runner/provider RPC limits.
+const REMOTE_WRITE_SINGLE_STREAM_MAX_BASE64_BYTES = 96 * 1024 * 1024;
+// Fallback chunk size (base64 bytes). Kept a multiple of 4 so each chunk is a
+// self-contained base64 unit that decodes cleanly on its own.
+const REMOTE_WRITE_FALLBACK_BASE64_CHUNK_SIZE = 4 * 1024 * 1024;
 
 function toBuffer(bytes: Buffer | Uint8Array | ArrayBuffer): Buffer {
   if (Buffer.isBuffer(bytes)) return bytes;
@@ -62,13 +77,21 @@ export function createCommandManagedRuntimeClient(input: {
   shellCommand?: "bash" | "sh" | null;
 }): SandboxManagedRuntimeClient {
   const shellCommand = preferredShellForSandbox(input.shellCommand);
-  const runShell = async (script: string, opts: { stdin?: string; timeoutMs?: number } = {}) => {
+  const runShell = async (
+    script: string,
+    opts: {
+      stdin?: string;
+      timeoutMs?: number;
+      onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    } = {},
+  ) => {
     const result = await input.runner.execute({
       command: shellCommand,
       args: shellCommandArgs(script),
       cwd: input.commandCwd,
       stdin: opts.stdin,
       timeoutMs: opts.timeoutMs ?? input.timeoutMs,
+      onLog: opts.onLog,
     });
     requireSuccessfulResult(result, script);
     return result;
@@ -78,25 +101,101 @@ export function createCommandManagedRuntimeClient(input: {
     makeDir: async (remotePath) => {
       await runShell(`mkdir -p ${shellQuote(remotePath)}`);
     },
-    writeFile: async (remotePath, bytes) => {
-      const body = toBuffer(bytes).toString("base64");
+    writeFile: async (remotePath, bytes, options) => {
+      const buffer = toBuffer(bytes);
+      const total = buffer.byteLength;
+      const body = buffer.toString("base64");
       const remoteDir = path.posix.dirname(remotePath);
-      const remoteTempPath = `${remotePath}.paperclip-upload.b64`;
+      const remoteTempPath = `${remotePath}.paperclip-upload`;
+      const canUseSingleStreamProgressPath =
+        !options?.onProgress || input.runner.supportsSingleStreamStdinProgress === true;
 
-      await runShell(
-        `mkdir -p ${shellQuote(remoteDir)} && rm -f ${shellQuote(remoteTempPath)} && : > ${shellQuote(remoteTempPath)}`,
-      );
-      for (let offset = 0; offset < body.length; offset += REMOTE_WRITE_BASE64_CHUNK_SIZE) {
-        const chunk = body.slice(offset, offset + REMOTE_WRITE_BASE64_CHUNK_SIZE);
-        await runShell(`printf '%s' ${shellQuote(chunk)} >> ${shellQuote(remoteTempPath)}`);
+      // Primary path: a single round-trip. Stream the entire base64 body to one
+      // `base64 -d` process via stdin, decode straight into a temp file, then
+      // atomically rename into place. This replaces the previous loop that did
+      // one `printf >> tmpfile` shell round-trip per 32 KB — thousands of serial
+      // processes for a large workspace — with exactly one process.
+      if (
+        body.length <= REMOTE_WRITE_SINGLE_STREAM_MAX_BASE64_BYTES &&
+        canUseSingleStreamProgressPath
+      ) {
+        await options?.onProgress?.(0, total);
+        await runShell(
+          `mkdir -p ${shellQuote(remoteDir)} && ` +
+            `base64 -d > ${shellQuote(remoteTempPath)} && ` +
+            `mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`,
+          { stdin: body },
+        );
+        await options?.onProgress?.(total, total);
+        return;
       }
+
+      // Bounded fallback for payloads too large to hand the runner as one stdin
+      // string: append the base64 body to a remote temp file in large chunks
+      // (orders of magnitude fewer round-trips than the old 32 KB loop), decoding
+      // each self-contained chunk on arrival and emitting progress per write,
+      // then atomically rename into place.
       await runShell(
-        `base64 -d < ${shellQuote(remoteTempPath)} > ${shellQuote(remotePath)} && rm -f ${shellQuote(remoteTempPath)}`,
+        `mkdir -p ${shellQuote(remoteDir)} && ` +
+          `rm -f ${shellQuote(remoteTempPath)} && : > ${shellQuote(remoteTempPath)}`,
       );
+      for (let offset = 0; offset < body.length; offset += REMOTE_WRITE_FALLBACK_BASE64_CHUNK_SIZE) {
+        const chunk = body.slice(offset, offset + REMOTE_WRITE_FALLBACK_BASE64_CHUNK_SIZE);
+        await runShell(`base64 -d >> ${shellQuote(remoteTempPath)}`, { stdin: chunk });
+        const decodedSoFar = Math.min(total, Math.floor(((offset + chunk.length) * 3) / 4));
+        await options?.onProgress?.(decodedSoFar, total);
+      }
+      await runShell(`mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`);
+      await options?.onProgress?.(total, total);
     },
-    readFile: async (remotePath) => {
-      const result = await runShell(`base64 < ${shellQuote(remotePath)}`);
-      return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
+    readFile: async (remotePath, options) => {
+      // Decoded file size up front so download progress can be a percentage.
+      // Only paid when a progress hook is attached.
+      let totalBytes: number | null = null;
+      if (options?.onProgress) {
+        const sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`);
+        const parsed = Number.parseInt(sizeResult.stdout.trim(), 10);
+        totalBytes = Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+      }
+
+      // Stream the remote `base64` stdout through a byte counter, decoding each
+      // 4-char-aligned slice incrementally rather than buffering the whole
+      // response as one string. Falls back to the buffered result when the
+      // runner does not surface incremental stdout.
+      const decodedChunks: Buffer[] = [];
+      let b64Remainder = "";
+      let decodedSoFar = 0;
+      let streamed = false;
+      const result = await runShell(`base64 < ${shellQuote(remotePath)}`, {
+        onLog: async (stream, chunk) => {
+          if (stream !== "stdout") return;
+          streamed = true;
+          const data = b64Remainder + chunk.replace(/\s+/g, "");
+          const alignedLen = data.length - (data.length % 4);
+          if (alignedLen > 0) {
+            const decoded = Buffer.from(data.slice(0, alignedLen), "base64");
+            decodedChunks.push(decoded);
+            decodedSoFar += decoded.byteLength;
+          }
+          b64Remainder = data.slice(alignedLen);
+          if (options?.onProgress) {
+            const done = totalBytes != null ? Math.min(totalBytes, decodedSoFar) : decodedSoFar;
+            await options.onProgress(done, totalBytes);
+          }
+        },
+      });
+
+      let out: Buffer;
+      if (streamed) {
+        if (b64Remainder.length > 0) {
+          decodedChunks.push(Buffer.from(b64Remainder, "base64"));
+        }
+        out = Buffer.concat(decodedChunks);
+      } else {
+        out = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
+      }
+      await options?.onProgress?.(out.byteLength, totalBytes ?? out.byteLength);
+      return out;
     },
     listFiles: async (remotePath) => {
       const result = await runShell(
@@ -146,10 +245,16 @@ export async function prepareCommandManagedRuntime(input: {
   installCommand?: string | null;
   /** When provided alongside `installCommand`, skip the install if `command -v <detectCommand>` succeeds. */
   detectCommand?: string | null;
+  // Upload progress sink. Forwarded to prepareSandboxManagedRuntime; the child
+  // task wires it into the byte-counting writeFile/readFile transport.
+  onProgress?: RuntimeProgressSink;
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
-  const commandCwd = input.spec.remoteCwd;
+  // Managed-runtime sync/restore scripts use absolute paths throughout, so
+  // run them from a stable cwd. The target workspace itself may be removed or
+  // recreated during a run, which breaks shell startup if we chdir into it.
+  const commandCwd = "/";
   const runtimeSpec: SandboxRemoteExecutionSpec = {
     transport: "sandbox",
     provider: input.spec.providerKey ?? "sandbox",
@@ -190,6 +295,7 @@ export async function prepareCommandManagedRuntime(input: {
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
+          onProgress: input.onProgress,
         });
       }
     }
@@ -224,5 +330,6 @@ export async function prepareCommandManagedRuntime(input: {
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
+    onProgress: input.onProgress,
   });
 }

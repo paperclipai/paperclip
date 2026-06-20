@@ -22,14 +22,30 @@ const mockIssueService = vi.hoisted(() => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(async () => true),
+    decide: vi.fn(async (input: { action?: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant.",
+    })),
     hasPermission: vi.fn(async () => true),
   }),
   agentService: () => ({
     getById: vi.fn(async () => null),
+    resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
+      ambiguous: false,
+      agent: {
+        id: reference,
+        companyId: "company-1",
+        status: "active",
+        orgChainHealth: { status: "healthy" },
+      },
+    })),
   }),
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
   }),
+  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
   }),
@@ -59,6 +75,10 @@ vi.mock("../services/index.js", () => ({
     listCompanyIds: vi.fn(async () => ["company-1"]),
   }),
   issueApprovalService: () => ({}),
+  issueRecoveryActionService: () => ({
+    getActiveForIssue: vi.fn(async () => null),
+    listActiveForIssues: vi.fn(async () => new Map()),
+  }),
   issueReferenceService: () => ({
     deleteDocumentSource: async () => undefined,
     diffIssueReferenceSummary: () => ({
@@ -71,6 +91,11 @@ vi.mock("../services/index.js", () => ({
     syncComment: async () => undefined,
     syncDocument: async () => undefined,
     syncIssue: async () => undefined,
+  }),
+  issueThreadInteractionService: () => ({
+    listForIssue: vi.fn(async () => []),
+    expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+    expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
   }),
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,

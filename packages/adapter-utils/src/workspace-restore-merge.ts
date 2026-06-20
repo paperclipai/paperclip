@@ -47,6 +47,10 @@ async function walkDirectory(
 
     const fullPath = path.join(root, nextRelative);
     const stats = await fs.lstat(fullPath);
+    if (!stats.isDirectory() && !stats.isSymbolicLink() && !stats.isFile()) {
+      continue;
+    }
+
     if (stats.isDirectory()) {
       out.set(nextRelative, { kind: "dir" });
       await walkDirectory(root, exclude, nextRelative, out);
@@ -87,6 +91,8 @@ async function readSnapshotEntry(root: string, relative: string): Promise<Snapsh
       target: await fs.readlink(fullPath),
     };
   }
+  if (!stats.isFile()) return null;
+
   return {
     kind: "file",
     mode: stats.mode,

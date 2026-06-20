@@ -36,7 +36,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { PROJECT_COLORS } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
@@ -168,7 +167,7 @@ export function NewProjectDialog() {
         name: name.trim(),
         description: description.trim() || undefined,
         status,
-        color: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)],
+        // No color is sent — new projects persist color = null (neutral gray). See PAP-68.
         ...(goalIds.length > 0 ? { goalIds } : {}),
         ...(targetDate ? { targetDate } : {}),
       });

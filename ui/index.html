@@ -4,9 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#18181b" />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Paperclip" />
     <title>Paperclip</title>
     <!-- PAPERCLIP_RUNTIME_BRANDING_START -->
@@ -26,7 +23,11 @@
         const lightThemeColor = "#ffffff";
         try {
           const stored = window.localStorage.getItem(key);
-          const theme = stored === "light" || stored === "dark" ? stored : "dark";
+          const prefersDark =
+            typeof window.matchMedia === "function" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const fallback = prefersDark ? "dark" : "light";
+          const theme = stored === "light" || stored === "dark" ? stored : fallback;
           const isDark = theme === "dark";
           document.documentElement.classList.toggle("dark", isDark);
           document.documentElement.style.colorScheme = isDark ? "dark" : "light";
