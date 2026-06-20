@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -625,6 +625,82 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         }),
       ]),
     );
+  });
+
+  it("deduplicates explicit idempotency-keyed assignment wakes", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        maxConcurrentRuns: 1,
+      },
+    });
+    const issueId = randomUUID();
+    const idempotencyKey = `issue-assignment:${issueId}:status_change:issue.update`;
+
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "status_change" },
+      status: "queued",
+      idempotencyKey,
+      requestedByActorType: "system",
+      requestedByActorId: null,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: {
+        issueId,
+        source: "issue-status-webhook",
+      },
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    const firstRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "status_change" },
+      idempotencyKey,
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: { issueId },
+    });
+    const secondRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "status_change" },
+      idempotencyKey,
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: { issueId },
+    });
+
+    expect(firstRun?.id).toBe(runId);
+    expect(secondRun?.id).toBe(runId);
+
+    const wakeups = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.idempotencyKey, idempotencyKey), eq(agentWakeupRequests.agentId, agentId)));
+    const runs = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+
+    expect(wakeups).toHaveLength(1);
+    expect(runs).toHaveLength(1);
   });
 
   it("skips wakes before queueing when per-agent daily cost cap is reached", async () => {

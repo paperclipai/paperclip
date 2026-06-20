@@ -27,11 +27,7 @@ export function isCodexLocalManualModel(model: string | null | undefined): boole
 export function isCodexLocalFastModeSupported(model: string | null | undefined): boolean {
   if (isCodexLocalManualModel(model)) return true;
   const normalizedModel = typeof model === "string" ? model.trim() : "";
-  // Empty means we're omitting --model so the Codex CLI picks its own default.
-  // On subscription auth that's gpt-5.5 (fast-mode capable); manual model IDs
-  // are also treated as supported. Match that policy: pass the fast-mode
-  // overrides through and let the CLI reject them if the chosen model can't use them.
-  if (!normalizedModel) return true;
+  if (!normalizedModel) return false;
   return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.includes(
     normalizedModel as (typeof CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS)[number],
   );

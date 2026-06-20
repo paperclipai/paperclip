@@ -315,6 +315,7 @@ describe("agent routes adapter validation", () => {
     expect(agentId).toMatch(/^[0-9a-f-]{36}$/i);
     const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
     const env = adapterConfig.env as Record<string, unknown>;
+    expect(adapterConfig.model).toBe("gpt-5.3-codex");
     expect(env.OPENAI_API_KEY).toBe("");
     expect(env.CODEX_HOME).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
     expect(String(env.CODEX_HOME)).not.toContain("/companies/company-1/codex-home");
