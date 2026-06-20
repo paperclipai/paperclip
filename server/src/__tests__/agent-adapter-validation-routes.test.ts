@@ -297,7 +297,7 @@ describe("agent routes adapter validation", () => {
     expect(res.body.adapterType).toBe("external_test");
   });
 
-  it("adds isolated CODEX_HOME and empty OPENAI_API_KEY override when creating codex_local agents", async () => {
+  it("adds isolated CODEX_HOME when creating codex_local agents and does not force an OPENAI_API_KEY slot", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
@@ -315,12 +315,31 @@ describe("agent routes adapter validation", () => {
     expect(agentId).toMatch(/^[0-9a-f-]{36}$/i);
     const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
     const env = adapterConfig.env as Record<string, unknown>;
-    expect(env.OPENAI_API_KEY).toBe("");
+    expect(Object.prototype.hasOwnProperty.call(env, "OPENAI_API_KEY")).toBe(false);
     expect(env.CODEX_HOME).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
     expect(String(env.CODEX_HOME)).not.toContain("/companies/company-1/codex-home");
   });
 
-  it("adds isolated CODEX_HOME and empty OPENAI_API_KEY override when updating codex_local agents", async () => {
+  it("preserves an explicitly provided OPENAI_API_KEY when creating codex_local agents", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Codex Agent",
+          adapterType: "codex_local",
+          adapterConfig: { env: { OPENAI_API_KEY: "sk-test" } },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
+    const env = adapterConfig.env as Record<string, unknown>;
+    expect(env.OPENAI_API_KEY).toBe("sk-test");
+  });
+
+  it("adds isolated CODEX_HOME when updating codex_local agents and does not force an OPENAI_API_KEY slot", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
@@ -334,7 +353,7 @@ describe("agent routes adapter validation", () => {
     const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     const adapterConfig = patch.adapterConfig as Record<string, unknown>;
     const env = adapterConfig.env as Record<string, unknown>;
-    expect(env.OPENAI_API_KEY).toBe("");
+    expect(Object.prototype.hasOwnProperty.call(env, "OPENAI_API_KEY")).toBe(false);
     expect(env.CODEX_HOME).toContain(
       "/companies/company-1/agents/11111111-1111-4111-8111-111111111111/codex-home",
     );

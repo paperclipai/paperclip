@@ -83,6 +83,30 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
+/**
+ * Isolation guard for the spawned Codex process env.
+ *
+ * The Codex CLI (>= 0.122) ignores the `OPENAI_API_KEY` env var and
+ * authenticates via its own `$CODEX_HOME/auth.json`. Older CLI versions or
+ * forked builds may still read it, so a host-level `OPENAI_API_KEY` must not
+ * leak into Codex runs through process inheritance unless the adapter config
+ * explicitly opts in.
+ *
+ * When `adapterConfig.env` does NOT contain an `OPENAI_API_KEY` entry, any
+ * value inherited from the host/server process is stripped. Explicit config
+ * values — including an empty string — are preserved so callers can
+ * intentionally blank out a host key.
+ */
+export function stripInheritedOpenAiApiKey(
+  effectiveEnv: Record<string, string>,
+  envConfig: Record<string, unknown>,
+): Record<string, string> {
+  if (!Object.prototype.hasOwnProperty.call(envConfig, "OPENAI_API_KEY")) {
+    delete effectiveEnv.OPENAI_API_KEY;
+  }
+  return effectiveEnv;
+}
+
 function resolveCodexBillingType(env: Record<string, string>): "api" | "subscription" {
   // Codex uses API-key auth when OPENAI_API_KEY is present; otherwise rely on local login/session auth.
   return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "api" : "subscription";
@@ -523,6 +547,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+    // Isolation guard: prevent a host-level OPENAI_API_KEY from leaking into
+    // Codex runs unless the adapter config explicitly provides one. See
+    // `stripInheritedOpenAiApiKey` for the full rationale.
+    stripInheritedOpenAiApiKey(effectiveEnv, envConfig);
     const billingType = resolveCodexBillingType(effectiveEnv);
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv(effectiveEnv)).filter(

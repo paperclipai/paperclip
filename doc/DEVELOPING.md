@@ -271,7 +271,7 @@ For `codex_local`, Paperclip assigns new and updated agents an isolated Codex ho
 
 - `~/.paperclip/instances/default/companies/<company-id>/agents/<agent-id>/codex-home`
 
-Paperclip also persists an empty `OPENAI_API_KEY` override for those agents so a host-level `OPENAI_API_KEY` cannot leak into Codex runs through process inheritance. If an operator explicitly configures `adapterConfig.env.CODEX_HOME`, it must not point at the shared company `codex-home`, `$CODEX_HOME`, or `~/.codex`.
+Paperclip also strips any host-level `OPENAI_API_KEY` from the spawned Codex process at run time unless the agent's `adapterConfig.env` explicitly provides one, so a host `OPENAI_API_KEY` cannot leak into Codex runs through process inheritance. No empty `OPENAI_API_KEY` slot is persisted in agent config. If an operator explicitly configures `adapterConfig.env.CODEX_HOME`, it must not point at the shared company `codex-home`, `$CODEX_HOME`, or `~/.codex`.
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
 

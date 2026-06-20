@@ -1195,9 +1195,12 @@ export function agentRoutes(
     } else {
       env.CODEX_HOME = codexLocalAgentHome(companyId, agentId);
     }
-    if (!Object.prototype.hasOwnProperty.call(env, "OPENAI_API_KEY")) {
-      env.OPENAI_API_KEY = "";
-    }
+    // OPENAI_API_KEY is no longer force-injected here. Host-level leak
+    // protection is applied at run time in the codex_local adapter: when
+    // adapterConfig.env does not explicitly provide OPENAI_API_KEY, any value
+    // inherited from the server/host process is stripped before spawning the
+    // Codex CLI. This keeps stored agent config free of a redundant empty
+    // slot while preserving the isolation guarantee.
     return { ...adapterConfig, env };
   }
 
