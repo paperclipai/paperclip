@@ -12,6 +12,7 @@ vi.mock("acpx/runtime", () => ({
 }));
 
 const agentId = "11111111-1111-4111-8111-111111111111";
+const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
 const companyId = "22222222-2222-4222-8222-222222222222";
 
 const baseAgent = {
@@ -47,6 +48,12 @@ const mockAgentService = vi.hoisted(() => ({
   terminate: vi.fn(),
   update: vi.fn(),
   updatePermissions: vi.fn(),
+  listConfigRevisions: vi.fn(),
+  getConfigRevision: vi.fn(),
+  rollbackConfigRevision: vi.fn(),
+  createApiKey: vi.fn(),
+  listKeys: vi.fn(),
+  getKeyById: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
 }));
@@ -307,6 +314,12 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.terminate.mockReset();
     mockAgentService.update.mockReset();
     mockAgentService.updatePermissions.mockReset();
+    mockAgentService.listConfigRevisions.mockReset();
+    mockAgentService.getConfigRevision.mockReset();
+    mockAgentService.rollbackConfigRevision.mockReset();
+    mockAgentService.createApiKey.mockReset();
+    mockAgentService.listKeys.mockReset();
+    mockAgentService.getKeyById.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockAccessService.canUser.mockReset();
@@ -354,6 +367,12 @@ describe.sequential("agent permission routes", () => {
     });
     mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
+    mockAgentService.listConfigRevisions.mockResolvedValue([]);
+    mockAgentService.getConfigRevision.mockResolvedValue(null);
+    mockAgentService.rollbackConfigRevision.mockResolvedValue(baseAgent);
+    mockAgentService.createApiKey.mockResolvedValue({ id: "key-1", name: "default", token: "test-token" });
+    mockAgentService.listKeys.mockResolvedValue([]);
+    mockAgentService.getKeyById.mockResolvedValue(null);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
       const allowed = Boolean(await mockAccessService.canUser());
@@ -550,6 +569,130 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(403);
   });
+
+  it("allows read-only agent config reviewers to read redacted config and revisions without mutation authority", async () => {
+    const targetAgent = {
+      ...baseAgent,
+      adapterConfig: {
+        apiUrl: "https://api.example.test/v1",
+        headers: { Authorization: "Bearer adapter-header-token" },
+        env: {
+          PAPERCLIP_API_KEY: "paperclip-key",
+          SAFE_VALUE: "visible",
+        },
+        privateKey: "private-key-value",
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {
+              endpoint: "https://runtime.example.test",
+              authHeader: "Bearer runtime-header-token",
+            },
+          },
+        },
+      },
+    };
+    const reviewerAgent = {
+      ...baseAgent,
+      id: reviewerAgentId,
+      name: "Reviewer",
+      role: "cto",
+      permissions: { canCreateAgents: false },
+    };
+    const revision = {
+      id: "revision-1",
+      agentId,
+      beforeConfig: {
+        adapterConfig: { token: "before-token", safe: "before" },
+        runtimeConfig: { endpoint: "https://before.example.test?access_token=before-query-token" },
+      },
+      afterConfig: {
+        adapterConfig: targetAgent.adapterConfig,
+        runtimeConfig: targetAgent.runtimeConfig,
+        metadata: { privateKey: "revision-private-key", safe: "revision" },
+      },
+      createdAt: new Date("2026-03-19T00:00:00.000Z"),
+    };
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === reviewerAgentId) return reviewerAgent;
+      if (id === agentId) return targetAgent;
+      return null;
+    });
+    mockAgentService.list.mockResolvedValue([targetAgent]);
+    mockAgentService.listConfigRevisions.mockResolvedValue([revision]);
+    mockAgentService.getConfigRevision.mockResolvedValue(revision);
+    // The reviewer holds only the dedicated agent_config:read grant — no
+    // agents:create grant and canCreateAgents:false on its own record. Reads
+    // gate on hasPermission(agent_config:read); mutations gate on decide
+    // (agents:create / agent:update), which must deny.
+    mockAccessService.hasPermission.mockImplementation(
+      async (_companyId: string, _principalType: string, principalId: string, key: string) =>
+        principalId === reviewerAgentId && key === "agent_config:read",
+    );
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: `Missing permission: ${input.action}.`,
+      grant: undefined,
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId: reviewerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const listRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agent-configurations`)
+    );
+    const configRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/agents/${agentId}/configuration`)
+    );
+    const revisionsRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/agents/${agentId}/config-revisions`)
+    );
+    const revisionRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/agents/${agentId}/config-revisions/revision-1`)
+    );
+    const createAgentRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({ name: "Backdoor", role: "engineer", adapterType: "process", adapterConfig: {} })
+    );
+    const updateRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl).patch(`/api/agents/${agentId}`).send({ title: "Mutated" })
+    );
+    const keyRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/keys`).send({ name: "reviewer-key" })
+    );
+    const rollbackRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/config-revisions/revision-1/rollback`).send({})
+    );
+
+    expect(listRes.status, JSON.stringify(listRes.body)).toBe(200);
+    expect(configRes.status, JSON.stringify(configRes.body)).toBe(200);
+    expect(revisionsRes.status, JSON.stringify(revisionsRes.body)).toBe(200);
+    expect(revisionRes.status, JSON.stringify(revisionRes.body)).toBe(200);
+    expect(configRes.body.adapterConfig.env).toEqual({
+      PAPERCLIP_API_KEY: "***REDACTED***",
+      SAFE_VALUE: "visible",
+    });
+    expect(configRes.body.adapterConfig.headers.Authorization).toBe("***REDACTED***");
+    expect(configRes.body.adapterConfig.privateKey).toBe("***REDACTED***");
+    expect(revisionsRes.body[0].beforeConfig.adapterConfig.token).toBe("***REDACTED***");
+    expect(revisionRes.body.afterConfig.metadata.privateKey).toBe("***REDACTED***");
+    expect(createAgentRes.status).toBe(403);
+    expect(updateRes.status).toBe(403);
+    expect(keyRes.status).toBe(403);
+    expect(rollbackRes.status).toBe(403);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockAgentService.createApiKey).not.toHaveBeenCalled();
+    expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+  }, 20_000);
 
   it("blocks agent-authenticated self-updates that set host-executed workspace commands", async () => {
     const app = await createApp({
@@ -1588,6 +1731,47 @@ describe.sequential("agent permission routes", () => {
     );
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
+  });
+
+  it("sets explicit config-read grants without requiring agent creation privilege", async () => {
+    mockAgentService.updatePermissions.mockResolvedValue({
+      ...baseAgent,
+      permissions: { canCreateAgents: false, canAssignTasks: true },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: true, canReadAgentConfig: true }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, {
+      canCreateAgents: false,
+      canAssignTasks: true,
+    });
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "tasks:assign",
+      true,
+      "board-user",
+    );
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "agent_config:read",
+      true,
+      "board-user",
+    );
   });
 
   it("exposes a dedicated agent route for the inbox mine view", async () => {
