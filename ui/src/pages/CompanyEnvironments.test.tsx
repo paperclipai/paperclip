@@ -17,6 +17,7 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   setDefault: vi.fn(),
 }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
   getExperimental: vi.fn(),
 }));
 const mockSecretsApi = vi.hoisted(() => ({
@@ -52,6 +53,13 @@ vi.mock("@/api/secrets", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+// Minimal Radix dialog dependency for jsdom.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).ResizeObserver = class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
 
 async function act(callback: () => void | Promise<void>) {
   await callback();
@@ -73,6 +81,14 @@ function testProviderButtons(container: HTMLElement): HTMLButtonElement[] {
   });
 }
 
+function findButton(root: ParentNode, label: string): HTMLButtonElement | undefined {
+  return Array.from(root.querySelectorAll("button")).find((button) => button.textContent?.trim() === label);
+}
+
+function getOpenDialog(): HTMLElement | null {
+  return document.body.querySelector("[role='dialog']");
+}
+
 describe("CompanyEnvironments — test provider button", () => {
   let container: HTMLDivElement;
   let probeResolvers: Map<string, () => void>;
@@ -81,6 +97,7 @@ describe("CompanyEnvironments — test provider button", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     probeResolvers = new Map();
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockEnvironmentsApi.capabilities.mockResolvedValue({ adapters: [], sandboxProviders: {} });
     mockSecretsApi.list.mockResolvedValue([]);
@@ -88,6 +105,20 @@ describe("CompanyEnvironments — test provider button", () => {
       { id: "env-1", name: "Alpha", driver: "sandbox", description: null, config: { provider: "e2b" } },
       { id: "env-2", name: "Beta", driver: "sandbox", description: null, config: { provider: "e2b" } },
     ]);
+    mockEnvironmentsApi.create.mockImplementation(async (_companyId: string, body: { name: string }) => ({
+      id: "env-new",
+      name: body.name,
+      driver: "ssh",
+      description: null,
+      config: {},
+    }));
+    mockEnvironmentsApi.update.mockImplementation(async (environmentId: string, body: { name: string }) => ({
+      id: environmentId,
+      name: body.name,
+      driver: "sandbox",
+      description: null,
+      config: { provider: "e2b" },
+    }));
     // Each probe stays pending until its resolver is called, so the testing
     // state remains observable and can be settled per environment.
     mockEnvironmentsApi.probe.mockImplementation(
@@ -174,5 +205,73 @@ describe("CompanyEnvironments — test provider button", () => {
     const buttons = testProviderButtons(container);
     expect(buttons[1].textContent?.trim()).toBe("Testing...");
     expect(buttons[1].disabled).toBe(true);
+  });
+
+  it("opens the add-environment form in a dialog and closes it on cancel", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await act(async () => {
+      findButton(container, "Add environment")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(getOpenDialog()?.textContent).toContain("Add environment");
+
+    await act(async () => {
+      findButton(document.body, "Cancel")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(getOpenDialog()).toBeNull();
+  });
+
+  it("opens the edit form in a dialog with existing values and closes after save", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanyEnvironments />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await act(async () => {
+      findButton(container, "Edit")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const dialog = getOpenDialog();
+    expect(dialog?.textContent).toContain("Edit environment");
+    expect(
+      Array.from(dialog?.querySelectorAll("input") ?? []).some((input) => (input as HTMLInputElement).value === "Alpha"),
+    ).toBe(true);
+
+    await act(async () => {
+      findButton(document.body, "Save environment")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockEnvironmentsApi.update).toHaveBeenCalledExactlyOnceWith(
+      "env-1",
+      expect.objectContaining({ name: "Alpha", driver: "sandbox" }),
+    );
+    expect(getOpenDialog()).toBeNull();
   });
 });
