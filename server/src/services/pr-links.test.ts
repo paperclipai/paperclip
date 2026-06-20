@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { IssuePrLink } from "@paperclipai/shared";
-import { mapPullRequestState, mergePrLinkStatus, parseGitHubPrUrl } from "./pr-links.js";
+import {
+  isRefreshableGitHubPrHostname,
+  mapPullRequestState,
+  mergePrLinkStatus,
+  parseGitHubPrUrl,
+} from "./pr-links.js";
 
 describe("parseGitHubPrUrl", () => {
   it("parses a github.com pull request URL", () => {
@@ -34,6 +39,18 @@ describe("parseGitHubPrUrl", () => {
     expect(parseGitHubPrUrl("not-a-url")).toBeNull();
     expect(parseGitHubPrUrl("ftp://github.com/acme/repo/pull/1")).toBeNull();
     expect(parseGitHubPrUrl("https://github.com/acme/repo/pull/0")).toBeNull();
+  });
+});
+
+describe("isRefreshableGitHubPrHostname", () => {
+  it("allows github.com hosts for status refresh", () => {
+    expect(isRefreshableGitHubPrHostname("github.com")).toBe(true);
+    expect(isRefreshableGitHubPrHostname("www.github.com")).toBe(true);
+  });
+
+  it("rejects arbitrary enterprise or internal hosts for status refresh", () => {
+    expect(isRefreshableGitHubPrHostname("git.corp.example.com")).toBe(false);
+    expect(isRefreshableGitHubPrHostname("169.254.169.254")).toBe(false);
   });
 });
 

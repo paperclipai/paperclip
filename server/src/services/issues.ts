@@ -73,7 +73,12 @@ import {
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { mergePrLinkStatus, mapPullRequestState, parseGitHubPrUrl } from "./pr-links.js";
+import {
+  isRefreshableGitHubPrHostname,
+  mergePrLinkStatus,
+  mapPullRequestState,
+  parseGitHubPrUrl,
+} from "./pr-links.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -4439,6 +4444,13 @@ export function issueService(db: Db) {
         const parsed = parseGitHubPrUrl(link.url);
         if (!parsed) {
           next.push(link);
+          continue;
+        }
+        if (!isRefreshableGitHubPrHostname(parsed.hostname)) {
+          next.push({
+            ...link,
+            statusError: "Status refresh is only supported for github.com PR links",
+          });
           continue;
         }
         if (link.statusFetchedAt) {

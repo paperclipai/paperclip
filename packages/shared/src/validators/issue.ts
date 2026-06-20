@@ -129,7 +129,14 @@ export const issueExecutionWorkspaceSettingsSchema = z
 // excluded here and stripped from any incoming body via `.strict()`.
 export const issuePrLinkSchema = z
   .object({
-    url: z.string().trim().url().max(2048),
+    url: z.string().trim().url().max(2048).refine((value) => {
+      try {
+        const parsed = new URL(value);
+        return parsed.protocol === "http:" || parsed.protocol === "https:";
+      } catch {
+        return false;
+      }
+    }, "PR links must use http or https"),
     title: z.string().trim().max(200).optional().nullable(),
   })
   .strict();

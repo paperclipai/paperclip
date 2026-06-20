@@ -9,6 +9,11 @@ export interface ParsedGitHubPrUrl {
 
 const GITHUB_PR_PATH_RE = /^\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:[/?#].*)?$/;
 
+export function isRefreshableGitHubPrHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return normalized === "github.com" || normalized === "www.github.com";
+}
+
 // Parses a GitHub (or GitHub Enterprise) pull-request URL into its parts.
 // Returns null for anything that is not a `/{owner}/{repo}/pull/{number}` URL so
 // non-PR links stay plain with no status badge.

@@ -411,6 +411,19 @@ describe("issue validators", () => {
       expect(parsed.success).toBe(false);
     });
 
+    it("rejects non-http pr link schemes", () => {
+      const javascriptUrl = createIssueSchema.safeParse({
+        title: "Task",
+        prLinks: [{ url: "javascript:alert(1)" }],
+      });
+      const dataUrl = updateIssueSchema.safeParse({
+        prLinks: [{ url: "data:text/html,<script>alert(1)</script>" }],
+      });
+
+      expect(javascriptUrl.success).toBe(false);
+      expect(dataUrl.success).toBe(false);
+    });
+
     it("strips server-trusted status fields from the public body", () => {
       const parsed = createIssueSchema.safeParse({
         title: "Task",
