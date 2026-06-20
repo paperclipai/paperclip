@@ -268,6 +268,7 @@ export type ReconcileManagedCodexHomeStatus =
   | "no_managed_home"
   | "external_override"
   | "already_seeded"
+  | "source_auth_missing"
   | "seeded";
 
 export interface ReconcileManagedCodexHomeInput {
@@ -333,6 +334,10 @@ export async function reconcileManagedCodexHome(
   }
 
   await seedManagedCodexHome(resolved, env, input.onLog ?? noopOnLog, { apiKey });
+
+  if (!apiKey && !(await codexHomeHasUsableAuth(resolved))) {
+    return { status: "source_auth_missing", home: resolved };
+  }
 
   // Without an API key, seeding only changes disk state when auth was missing.
   // With an API key, the matching-file short-circuit above filters out the

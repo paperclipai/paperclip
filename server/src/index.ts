@@ -741,6 +741,12 @@ export async function startServer(): Promise<StartedServer> {
           "reconciled codex_local managed homes (backfilled missing auth)",
         );
       }
+      if (result.sourceAuthMissing > 0) {
+        logger.warn(
+          { sourceAuthMissing: result.sourceAuthMissing, scanned: result.scanned },
+          "could not backfill codex_local managed homes because shared Codex auth is missing",
+        );
+      }
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of codex_local managed homes failed");

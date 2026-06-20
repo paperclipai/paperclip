@@ -82,6 +82,23 @@ describe("reconcileCodexLocalManagedHomesOnStartup", () => {
     expect(second).toMatchObject({ scanned: 1, seeded: 0, alreadySeeded: 1, failed: 0 });
   });
 
+  it("does not report a backfill when shared Codex auth is missing", async () => {
+    await fs.rm(path.join(sharedCodexHome, "auth.json"), { force: true });
+    const agentHome = managedAgentHome("company-1", "agent-missing-source");
+    const rows: AgentRow[] = [
+      { id: "agent-missing-source", companyId: "company-1", adapterConfig: { env: { CODEX_HOME: agentHome } } },
+    ];
+
+    const summary = await reconcileCodexLocalManagedHomesOnStartup(makeDb(rows));
+    expect(summary).toMatchObject({
+      scanned: 1,
+      seeded: 0,
+      sourceAuthMissing: 1,
+      failed: 0,
+    });
+    await expect(fs.lstat(path.join(agentHome, "auth.json"))).rejects.toThrow();
+  });
+
   it("classifies external overrides and unconfigured homes without seeding", async () => {
     const external = path.join(root, "user-codex");
     await fs.mkdir(external, { recursive: true });

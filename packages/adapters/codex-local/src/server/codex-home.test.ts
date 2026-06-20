@@ -377,6 +377,24 @@ describe("reconcileManagedCodexHome", () => {
     }
   });
 
+  it("reports source_auth_missing when shared auth is unavailable", async () => {
+    const fx = await makeFixture();
+    try {
+      await fs.rm(fx.sharedAuth, { force: true });
+
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        env: fx.env,
+      });
+
+      expect(result.status).toBe("source_auth_missing");
+      await expect(fs.lstat(fx.agentAuth)).rejects.toThrow();
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
   it("leaves a genuine external override untouched", async () => {
     const fx = await makeFixture();
     try {

@@ -10,6 +10,7 @@ export interface CodexAuthReconciliationSummary {
   alreadySeeded: number;
   externalOverride: number;
   noManagedHome: number;
+  sourceAuthMissing: number;
   failed: number;
   seededAgentIds: string[];
 }
@@ -79,6 +80,7 @@ export async function reconcileCodexLocalManagedHomesOnStartup(
     alreadySeeded: 0,
     externalOverride: 0,
     noManagedHome: 0,
+    sourceAuthMissing: 0,
     failed: 0,
     seededAgentIds: [],
   };
@@ -122,6 +124,9 @@ export async function reconcileCodexLocalManagedHomesOnStartup(
           break;
         case "no_managed_home":
           summary.noManagedHome += 1;
+          break;
+        case "source_auth_missing":
+          summary.sourceAuthMissing += 1;
           break;
       }
     } catch (err) {
