@@ -1211,7 +1211,10 @@ export function pluginLoader(
               );
             });
             
-            if (matchedKey) {
+            // Valid npm package names: unscoped [a-z0-9._-] or scoped @scope/name
+            const NPM_PKG_RE = /^(?:@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z0-9._-]+)$/;
+
+            if (matchedKey && NPM_PKG_RE.test(matchedKey)) {
               log.info(
                 { packageName: targetPackageName, matchedKey },
                 "plugin-loader: resolved alias for installed package",
@@ -1223,6 +1226,11 @@ export function pluginLoader(
               } else {
                 resolvedPackagePath = path.join(nodeModulesPath, resolvedPackageName);
               }
+            } else if (matchedKey) {
+              log.warn(
+                { matchedKey },
+                "plugin-loader: dependency key failed validation, skipping",
+              );
             }
           } catch (e) {
             log.warn({ err: e }, "plugin-loader: failed to read package.json dependencies for resolution");
