@@ -7020,7 +7020,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function hasActionableTimerWork(agent: typeof agents.$inferSelect) {
-    const row = await db
+    const candidateRows = await db
       .select({ id: issues.id })
       .from(issues)
       .where(
@@ -7032,9 +7032,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
         ),
       )
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    return Boolean(row);
+      .orderBy(asc(issues.updatedAt))
+      .limit(50);
+    if (candidateRows.length === 0) return false;
+
+    const readinessByIssueId = await issuesSvc.listDependencyReadiness(
+      agent.companyId,
+      candidateRows.map((row) => row.id),
+    );
+    return candidateRows.some((row) => readinessByIssueId.get(row.id)?.isDependencyReady ?? true);
   }
 
   async function markTimerHeartbeatChecked(agentId: string, source: WakeupOptions["source"]) {
