@@ -265,7 +265,7 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
   });
 
-  it("records Telegram approval attribution when provided by a board-authenticated integration", async () => {
+  it("ignores Telegram approval attribution from session callers", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-4b",
       companyId: "company-1",
@@ -293,6 +293,39 @@ describe("approval routes idempotent retries", () => {
     expect(res.status).toBe(200);
     expect(mockApprovalService.approve).toHaveBeenCalledWith(
       "approval-4b",
+      "user-1",
+      "ship it",
+    );
+  });
+
+  it("records Telegram approval attribution when provided by a board API key integration", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-4c",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: null,
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-4c",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: null,
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp({ source: "board_key", keyId: "board-key-1" }))
+      .post("/api/approvals/approval-4c/approve")
+      .send({ decidedByUserId: "telegram:tigom007", decisionNote: "ship it" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.approve).toHaveBeenCalledWith(
+      "approval-4c",
       "telegram:tigom007",
       "ship it",
     );
@@ -332,7 +365,7 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-5", "user-1", "not now");
   });
 
-  it("records Telegram rejection attribution when provided by a board-authenticated integration", async () => {
+  it("ignores Telegram rejection attribution from session callers", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-5b",
       companyId: "company-1",
@@ -358,6 +391,37 @@ describe("approval routes idempotent retries", () => {
     expect(res.status).toBe(200);
     expect(mockApprovalService.reject).toHaveBeenCalledWith(
       "approval-5b",
+      "user-1",
+      "not now",
+    );
+  });
+
+  it("records Telegram rejection attribution when provided by a board API key integration", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-5c",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-5c",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "rejected",
+        payload: {},
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp({ source: "board_key", keyId: "board-key-1" }))
+      .post("/api/approvals/approval-5c/reject")
+      .send({ decidedByUserId: "telegram:tigom007", decisionNote: "not now" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.reject).toHaveBeenCalledWith(
+      "approval-5c",
       "telegram:tigom007",
       "not now",
     );
