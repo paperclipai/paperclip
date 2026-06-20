@@ -63,6 +63,26 @@
 
 -
 
+## Layout & Smoke
+
+<!--
+  Required for UI / FE PRs. Backend-only PRs can write "N/A — backend only".
+
+  Layout-sensitive changes are ones that touch CSS, component structure,
+  flex/grid, spacing tokens, breakpoints, navigation chrome, or anything
+  that visibly moves pixels for an existing user. If unsure, mark yes.
+
+  Smoke test gate: large FE changes must run at least one smoke check
+  (`pnpm test:e2e` subset, `scripts/smoke/*`, or a manual
+  before/after screenshot pass) before this PR is merge-eligible.
+  State exactly what was run and the result.
+-->
+
+- Layout-sensitive change? **(yes / no — explain below)**
+-
+- Smoke check run: **(command / manual steps + result)**
+-
+
 > For core feature work, check [`ROADMAP.md`](ROADMAP.md) first and discuss it in `#dev` before opening the PR. Feature PRs that overlap with planned core work may need to be redirected — check the roadmap first. See `CONTRIBUTING.md`.
 
 ## Model Used
@@ -91,6 +111,8 @@
 - [ ] My branch name describes the change (e.g. `docs/...`, `fix/...`) and contains no internal Paperclip ticket id or instance-derived details
 - [ ] I have run tests locally and they pass
 - [ ] I have added or updated tests where applicable
+- [ ] I have answered the Layout & Smoke section (or marked it N/A — backend only)
+- [ ] If this is a layout-sensitive FE change, I have run a smoke check and stated the result
 - [ ] If this change affects the UI, I have included before/after screenshots
 - [ ] I have updated relevant documentation to reflect my changes
 - [ ] I have considered and documented any risks above
