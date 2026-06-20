@@ -166,6 +166,7 @@ export function CompanyEnvironments() {
   const [editingEnvironmentId, setEditingEnvironmentId] = useState<string | null>(null);
   const [environmentForm, setEnvironmentForm] = useState<EnvironmentFormState>(createEmptyEnvironmentForm);
   const [probeResults, setProbeResults] = useState<Record<string, EnvironmentProbeResult | null>>({});
+  const [testingEnvironmentId, setTestingEnvironmentId] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -232,6 +233,12 @@ export function CompanyEnvironments() {
 
   const environmentProbeMutation = useMutation({
     mutationFn: async (environmentId: string) => await environmentsApi.probe(environmentId),
+    onMutate: (environmentId) => {
+      setTestingEnvironmentId(environmentId);
+    },
+    onSettled: (_probe, _error, environmentId) => {
+      setTestingEnvironmentId((current) => (current === environmentId ? null : current));
+    },
     onSuccess: (probe, environmentId) => {
       setProbeResults((current) => ({
         ...current,
@@ -287,6 +294,7 @@ export function CompanyEnvironments() {
     setEditingEnvironmentId(null);
     setEnvironmentForm(createEmptyEnvironmentForm());
     setProbeResults({});
+    setTestingEnvironmentId(null);
   }, [selectedCompanyId]);
 
   function handleEditEnvironment(environment: Environment) {
@@ -530,9 +538,9 @@ export function CompanyEnvironments() {
                           size="sm"
                           variant="outline"
                           onClick={() => environmentProbeMutation.mutate(environment.id)}
-                          disabled={environmentProbeMutation.isPending}
+                          disabled={testingEnvironmentId === environment.id}
                         >
-                          {environmentProbeMutation.isPending
+                          {testingEnvironmentId === environment.id
                             ? "Testing..."
                             : environment.driver === "ssh"
                               ? "Test connection"
