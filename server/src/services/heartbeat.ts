@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -4838,10 +4838,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
         projectId: issues.projectId,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
+        monitorNotes: issues.monitorNotes,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
+    if (issue) {
+      const now = new Date();
+      if (issue.monitorNextCheckAt && issue.monitorNextCheckAt > now) return;
+      if (issue.monitorNotes) {
+        const m = /wakeNotBefore:\s*(\S+)/i.exec(issue.monitorNotes);
+        if (m?.[1]) {
+          const t = new Date(m[1]);
+          if (!isNaN(t.getTime()) && t > now) return;
+        }
+      }
+    }
     const idempotencyKey = issue
       ? buildFinishSuccessfulRunHandoffIdempotencyKey({
         issueId: issue.id,
@@ -4861,6 +4874,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       existingWake,
       budgetBlock,
       pauseHold,
+      recentCooldownWake,
     ] = await Promise.all([
       issue
         ? db
@@ -4986,6 +5000,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue
         ? treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id)
         : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed", "completed"]),
+              sql`${agentWakeupRequests.idempotencyKey} like ${FINISH_SUCCESSFUL_RUN_HANDOFF_REASON + ":" + issue.id + ":%"}`,
+              gte(agentWakeupRequests.createdAt, new Date(Date.now() - 30 * 60 * 1000)),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -5003,6 +5032,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasPauseHold: Boolean(pauseHold),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
+      recentCooldownWakeExists: Boolean(recentCooldownWake),
     });
 
     if (decision.kind !== "enqueue" || !issue) return;
