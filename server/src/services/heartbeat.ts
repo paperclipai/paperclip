@@ -131,6 +131,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
+  resolveSharedWorkspaceReuseDecision,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import {
@@ -161,6 +162,7 @@ import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import { acquireExecutionWorkspaceIdentityLock } from "./execution-workspace-identity-lock.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -8621,8 +8623,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipTaskMarkdown;
     }
-    const existingExecutionWorkspace =
+    let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
+    let profileResolutionFallbackReason: string | null = null;
+    try {
+      adapterModelProfiles = await listAdapterModelProfiles(agent.adapterType);
+    } catch (error) {
+      profileResolutionFallbackReason = "adapter_profile_resolution_failed";
+      logger.warn(
+        {
+          err: error,
+          companyId: agent.companyId,
+          agentId: agent.id,
+          adapterType: agent.adapterType,
+          runId: run.id,
+        },
+        "Failed to resolve adapter model profiles; falling back to primary adapter config",
+      );
+    }
+    const modelProfileApplication = resolveModelProfileApplication({
+      adapterModelProfiles,
+      agentRuntimeConfig: agent.runtimeConfig,
+      issueModelProfile: issueAssigneeOverrides?.modelProfile ?? null,
+      contextSnapshot: context,
+      profileResolutionFallbackReason,
+    });
+    const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
+    if (modelProfileMetadata) {
+      context.paperclipModelProfile = modelProfileMetadata;
+      if (modelProfileApplication.requested) context.modelProfile = modelProfileApplication.requested;
+    } else {
+      delete context.paperclipModelProfile;
+    }
+    const issueLinkedExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
+    const existingExecutionWorkspace = issueLinkedExecutionWorkspace;
     const requestedShouldReuseExisting =
       issueRef?.executionWorkspacePreference === "reuse_existing" &&
       existingExecutionWorkspace !== null &&
@@ -8761,37 +8795,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       workspaceConfig: reusableExecutionWorkspaceConfig,
       mode: effectiveExecutionWorkspaceMode,
     });
-    let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
-    let profileResolutionFallbackReason: string | null = null;
-    try {
-      adapterModelProfiles = await listAdapterModelProfiles(agent.adapterType);
-    } catch (error) {
-      profileResolutionFallbackReason = "adapter_profile_resolution_failed";
-      logger.warn(
-        {
-          err: error,
-          companyId: agent.companyId,
-          agentId: agent.id,
-          adapterType: agent.adapterType,
-          runId: run.id,
-        },
-        "Failed to resolve adapter model profiles; falling back to primary adapter config",
-      );
-    }
-    const modelProfileApplication = resolveModelProfileApplication({
-      adapterModelProfiles,
-      agentRuntimeConfig: agent.runtimeConfig,
-      issueModelProfile: issueAssigneeOverrides?.modelProfile ?? null,
-      contextSnapshot: context,
-      profileResolutionFallbackReason,
-    });
-    const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
-    if (modelProfileMetadata) {
-      context.paperclipModelProfile = modelProfileMetadata;
-      if (modelProfileApplication.requested) context.modelProfile = modelProfileApplication.requested;
-    } else {
-      delete context.paperclipModelProfile;
-    }
     const mergedConfig = mergeModelProfileAdapterConfig({
       baseConfig: persistedWorkspaceManagedConfig,
       modelProfile: modelProfileApplication,
@@ -8921,6 +8924,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           recorder: workspaceOperationRecorder,
         });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
+    // Only dedup when the issue is NOT already linked to a workspace — the
+    // unreliable-link case across the multi-agent funnel that accretes duplicate
+    // active rows. Use the realized branch so the identity cannot drift from the
+    // workspace-runtime branch renderer.
+    const sharedWorkspaceDedupIdentity =
+      existingExecutionWorkspace === null &&
+      requestedExecutionWorkspaceMode === "shared_workspace" &&
+      executionWorkspace.branchName !== null &&
+      resolvedProjectId !== null &&
+      issueRef?.id
+        ? {
+            companyId: agent.companyId,
+            projectId: resolvedProjectId,
+            sourceIssueId: issueRef.id,
+            branchName: executionWorkspace.branchName,
+          }
+        : null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
     const nextExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
@@ -8932,47 +8952,81 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       baseRef: executionWorkspace.repoRef,
       baseRefSha: executionWorkspace.baseRefSha ?? null,
     });
+    // Serialize the re-lookup -> reuse-or-create decision per logical identity so
+    // two concurrent first-wakes cannot both insert a new active row. Held ONLY
+    // across the fast persist (realizeExecutionWorkspace already ran and is
+    // idempotent for the identity) and released in `finally`, so a throw can never
+    // leak it; no proceed-anyway timeout (see execution-workspace-identity-lock).
+    const releaseExecutionWorkspaceIdentityLock = sharedWorkspaceDedupIdentity
+      ? await acquireExecutionWorkspaceIdentityLock(
+          `${sharedWorkspaceDedupIdentity.companyId}:${sharedWorkspaceDedupIdentity.projectId}:${sharedWorkspaceDedupIdentity.sourceIssueId}:${sharedWorkspaceDedupIdentity.branchName}`,
+        )
+      : null;
     try {
-      persistedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
-        ? await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
-            cwd: executionWorkspace.cwd,
-            repoUrl: executionWorkspace.repoUrl,
-            baseRef: executionWorkspace.repoRef,
-            branchName: executionWorkspace.branchName,
-            providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
-            providerRef: executionWorkspace.worktreePath,
-            status: "active",
-            lastUsedAt: new Date(),
-            metadata: nextExecutionWorkspaceMetadata,
-          })
-        : resolvedProjectId
-          ? await executionWorkspacesSvc.create({
-              companyId: agent.companyId,
-              projectId: resolvedProjectId,
-              projectWorkspaceId: resolvedProjectWorkspaceId,
-              sourceIssueId: issueRef?.id ?? null,
-              mode:
-                requestedExecutionWorkspaceMode === "isolated_workspace"
-                  ? "isolated_workspace"
-                  : requestedExecutionWorkspaceMode === "operator_branch"
-                    ? "operator_branch"
-                    : requestedExecutionWorkspaceMode === "agent_default"
-                      ? "adapter_managed"
-                      : "shared_workspace",
-              strategyType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "project_primary",
-              name: executionWorkspace.branchName ?? issueRef?.identifier ?? `workspace-${agent.id.slice(0, 8)}`,
-              status: "active",
-              cwd: executionWorkspace.cwd,
-              repoUrl: executionWorkspace.repoUrl,
-              baseRef: executionWorkspace.repoRef,
-              branchName: executionWorkspace.branchName,
-              providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
-              providerRef: executionWorkspace.worktreePath,
-              lastUsedAt: new Date(),
-              openedAt: new Date(),
-              metadata: nextExecutionWorkspaceMetadata,
-            })
+      if (shouldReuseExisting && existingExecutionWorkspace) {
+        persistedExecutionWorkspace = await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
+          cwd: executionWorkspace.cwd,
+          repoUrl: executionWorkspace.repoUrl,
+          baseRef: executionWorkspace.repoRef,
+          branchName: executionWorkspace.branchName,
+          providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+          providerRef: executionWorkspace.worktreePath,
+          status: "active",
+          lastUsedAt: new Date(),
+          metadata: nextExecutionWorkspaceMetadata,
+        });
+      } else if (resolvedProjectId) {
+        // Double-checked under the identity lock, ONLY when no existing workspace
+        // was resolved (the genuine first-create path): a concurrent wake may have
+        // created the shared row after our early (unlocked) lookup missed it.
+        const racedCandidate = sharedWorkspaceDedupIdentity && existingExecutionWorkspace === null
+          ? await executionWorkspacesSvc.findReusableSharedWorkspace(sharedWorkspaceDedupIdentity)
           : null;
+        // Reuse the raced row ONLY if its persisted environment does not conflict
+        // with this assignee's intended env — the SAME PAPA-380/431 guard an early
+        // candidate gets (resolveExecutionWorkspaceEnvironmentId), combined via
+        // resolveSharedWorkspaceReuseDecision. A conflict (or no row) -> create fresh.
+        const racedSharedWorkspace = resolveSharedWorkspaceReuseDecision({
+          candidate: racedCandidate,
+          environmentConflict: racedCandidate
+            ? resolveExecutionWorkspaceEnvironmentId({
+                projectPolicy: projectExecutionWorkspacePolicy,
+                issueSettings: issueExecutionWorkspaceSettings,
+                workspaceConfig: racedCandidate.config ?? null,
+                agentDefaultEnvironmentId: agent.defaultEnvironmentId,
+                defaultEnvironmentId: defaultEnvironment.id,
+              }).conflict
+            : null,
+        })
+          ? racedCandidate
+          : null;
+        persistedExecutionWorkspace = racedSharedWorkspace ?? await executionWorkspacesSvc.create({
+          companyId: agent.companyId,
+          projectId: resolvedProjectId,
+          projectWorkspaceId: resolvedProjectWorkspaceId,
+          sourceIssueId: issueRef?.id ?? null,
+          mode:
+            requestedExecutionWorkspaceMode === "isolated_workspace"
+              ? "isolated_workspace"
+              : requestedExecutionWorkspaceMode === "operator_branch"
+                ? "operator_branch"
+                : requestedExecutionWorkspaceMode === "agent_default"
+                  ? "adapter_managed"
+                  : "shared_workspace",
+          strategyType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "project_primary",
+          name: executionWorkspace.branchName ?? issueRef?.identifier ?? `workspace-${agent.id.slice(0, 8)}`,
+          status: "active",
+          cwd: executionWorkspace.cwd,
+          repoUrl: executionWorkspace.repoUrl,
+          baseRef: executionWorkspace.repoRef,
+          branchName: executionWorkspace.branchName,
+          providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+          providerRef: executionWorkspace.worktreePath,
+          lastUsedAt: new Date(),
+          openedAt: new Date(),
+          metadata: nextExecutionWorkspaceMetadata,
+        });
+      }
     } catch (error) {
       if (executionWorkspace.created) {
         try {
@@ -9014,6 +9068,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
       throw error;
+    } finally {
+      releaseExecutionWorkspaceIdentityLock?.();
     }
     await workspaceOperationRecorder.attachExecutionWorkspaceId(persistedExecutionWorkspace?.id ?? null);
     if (

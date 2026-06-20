@@ -152,6 +152,18 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
   };
 }
 
+// Shared_workspace reuse decision (spec "Fix"): reuse a found shared candidate
+// ONLY when one exists AND its persisted environment does not conflict with the
+// assignee's intended environment (the conflict signal comes from
+// `resolveExecutionWorkspaceEnvironmentId`). No candidate, or a conflict, means
+// create fresh.
+export function resolveSharedWorkspaceReuseDecision(input: {
+  candidate: { id: string } | null;
+  environmentConflict: { reason: string } | null;
+}): boolean {
+  return input.candidate !== null && input.environmentConflict === null;
+}
+
 export function defaultIssueExecutionWorkspaceSettingsForProject(
   projectPolicy: ProjectExecutionWorkspacePolicy | null,
 ): IssueExecutionWorkspaceSettings | null {

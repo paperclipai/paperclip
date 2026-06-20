@@ -486,6 +486,45 @@ export function executionWorkspaceService(db: Db) {
       );
     },
 
+    // Shared_workspace-only dedup lookup (spec): keyed on the full logical
+    // identity companyId + projectId + sourceIssueId + branchName, restricted to
+    // mode="shared_workspace" reusable rows (status active|idle|in_review,
+    // closedAt IS NULL). A null sourceIssueId or branchName is not a stable
+    // identity, so dedup is skipped (null). Deliberately separate from
+    // reuseEligible/listSummaries, which pin OPEN non-shared workspaces.
+    findReusableSharedWorkspace: async (identity: {
+      companyId: string;
+      projectId: string;
+      sourceIssueId: string | null;
+      branchName: string | null;
+    }): Promise<ExecutionWorkspace | null> => {
+      if (!identity.sourceIssueId || !identity.branchName) {
+        return null;
+      }
+      const row = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(
+          and(
+            eq(executionWorkspaces.companyId, identity.companyId),
+            eq(executionWorkspaces.projectId, identity.projectId),
+            eq(executionWorkspaces.sourceIssueId, identity.sourceIssueId),
+            eq(executionWorkspaces.branchName, identity.branchName),
+            eq(executionWorkspaces.mode, "shared_workspace"),
+            inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+            isNull(executionWorkspaces.closedAt),
+          ),
+        )
+        .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt))
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
+      return toExecutionWorkspace(
+        row,
+        (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+      );
+    },
+
     getCloseReadiness: async (id: string): Promise<ExecutionWorkspaceCloseReadiness | null> => {
       const workspace = await db
         .select()

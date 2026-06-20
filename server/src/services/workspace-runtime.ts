@@ -1211,6 +1211,32 @@ async function resolveGitRepoRootForWorkspaceCleanup(
   return path.dirname(resolvedGitDir);
 }
 
+// Side-effect-free branch planner: renders the SAME branch
+// `realizeExecutionWorkspace` produces for identical inputs via the shared
+// render + sanitize + default-template path (no second renderer, no drift).
+// Returns `null` for non-`git_worktree` strategies so callers can key
+// shared_workspace dedup on a stable branch identity, or skip it when null.
+export function planExecutionWorkspaceBranch(
+  workspaceStrategy: unknown,
+  issue: ExecutionWorkspaceIssueRef | null,
+  agent: ExecutionWorkspaceAgentRef,
+  projectId: string | null,
+  repoRef: string | null,
+): string | null {
+  const rawStrategy = parseObject(workspaceStrategy);
+  if (asString(rawStrategy.type, "project_primary") !== "git_worktree") {
+    return null;
+  }
+  const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
+  const renderedBranch = renderWorkspaceTemplate(branchTemplate, {
+    issue,
+    agent,
+    projectId,
+    repoRef,
+  });
+  return sanitizeBranchName(renderedBranch);
+}
+
 export async function realizeExecutionWorkspace(input: {
   base: ExecutionWorkspaceInput;
   config: Record<string, unknown>;
@@ -1219,8 +1245,14 @@ export async function realizeExecutionWorkspace(input: {
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
-  const strategyType = asString(rawStrategy.type, "project_primary");
-  if (strategyType !== "git_worktree") {
+  const plannedBranchName = planExecutionWorkspaceBranch(
+    input.config.workspaceStrategy,
+    input.issue,
+    input.agent,
+    input.base.projectId,
+    input.base.repoRef,
+  );
+  if (plannedBranchName === null) {
     return {
       ...input.base,
       strategy: "project_primary",
@@ -1232,16 +1264,9 @@ export async function realizeExecutionWorkspace(input: {
       baseRefSha: null,
     };
   }
+  const branchName = plannedBranchName;
 
   const repoRoot = await resolveGitOwnerRepoRoot(input.base.baseCwd);
-  const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
-  const renderedBranch = renderWorkspaceTemplate(branchTemplate, {
-    issue: input.issue,
-    agent: input.agent,
-    projectId: input.base.projectId,
-    repoRef: input.base.repoRef,
-  });
-  const branchName = sanitizeBranchName(renderedBranch);
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
