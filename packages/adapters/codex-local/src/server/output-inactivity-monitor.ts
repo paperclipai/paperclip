@@ -1,23 +1,23 @@
 import { parseJson } from "@paperclipai/adapter-utils/server-utils";
 
 export const DEFAULT_CODEX_OUTPUT_INACTIVITY_TIMEOUT_MS = 7 * 60 * 1000;
-export const CODEX_WATCHDOG_SIGTERM_GRACE_MS = 5_000;
+export const CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS = 5_000;
 
-export type CodexWatchdogResolution =
+export type CodexOutputInactivityMonitorResolution =
   | { mode: "default"; timeoutMs: number }
   | { mode: "configured"; timeoutMs: number }
   | { mode: "disabled"; reason: "explicit_null" }
   | { mode: "default"; timeoutMs: number; reason: "non_positive" };
 
 /**
- * Resolve the inactivity watchdog timeout from raw adapter config.
+ * Resolve the inactivity monitor timeout from raw adapter config.
  *
  * - `null`         → disabled (explicit escape hatch).
  * - missing/`undefined` → default 7m.
  * - number > 0     → configured value.
  * - number ≤ 0     → default 7m (and a `non_positive` note for logging).
  */
-export function resolveCodexInactivityTimeout(rawValue: unknown): CodexWatchdogResolution {
+export function resolveCodexInactivityTimeout(rawValue: unknown): CodexOutputInactivityMonitorResolution {
   if (rawValue === null) return { mode: "disabled", reason: "explicit_null" };
   if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
     if (rawValue > 0) return { mode: "configured", timeoutMs: rawValue };
@@ -26,7 +26,7 @@ export function resolveCodexInactivityTimeout(rawValue: unknown): CodexWatchdogR
   return { mode: "default", timeoutMs: DEFAULT_CODEX_OUTPUT_INACTIVITY_TIMEOUT_MS };
 }
 
-export interface CodexInactivityWatchdogState {
+export interface CodexOutputInactivityMonitorState {
   fired: boolean;
   spawnedAt: number;
   lastEventAt: number;
@@ -34,9 +34,9 @@ export interface CodexInactivityWatchdogState {
   parsedEventCount: number;
 }
 
-export interface CodexInactivityWatchdogOptions {
+export interface CodexOutputInactivityMonitorOptions {
   timeoutMs: number;
-  onFire: (state: CodexInactivityWatchdogState) => void;
+  onFire: (state: CodexOutputInactivityMonitorState) => void;
   now?: () => number;
   setTimer?: (cb: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
@@ -47,12 +47,12 @@ export interface CodexInactivityWatchdogOptions {
   isHeartbeatLine?: (line: string) => boolean;
 }
 
-export interface CodexInactivityWatchdogHandle {
+export interface CodexOutputInactivityMonitorHandle {
   noteStdoutChunk(chunk: string): void;
   /** Returns the current state without stopping the timer. */
-  state(): CodexInactivityWatchdogState;
+  state(): CodexOutputInactivityMonitorState;
   /** Cancels any pending timer and returns the final state. */
-  stop(): CodexInactivityWatchdogState;
+  stop(): CodexOutputInactivityMonitorState;
 }
 
 function defaultIsHeartbeatLine(line: string): boolean {
@@ -61,9 +61,9 @@ function defaultIsHeartbeatLine(line: string): boolean {
   return parseJson(trimmed) !== null;
 }
 
-export function createCodexInactivityWatchdog(
-  options: CodexInactivityWatchdogOptions,
-): CodexInactivityWatchdogHandle {
+export function createCodexOutputInactivityMonitor(
+  options: CodexOutputInactivityMonitorOptions,
+): CodexOutputInactivityMonitorHandle {
   const now = options.now ?? (() => Date.now());
   const setTimer = options.setTimer ?? ((cb, ms) => setTimeout(cb, ms));
   const clearTimer = options.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
@@ -71,11 +71,11 @@ export function createCodexInactivityWatchdog(
   const timeoutMs = options.timeoutMs;
 
   if (!(timeoutMs > 0)) {
-    throw new Error(`createCodexInactivityWatchdog requires timeoutMs > 0 (got ${timeoutMs})`);
+    throw new Error(`createCodexOutputInactivityMonitor requires timeoutMs > 0 (got ${timeoutMs})`);
   }
 
   const spawnedAt = now();
-  const state: CodexInactivityWatchdogState = {
+  const state: CodexOutputInactivityMonitorState = {
     fired: false,
     spawnedAt,
     lastEventAt: spawnedAt,
@@ -131,12 +131,12 @@ export function createCodexInactivityWatchdog(
 }
 
 /**
- * Format the inactivity watchdog error message in the canonical
- * `watchdog: no codex output for {N}m {S}s` shape consumed by NEE-81.
+ * Format the inactivity monitor error message in the canonical
+ * `monitor: no codex output for {N}m {S}s` shape consumed by NEE-81.
  */
-export function formatWatchdogErrorMessage(elapsedMs: number): string {
+export function formatOutputInactivityMonitorErrorMessage(elapsedMs: number): string {
   const total = Math.max(0, Math.round(elapsedMs / 1000));
   const minutes = Math.floor(total / 60);
   const seconds = total - minutes * 60;
-  return `watchdog: no codex output for ${minutes}m ${seconds}s`;
+  return `monitor: no codex output for ${minutes}m ${seconds}s`;
 }

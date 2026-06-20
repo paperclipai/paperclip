@@ -50,11 +50,11 @@ import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
-  CODEX_WATCHDOG_SIGTERM_GRACE_MS,
-  createCodexInactivityWatchdog,
-  formatWatchdogErrorMessage,
+  CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS,
+  createCodexOutputInactivityMonitor,
+  formatOutputInactivityMonitorErrorMessage,
   resolveCodexInactivityTimeout,
-} from "./watchdog.js";
+} from "./output-inactivity-monitor.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -576,16 +576,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resolvedCommand,
     });
 
-    const watchdogResolution = resolveCodexInactivityTimeout(config.outputInactivityTimeoutMs);
-    if (watchdogResolution.mode === "disabled") {
+    const monitorResolution = resolveCodexInactivityTimeout(config.outputInactivityTimeoutMs);
+    if (monitorResolution.mode === "disabled") {
       await onLog(
         "stdout",
-        `[paperclip] Codex output inactivity watchdog is DISABLED via adapterConfig.outputInactivityTimeoutMs=null. Hung codex runs will only be detected by the platform-level silent-run safety net.\n`,
+        `[paperclip] Codex output inactivity monitor is DISABLED via adapterConfig.outputInactivityTimeoutMs=null. Hung codex runs will only be detected by the platform-level silent-run safety net.\n`,
       );
-    } else if (watchdogResolution.mode === "default" && "reason" in watchdogResolution) {
+    } else if (monitorResolution.mode === "default" && "reason" in monitorResolution) {
       await onLog(
         "stdout",
-        `[paperclip] Ignoring non-positive adapterConfig.outputInactivityTimeoutMs; falling back to default ${watchdogResolution.timeoutMs}ms.\n`,
+        `[paperclip] Ignoring non-positive adapterConfig.outputInactivityTimeoutMs; falling back to default ${monitorResolution.timeoutMs}ms.\n`,
       );
     }
     const runtimeSessionParams = parseObject(runtime.sessionParams);
@@ -769,47 +769,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
-      let watchdogFired = false;
-      let watchdogTerminationSignal: NodeJS.Signals | null = null;
-      let watchdogElapsedMs = 0;
-      let watchdogTimeoutMs = 0;
+      let monitorFired = false;
+      let monitorTerminationSignal: NodeJS.Signals | null = null;
+      let monitorElapsedMs = 0;
+      let monitorTimeoutMs = 0;
       let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
       let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
-      let watchdogLogPromise: Promise<unknown> | null = null;
+      let monitorLogPromise: Promise<unknown> | null = null;
 
-      const watchdog =
-        watchdogResolution.mode === "disabled"
+      const monitor =
+        monitorResolution.mode === "disabled"
           ? null
-          : createCodexInactivityWatchdog({
-              timeoutMs: watchdogResolution.timeoutMs,
+          : createCodexOutputInactivityMonitor({
+              timeoutMs: monitorResolution.timeoutMs,
               onFire: (state) => {
-                watchdogFired = true;
-                watchdogElapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
-                watchdogTimeoutMs = watchdogResolution.timeoutMs;
-                const message = formatWatchdogErrorMessage(watchdogElapsedMs);
-                const elapsedSec = Math.round(watchdogElapsedMs / 1000);
-                const timeoutSecLabel = Math.round(watchdogResolution.timeoutMs / 1000);
+                monitorFired = true;
+                monitorElapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
+                monitorTimeoutMs = monitorResolution.timeoutMs;
+                const message = formatOutputInactivityMonitorErrorMessage(monitorElapsedMs);
+                const elapsedSec = Math.round(monitorElapsedMs / 1000);
+                const timeoutSecLabel = Math.round(monitorResolution.timeoutMs / 1000);
                 const logLine =
                   `[paperclip] adapter.invoke ${message}; ` +
-                  `timeoutMs=${watchdogResolution.timeoutMs} elapsedSinceLastEventMs=${watchdogElapsedMs} ` +
+                  `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
                   `parsedEvents=${state.parsedEventCount} (timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
                   `terminating codex child via SIGTERM (5s grace, then SIGKILL).\n`;
                 // Issue the log without awaiting on the kill hot path, but capture
                 // the promise so the surrounding try/finally can await flush before
                 // the run resolves. Without this the diagnostic that explains the
                 // kill could be dropped if the child exits faster than onLog flushes.
-                watchdogLogPromise = Promise.resolve(onLog("stderr", logLine)).catch(() => {});
+                monitorLogPromise = Promise.resolve(onLog("stderr", logLine)).catch(() => {});
                 const target = killTarget;
                 if (!target || (target.pid == null && target.processGroupId == null)) {
                   return;
                 }
                 const sentSig = signalCodexChild(target, "SIGTERM");
-                if (sentSig) watchdogTerminationSignal = "SIGTERM";
+                if (sentSig) monitorTerminationSignal = "SIGTERM";
                 sigkillTimer = setTimeout(() => {
                   sigkillTimer = null;
                   const stillSent = signalCodexChild(target, "SIGKILL");
-                  if (stillSent) watchdogTerminationSignal = "SIGKILL";
-                }, CODEX_WATCHDOG_SIGTERM_GRACE_MS);
+                  if (stillSent) monitorTerminationSignal = "SIGKILL";
+                }, CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
                 if (typeof (sigkillTimer as { unref?: () => void }).unref === "function") {
                   (sigkillTimer as { unref: () => void }).unref();
                 }
@@ -833,7 +833,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           onSpawn: wrappedOnSpawn,
           onLog: async (stream, chunk) => {
             if (stream === "stdout") {
-              watchdog?.noteStdoutChunk(chunk);
+              monitor?.noteStdoutChunk(chunk);
               await onLog(stream, chunk);
               return;
             }
@@ -850,24 +850,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           },
           rawStderr: proc.stderr,
           parsed: parseCodexJsonl(proc.stdout),
-          watchdog: watchdogFired
+          monitor: monitorFired
             ? {
                 fired: true as const,
-                terminationSignal: watchdogTerminationSignal,
-                elapsedMsSinceLastEvent: watchdogElapsedMs,
-                timeoutMs: watchdogTimeoutMs,
+                terminationSignal: monitorTerminationSignal,
+                elapsedMsSinceLastEvent: monitorElapsedMs,
+                timeoutMs: monitorTimeoutMs,
               }
             : { fired: false as const },
         };
       } finally {
-        watchdog?.stop();
+        monitor?.stop();
         if (sigkillTimer) {
           clearTimeout(sigkillTimer);
           sigkillTimer = null;
         }
-        if (watchdogLogPromise) {
-          await watchdogLogPromise;
-          watchdogLogPromise = null;
+        if (monitorLogPromise) {
+          await monitorLogPromise;
+          monitorLogPromise = null;
         }
       }
     };
@@ -877,21 +877,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
         rawStderr: string;
         parsed: ReturnType<typeof parseCodexJsonl>;
-        watchdog?:
+        monitor?:
           | { fired: false }
           | { fired: true; terminationSignal: NodeJS.Signals | null; elapsedMsSinceLastEvent: number; timeoutMs: number };
       },
       clearSessionOnMissingSession = false,
       isRetry = false,
     ): AdapterExecutionResult => {
-      if (attempt.watchdog?.fired) {
-        const errorMessage = formatWatchdogErrorMessage(attempt.watchdog.elapsedMsSinceLastEvent);
+      if (attempt.monitor?.fired) {
+        const errorMessage = formatOutputInactivityMonitorErrorMessage(attempt.monitor.elapsedMsSinceLastEvent);
         return {
           exitCode: null,
-          signal: attempt.watchdog.terminationSignal ?? attempt.proc.signal,
+          signal: attempt.monitor.terminationSignal ?? attempt.proc.signal,
           timedOut: false,
           errorMessage,
-          errorCode: "codex_output_inactivity_watchdog",
+          errorCode: "codex_output_inactivity_monitor",
           errorFamily: null,
           usage: attempt.parsed.usage,
           sessionId: null,
@@ -905,11 +905,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           resultJson: {
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
-            watchdog: {
+            outputInactivityMonitor: {
               kind: "output_inactivity",
-              timeoutMs: attempt.watchdog.timeoutMs,
-              elapsedMsSinceLastEvent: attempt.watchdog.elapsedMsSinceLastEvent,
-              terminationSignal: attempt.watchdog.terminationSignal,
+              timeoutMs: attempt.monitor.timeoutMs,
+              elapsedMsSinceLastEvent: attempt.monitor.elapsedMsSinceLastEvent,
+              terminationSignal: attempt.monitor.terminationSignal,
             },
           },
           summary: attempt.parsed.summary,

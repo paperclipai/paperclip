@@ -87,7 +87,7 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
-- outputInactivityTimeoutMs (number | null, optional): inactivity watchdog around the codex child. Resets on every parsed JSONL event from stdout. Defaults to 7 * 60_000 ms when unset or non-positive. Set to \`null\` to disable the watchdog entirely (only do this for known-slow tasks; the platform-level 1h silent-run safety net still applies). On fire, the adapter sends SIGTERM to the process group, waits 5s, then SIGKILL, and surfaces the run as failed with errorMessage "watchdog: no codex output for {N}m {S}s".
+- outputInactivityTimeoutMs (number | null, optional): inactivity monitor around the codex child. Resets on every parsed JSONL event from stdout. Defaults to 7 * 60_000 ms when unset or non-positive. Set to \`null\` to disable the monitor entirely (only do this for known-slow tasks; the platform-level 1h silent-run safety net still applies). On fire, the adapter sends SIGTERM to the process group, waits 5s, then SIGKILL, and surfaces the run as failed with errorMessage "monitor: no codex output for {N}m {S}s".
 
 Notes:
 - Prompts are piped via stdin (Codex receives "-" prompt argument).

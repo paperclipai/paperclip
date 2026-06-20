@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  CODEX_WATCHDOG_SIGTERM_GRACE_MS,
+  CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS,
   DEFAULT_CODEX_OUTPUT_INACTIVITY_TIMEOUT_MS,
-  createCodexInactivityWatchdog,
-  formatWatchdogErrorMessage,
+  createCodexOutputInactivityMonitor,
+  formatOutputInactivityMonitorErrorMessage,
   resolveCodexInactivityTimeout,
-} from "./watchdog.js";
+} from "./output-inactivity-monitor.js";
 
 class FakeClock {
   private nowMs = 0;
@@ -93,20 +93,20 @@ describe("resolveCodexInactivityTimeout", () => {
   });
 });
 
-describe("formatWatchdogErrorMessage", () => {
+describe("formatOutputInactivityMonitorErrorMessage", () => {
   it("formats minutes and seconds", () => {
-    expect(formatWatchdogErrorMessage(0)).toBe("watchdog: no codex output for 0m 0s");
-    expect(formatWatchdogErrorMessage(7 * 60 * 1000)).toBe("watchdog: no codex output for 7m 0s");
-    expect(formatWatchdogErrorMessage(7 * 60 * 1000 + 12_000)).toBe("watchdog: no codex output for 7m 12s");
-    expect(formatWatchdogErrorMessage(45_000)).toBe("watchdog: no codex output for 0m 45s");
+    expect(formatOutputInactivityMonitorErrorMessage(0)).toBe("monitor: no codex output for 0m 0s");
+    expect(formatOutputInactivityMonitorErrorMessage(7 * 60 * 1000)).toBe("monitor: no codex output for 7m 0s");
+    expect(formatOutputInactivityMonitorErrorMessage(7 * 60 * 1000 + 12_000)).toBe("monitor: no codex output for 7m 12s");
+    expect(formatOutputInactivityMonitorErrorMessage(45_000)).toBe("monitor: no codex output for 0m 45s");
   });
 });
 
-describe("createCodexInactivityWatchdog (acceptance criteria 1: fires)", () => {
+describe("createCodexOutputInactivityMonitor (acceptance criteria 1: fires)", () => {
   it("fires after timeoutMs when child emits one event then goes silent", () => {
     const clock = new FakeClock();
     const fires: Array<{ elapsed: number; parsedEventCount: number }> = [];
-    const watchdog = createCodexInactivityWatchdog({
+    const monitor = createCodexOutputInactivityMonitor({
       timeoutMs: 7 * 60 * 1000,
       now: () => clock.now(),
       setTimer: (cb, ms) => clock.setTimer(cb, ms),
@@ -121,11 +121,11 @@ describe("createCodexInactivityWatchdog (acceptance criteria 1: fires)", () => {
 
     // One event right after spawn.
     clock.advance(50);
-    watchdog.noteStdoutChunk('{"type":"thread.started","thread_id":"abc"}\n');
+    monitor.noteStdoutChunk('{"type":"thread.started","thread_id":"abc"}\n');
     expect(fires).toHaveLength(0);
-    expect(watchdog.state().parsedEventCount).toBe(1);
+    expect(monitor.state().parsedEventCount).toBe(1);
 
-    // Now go silent for 7 minutes; watchdog should fire exactly at threshold.
+    // Now go silent for 7 minutes; monitor should fire exactly at threshold.
     clock.advance(7 * 60 * 1000 - 1);
     expect(fires).toHaveLength(0);
     clock.advance(1);
@@ -134,14 +134,14 @@ describe("createCodexInactivityWatchdog (acceptance criteria 1: fires)", () => {
     expect(fires[0].parsedEventCount).toBe(1);
 
     // Stopping after fire is a no-op for the timer but returns final state.
-    const finalState = watchdog.stop();
+    const finalState = monitor.stop();
     expect(finalState.fired).toBe(true);
   });
 
   it("only fires once even if more silence elapses after firing", () => {
     const clock = new FakeClock();
     let fireCount = 0;
-    const watchdog = createCodexInactivityWatchdog({
+    const monitor = createCodexOutputInactivityMonitor({
       timeoutMs: 1_000,
       now: () => clock.now(),
       setTimer: (cb, ms) => clock.setTimer(cb, ms),
@@ -154,13 +154,13 @@ describe("createCodexInactivityWatchdog (acceptance criteria 1: fires)", () => {
     expect(fireCount).toBe(1);
     clock.advance(10_000);
     expect(fireCount).toBe(1);
-    watchdog.stop();
+    monitor.stop();
   });
 
   it("ignores non-JSON lines when resetting the timer", () => {
     const clock = new FakeClock();
     let fireCount = 0;
-    const watchdog = createCodexInactivityWatchdog({
+    const monitor = createCodexOutputInactivityMonitor({
       timeoutMs: 1_000,
       now: () => clock.now(),
       setTimer: (cb, ms) => clock.setTimer(cb, ms),
@@ -169,22 +169,22 @@ describe("createCodexInactivityWatchdog (acceptance criteria 1: fires)", () => {
         fireCount += 1;
       },
     });
-    // Plain stderr-ish text should NOT reset the watchdog.
+    // Plain stderr-ish text should NOT reset the monitor.
     clock.advance(500);
-    watchdog.noteStdoutChunk("loading model...\n");
-    expect(watchdog.state().parsedEventCount).toBe(0);
+    monitor.noteStdoutChunk("loading model...\n");
+    expect(monitor.state().parsedEventCount).toBe(0);
     clock.advance(600);
     expect(fireCount).toBe(1);
-    watchdog.stop();
+    monitor.stop();
   });
 });
 
-describe("createCodexInactivityWatchdog (acceptance criteria 2: does not fire)", () => {
+describe("createCodexOutputInactivityMonitor (acceptance criteria 2: does not fire)", () => {
   it("does not fire when events arrive every (threshold - 1s)", () => {
     const clock = new FakeClock();
     let fireCount = 0;
     const timeoutMs = 7 * 60 * 1000;
-    const watchdog = createCodexInactivityWatchdog({
+    const monitor = createCodexOutputInactivityMonitor({
       timeoutMs,
       now: () => clock.now(),
       setTimer: (cb, ms) => clock.setTimer(cb, ms),
@@ -197,23 +197,23 @@ describe("createCodexInactivityWatchdog (acceptance criteria 2: does not fire)",
     // Pump events at threshold-1s intervals for 12 cycles (~84 minutes).
     for (let i = 0; i < 12; i += 1) {
       clock.advance(timeoutMs - 1_000);
-      watchdog.noteStdoutChunk(`{"type":"item.completed","item":{"type":"agent_message","text":"tick ${i}"}}\n`);
+      monitor.noteStdoutChunk(`{"type":"item.completed","item":{"type":"agent_message","text":"tick ${i}"}}\n`);
       expect(fireCount).toBe(0);
     }
 
     // Final event lets us "complete" — total state shows 12 parsed events.
-    expect(watchdog.state().parsedEventCount).toBe(12);
+    expect(monitor.state().parsedEventCount).toBe(12);
     expect(fireCount).toBe(0);
 
     // Stop cleanly before the timer would have fired.
-    watchdog.stop();
+    monitor.stop();
     expect(fireCount).toBe(0);
   });
 
   it("multiple events in one chunk all reset the timer", () => {
     const clock = new FakeClock();
     let fireCount = 0;
-    const watchdog = createCodexInactivityWatchdog({
+    const monitor = createCodexOutputInactivityMonitor({
       timeoutMs: 1_000,
       now: () => clock.now(),
       setTimer: (cb, ms) => clock.setTimer(cb, ms),
@@ -223,29 +223,29 @@ describe("createCodexInactivityWatchdog (acceptance criteria 2: does not fire)",
       },
     });
     clock.advance(500);
-    watchdog.noteStdoutChunk(
+    monitor.noteStdoutChunk(
       '{"type":"thread.started","thread_id":"a"}\n{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}\n',
     );
-    expect(watchdog.state().parsedEventCount).toBe(2);
+    expect(monitor.state().parsedEventCount).toBe(2);
     // Now wait 999ms — should still not fire.
     clock.advance(999);
     expect(fireCount).toBe(0);
     // Wait one more ms — fires now.
     clock.advance(1);
     expect(fireCount).toBe(1);
-    watchdog.stop();
+    monitor.stop();
   });
 });
 
-describe("createCodexInactivityWatchdog (acceptance criteria 3: disabled)", () => {
-  it("resolveCodexInactivityTimeout returns disabled for null and the adapter creates no watchdog", () => {
+describe("createCodexOutputInactivityMonitor (acceptance criteria 3: disabled)", () => {
+  it("resolveCodexInactivityTimeout returns disabled for null and the adapter creates no monitor", () => {
     const resolution = resolveCodexInactivityTimeout(null);
     expect(resolution.mode).toBe("disabled");
     // Sanity: when a caller (execute.ts) honors `disabled`, it must not
-    // construct a watchdog at all. Verify the constructor would otherwise
+    // construct a monitor at all. Verify the constructor would otherwise
     // require a positive timeoutMs.
     expect(() =>
-      createCodexInactivityWatchdog({
+      createCodexOutputInactivityMonitor({
         timeoutMs: 0,
         onFire: () => {},
       }),
@@ -253,8 +253,8 @@ describe("createCodexInactivityWatchdog (acceptance criteria 3: disabled)", () =
   });
 });
 
-describe("CODEX_WATCHDOG_SIGTERM_GRACE_MS", () => {
+describe("CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS", () => {
   it("matches the 5-second grace window required by NEE-81", () => {
-    expect(CODEX_WATCHDOG_SIGTERM_GRACE_MS).toBe(5_000);
+    expect(CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS).toBe(5_000);
   });
 });
