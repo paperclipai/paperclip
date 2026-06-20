@@ -9,6 +9,7 @@ export interface IssueAssignmentWakeupDeps {
     opts: {
       source?: WakeupSource;
       triggerDetail?: WakeupTriggerDetail;
+      idempotencyKey?: string | null;
       reason?: string | null;
       payload?: Record<string, unknown> | null;
       requestedByActorType?: "user" | "agent" | "system";
@@ -34,6 +35,7 @@ export function queueIssueAssignmentWakeup(input: {
     .wakeup(input.issue.assigneeAgentId, {
       source: "assignment",
       triggerDetail: "system",
+      idempotencyKey: `issue-assignment:${input.issue.id}:${input.mutation}:${input.contextSource}`,
       reason: input.reason,
       payload: { issueId: input.issue.id, mutation: input.mutation },
       requestedByActorType: input.requestedByActorType,

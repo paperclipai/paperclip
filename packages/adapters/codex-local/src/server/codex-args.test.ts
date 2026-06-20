@@ -70,21 +70,21 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("enables Codex fast mode overrides when model is omitted (CLI default)", () => {
+  it("defaults omitted model to gpt-5.3-codex and ignores fast mode", () => {
     const result = buildCodexExecArgs({
       fastMode: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
-    expect(result.fastModeApplied).toBe(true);
-    expect(result.fastModeIgnoredReason).toBeNull();
+    expect(result.fastModeApplied).toBe(false);
+    expect(result.fastModeIgnoredReason).toBe(
+      "Configured fast mode is currently only supported on gpt-5.5, gpt-5.4 or manually configured model IDs; Paperclip will ignore it for model gpt-5.3-codex.",
+    );
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'service_tier="fast"',
-      "-c",
-      "features.fast_mode=true",
+      "--model",
+      "gpt-5.3-codex",
       "-",
     ]);
   });

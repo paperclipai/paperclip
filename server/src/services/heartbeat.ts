@@ -224,6 +224,13 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
 ];
+const IDEMPOTENT_QUEUED_WAKE_STATUSES = [
+  "queued",
+  "coalesced",
+  "deferred_issue_execution",
+  "claimed",
+  "completed",
+] as const;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
@@ -10585,6 +10592,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    if (opts.idempotencyKey) {
+      const existingWakeup = await db
+        .select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, agent.companyId),
+            eq(agentWakeupRequests.agentId, agent.id),
+            eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+            inArray(agentWakeupRequests.status, IDEMPOTENT_QUEUED_WAKE_STATUSES),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (existingWakeup?.runId) {
+        const existingRun = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, existingWakeup.runId))
+          .then((rows) => rows[0] ?? null);
+        if (existingRun) return existingRun;
+      }
+
+      if (existingWakeup) {
+        return null;
+      }
+    }
 
     const writeSkippedRequest = async (
       skipReason: string,
