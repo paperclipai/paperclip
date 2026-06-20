@@ -320,25 +320,25 @@ describe("parseClaudeCliUsageText", () => {
       Extra usage not enabled • /extra-usage to enable
     `;
 
-    expect(parseClaudeCliUsageText(raw)).toEqual([
+    expect(parseClaudeCliUsageText(raw, new Date("2026-03-17T12:00:00.000Z"))).toEqual([
       {
         label: "Current session",
         usedPercent: 2,
-        resetsAt: null,
+        resetsAt: "2026-03-17T22:00:00.000Z",
         valueLabel: null,
         detail: "Resets 5pm (America/Chicago)",
       },
       {
         label: "Current week (all models)",
         usedPercent: 47,
-        resetsAt: null,
+        resetsAt: "2026-03-18T12:59:00.000Z",
         valueLabel: null,
         detail: "Resets Mar 18 at 7:59am (America/Chicago)",
       },
       {
         label: "Current week (Sonnet only)",
         usedPercent: 0,
-        resetsAt: null,
+        resetsAt: "2026-03-18T13:59:00.000Z",
         valueLabel: null,
         detail: "Resets Mar 18 at 8:59am (America/Chicago)",
       },
@@ -368,14 +368,16 @@ describe("parseClaudeCliUsageText", () => {
       Refreshing...
     `;
 
-    expect(parseClaudeCliUsageText(raw)).toMatchObject([
+    expect(parseClaudeCliUsageText(raw, new Date("2026-06-20T13:00:00.000Z"))).toMatchObject([
       {
         label: "Current session",
         usedPercent: 78,
+        resetsAt: "2026-06-20T15:00:00.000Z",
       },
       {
         label: "Current week (all models)",
         usedPercent: 7,
+        resetsAt: "2026-06-27T02:00:00.000Z",
       },
     ]);
   });

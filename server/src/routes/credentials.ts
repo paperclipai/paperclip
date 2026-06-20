@@ -176,6 +176,7 @@ export function credentialRoutes(db: Db) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const forceRefresh = req.query.refresh === "true" || req.query.force === "true";
     const rows = await svc.list(companyId);
     const sampledAt = new Date().toISOString();
     const results = await Promise.all(rows.map(async (credential) => {
@@ -201,7 +202,7 @@ export function credentialRoutes(db: Db) {
       const credentialType: Extract<CredentialType, "claude_oauth" | "codex_oauth"> =
         credential.type === "claude_oauth" ? "claude_oauth" : "codex_oauth";
       const source = credentialType === "claude_oauth" ? "anthropic-oauth-usage" : "chatgpt-wham-usage";
-      const reusableCached = getReusableQuotaCache({
+      const reusableCached = forceRefresh ? null : getReusableQuotaCache({
         id: credential.id,
         type: credentialType,
         updatedAt: credential.updatedAt,
@@ -218,7 +219,7 @@ export function credentialRoutes(db: Db) {
           cachedAt: reusableCached.sampledAt,
         };
       }
-      const recentError = getRecentQuotaErrorCache({
+      const recentError = forceRefresh ? null : getRecentQuotaErrorCache({
         id: credential.id,
         type: credentialType,
         updatedAt: credential.updatedAt,

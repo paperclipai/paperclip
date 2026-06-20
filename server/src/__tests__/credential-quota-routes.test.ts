@@ -112,6 +112,39 @@ describe("credential quota route caching", () => {
     });
   });
 
+  it("bypasses a recent successful quota cache when refresh=true is requested", async () => {
+    const app = createApp();
+    mockCredentialService.list.mockResolvedValue([claudeCredential("claude-cache-refresh")]);
+    mockFetchClaudeQuota
+      .mockResolvedValueOnce([
+        {
+          label: "Current session",
+          usedPercent: 10,
+          resetsAt: "2026-06-20T05:00:00Z",
+          valueLabel: null,
+          detail: null,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          label: "Current session",
+          usedPercent: 20,
+          resetsAt: "2026-06-20T06:00:00Z",
+          valueLabel: null,
+          detail: null,
+        },
+      ]);
+
+    const first = await request(app).get("/api/companies/company-1/credentials/quota-windows").expect(200);
+    const refreshed = await request(app)
+      .get("/api/companies/company-1/credentials/quota-windows?refresh=true")
+      .expect(200);
+
+    expect(mockFetchClaudeQuota).toHaveBeenCalledTimes(2);
+    expect(first.body[0].quotaWindows[0]).toMatchObject({ usedPercent: 10 });
+    expect(refreshed.body[0].quotaWindows[0]).toMatchObject({ usedPercent: 20 });
+  });
+
   it("caches a recent Claude 429 so the dashboard does not keep hammering the usage endpoint", async () => {
     const app = createApp();
     mockCredentialService.list.mockResolvedValue([claudeCredential("claude-cache-429")]);

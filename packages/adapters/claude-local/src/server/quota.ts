@@ -391,7 +391,150 @@ function formatClaudeCliDetail(label: string, lines: string[]): string | null {
     .trim();
 }
 
-export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
+const MONTH_INDEX: Record<string, number> = {
+  jan: 1,
+  feb: 2,
+  mar: 3,
+  apr: 4,
+  may: 5,
+  jun: 6,
+  jul: 7,
+  aug: 8,
+  sep: 9,
+  oct: 10,
+  nov: 11,
+  dec: 12,
+};
+
+function readTimeZoneParts(date: Date, timeZone: string) {
+  const values = new Map(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).formatToParts(date).map((part) => [part.type, part.value]),
+  );
+  return {
+    year: Number.parseInt(values.get("year") ?? "", 10),
+    month: Number.parseInt(values.get("month") ?? "", 10),
+    day: Number.parseInt(values.get("day") ?? "", 10),
+    hour: Number.parseInt(values.get("hour") ?? "", 10),
+    minute: Number.parseInt(values.get("minute") ?? "", 10),
+  };
+}
+
+function normalizeResetTimeZone(timeZoneHint: string | null | undefined): string | null {
+  const normalized = timeZoneHint?.trim();
+  if (!normalized) return null;
+  if (/^(?:utc|gmt)$/i.test(normalized)) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: normalized }).format(new Date(0));
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+function dateFromTimeZoneWallClock(input: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  timeZone: string;
+}): Date | null {
+  let candidate = new Date(Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0, 0));
+  const targetUtc = Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0, 0);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const actual = readTimeZoneParts(candidate, input.timeZone);
+    const actualUtc = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, 0, 0);
+    const offsetMs = targetUtc - actualUtc;
+    if (offsetMs === 0) break;
+    candidate = new Date(candidate.getTime() + offsetMs);
+  }
+  const verified = readTimeZoneParts(candidate, input.timeZone);
+  if (
+    verified.year !== input.year ||
+    verified.month !== input.month ||
+    verified.day !== input.day ||
+    verified.hour !== input.hour ||
+    verified.minute !== input.minute
+  ) {
+    return null;
+  }
+  return candidate;
+}
+
+function parseClaudeCliClock(input: string): { hour: number; minute: number } | null {
+  const match = input.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
+  if (!match) return null;
+  const hour12 = Number.parseInt(match[1] ?? "", 10);
+  const minute = Number.parseInt(match[2] ?? "0", 10);
+  if (!Number.isInteger(hour12) || hour12 < 1 || hour12 > 12) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  let hour = hour12 % 12;
+  if ((match[3] ?? "").toLowerCase() === "p") hour += 12;
+  return { hour, minute };
+}
+
+function parseClaudeCliResetAt(detail: string | null, now = new Date()): string | null {
+  if (!detail) return null;
+  const normalized = detail
+    .replace(/^resets\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const match = normalized.match(/^(?:(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:,|\s+at)?\s*)?(\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?)\s*(?:\(([^)]+)\))?/i);
+  if (!match) return null;
+  const clock = parseClaudeCliClock(match[3] ?? "");
+  if (!clock) return null;
+  const timeZone = normalizeResetTimeZone(match[4]) ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
+  const nowParts = readTimeZoneParts(now, timeZone);
+  const month = match[1] ? MONTH_INDEX[match[1].slice(0, 3).toLowerCase()] : nowParts.month;
+  const day = match[2] ? Number.parseInt(match[2], 10) : nowParts.day;
+  if (!month || !Number.isInteger(day) || day < 1 || day > 31) return null;
+  let year = nowParts.year;
+  let resetAt = dateFromTimeZoneWallClock({
+    year,
+    month,
+    day,
+    hour: clock.hour,
+    minute: clock.minute,
+    timeZone,
+  });
+  if (!resetAt) return null;
+  if (resetAt.getTime() <= now.getTime()) {
+    if (match[1]) {
+      year += 1;
+    } else {
+      const tomorrow = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day + 1, 0, 0, 0, 0));
+      const tomorrowParts = readTimeZoneParts(tomorrow, timeZone);
+      resetAt = dateFromTimeZoneWallClock({
+        year: tomorrowParts.year,
+        month: tomorrowParts.month,
+        day: tomorrowParts.day,
+        hour: clock.hour,
+        minute: clock.minute,
+        timeZone,
+      });
+      return resetAt?.toISOString() ?? null;
+    }
+    resetAt = dateFromTimeZoneWallClock({
+      year,
+      month,
+      day,
+      hour: clock.hour,
+      minute: clock.minute,
+      timeZone,
+    });
+  }
+  return resetAt?.toISOString() ?? null;
+}
+
+export function parseClaudeCliUsageText(text: string, now = new Date()): QuotaWindow[] {
   const cleaned = trimToLatestUsagePanel(cleanTerminalText(text)) ?? cleanTerminalText(text);
   const usageError = extractUsageError(cleaned);
   if (usageError) throw new Error(usageError);
@@ -416,12 +559,13 @@ export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
 
   const windows = sections.map<QuotaWindow>((section) => {
     const usedPercent = section.lines.map(percentFromLine).find((value) => value != null) ?? null;
+    const detail = formatClaudeCliDetail(section.label, section.lines);
     return {
       label: section.label,
       usedPercent,
-      resetsAt: null,
+      resetsAt: parseClaudeCliResetAt(detail, now),
       valueLabel: null,
-      detail: formatClaudeCliDetail(section.label, section.lines),
+      detail,
     };
   });
 

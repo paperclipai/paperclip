@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -39,6 +39,7 @@ import {
   XCircle,
   Zap,
   Clock,
+  RefreshCw,
 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import { CodexDeviceAuthDialog } from "../components/CodexDeviceAuthDialog";
@@ -921,7 +922,8 @@ function formatCredentialQuotaTitle(quota: ProviderCredentialQuota): string {
         ? `${Math.round(entry.usedPercent)}% used · ${Math.max(0, Math.round(100 - entry.usedPercent))}% available`
         : entry.valueLabel ?? "reported";
       const reset = formatCredentialQuotaReset(entry.resetsAt);
-      return `${entry.label}: ${value}${reset ? ` · resets ${reset}` : ""}`;
+      const resetOrDetail = reset ? `resets ${reset}` : entry.detail ?? null;
+      return `${entry.label}: ${value}${resetOrDetail ? ` · ${resetOrDetail}` : ""}`;
     })
     .join(" · ");
   const stale = quota.stale
@@ -1026,6 +1028,7 @@ function buildCredentialPayload(
 
 function CredentialsSection({ companyId }: { companyId: string }) {
   const queryClient = useQueryClient();
+  const forceQuotaRefreshRef = useRef(false);
 
   const { data: credentials = [], isLoading } = useQuery({
     queryKey: queryKeys.credentials.list(companyId),
@@ -1037,11 +1040,23 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     queryKey: ["credentials", "usage", companyId, "mtd"],
     queryFn: () => credentialsApi.usage(companyId, { period: "month" }),
   });
-  const { data: quotaRows = [] } = useQuery({
+  const {
+    data: quotaRows = [],
+    refetch: refetchQuotaRows,
+    isFetching: quotaRowsFetching,
+  } = useQuery({
     queryKey: queryKeys.credentials.quotaWindows(companyId),
-    queryFn: () => credentialsApi.quotaWindows(companyId),
+    queryFn: () => {
+      const refresh = forceQuotaRefreshRef.current;
+      forceQuotaRefreshRef.current = false;
+      return credentialsApi.quotaWindows(companyId, { refresh });
+    },
     refetchInterval: 60_000,
   });
+  const refreshQuotaRows = () => {
+    forceQuotaRefreshRef.current = true;
+    void refetchQuotaRows();
+  };
   const usageByCredential = useMemo(() => {
     const map = new Map<string, CredentialUsage>();
     for (const u of usageResp?.usage ?? []) map.set(u.credentialId, u);
@@ -1318,12 +1333,25 @@ function CredentialsSection({ companyId }: { companyId: string }) {
         Credentials
       </div>
       <div className="space-y-3 rounded-md border border-border px-4 py-4">
-        <div className="flex items-center gap-1.5">
-          <KeyRound className="h-4 w-4 text-muted-foreground" />
-          <span className="text-xs text-muted-foreground">
-            Provider credentials used by agents for LLM access.
-          </span>
-          <HintIcon text="Credentials are encrypted at rest with AES-256-GCM. Tokens are never displayed after creation unless explicitly revealed." />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <KeyRound className="h-4 w-4 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">
+              Provider credentials used by agents for LLM access.
+            </span>
+            <HintIcon text="Credentials are encrypted at rest with AES-256-GCM. Tokens are never displayed after creation unless explicitly revealed." />
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
+            onClick={refreshQuotaRows}
+            disabled={quotaRowsFetching}
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", quotaRowsFetching && "animate-spin")} />
+            Refresh usage
+          </Button>
         </div>
 
         {isLoading ? (

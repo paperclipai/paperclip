@@ -16,12 +16,13 @@ import { queryKeys } from "../lib/queryKeys";
 import { CircularStatWidget } from "../components/CircularStatWidget";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
+import { Button } from "@/components/ui/button";
 
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents, formatTokens } from "../lib/utils";
-import { Bot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Eye, KeyRound } from "lucide-react";
+import { Bot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Eye, KeyRound, RefreshCw } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { AnimatedNumber, DotMatrixText } from "../components/NothingAesthetic";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -92,6 +93,10 @@ function formatQuotaResetTime(iso: string | null | undefined): string | null {
   })}`;
 }
 
+function formatQuotaResetOrDetail(window: { resetsAt: string | null; detail?: string | null }): string | null {
+  return formatQuotaResetTime(window.resetsAt) ?? window.detail ?? null;
+}
+
 function DottedUsageBar({
   usedPercent,
   className,
@@ -148,6 +153,7 @@ export function Dashboard() {
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
+  const forceCredentialQuotaRefreshRef = useRef(false);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -208,16 +214,29 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: credentialQuota = [] } = useQuery({
+  const {
+    data: credentialQuota = [],
+    refetch: refetchCredentialQuota,
+    isFetching: credentialQuotaFetching,
+  } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.credentials.quotaWindows(selectedCompanyId)
       : ["credentials", "none", "quota-windows"],
-    queryFn: () => credentialsApi.quotaWindows(selectedCompanyId!),
+    queryFn: () => {
+      const refresh = forceCredentialQuotaRefreshRef.current;
+      forceCredentialQuotaRefreshRef.current = false;
+      return credentialsApi.quotaWindows(selectedCompanyId!, { refresh });
+    },
     enabled: !!selectedCompanyId,
     staleTime: 5 * 60_000,
     refetchInterval: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
+
+  const refreshCredentialQuota = () => {
+    forceCredentialQuotaRefreshRef.current = true;
+    void refetchCredentialQuota();
+  };
 
   const { data: credentialUsageResp } = useQuery({
     queryKey: selectedCompanyId
@@ -451,9 +470,22 @@ export function Dashboard() {
                   <KeyRound className="h-4 w-4 text-[#34BFF0]" />
                   <h3 className="text-sm font-medium">Credential quota & value</h3>
                 </div>
-                <Link to="/settings" className="text-xs text-muted-foreground hover:text-foreground">
-                  Manage
-                </Link>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
+                    onClick={refreshCredentialQuota}
+                    disabled={credentialQuotaFetching}
+                  >
+                    <RefreshCw className={cn("h-3.5 w-3.5", credentialQuotaFetching && "animate-spin")} />
+                    Refresh
+                  </Button>
+                  <Link to="/settings" className="text-xs text-muted-foreground hover:text-foreground">
+                    Manage
+                  </Link>
+                </div>
               </div>
               <div className="mb-4 grid gap-2 sm:grid-cols-3">
                 <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
@@ -551,7 +583,10 @@ export function Dashboard() {
                       <div
                         className="mt-3 space-y-1.5"
                         title={row.quotaWindows
-                          .map((entry) => `${entry.label}: ${entry.usedPercent != null ? `${Math.round(entry.usedPercent)}% used, ${Math.max(0, Math.round(100 - entry.usedPercent))}% available` : entry.valueLabel ?? "reported"}${entry.resetsAt ? ` · ${formatQuotaResetTime(entry.resetsAt)}` : ""}`)
+                          .map((entry) => {
+                            const reset = formatQuotaResetOrDetail(entry);
+                            return `${entry.label}: ${entry.usedPercent != null ? `${Math.round(entry.usedPercent)}% used, ${Math.max(0, Math.round(100 - entry.usedPercent))}% available` : entry.valueLabel ?? "reported"}${reset ? ` · ${reset}` : ""}`;
+                          })
                           .join(" · ")}
                       >
                         {row.stale && row.error ? (
@@ -578,9 +613,9 @@ export function Dashboard() {
                                     : window.valueLabel ?? "ok"}
                                 </span>
                               </div>
-                              {formatQuotaResetTime(window.resetsAt) ? (
+                              {formatQuotaResetOrDetail(window) ? (
                                 <div className="truncate text-[10px] text-muted-foreground">
-                                  {formatQuotaResetTime(window.resetsAt)}
+                                  {formatQuotaResetOrDetail(window)}
                                 </div>
                               ) : null}
                               {window.usedPercent != null ? (

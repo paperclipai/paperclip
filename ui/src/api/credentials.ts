@@ -90,8 +90,10 @@ export const credentialsApi = {
       `/companies/${companyId}/credentials/usage?${params.toString()}`,
     );
   },
-  quotaWindows: (companyId: string) =>
-    api.get<ProviderCredentialQuota[]>(`/companies/${companyId}/credentials/quota-windows`),
+  quotaWindows: (companyId: string, options?: { refresh?: boolean }) =>
+    api.get<ProviderCredentialQuota[]>(
+      `/companies/${companyId}/credentials/quota-windows${options?.refresh ? "?refresh=true" : ""}`,
+    ),
   test: (id: string) =>
     api.post<{ ok: boolean; message: string }>(`/credentials/${id}/test`, {}),
   reenable: (id: string) => api.post<ProviderCredential>(`/credentials/${id}/reenable`, {}),
