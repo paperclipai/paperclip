@@ -483,6 +483,17 @@ function buildGateConfirmationMirrorMarker(childIssueId: string) {
   return `<!-- gate-confirmation-mirror:${childIssueId} -->`;
 }
 
+function escapeMarkdownText(value: string) {
+  return value.replace(/[\\[\]()]/g, "\\$&").replace(/\s+/g, " ").trim();
+}
+
+function indentMarkdownCodeBlock(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((line) => `    ${line}`)
+    .join("\n");
+}
+
 function buildGateConfirmationMirrorComment(input: {
   childIssueId: string;
   childIdentifier: string | null;
@@ -493,11 +504,11 @@ function buildGateConfirmationMirrorComment(input: {
   const childLabel = input.childIdentifier
     ? `[${input.childIdentifier}](${prefix ? `/${prefix}/issues/${input.childIdentifier}` : "#"})`
     : `child issue ${input.childIssueId}`;
-  const summary = input.childSummary ? `\n\nLatest child update:\n\n${input.childSummary}` : "";
+  const summary = input.childSummary ? `\n\nLatest child update:\n\n${indentMarkdownCodeBlock(input.childSummary)}` : "";
   return [
     "## Gate Confirmation",
     "",
-    `${childLabel} completed the delegated gate-confirmation task: ${input.childTitle}.`,
+    `${childLabel} completed the delegated gate-confirmation task: ${escapeMarkdownText(input.childTitle)}.`,
     summary,
     "",
     buildGateConfirmationMirrorMarker(input.childIssueId),
@@ -4655,7 +4666,6 @@ export function issueService(db: Db) {
           eq(issueComments.companyId, child.companyId),
           eq(issueComments.issueId, child.parentId),
           like(issueComments.body, `%${marker}%`),
-          isNull(issueComments.deletedAt),
         ))
         .limit(1)
         .then((rows) => rows[0] ?? null);
