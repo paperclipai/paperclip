@@ -99,6 +99,7 @@ export interface TestHarness {
     projects?: Project[];
     issues?: Issue[];
     issueComments?: IssueComment[];
+    issueInteractions?: IssueThreadInteraction[];
     agents?: Agent[];
     goals?: Goal[];
     projectWorkspaces?: PluginWorkspace[];
@@ -1700,6 +1701,31 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         issueInteractions.set(issueId, current);
         return created;
       },
+      interactions: {
+        async list(issueId, companyId, options) {
+          requireCapability(manifest, capabilitySet, "issue.interactions.read");
+          if (!isInCompany(issues.get(issueId), companyId)) return [];
+          let rows = [...(issueInteractions.get(issueId) ?? [])]
+            .filter((interaction) => interaction.companyId === companyId);
+          if (options?.status) {
+            rows = rows.filter((interaction) => interaction.status === options.status);
+          }
+          if (options?.kind) {
+            rows = rows.filter((interaction) => interaction.kind === options.kind);
+          }
+          const offset = Math.max(0, options?.offset ?? 0);
+          const limit = options?.limit == null ? rows.length : Math.max(0, options.limit);
+          return rows.slice(offset, offset + limit);
+        },
+        async get(interactionId, companyId) {
+          requireCapability(manifest, capabilitySet, "issue.interactions.read");
+          for (const rows of issueInteractions.values()) {
+            const interaction = rows.find((entry) => entry.id === interactionId) ?? null;
+            if (interaction) return interaction.companyId === companyId ? interaction : null;
+          }
+          return null;
+        },
+      },
       async suggestTasks(issueId, interaction, companyId, options) {
         return this.createInteraction(issueId, { ...interaction, kind: "suggest_tasks" }, companyId, options) as Promise<any>;
       },
@@ -2337,6 +2363,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const list = issueComments.get(row.issueId) ?? [];
         list.push(row);
         issueComments.set(row.issueId, list);
+      }
+      for (const row of input.issueInteractions ?? []) {
+        const list = issueInteractions.get(row.issueId) ?? [];
+        list.push(row);
+        issueInteractions.set(row.issueId, list);
       }
       for (const row of input.agents ?? []) agents.set(row.id, row);
       for (const row of input.goals ?? []) goals.set(row.id, row);

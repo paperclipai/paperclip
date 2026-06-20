@@ -1133,6 +1133,24 @@ export interface WorkerToHostMethods {
     },
     result: IssueThreadInteraction,
   ];
+  "issues.interactions.list": [
+    params: {
+      issueId: string;
+      companyId: string;
+      status?: IssueThreadInteraction["status"];
+      kind?: IssueThreadInteraction["kind"];
+      limit?: number;
+      offset?: number;
+    },
+    result: IssueThreadInteraction[],
+  ];
+  "issues.interactions.get": [
+    params: {
+      interactionId: string;
+      companyId: string;
+    },
+    result: IssueThreadInteraction | null,
+  ];
 
   // Issue Documents
   "issues.documents.list": [
