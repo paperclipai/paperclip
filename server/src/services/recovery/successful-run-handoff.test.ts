@@ -54,6 +54,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasPauseHold: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
+    recentCooldownWakeExists: false,
     ...overrides,
   });
 }
@@ -296,6 +297,17 @@ describe("successful run handoff decision", () => {
     ]));
     expect(noticeMetadataReferencesRecoveryAction(notice.metadata, "77777777-7777-4777-8777-777777777777")).toBe(true);
     expect(noticeMetadataReferencesRecoveryAction(notice.metadata, "88888888-8888-4888-8888-888888888888")).toBe(false);
+  });
+
+  it("skips when a recent cooldown wake already exists for this issue", () => {
+    const decision = decide({ recentCooldownWakeExists: true });
+    expect(decision.kind).toBe("skip");
+    expect((decision as any).reason).toContain("cooldown");
+  });
+
+  it("still enqueues when cooldown wake does not exist", () => {
+    const decision = decide({ recentCooldownWakeExists: false });
+    expect(decision.kind).toBe("enqueue");
   });
 
   it("recognizes new notices and legacy markdown headings for fallback deduplication", () => {
