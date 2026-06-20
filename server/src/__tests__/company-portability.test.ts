@@ -3730,25 +3730,30 @@ describe("company portability", () => {
   it("sets pending_approval status and mints hire approval when requireBoardApprovalForNewAgents=true", async () => {
     const portability = companyPortabilityService({} as any);
 
-    companySvc.create.mockResolvedValue({
-      id: "company-gated",
+    companySvc.getById.mockResolvedValue({
+      id: "company-1",
       name: "Gated Company",
+      description: null,
+      issuePrefix: "PAP",
+      brandColor: null,
+      logoAssetId: null,
+      logoUrl: null,
       requireBoardApprovalForNewAgents: true,
     });
-    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
     agentSvc.create.mockResolvedValue({
       id: "agent-gated",
-      name: "ClaudeCoder",
+      name: "ImportedBot",
       role: "engineer",
       title: "Software Engineer",
-      icon: "code",
+      icon: null,
       reportsTo: null,
-      capabilities: "Writes code",
+      capabilities: null,
       adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
-      budgetMonthlyCents: null,
-      metadata: {},
+      budgetMonthlyCents: 0,
+      metadata: null,
       status: "pending_approval",
     });
     approvalSvc.create.mockResolvedValue({ id: "approval-1" });
@@ -3758,16 +3763,9 @@ describe("company portability", () => {
         type: "inline",
         rootPath: "gated-demo",
         files: {
-          "COMPANY.md": [
+          "agents/importedbot/AGENTS.md": [
             "---",
-            'schema: "agentcompanies/v1"',
-            'name: "Gated Company"',
-            "---",
-            "",
-          ].join("\n"),
-          "agents/claudecoder/AGENTS.md": [
-            "---",
-            'name: "ClaudeCoder"',
+            'name: "ImportedBot"',
             'title: "Software Engineer"',
             "---",
             "",
@@ -3775,16 +3773,16 @@ describe("company portability", () => {
           ].join("\n"),
         },
       },
-      include: { company: true, agents: true, projects: false, issues: false },
-      target: { mode: "new_company", newCompanyName: "Gated Company" },
+      include: { company: false, agents: true, projects: false, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
       agents: "all",
       collisionStrategy: "rename",
     }, "user-1");
 
-    expect(agentSvc.create).toHaveBeenCalledWith("company-gated", expect.objectContaining({
+    expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       status: "pending_approval",
     }));
-    expect(approvalSvc.create).toHaveBeenCalledWith("company-gated", expect.objectContaining({
+    expect(approvalSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       type: "hire_agent",
       status: "pending",
     }));
