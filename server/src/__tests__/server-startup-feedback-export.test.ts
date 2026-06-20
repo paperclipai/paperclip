@@ -262,7 +262,7 @@ describe("startServer authenticated auth origin setup", () => {
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
 
-  it("derives trusted origins from the detected listen port before auth initializes", async () => {
+  it("derives trusted origins from the detected listen port, preserving explicit authPublicBaseUrl", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       port: 3210,
       allowedHostnames: ["board.example.test"],
@@ -278,10 +278,11 @@ describe("startServer authenticated auth origin setup", () => {
 
     await startServer();
 
+    // explicit mode: authPublicBaseUrl is NOT rewritten — the operator chose the URL
     expect(deriveAuthTrustedOriginsMock).toHaveBeenCalledWith(
       expect.objectContaining({
         port: 3210,
-        authPublicBaseUrl: "http://127.0.0.1:3211/",
+        authPublicBaseUrl: "http://127.0.0.1:3210",
       }),
       { listenPort: 3211 },
     );
@@ -289,7 +290,7 @@ describe("startServer authenticated auth origin setup", () => {
       expect.anything(),
       expect.objectContaining({
         port: 3210,
-        authPublicBaseUrl: "http://127.0.0.1:3211/",
+        authPublicBaseUrl: "http://127.0.0.1:3210",
       }),
       ["http://board.example.test:3211"],
     );
@@ -347,7 +348,9 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
   });
 
-  it("rewrites explicit-port auth public URLs when detect-port selects a new port", async () => {
+  it("does NOT rewrite explicit-mode public URLs when detect-port selects a new port", async () => {
+    // The operator configured a public URL (e.g. Tailscale host, reverse proxy) — the port
+    // in that URL is intentional and must survive detectPort bumping the internal listen port.
     loadConfigMock.mockReturnValueOnce(buildTestConfig({
       port: 3100,
       authBaseUrlMode: "explicit",
@@ -358,8 +361,8 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     const started = await startServer();
 
     expect(started.listenPort).toBe(3110);
-    expect(started.apiUrl).toBe("http://my-host.ts.net:3110");
-    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3110");
+    expect(started.apiUrl).toBe("http://my-host.ts.net:3100"); // port preserved — explicit URL is untouched
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3100");
   });
 
   it("keeps no-port auth public URLs stable when detect-port selects a new port", async () => {
