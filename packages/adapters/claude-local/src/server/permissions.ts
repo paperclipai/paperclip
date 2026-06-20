@@ -17,6 +17,14 @@ const SANDBOX_ALLOWED_TOOLS =
   "NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill " +
   "TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write";
 
+export const CLAUDE_STRICT_MCP_CONFIG_ARG = "--strict-mcp-config";
+
+export function appendClaudeStrictMcpConfigArg(args: string[], extraArgs: string[], strictMcpConfig: boolean): void {
+  if (!strictMcpConfig) return;
+  if (args.includes(CLAUDE_STRICT_MCP_CONFIG_ARG) || extraArgs.includes(CLAUDE_STRICT_MCP_CONFIG_ARG)) return;
+  args.push(CLAUDE_STRICT_MCP_CONFIG_ARG);
+}
+
 export function buildClaudeProbePermissionArgs(input: {
   dangerouslySkipPermissions: boolean;
   targetIsSandbox: boolean;

@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { environmentLeases, environments } from "@paperclipai/db";
 import {
@@ -212,6 +212,7 @@ export function environmentService(db: Db) {
         .select()
         .from(environments)
         .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+        .orderBy(asc(environments.createdAt), asc(environments.id))
         .then((rows) =>
           rows.find(
             (row) =>
@@ -265,6 +266,7 @@ export function environmentService(db: Db) {
         .select()
         .from(environments)
         .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+        .orderBy(asc(environments.createdAt), asc(environments.id))
         .then(
           (rows) =>
             rows.find(

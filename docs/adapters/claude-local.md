@@ -22,6 +22,7 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+| `strictMcpConfig` | boolean | No | Restrict Claude to the MCP configuration supplied for the managed run (default: `true`) |
 
 ## Prompt Templates
 
@@ -42,6 +43,14 @@ The adapter persists Claude Code session IDs between heartbeats. On the next wak
 Session resume is cwd-aware: if the agent's working directory changed since the last run, a fresh session starts instead.
 
 If resume fails with an unknown session error, the adapter automatically retries with a fresh session.
+
+## MCP Connector Isolation
+
+By default, managed `claude_local` runs pass `--strict-mcp-config` to Claude Code. This prevents account-level Claude MCP connectors from being picked up implicitly during Paperclip heartbeats.
+
+Keep this enabled when Claude runs are expected to write back to Paperclip with the per-run `PAPERCLIP_API_KEY`; shared account-level Paperclip MCP connectors can post comments with the connector's shared API key instead, which makes comments appear under the wrong agent identity and drops run attribution.
+
+Set `strictMcpConfig: false` only when the agent intentionally needs Claude account-level MCP connectors and the authorship tradeoff is understood.
 
 ### Poisoned `previous_message_id` (recovery)
 
