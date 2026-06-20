@@ -35,6 +35,14 @@ describe("GET /health", () => {
     expect(res.body).toEqual({ status: "ok", version: serverVersion });
   }, 15_000);
 
+  it("serves the /healthz alias with 200 and status ok", async () => {
+    const app = express();
+    app.use("/healthz", healthRoutes());
+    const res = await request(app).get("/healthz");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "ok", version: serverVersion });
+  }, 15_000);
+
   it("returns 200 when the database probe succeeds", async () => {
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),

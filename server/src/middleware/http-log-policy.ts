@@ -1,7 +1,7 @@
 const SILENCED_SUCCESS_METHODS = new Set(["GET", "HEAD"]);
 
 const SILENCED_SUCCESS_API_PATHS = [
-  /^\/api\/health(?:\/|$)/,
+  /^\/api\/healthz?(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/activity(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/dashboard(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/heartbeat-runs(?:\/|$)/,

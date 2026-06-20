@@ -8,6 +8,7 @@ describe("shouldSilenceHttpSuccessLog", () => {
 
   it("silences successful polling endpoints", () => {
     expect(shouldSilenceHttpSuccessLog("GET", "/api/health", 200)).toBe(true);
+    expect(shouldSilenceHttpSuccessLog("GET", "/api/healthz", 200)).toBe(true);
     expect(
       shouldSilenceHttpSuccessLog(
         "GET",
