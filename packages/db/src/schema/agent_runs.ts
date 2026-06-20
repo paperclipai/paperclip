@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   bigserial,
@@ -6,6 +7,7 @@ import {
   integer,
   timestamp,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { promptVersions } from "./prompt_versions.js";
 
@@ -28,10 +30,18 @@ export const agentRuns = pgTable(
     userFeedback: integer("user_feedback"),
     latencyMs: integer("latency_ms"),
     tier: text("tier"),
+    // Stable link back to the heartbeat_runs row that produced this telemetry
+    // (set by the PR2 emitter). Nullable: dispatcher-originated rows have none.
+    heartbeatRunId: text("heartbeat_run_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     classOutcomeIdx: index("ix_agent_runs_class_outcome").on(table.taskClass, table.outcome),
     promptVersionIdx: index("ix_agent_runs_prompt_version").on(table.promptVersionId),
+    // Partial unique: at most one agent_runs row per heartbeat run (idempotent
+    // emit), while leaving non-heartbeat rows (heartbeat_run_id IS NULL) free.
+    heartbeatRunIdx: uniqueIndex("uq_agent_runs_heartbeat_run")
+      .on(table.heartbeatRunId)
+      .where(sql`${table.heartbeatRunId} IS NOT NULL`),
   }),
 );

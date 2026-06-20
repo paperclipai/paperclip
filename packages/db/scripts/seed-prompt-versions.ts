@@ -8,8 +8,9 @@
 //
 // NOTE: prompt_versions.agent is TEXT (an opaque agent identifier — learning.py
 // compares it as a string, never joins it as an FK). This script seeds it with
-// the board's `agents.name`. If the consumer expects `agents.id` instead, change
-// SEED_AGENT_COLUMN below.
+// the board's `agents.id` (the stable UUID). This MUST match the PR2 emitter
+// (telemetry-emit.ts), which derives prompt_version_id by looking up the active
+// (agent=agentId, task_class='general') row — keying on the UUID, not the name.
 //
 // Run (NOT at build time — requires a live DB):
 //   tsx packages/db/scripts/seed-prompt-versions.ts --config <path> --base-url <url>
@@ -53,10 +54,11 @@ async function main() {
   };
 
   try {
-    // Distinct agent identifiers from the board.
-    const rows = await db.select({ name: agents.name }).from(agents);
-    const seedAgents = Array.from(new Set(rows.map((r) => r.name))).filter(
-      (name): name is string => typeof name === "string" && name.length > 0,
+    // Distinct agent identifiers from the board — the stable UUID (agents.id),
+    // so the (agent, 'general') active row matches the PR2 emitter's lookup.
+    const rows = await db.select({ id: agents.id }).from(agents);
+    const seedAgents = Array.from(new Set(rows.map((r) => r.id))).filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
     );
 
     let created = 0;

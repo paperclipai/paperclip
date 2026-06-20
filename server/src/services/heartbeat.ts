@@ -64,6 +64,7 @@ import {
 import { issueService } from "./issues.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
+import { emitAgentRunFromTerminal } from "./telemetry-emit.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
@@ -2179,6 +2180,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
+
+      // Best-effort telemetry emit (PR2). Must NEVER fail the run lifecycle.
+      try {
+        await emitAgentRunFromTerminal(db, updated);
+      } catch (err) {
+        logger.error({ err, runId }, "agent_runs emit failed (non-fatal)");
+      }
     }
 
     return updated;
