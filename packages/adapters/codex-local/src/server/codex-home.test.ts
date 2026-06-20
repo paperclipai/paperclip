@@ -320,7 +320,7 @@ describe("seedManagedCodexHome", () => {
   });
 });
 
-// PAPA-910 Phase 2: backfill seeding for already-isolated agent homes.
+// Startup backfill for already-isolated managed homes.
 describe("reconcileManagedCodexHome", () => {
   async function makeFixture() {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-reconcile-"));
