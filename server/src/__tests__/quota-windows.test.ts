@@ -352,6 +352,34 @@ describe("parseClaudeCliUsageText", () => {
     ]);
   });
 
+  it("parses compact Claude TUI usage text captured from a PTY", () => {
+    const raw = `
+      Setting Statu Config Usage Stats
+
+      Currentsession
+      ███████████████████████████████████████78%used
+      Resets3pm(UTC)
+
+      Currentweek(allmodels)
+      ███▌7%used
+      ResetsJun27,2am(UTC)
+
+      What's contributing to your limits usage?
+      Refreshing...
+    `;
+
+    expect(parseClaudeCliUsageText(raw)).toMatchObject([
+      {
+        label: "Current session",
+        usedPercent: 78,
+      },
+      {
+        label: "Current week (all models)",
+        usedPercent: 7,
+      },
+    ]);
+  });
+
   it("throws a useful error when the Claude CLI panel reports a usage load failure", () => {
     expect(() => parseClaudeCliUsageText("Failed to load usage data")).toThrow(
       "Claude CLI could not load usage data. Open the CLI and retry `/usage`.",

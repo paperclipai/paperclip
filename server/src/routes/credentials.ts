@@ -253,7 +253,7 @@ export function credentialRoutes(db: Db) {
             quotaWindows = await fetchClaudeQuota(accessToken);
           } catch (oauthError) {
             try {
-              quotaWindows = await fetchClaudeCliQuotaForOAuth(payloadRecord, { timeoutMs: 35_000 });
+              quotaWindows = await fetchClaudeCliQuotaForOAuth(payloadRecord, { timeoutMs: 45_000 });
               source = "claude-cli-usage";
             } catch {
               throw oauthError;

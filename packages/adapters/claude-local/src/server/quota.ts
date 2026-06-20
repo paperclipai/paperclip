@@ -474,18 +474,52 @@ async function prepareClaudeQuotaHome(oauth: Record<string, unknown>): Promise<s
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-usage-"));
   const claudeDir = path.join(home, ".claude");
   await fs.mkdir(claudeDir, { recursive: true });
+  const normalizedOauth = normalizeClaudeOauthPayload(oauth);
   await fs.writeFile(
     path.join(claudeDir, ".credentials.json"),
-    JSON.stringify({ claudeAiOauth: normalizeClaudeOauthPayload(oauth) }),
+    JSON.stringify({ claudeAiOauth: normalizedOauth }),
     "utf-8",
   );
   await fs.chmod(path.join(claudeDir, ".credentials.json"), 0o600).catch(() => undefined);
-  await fs.writeFile(
-    path.join(home, ".claude.json"),
-    JSON.stringify({ hasCompletedOnboarding: true, lastOnboardingVersion: "2.1.141" }),
-    "utf-8",
-  );
-  await fs.chmod(path.join(home, ".claude.json"), 0o600).catch(() => undefined);
+  const now = new Date().toISOString();
+  const subscriptionType = readString(normalizedOauth.subscriptionType) ?? "max";
+  const rateLimitTier = readString(normalizedOauth.rateLimitTier)
+    ?? (subscriptionType === "max" ? "default_claude_max_20x" : null);
+  const state = {
+    hasCompletedOnboarding: true,
+    lastOnboardingVersion: "2.1.156",
+    migrationVersion: 13,
+    firstStartTime: now,
+    numStartups: 1,
+    seenNotifications: {},
+    userID: "paperclip-quota-probe",
+    opusProMigrationComplete: true,
+    sonnet1m45MigrationComplete: true,
+    oauthAccount: {
+      accountUuid: "paperclip-quota-probe-account",
+      emailAddress: null,
+      organizationUuid: "paperclip-quota-probe-org",
+      hasExtraUsageEnabled: false,
+      billingType: "stripe_subscription",
+      accountCreatedAt: now,
+      subscriptionCreatedAt: now,
+      displayName: "Paperclip",
+      organizationRole: "admin",
+      workspaceRole: null,
+      organizationName: "Paperclip",
+      ccOnboardingFlags: {},
+      claudeCodeTrialEndsAt: null,
+      claudeCodeTrialDurationDays: null,
+      seatTier: null,
+      organizationType: subscriptionType === "max" ? "claude_max" : "claude_subscription",
+      organizationRateLimitTier: rateLimitTier,
+      userRateLimitTier: null,
+    },
+  };
+  for (const statePath of [path.join(home, ".claude.json"), path.join(claudeDir, ".claude.json")]) {
+    await fs.writeFile(statePath, JSON.stringify(state), "utf-8");
+    await fs.chmod(statePath, 0o600).catch(() => undefined);
+  }
   await fs.writeFile(
     path.join(claudeDir, "settings.json"),
     JSON.stringify({
@@ -500,7 +534,7 @@ async function prepareClaudeQuotaHome(oauth: Record<string, unknown>): Promise<s
 
 export async function captureClaudeCliUsageText(options: ClaudeCliQuotaOptions = {}): Promise<string> {
   const command = options.command ?? "claude";
-  const timeoutMs = Math.max(10_000, Math.min(options.timeoutMs ?? 35_000, 60_000));
+  const timeoutMs = Math.max(15_000, Math.min(options.timeoutMs ?? 45_000, 75_000));
   const preparedHome = options.oauth ? await prepareClaudeQuotaHome(options.oauth) : null;
   const env = createClaudeQuotaEnv();
   if (preparedHome) {
@@ -512,9 +546,11 @@ export async function captureClaudeCliUsageText(options: ClaudeCliQuotaOptions =
   const driver = [
     "set -euo pipefail",
     "(",
+    "  sleep 5",
+    "  printf '\\r'",
     "  sleep 4",
     "  printf '/usage\\r'",
-    "  sleep 24",
+    "  sleep 26",
     "  printf '\\033'",
     "  sleep 0.5",
     "  printf '\\003'",

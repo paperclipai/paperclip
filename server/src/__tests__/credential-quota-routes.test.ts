@@ -170,7 +170,7 @@ describe("credential quota route caching", () => {
         refreshToken: "refresh-token",
         subscriptionType: "max",
       }),
-      { timeoutMs: 35_000 },
+      { timeoutMs: 45_000 },
     );
     expect(response.body[0]).toMatchObject({
       ok: true,
