@@ -63,7 +63,7 @@ function classifyApiKeyBinding(value: unknown): ApiKeyBinding {
 }
 
 /**
- * Startup backfill for PAPA-910 Phase 2: seed `auth.json` into any already-
+ * Startup backfill: seed `auth.json` into any already-
  * isolated `codex_local` managed home that was created (by the #8272 isolation
  * guard) before the Phase 1 seeding fix landed. Phase 1 seeds at execute time;
  * this repairs persisted homes proactively so a stranded agent recovers without
