@@ -1249,6 +1249,7 @@ function lowTrustBoundaryIssueCondition(
 }
 
 const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "cancelled"];
+const CHILD_DERIVED_BLOCKER_TERMINAL_STATUSES = ["done", "cancelled"];
 const BLOCKER_ATTENTION_MAX_DEPTH = 8;
 const BLOCKER_ATTENTION_MAX_NODES = 2000;
 const BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
@@ -1636,7 +1637,7 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
-            ne(issues.status, "done"),
+            notInArray(issues.status, CHILD_DERIVED_BLOCKER_TERMINAL_STATUSES),
           ),
         );
       const [explicitBlockerRows, childRows] = await Promise.all([
@@ -2159,7 +2160,7 @@ async function blockedByMapForIssues(
   }
 
   for (const issueIdChunk of chunkList(uniqueIssueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
-    const rows = await dbOrTx
+    const explicitRowsPromise = dbOrTx
       .select({
         currentIssueId: issueRelations.relatedIssueId,
         relatedId: issues.id,
@@ -2177,12 +2178,36 @@ async function blockedByMapForIssues(
           eq(issueRelations.companyId, companyId),
           eq(issueRelations.type, "blocks"),
           inArray(issueRelations.relatedIssueId, issueIdChunk),
+          eq(issues.companyId, companyId),
         ),
       );
+    const childRowsPromise = dbOrTx
+      .select({
+        currentIssueId: issues.parentId,
+        relatedId: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.parentId, issueIdChunk),
+          notInArray(issues.status, CHILD_DERIVED_BLOCKER_TERMINAL_STATUSES),
+        ),
+      );
+    const [explicitRows, childRows] = await Promise.all([explicitRowsPromise, childRowsPromise]);
+    const rows = [...explicitRows, ...childRows];
 
     for (const row of rows) {
+      if (!row.currentIssueId) continue;
       const blockedBy = map.get(row.currentIssueId);
       if (!blockedBy) continue;
+      if (blockedBy.some((existing) => existing.id === row.relatedId)) continue;
       blockedBy.push({
         id: row.relatedId,
         identifier: row.identifier,
@@ -3557,7 +3582,7 @@ export function issueService(db: Db) {
     }
     if (uniqueIssueIds.length === 0) return empty;
 
-    const [blockedByRows, blockingRows] = await Promise.all([
+    const [explicitBlockedByRows, childBlockedByRows, blockingRows] = await Promise.all([
       dbOrTx
         .select({
           currentIssueId: issueRelations.relatedIssueId,
@@ -3576,6 +3601,26 @@ export function issueService(db: Db) {
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+            eq(issues.companyId, companyId),
+          ),
+        ),
+      dbOrTx
+        .select({
+          currentIssueId: issues.parentId,
+          relatedId: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.parentId, uniqueIssueIds),
+            notInArray(issues.status, CHILD_DERIVED_BLOCKER_TERMINAL_STATUSES),
           ),
         ),
       dbOrTx
@@ -3596,12 +3641,17 @@ export function issueService(db: Db) {
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.issueId, uniqueIssueIds),
+            eq(issues.companyId, companyId),
           ),
-        ),
+      ),
     ]);
 
+    const blockedByRows = [...explicitBlockedByRows, ...childBlockedByRows];
     for (const row of blockedByRows) {
-      empty.get(row.currentIssueId)?.blockedBy.push(summarizeIssueRelationRow(row));
+      if (!row.currentIssueId) continue;
+      const blockedBy = empty.get(row.currentIssueId)?.blockedBy;
+      if (!blockedBy || blockedBy.some((existing) => existing.id === row.relatedId)) continue;
+      blockedBy.push(summarizeIssueRelationRow(row));
     }
     for (const row of blockingRows) {
       empty.get(row.currentIssueId)?.blocks.push(summarizeIssueRelationRow(row));
