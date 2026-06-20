@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
+import { createRuntimeProgressReporter, type RuntimeProgressSink } from "./runtime-progress.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -23,10 +24,23 @@ export interface SandboxManagedRuntimeAsset {
   exclude?: string[];
 }
 
+/**
+ * Per-call byte-level progress hook. `transferredBytes`/`totalBytes` are decoded
+ * file bytes (not the base64 wire size). `totalBytes` is null when the size is
+ * not known up front. The transport is the source of truth for byte counts; the
+ * orchestrator owns the phase label and direction.
+ */
+export interface SandboxTransferProgressOptions {
+  onProgress?: (transferredBytes: number, totalBytes: number | null) => void | Promise<void>;
+}
+
 export interface SandboxManagedRuntimeClient {
   makeDir(remotePath: string): Promise<void>;
-  writeFile(remotePath: string, bytes: ArrayBuffer): Promise<void>;
-  readFile(remotePath: string): Promise<Buffer | Uint8Array | ArrayBuffer>;
+  writeFile(remotePath: string, bytes: ArrayBuffer, options?: SandboxTransferProgressOptions): Promise<void>;
+  readFile(
+    remotePath: string,
+    options?: SandboxTransferProgressOptions,
+  ): Promise<Buffer | Uint8Array | ArrayBuffer>;
   listFiles(remotePath: string): Promise<string[]>;
   remove(remotePath: string): Promise<void>;
   run(command: string, options: { timeoutMs: number }): Promise<void>;
@@ -38,7 +52,7 @@ export interface PreparedSandboxManagedRuntime {
   workspaceRemoteDir: string;
   runtimeRootDir: string;
   assetDirs: Record<string, string>;
-  restoreWorkspace(): Promise<void>;
+  restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -261,6 +275,36 @@ function tarExcludeFlags(exclude: string[] | undefined): string {
   return ["._*", ...(exclude ?? [])].map((entry) => `--exclude ${shellQuote(entry)}`).join(" ");
 }
 
+// Bridge a single byte-level transfer to the throttled progress reporter. The
+// transport reports decoded bytes via `options.onProgress`; the reporter turns
+// them into a throttled, fully-formatted log line. `finish()` emits the terminal
+// completion line (idempotent) once the transfer returns.
+function makeTransferProgress(
+  sink: RuntimeProgressSink | undefined,
+  phase: "Syncing" | "Restoring",
+  direction: "to" | "from",
+  label: string,
+): { options: SandboxTransferProgressOptions | undefined; finish: () => Promise<void> } {
+  if (!sink) return { options: undefined, finish: async () => {} };
+  const reporter = createRuntimeProgressReporter({
+    sink,
+    phase,
+    direction,
+    target: "sandbox",
+    label,
+  });
+  return {
+    options: {
+      onProgress: async (transferredBytes, totalBytes) => {
+        await reporter.report(transferredBytes, totalBytes);
+      },
+    },
+    finish: async () => {
+      await reporter.complete();
+    },
+  };
+}
+
 export async function prepareSandboxManagedRuntime(input: {
   spec: SandboxRemoteExecutionSpec;
   adapterKey: string;
@@ -270,6 +314,9 @@ export async function prepareSandboxManagedRuntime(input: {
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: SandboxManagedRuntimeAsset[];
+  // Upload progress sink. Threaded for the byte-counting transport rewrite; the
+  // child task wires it into writeFile/readFile.
+  onProgress?: RuntimeProgressSink;
 }): Promise<PreparedSandboxManagedRuntime> {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
@@ -287,7 +334,13 @@ export async function prepareSandboxManagedRuntime(input: {
     const workspaceTarBytes = await fs.readFile(workspaceTarPath);
     const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-upload.tar");
     await input.client.makeDir(runtimeRootDir);
-    await input.client.writeFile(remoteWorkspaceTar, toArrayBuffer(workspaceTarBytes));
+    const workspaceUpload = makeTransferProgress(input.onProgress, "Syncing", "to", "workspace");
+    await input.client.writeFile(
+      remoteWorkspaceTar,
+      toArrayBuffer(workspaceTarBytes),
+      workspaceUpload.options,
+    );
+    await workspaceUpload.finish();
     const preservedNames = new Set([".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? [])]);
     const findPreserveArgs = [...preservedNames].map((entry) => `! -name ${shellQuote(entry)}`).join(" ");
     await input.client.run(
@@ -311,7 +364,9 @@ export async function prepareSandboxManagedRuntime(input: {
       const assetTarBytes = await fs.readFile(assetTarPath);
       const remoteAssetDir = path.posix.join(runtimeRootDir, asset.key);
       const remoteAssetTar = path.posix.join(runtimeRootDir, `${asset.key}-upload.tar`);
-      await input.client.writeFile(remoteAssetTar, toArrayBuffer(assetTarBytes));
+      const assetUpload = makeTransferProgress(input.onProgress, "Syncing", "to", asset.key);
+      await input.client.writeFile(remoteAssetTar, toArrayBuffer(assetTarBytes), assetUpload.options);
+      await assetUpload.finish();
       await input.client.run(
         `sh -c ${shellQuote(
           `rm -rf ${shellQuote(remoteAssetDir)} && ` +
@@ -334,7 +389,8 @@ export async function prepareSandboxManagedRuntime(input: {
     workspaceRemoteDir,
     runtimeRootDir,
     assetDirs,
-    restoreWorkspace: async () => {
+    restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
+      const restoreSink = onProgress ?? input.onProgress;
       await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
         const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
         await input.client.run(
@@ -345,7 +401,9 @@ export async function prepareSandboxManagedRuntime(input: {
           )}`,
           { timeoutMs: input.spec.timeoutMs },
         );
-        const archiveBytes = await input.client.readFile(remoteWorkspaceTar);
+        const workspaceRestore = makeTransferProgress(restoreSink, "Restoring", "from", "workspace");
+        const archiveBytes = await input.client.readFile(remoteWorkspaceTar, workspaceRestore.options);
+        await workspaceRestore.finish();
         await input.client.remove(remoteWorkspaceTar).catch(() => undefined);
         const localArchivePath = path.join(tempDir, "workspace.tar");
         const extractedDir = path.join(tempDir, "workspace");

@@ -397,6 +397,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             workspaceLocalDir: cwd,
             installCommand: SANDBOX_INSTALL_COMMAND,
             detectCommand: command,
+            onProgress: (line) => onLog("stdout", line),
             assets: [
               {
                 key: "home",
@@ -414,7 +415,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const executionTargetIsSandbox =
       runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
     const restoreRemoteWorkspace = preparedExecutionTargetRuntime
-      ? () => preparedExecutionTargetRuntime.restoreWorkspace()
+      ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
       : null;
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
     const remoteCodexHome = executionTargetIsRemote
