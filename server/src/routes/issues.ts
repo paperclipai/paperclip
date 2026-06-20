@@ -6361,13 +6361,29 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
+      // Board may cancel any pending interaction; an agent may withdraw one it
+      // created (enforced in the service via enforceCreatorAgentId). Without this
+      // an agent that posts a mistaken request_confirmation has no way off it.
+      if (req.actor.type === "agent") {
+        if (!req.actor.agentId) {
+          res.status(403).json({ error: "Only the creating agent can cancel this interaction" });
+          return;
+        }
+      } else {
+        assertBoard(req);
+      }
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      const interaction = await issueThreadInteractionService(db).cancelQuestions(
+        issue,
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        { enforceCreatorAgentId: req.actor.type === "agent" ? req.actor.agentId : null },
+      );
 
       await logActivity(db, {
         companyId: issue.companyId,

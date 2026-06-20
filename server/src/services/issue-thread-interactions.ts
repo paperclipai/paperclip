@@ -16,6 +16,7 @@ import type {
   CancelIssueThreadInteraction,
   CreateIssueThreadInteraction,
   IssueThreadInteraction,
+  IssueThreadInteractionResult,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   RequestConfirmationTarget,
@@ -1400,6 +1401,10 @@ export function issueThreadInteractionService(db: Db) {
       interactionId: string,
       input: CancelIssueThreadInteraction,
       actor: InteractionActor,
+      // When set, only the interaction's creating agent may cancel it. The route
+      // passes this for agent actors so an agent can withdraw its own pending
+      // card but not someone else's; board actors pass null (may cancel any).
+      options?: { enforceCreatorAgentId?: string | null },
     ) => {
       const data = cancelIssueThreadInteractionSchema.parse(input);
       const current = await db
@@ -1412,25 +1417,22 @@ export function issueThreadInteractionService(db: Db) {
       if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
         throw notFound("Interaction not found");
       }
-      if (current.kind !== "ask_user_questions") {
-        throw unprocessable("Only ask_user_questions interactions can be cancelled");
+      const enforceCreatorAgentId = options?.enforceCreatorAgentId ?? null;
+      if (enforceCreatorAgentId && current.createdByAgentId !== enforceCreatorAgentId) {
+        throw unprocessable("Only the creating agent can cancel this interaction");
       }
       if (current.status !== "pending") {
         throw conflict("Interaction has already been resolved");
       }
 
       const reason = data.reason?.trim() || null;
+      const cancelledResult = buildCancelledInteractionResult(current.kind, reason);
+
       const [updated] = await db
         .update(issueThreadInteractions)
         .set({
           status: "cancelled",
-          result: {
-            version: 1,
-            answers: [],
-            cancelled: true,
-            cancellationReason: reason,
-            summaryMarkdown: null,
-          },
+          result: cancelledResult,
           resolvedByAgentId: actor.agentId ?? null,
           resolvedByUserId: actor.userId ?? null,
           resolvedAt: new Date(),
@@ -1450,4 +1452,28 @@ export function issueThreadInteractionService(db: Db) {
       return hydrateInteraction(updated);
     },
   };
+}
+
+// Build the kind-appropriate "cancelled" result row. Confirmation-like kinds use
+// the result `outcome: "cancelled"`; ask_user_questions uses its answers shape.
+function buildCancelledInteractionResult(
+  kind: string,
+  reason: string | null,
+): IssueThreadInteractionResult {
+  switch (kind) {
+    case "ask_user_questions":
+      return {
+        version: 1,
+        answers: [],
+        cancelled: true,
+        cancellationReason: reason,
+        summaryMarkdown: null,
+      };
+    case "request_confirmation":
+      return { version: 1, outcome: "cancelled", reason };
+    case "request_checkbox_confirmation":
+      return { version: 1, outcome: "cancelled", reason, selectedOptionIds: [] };
+    default:
+      throw unprocessable(`${kind} interactions cannot be cancelled`);
+  }
 }

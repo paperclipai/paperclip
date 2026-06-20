@@ -566,6 +566,53 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("lets the creating agent cancel its own pending request_confirmation", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(agents).values([
+      { id: agentId, companyId, name: "CTO", role: "lead", status: "running", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: otherAgentId, companyId, name: "Other", role: "engineer", status: "idle", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+    ]);
+    await db.insert(goals).values({
+      id: goalId, companyId, title: "Confirm plan", level: "task", status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId, companyId, goalId, title: "Plan parent", status: "in_progress", priority: "medium",
+    });
+
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Apply this plan?", acceptLabel: "Apply", rejectLabel: "Keep editing" },
+    }, { agentId });
+
+    // A different agent cannot cancel it.
+    await expect(interactionsSvc.cancelQuestions(
+      { id: issueId, companyId }, created.id, { reason: "nope" }, { agentId: otherAgentId },
+      { enforceCreatorAgentId: otherAgentId },
+    )).rejects.toThrow(/creating agent/i);
+
+    // The creating agent can.
+    const cancelled = await interactionsSvc.cancelQuestions(
+      { id: issueId, companyId }, created.id, { reason: "duplicate card" }, { agentId },
+      { enforceCreatorAgentId: agentId },
+    );
+
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.result).toEqual({ version: 1, outcome: "cancelled", reason: "duplicate card" });
+  });
+
   it("reuses the existing interaction when the same idempotency key is submitted twice", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

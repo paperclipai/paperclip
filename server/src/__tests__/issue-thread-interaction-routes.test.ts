@@ -473,6 +473,7 @@ describe.sequential("issue thread interaction routes", () => {
       "interaction-2",
       {},
       expect.objectContaining({ userId: "local-board" }),
+      { enforceCreatorAgentId: null },
     );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
