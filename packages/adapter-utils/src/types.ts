@@ -145,7 +145,8 @@ export interface AdapterModel {
   label: string;
 }
 
-export type AdapterModelProfileKey = "cheap";
+// Keep in sync with MODEL_PROFILE_KEYS in @paperclipai/shared.
+export type AdapterModelProfileKey = "cheap" | "deep" | "bulk";
 
 export interface AdapterModelProfileDefinition {
   key: AdapterModelProfileKey;
