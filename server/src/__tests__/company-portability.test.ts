@@ -76,8 +76,16 @@ const agentInstructionsSvc = {
   materializeManagedBundle: vi.fn(),
 };
 
+const approvalSvc = {
+  create: vi.fn(),
+};
+
 vi.mock("../services/companies.js", () => ({
   companyService: () => companySvc,
+}));
+
+vi.mock("../services/approvals.js", () => ({
+  approvalService: () => approvalSvc,
 }));
 
 vi.mock("../services/agents.js", () => ({
@@ -3717,5 +3725,68 @@ describe("company portability", () => {
     expect(preview.plan.agentPlans).toHaveLength(0);
     expect(preview.plan.projectPlans).toHaveLength(0);
     expect(preview.plan.issuePlans).toHaveLength(0);
+  });
+
+  it("sets pending_approval status and mints hire approval when requireBoardApprovalForNewAgents=true", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-gated",
+      name: "Gated Company",
+      requireBoardApprovalForNewAgents: true,
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.create.mockResolvedValue({
+      id: "agent-gated",
+      name: "ClaudeCoder",
+      role: "engineer",
+      title: "Software Engineer",
+      icon: "code",
+      reportsTo: null,
+      capabilities: "Writes code",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      budgetMonthlyCents: null,
+      metadata: {},
+      status: "pending_approval",
+    });
+    approvalSvc.create.mockResolvedValue({ id: "approval-1" });
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: "gated-demo",
+        files: {
+          "COMPANY.md": [
+            "---",
+            'schema: "agentcompanies/v1"',
+            'name: "Gated Company"',
+            "---",
+            "",
+          ].join("\n"),
+          "agents/claudecoder/AGENTS.md": [
+            "---",
+            'name: "ClaudeCoder"',
+            'title: "Software Engineer"',
+            "---",
+            "",
+            "You write code.",
+          ].join("\n"),
+        },
+      },
+      include: { company: true, agents: true, projects: false, issues: false },
+      target: { mode: "new_company", newCompanyName: "Gated Company" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(agentSvc.create).toHaveBeenCalledWith("company-gated", expect.objectContaining({
+      status: "pending_approval",
+    }));
+    expect(approvalSvc.create).toHaveBeenCalledWith("company-gated", expect.objectContaining({
+      type: "hire_agent",
+      status: "pending",
+    }));
   });
 });
