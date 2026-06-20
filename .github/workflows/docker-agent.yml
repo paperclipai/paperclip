@@ -24,7 +24,10 @@ jobs:
   build-and-push:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: arc-deploy
-    timeout-minutes: 30
+    # Full agent-image rebuilds invalidate the heavy apt/toolchain layers when
+    # the base paperclip server image changes. Keep enough room for that path;
+    # Buildx still fails fast on real command errors.
+    timeout-minutes: 90
     concurrency:
       group: docker-agent-${{ github.ref }}
       cancel-in-progress: true

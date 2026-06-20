@@ -50,4 +50,8 @@ describe("production Dockerfile k8s adapter runtime pins", () => {
     expect(dockerWorkflow).not.toContain("runs-on: self-hosted");
     expect(dockerAgentWorkflow).not.toContain("runs-on: self-hosted");
   });
+
+  it("keeps the agent image build timeout above full toolchain rebuild duration", () => {
+    expect(dockerAgentWorkflow).toContain("timeout-minutes: 90");
+  });
 });
