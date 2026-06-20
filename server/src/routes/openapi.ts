@@ -400,18 +400,17 @@ const ErrorSchema = registry.register(
   z.object({ error: z.string() }),
 );
 
-const FilesystemListResponseSchema = registry.register(
-  "FilesystemListResponse",
-  z.object({
-    path: z.string(),
-    parent: z.string().nullable(),
-    entries: z.array(z.object({
-      name: z.string(),
-      isDir: z.boolean(),
-      isSymlink: z.boolean(),
-    })),
-  }),
-);
+const FilesystemListResponseSchema = z.object({
+  path: z.string(),
+  parent: z.string().nullable(),
+  entries: z.array(z.object({
+    name: z.string(),
+    isDir: z.boolean(),
+    isSymlink: z.boolean(),
+  })),
+});
+
+registry.register("FilesystemListResponse", FilesystemListResponseSchema);
 
 const responses = {
   ok: (schema: z.ZodTypeAny = z.record(z.unknown())) => ({
