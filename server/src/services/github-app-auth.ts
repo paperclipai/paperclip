@@ -212,7 +212,10 @@ export async function githubHasReviewerEvidenceForPr(input: {
   // SHA forms of THIS head are recognized — same shape as
   // prReviewOutputReferencesSameTarget in heartbeat.ts.
   if (headPrefix) {
-    const headRefPattern = new RegExp(`\\b${headPrefix.slice(0, 7)}[0-9a-f]*\\b`);
+    // Boundary on hex chars only (not `\b`): `_` is a `\w` char, so `\b…\b` finds
+    // no trailing boundary when Ally embeds the SHA in markdown italics
+    // (`_reviewed head: <sha>_`), mis-flagging a real comment-mode review as missing.
+    const headRefPattern = new RegExp(`(?<![0-9a-f])${headPrefix.slice(0, 7)}[0-9a-f]*(?![0-9a-f])`);
     try {
       for (let page = 1; page <= 10; page += 1) {
         const url = `${apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/comments?per_page=100&page=${page}`;

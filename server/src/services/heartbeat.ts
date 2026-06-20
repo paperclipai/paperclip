@@ -3503,7 +3503,10 @@ function prReviewOutputReferencesSameTarget(
   }
   if (prReview.headSha) {
     const hex = prReview.headSha.match(/^[0-9a-f]{7,40}/i)?.[0];
-    if (hex && new RegExp(`\\b${hex.slice(0, 7)}[0-9a-f]*\\b`, "i").test(text)) return true;
+    // Boundary on hex chars only (not `\b`): `_` is a `\w` char, so `\b…\b` misses a
+    // head SHA wrapped in markdown italics (`_reviewed head: <sha>_`). Mirror of the
+    // headRefPattern fix in github-app-auth.ts (BLO-10878).
+    if (hex && new RegExp(`(?<![0-9a-f])${hex.slice(0, 7)}[0-9a-f]*(?![0-9a-f])`, "i").test(text)) return true;
   }
   return false;
 }

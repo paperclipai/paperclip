@@ -178,6 +178,24 @@ describe("githubHasReviewerEvidenceForPr", () => {
     });
   });
 
+  it("BLO-10878: matches a comment-mode review when the head SHA is wrapped in markdown italics (trailing _)", async () => {
+    setCreds();
+    // Real paperclip#458 shape: Ally's consolidated review embeds the head SHA in
+    // an italic run (`_reviewed head: <sha>_`), so a `_` sits immediately after the
+    // final hex digit. `_` is a `\w` char, so a `\b…\b`-anchored pattern finds no
+    // trailing word boundary and the review is mis-flagged as missing.
+    stubGithub({
+      reviews: [],
+      comments: [
+        { user: { login: "allyblockcast[bot]" }, body: `## Ally — Consolidated PR Review\n_reviewed head: ${headSha}_` },
+      ],
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: true,
+      via: "comment",
+    });
+  });
+
   it("BLO-10878: falls back to the PR head when the wake carried no head SHA, then matches a comment-mode review", async () => {
     setCreds();
     stubGithub({
