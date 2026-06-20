@@ -43,9 +43,9 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableIsolatedWorkspaces: z.boolean().default(false),
   enableStreamlinedLeftNavigation: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),
+  enableTaskWatchdogs: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
-  enableTaskWatchdogs: z.boolean().default(false),
   enableCloudSync: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
@@ -58,6 +58,10 @@ export const instanceExperimentalSettingsSchema = z.object({
 }).strict();
 
 export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema.partial();
+
+export const patchInstanceSettingsSchema = z.object({
+  defaultEnvironmentId: z.string().uuid().nullable().optional(),
+}).strict();
 
 export const issueGraphLivenessAutoRecoveryRequestSchema = z.object({
   lookbackHours: z
@@ -72,6 +76,16 @@ export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSche
 export type PatchInstanceGeneralSettings = z.infer<typeof patchInstanceGeneralSettingsSchema>;
 export type InstanceExperimentalSettings = z.infer<typeof instanceExperimentalSettingsSchema>;
 export type PatchInstanceExperimentalSettings = z.infer<typeof patchInstanceExperimentalSettingsSchema>;
+export type PatchInstanceSettings = z.infer<typeof patchInstanceSettingsSchema>;
 export type IssueGraphLivenessAutoRecoveryRequest = z.infer<
   typeof issueGraphLivenessAutoRecoveryRequestSchema
 >;
+
+export const instanceSettingsSchema = z.object({
+  id: z.string().uuid(),
+  defaultEnvironmentId: z.string().uuid().nullable(),
+  general: instanceGeneralSettingsSchema,
+  experimental: instanceExperimentalSettingsSchema,
+  createdAt: z.union([z.date(), z.string().datetime()]),
+  updatedAt: z.union([z.date(), z.string().datetime()]),
+}).strict();

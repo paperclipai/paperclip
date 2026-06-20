@@ -457,6 +457,8 @@ export async function resolveExecutionRunAdapterConfig(input: {
   agentId?: string | null;
   issueId?: string | null;
   heartbeatRunId?: string | null;
+  environmentId?: string | null;
+  environmentEnv?: unknown;
   projectId?: string | null;
   routineId?: string | null;
   executionRunConfig: Record<string, unknown>;
@@ -466,12 +468,14 @@ export async function resolveExecutionRunAdapterConfig(input: {
   trustPreset?: TrustPresetResolution;
 }) {
   const executionRunConfig = stripPaperclipRuntimeEnvFromAdapterConfig(input.executionRunConfig);
+  const environmentEnv = stripPaperclipRuntimeEnvBindings(input.environmentEnv);
   const projectEnv = stripPaperclipRuntimeEnvBindings(input.projectEnv);
   const routineEnv = stripPaperclipRuntimeEnvBindings(input.routineEnv);
   const lowTrustAllowedBindingIds = input.trustPreset?.kind === "low_trust_review"
     ? input.trustPreset.boundary.allowedSecretBindingIds ?? []
     : undefined;
   if (input.trustPreset?.kind === "low_trust_review") {
+    assertLowTrustEnvConfigAllowed(environmentEnv, "environment.env");
     assertLowTrustEnvConfigAllowed(executionRunConfig.env, "agent.env");
     assertLowTrustEnvConfigAllowed(projectEnv, "project.env");
     assertLowTrustEnvConfigAllowed(routineEnv, "routine.env");
@@ -482,6 +486,15 @@ export async function resolveExecutionRunAdapterConfig(input: {
   // dispatched-then-failed run (which previously surfaced as opaque setup_failed).
   if (typeof input.secretsSvc.collectMissingRuntimeBindings === "function") {
     const missingBindings: MissingRuntimeBinding[] = [];
+    if (environmentEnv && input.environmentId) {
+      missingBindings.push(
+        ...(await input.secretsSvc.collectMissingRuntimeBindings(
+          input.companyId,
+          environmentEnv,
+          { consumerType: "environment", consumerId: input.environmentId },
+        )),
+      );
+    }
     if (input.agentId) {
       missingBindings.push(
         ...(await input.secretsSvc.collectMissingRuntimeBindings(
@@ -524,6 +537,23 @@ export async function resolveExecutionRunAdapterConfig(input: {
       });
     }
   }
+  const environmentEnvResolution = environmentEnv
+    ? await input.secretsSvc.resolveEnvBindings(
+        input.companyId,
+        environmentEnv,
+        input.environmentId
+          ? {
+              consumerType: "environment",
+              consumerId: input.environmentId,
+              actorType: "agent",
+              actorId: input.agentId ?? null,
+              issueId: input.issueId ?? null,
+              heartbeatRunId: input.heartbeatRunId ?? null,
+              ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
+            }
+          : undefined,
+      )
+    : { env: {}, secretKeys: new Set<string>(), manifest: [] };
   const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
     executionRunConfig,
@@ -539,6 +569,15 @@ export async function resolveExecutionRunAdapterConfig(input: {
         }
       : undefined,
   );
+  if (Object.keys(environmentEnvResolution.env).length > 0) {
+    resolvedConfig.env = {
+      ...environmentEnvResolution.env,
+      ...parseObject(resolvedConfig.env),
+    };
+    for (const key of environmentEnvResolution.secretKeys) {
+      secretKeys.add(key);
+    }
+  }
   const projectEnvResolution = projectEnv
     ? await input.secretsSvc.resolveEnvBindings(
         input.companyId,
@@ -595,6 +634,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
     resolvedConfig,
     secretKeys,
     secretManifest: [
+      ...(environmentEnvResolution.manifest ?? []),
       ...(manifest ?? []),
       ...(projectEnvResolution.manifest ?? []),
       ...(routineEnvResolution.manifest ?? []),
@@ -8417,37 +8457,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const requestedReusableExecutionWorkspaceConfig = requestedShouldReuseExisting
       ? existingExecutionWorkspace?.config ?? null
       : null;
-    const defaultEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
+    const localEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
+    const resolvedInstanceSettings = await instanceSettings.get();
     const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
-      projectPolicy: projectExecutionWorkspacePolicy,
-      issueSettings: issueExecutionWorkspaceSettings,
-      workspaceConfig: requestedReusableExecutionWorkspaceConfig,
       agentDefaultEnvironmentId: agent.defaultEnvironmentId,
-      defaultEnvironmentId: defaultEnvironment.id,
+      instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
+      localDefaultEnvironmentId: localEnvironment.id,
     });
-    // PAPA-380 / PAPA-431: when the resolver refuses silent reuse of the
-    // persisted workspace environment, also force a fresh workspace
-    // realization on the assignee's intended env. Reusing the on-disk
-    // workspace while swapping the env underneath it would mismatch the cwd's
-    // runtime expectations (e.g. an SSH-targeted worktree running on the
-    // local default driver).
-    if (environmentResolution.conflict) {
-      logger.warn(
-        {
-          runId: run.id,
-          issueId,
-          agentId: agent.id,
-          adapterType: agent.adapterType,
-          existingExecutionWorkspaceId: existingExecutionWorkspace?.id ?? null,
-          workspaceEnvironmentId: environmentResolution.conflict.workspaceEnvironmentId,
-          assigneeIntendedEnvironmentId:
-            environmentResolution.conflict.assigneeIntendedEnvironmentId,
-          assigneeIntendedSource: environmentResolution.conflict.assigneeIntendedSource,
-        },
-        "Refusing silent reuse of execution workspace whose environment does not match the assignee's intended environment; forcing fresh realization",
-      );
-    }
-    const shouldReuseExisting = requestedShouldReuseExisting && !environmentResolution.conflict;
+    const shouldReuseExisting = requestedShouldReuseExisting;
     const reusableExecutionWorkspaceConfig = shouldReuseExisting
       ? requestedReusableExecutionWorkspaceConfig
       : null;
@@ -8545,7 +8562,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const preflightEnvironment = await envOrchestrator.resolveEnvironment({
           companyId: agent.companyId,
           selectedEnvironmentId,
-          defaultEnvironmentId: defaultEnvironment.id,
+          localEnvironmentId: localEnvironment.id,
         });
         return preflightEnvironment.driver;
       },
@@ -8609,11 +8626,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+    const selectedEnvironmentForConfig = selectedEnvironmentId === localEnvironment.id
+      ? localEnvironment
+      : selectedEnvironmentId
+        ? await environmentsSvc.getById(selectedEnvironmentId)
+        : null;
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
       issueId,
       heartbeatRunId: run.id,
+      environmentId: selectedEnvironmentForConfig?.id ?? null,
+      environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
       projectId: projectContext?.id ?? null,
       routineId: routineEnvContext.routineId,
       executionRunConfig,
@@ -8849,17 +8873,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(heartbeatRuns.id, run.id));
     }
-    // When execution is forced to Kubernetes, `selectedEnvironmentId` is already
-    // pinned to the managed k8s environment above; ignore any persisted workspace
-    // environmentId (which could point at a stale local/ssh env) so a reused
-    // workspace can never downgrade us off the sandbox.
-    const persistedEnvironmentId = isExecutionForcedToKubernetes(executionPolicy)
-      ? selectedEnvironmentId
-      : persistedExecutionWorkspace?.config?.environmentId ?? selectedEnvironmentId;
     const acquiredEnvironment = await envOrchestrator.acquireForRun({
       companyId: agent.companyId,
-      selectedEnvironmentId: persistedEnvironmentId,
-      defaultEnvironmentId: defaultEnvironment.id,
+      selectedEnvironmentId,
+      localEnvironmentId: localEnvironment.id,
       adapterType: agent.adapterType,
       issueId: issueId ?? null,
       heartbeatRunId: run.id,

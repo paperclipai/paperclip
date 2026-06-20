@@ -103,6 +103,7 @@ export interface EnvironmentDriverAcquireInput {
   companyId: string;
   environment: Environment;
   issueId: string | null;
+  agentId: string | null;
   /**
    * UUID of the owning heartbeat run, or null for ad-hoc invocations
    * (e.g. operator-initiated `Test` probes) that are not tied to a run.
@@ -219,6 +220,7 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         leasePolicy: "ephemeral",
         provider: "local",
         metadata: {
+          ...(input.agentId ? { agentId: input.agentId } : {}),
           driver: input.environment.driver,
           executionWorkspaceMode: input.executionWorkspaceMode,
         },
@@ -272,6 +274,7 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         provider: "ssh",
         providerLeaseId: `ssh://${parsed.config.username}@${parsed.config.host}:${parsed.config.port}${remoteCwd}`,
         metadata: {
+          ...(input.agentId ? { agentId: input.agentId } : {}),
           driver: input.environment.driver,
           executionWorkspaceMode: input.executionWorkspaceMode,
           host: parsed.config.host,
@@ -452,11 +455,23 @@ function createSandboxEnvironmentDriver(
         // We also filter out leases whose policy is not reuse_by_environment
         // so any non-reusable lease (including ad-hoc test leases that
         // landed in the table from older code paths) cannot be matched.
-        const reusableExistingLeases = parsed.config.reuseLease && input.heartbeatRunId !== null
+        const reusableExistingLeases =
+          parsed.config.reuseLease &&
+          input.heartbeatRunId !== null &&
+          input.executionWorkspaceId !== null &&
+          input.agentId !== null
           ? (await environmentsSvc.listLeases(input.environment.id))
-              .filter((lease) => lease.leasePolicy === "reuse_by_environment")
+              .filter((lease) =>
+                lease.leasePolicy === "reuse_by_environment" &&
+                lease.executionWorkspaceId === input.executionWorkspaceId &&
+                lease.metadata?.agentId === input.agentId,
+              )
           : [];
-        const reusableProviderLeaseId = parsed.config.reuseLease && input.heartbeatRunId !== null
+        const reusableProviderLeaseId =
+          parsed.config.reuseLease &&
+          input.heartbeatRunId !== null &&
+          input.executionWorkspaceId !== null &&
+          input.agentId !== null
           ? findReusableSandboxLeaseId({ config: storedConfig, leases: reusableExistingLeases })
           : null;
         const reusableLease = reusableProviderLeaseId
@@ -497,6 +512,8 @@ function createSandboxEnvironmentDriver(
             // a well-formed identifier.
             runId: input.heartbeatRunId ?? randomUUID(),
             workspaceMode: input.executionWorkspaceMode ?? undefined,
+            agentId: input.agentId ?? undefined,
+            executionWorkspaceId: input.executionWorkspaceId ?? undefined,
             // The agent's harness for THIS run, so the plugin picks the matching
             // runtime image (per-run adapter, mixed-harness environments).
             // NOTE: environment-runtime.ts has TWO drivers calling
@@ -527,6 +544,7 @@ function createSandboxEnvironmentDriver(
           providerLeaseId: acquiredLease.providerLeaseId,
           expiresAt: acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
           metadata: {
+            ...(input.agentId ? { agentId: input.agentId } : {}),
             driver: input.environment.driver,
             executionWorkspaceMode: input.executionWorkspaceMode,
             pluginId: pluginProvider.resolved.plugin.id,
@@ -546,13 +564,21 @@ function createSandboxEnvironmentDriver(
       // provider lease, or releasing the test lease will terminate the live
       // heartbeat run that shares it. Filter to leases whose policy is
       // reuse_by_environment so non-reusable rows can never be matched.
-      const reusableProviderLeaseId = parsed.config.reuseLease && input.heartbeatRunId !== null
+      const reusableProviderLeaseId =
+        parsed.config.reuseLease &&
+        input.heartbeatRunId !== null &&
+        input.executionWorkspaceId !== null &&
+        input.agentId !== null
         ? (await environmentsSvc
             .listLeases(input.environment.id)
             .then((leases) =>
               findReusableSandboxLeaseId({
                 config: parsed.config,
-                leases: leases.filter((lease) => lease.leasePolicy === "reuse_by_environment"),
+                leases: leases.filter((lease) =>
+                  lease.leasePolicy === "reuse_by_environment" &&
+                  lease.executionWorkspaceId === input.executionWorkspaceId &&
+                  lease.metadata?.agentId === input.agentId,
+                ),
               }),
             ))
         : null;
@@ -562,6 +588,8 @@ function createSandboxEnvironmentDriver(
         environmentId: input.environment.id,
         heartbeatRunId: input.heartbeatRunId ?? randomUUID(),
         issueId: input.issueId,
+        agentId: input.agentId,
+        executionWorkspaceId: input.executionWorkspaceId,
         reusableProviderLeaseId,
       });
 
@@ -581,6 +609,7 @@ function createSandboxEnvironmentDriver(
         provider: parsed.config.provider,
         providerLeaseId: providerLease.providerLeaseId,
         metadata: {
+          ...(input.agentId ? { agentId: input.agentId } : {}),
           driver: input.environment.driver,
           executionWorkspaceMode: input.executionWorkspaceMode,
           ...providerLease.metadata,
@@ -913,6 +942,8 @@ function createPluginEnvironmentDriver(
         config: parsed.config.driverConfig,
         runId: input.heartbeatRunId ?? randomUUID(),
         workspaceMode: input.executionWorkspaceMode ?? undefined,
+        agentId: input.agentId ?? undefined,
+        executionWorkspaceId: input.executionWorkspaceId ?? undefined,
         adapterType: input.adapterType ?? undefined,
       });
 
@@ -927,6 +958,7 @@ function createPluginEnvironmentDriver(
         providerLeaseId: providerLease.providerLeaseId,
         expiresAt: parseExpiresAt(providerLease.expiresAt),
         metadata: {
+          ...(input.agentId ? { agentId: input.agentId } : {}),
           providerMetadata: providerLease.metadata ?? {},
           driver: input.environment.driver,
           executionWorkspaceMode: input.executionWorkspaceMode,
@@ -1126,6 +1158,7 @@ export function environmentRuntimeService(
       companyId: string;
       environment: Environment;
       issueId: string | null;
+      agentId?: string | null;
       /** Null for ad-hoc invocations (e.g. operator-initiated `Test` probes). */
       heartbeatRunId: string | null;
       persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
@@ -1144,6 +1177,7 @@ export function environmentRuntimeService(
         companyId: input.companyId,
         environment: input.environment,
         issueId: input.issueId,
+        agentId: input.agentId ?? null,
         heartbeatRunId: input.heartbeatRunId,
         executionWorkspaceId: leaseContext.executionWorkspaceId,
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,

@@ -442,14 +442,15 @@ describe("Layout", () => {
     const selector = container.querySelector("select");
     expect(selector).not.toBeNull();
     expect(selector?.value).toBe("secrets");
-    expect(selector?.textContent).toContain("General");
-    expect(selector?.textContent).toContain("Environments");
-    expect(selector?.textContent).toContain("Cloud upstream");
-    expect(selector?.textContent).toContain("Members");
-    expect(selector?.textContent).toContain("Invites");
-    expect(selector?.textContent).toContain("Secrets");
-    expect(selector?.textContent).toContain("Instance general");
-    expect(selector?.textContent).toContain("Instance plugins");
+    const selectorText = selector?.textContent?.toLowerCase() ?? "";
+    expect(selectorText).toContain("general");
+    expect(selectorText).toContain("cloud upstream");
+    expect(selectorText).toContain("members");
+    expect(selectorText).toContain("invites");
+    expect(selectorText).toContain("secrets");
+    expect(selectorText).toContain("instance general");
+    expect(selectorText).toContain("instance environments");
+    expect(selectorText).toContain("instance plugins");
 
     await act(async () => {
       root.unmount();

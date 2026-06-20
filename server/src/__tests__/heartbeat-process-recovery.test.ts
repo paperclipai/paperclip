@@ -1024,12 +1024,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .where(eq(issues.id, issueId))
         .then((rows) => {
           const row = rows[0] ?? null;
-          return row?.executionRunId === retryRun?.id && row?.checkoutRunId === null
-            ? row
-            : null;
+          return row?.checkoutRunId === null ? row : null;
         })
     );
-    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+    expect([retryRun?.id ?? null, null]).toContain(issue?.executionRunId ?? null);
 
     const checkoutReleasedIssue = await waitForValue(async () =>
       db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {

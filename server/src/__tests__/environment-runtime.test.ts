@@ -18,8 +18,10 @@ import {
   createDb,
   environmentLeases,
   environments,
+  executionWorkspaces,
   heartbeatRuns,
   plugins,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -129,9 +131,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(environments);
+    await db.delete(executionWorkspaces);
     await db.delete(plugins);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(projects);
     await db.delete(companies);
   });
 
@@ -149,6 +153,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const agentId = randomUUID();
     const environmentId = randomUUID();
     const runId = randomUUID();
+    const driver = input.driver ?? "local";
+    const environmentName = input.name ?? `${driver}-${environmentId.slice(0, 8)}`;
     let config = input.config ?? {};
 
     await db.insert(companies).values({
@@ -194,16 +200,35 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         },
       };
     }
-    await db.insert(environments).values({
+    const existingLocalEnvironment = driver === "local"
+      ? await db
+        .select()
+        .from(environments)
+        .where(eq(environments.driver, "local"))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const environmentRecord = existingLocalEnvironment ?? {
       id: environmentId,
-      companyId,
-      name: input.name ?? "Local",
-      driver: input.driver ?? "local",
+      name: environmentName,
+      description: null,
+      driver,
       status: input.status ?? "active",
       config,
+      metadata: null,
       createdAt: new Date(),
       updatedAt: new Date(),
-    });
+    };
+    if (!existingLocalEnvironment) {
+      await db.insert(environments).values({
+        id: environmentRecord.id,
+        name: environmentRecord.name,
+        driver: environmentRecord.driver,
+        status: environmentRecord.status,
+        config: environmentRecord.config,
+        createdAt: environmentRecord.createdAt,
+        updatedAt: environmentRecord.updatedAt,
+      });
+    }
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -216,17 +241,18 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
     return {
       companyId,
+      agentId,
       environment: {
-        id: environmentId,
+        id: environmentRecord.id,
         companyId,
-        name: input.name ?? "Local",
-        description: null,
-        driver: input.driver ?? "local",
-        status: input.status ?? "active",
-        config,
-        metadata: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        name: environmentRecord.name,
+        description: environmentRecord.description,
+        driver: environmentRecord.driver,
+        status: environmentRecord.status,
+        config: environmentRecord.config,
+        metadata: environmentRecord.metadata,
+        createdAt: environmentRecord.createdAt,
+        updatedAt: environmentRecord.updatedAt,
       } as const,
       runId,
     };
@@ -283,7 +309,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   });
 
   it("rejects truly unsupported drivers before acquiring a lease", async () => {
-    const { companyId, environment, runId } = await seedEnvironment({
+    const { companyId, agentId, environment, runId } = await seedEnvironment({
       driver: "ssh",
       name: "Fixture SSH",
       config: {
@@ -389,7 +415,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
 
     expect(acquired.lease.status).toBe("active");
-    expect(acquired.lease.providerLeaseId).toBe(`sandbox://fake/${environment.id}`);
+    expect(acquired.lease.providerLeaseId).toBe(`sandbox://fake/${environment.id}/workspace/agent`);
     expect(acquired.lease.metadata).toMatchObject({
       driver: "sandbox",
       provider: "fake",
@@ -876,7 +902,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
   it("falls back to acquire when plugin-backed sandbox lease resume throws", async () => {
     const pluginId = randomUUID();
-    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
       provider: "fake-plugin",
       image: "fake:test",
@@ -931,14 +957,38 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       installOrder: 1,
       updatedAt: new Date(),
     } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Reusable workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
     await environmentService(db).acquireLease({
       companyId,
       environmentId: environment.id,
+      executionWorkspaceId,
       heartbeatRunId: runId,
       leasePolicy: "reuse_by_environment",
       provider: "fake-plugin",
       providerLeaseId: "stale-plugin-lease",
       metadata: {
+        agentId,
         provider: "fake-plugin",
         image: "fake:test",
         timeoutMs: 1234,
@@ -973,8 +1023,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       companyId,
       environment,
       issueId: null,
+      agentId,
       heartbeatRunId: runId,
-      persistedExecutionWorkspace: null,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
     });
 
     expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
@@ -989,6 +1043,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         timeoutMs: 1234,
         reuseLease: true,
       },
+      agentId,
+      executionWorkspaceId,
       runId,
     }), 31234);
   });
@@ -1022,6 +1078,129 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(released).toHaveLength(1);
     expect(released[0]?.lease.id).toBe(acquired.lease.id);
     expect(released[0]?.lease.status).toBe("released");
+  });
+
+  it("does not reuse a sandbox lease owned by a different agent for the same execution workspace", async () => {
+    const { companyId, agentId, environment, runId } = await seedEnvironment({
+      driver: "plugin",
+      name: "Plugin Fake plugin",
+      config: {
+        pluginKey: "acme.environments",
+        driverKey: "fake-plugin",
+        driverConfig: {
+          template: "base",
+        },
+      },
+    });
+    const otherAgentId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const pluginId = randomUUID();
+    const projectId = randomUUID();
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Existing workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.environments",
+      packageName: "@acme/paperclip-environments",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.environments",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Acme Environments",
+        description: "Test plugin environment driver",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    await environmentService(db).acquireLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "reuse_by_environment",
+      provider: "fake-plugin",
+      providerLeaseId: "other-agent-lease",
+      metadata: {
+        agentId,
+        provider: "fake-plugin",
+        template: "base",
+        reuseLease: true,
+      },
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-agent-lease",
+            metadata: {
+              provider: "fake-plugin",
+              template: "base",
+              reuseLease: true,
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId: otherAgentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-agent-lease");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.objectContaining({
+      agentId: otherAgentId,
+      executionWorkspaceId,
+    }));
   });
 
   it("delegates plugin environment leases through the plugin worker manager", async () => {

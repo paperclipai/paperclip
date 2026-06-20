@@ -897,17 +897,20 @@ export {
 } from "./execution-workspace-guards.js";
 
 export {
+  instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
   trustAuthorizationPolicySchema,
   type PatchInstanceExperimentalSettings,
+  type PatchInstanceSettings,
   type IssueGraphLivenessAutoRecoveryRequest,
   type TrustPresetInput,
   type LowTrustBoundaryInput,
