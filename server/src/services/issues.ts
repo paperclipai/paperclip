@@ -94,6 +94,9 @@ import {
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+// Terminal statuses must never be silently reopened by a checkout. Resuming
+// finished work has to go through the explicit `resume: true` path instead.
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -5536,11 +5539,26 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, status: issues.status })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
+
+      // A checkout must never resurrect completed work. Reject terminal
+      // (done/cancelled) issues outright — even when the caller passes that
+      // status in expectedStatuses — so no wake path can flip a finished issue
+      // back to in_progress. Resuming finished work must go through the
+      // explicit `resume: true` path. Mirrors the early-return style used for
+      // the subtree pause-hold gate below.
+      if (TERMINAL_ISSUE_STATUSES.has(issueCompany.status)) {
+        throw conflict("Cannot checkout a completed issue", {
+          issueId: id,
+          status: issueCompany.status,
+          securityPrinciples: ["Fail Securely", "Secure Defaults"],
+        });
+      }
+
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();

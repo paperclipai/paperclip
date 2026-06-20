@@ -4407,6 +4407,124 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
   });
 
+  // Regression for SUP-13: checkout must never resurrect terminal (done/
+  // cancelled) work, even when the caller passes that status in
+  // expectedStatuses. This is the loop class that caused SUP-9 (12 runs / 11
+  // re-verify→re-close comments in 1h). Resuming finished work must go through
+  // the explicit `resume: true` path.
+  async function seedTerminalIssue(status: "done" | "cancelled") {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ClaudeCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: `Terminal ${status} issue`,
+      status,
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: status === "done" ? new Date("2026-06-10T10:01:00.000Z") : null,
+      cancelledAt: status === "cancelled" ? new Date("2026-06-10T10:01:00.000Z") : null,
+    });
+
+    return { companyId, agentId, issueId, checkoutRunId };
+  }
+
+  it("checkout does not reopen a 'done' issue even when 'done' is in expectedStatuses", async () => {
+    const { agentId, issueId, checkoutRunId } = await seedTerminalIssue("done");
+
+    await expect(svc.checkout(issueId, agentId, ["todo", "in_progress", "done"], checkoutRunId))
+      .rejects.toMatchObject({ status: 409 });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        startedAt: issues.startedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "done",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      startedAt: null,
+    });
+  });
+
+  it("checkout does not reopen a 'cancelled' issue even when 'cancelled' is in expectedStatuses", async () => {
+    const { agentId, issueId, checkoutRunId } = await seedTerminalIssue("cancelled");
+
+    await expect(svc.checkout(issueId, agentId, ["todo", "cancelled"], checkoutRunId))
+      .rejects.toMatchObject({ status: 409 });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        startedAt: issues.startedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "cancelled",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      startedAt: null,
+    });
+  });
+
+  it("repeated checkout of a 'done' issue is idempotent and produces no status churn (SUP-9 loop)", async () => {
+    const { agentId, issueId } = await seedTerminalIssue("done");
+
+    for (let i = 0; i < 12; i++) {
+      await expect(svc.checkout(issueId, agentId, ["todo", "in_progress", "done"], randomUUID()))
+        .rejects.toMatchObject({ status: 409 });
+    }
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        startedAt: issues.startedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "done",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      startedAt: null,
+    });
+  });
+
   it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
     // Regression for PR #2482 checkout-adoption review finding: any adoption
     // helper that re-locks an existing in_progress issue (e.g. when the prior
