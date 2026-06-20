@@ -44,7 +44,15 @@ import {
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
-import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
+import {
+  codexHomeHasUsableAuth,
+  isManagedCodexHomePath,
+  pathExists,
+  prepareManagedCodexHome,
+  resolveManagedCodexHomeDir,
+  resolveSharedCodexHomeDir,
+  seedManagedCodexHome,
+} from "./codex-home.js";
 import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
@@ -340,15 +348,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
-  const preparedManagedCodexHome =
-    configuredCodexHome
-      ? null
-      : await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
-          apiKey: configuredOpenAiApiKey,
-        });
+  // A configured CODEX_HOME that lives under the Paperclip-managed company tree
+  // (the per-agent home set by the server isolation guard) still needs auth
+  // seeded — it ships with no credentials and OPENAI_API_KEY="" by default.
+  // Only a genuine external/user-supplied override is treated as self-managed
+  // and left untouched.
+  const configuredHomeIsManaged =
+    configuredCodexHome != null &&
+    isManagedCodexHomePath(process.env, agent.companyId, configuredCodexHome);
+  if (configuredCodexHome == null) {
+    await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
+      apiKey: configuredOpenAiApiKey,
+    });
+  } else if (configuredHomeIsManaged) {
+    await seedManagedCodexHome(configuredCodexHome, process.env, onLog, {
+      apiKey: configuredOpenAiApiKey,
+    });
+  }
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
-  const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
+  const effectiveCodexHome = configuredCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
+
+  // Never launch a managed CODEX_HOME with no credentials. Without auth.json and
+  // with OPENAI_API_KEY="" the provider rejects every request with
+  // "401 Missing bearer"; fail fast with a clear adapter error instead of
+  // emitting unauthenticated calls. External overrides manage their own auth.
+  const effectiveHomeIsManaged = configuredCodexHome == null || configuredHomeIsManaged;
+  if (
+    effectiveHomeIsManaged &&
+    !configuredOpenAiApiKey &&
+    !(await codexHomeHasUsableAuth(effectiveCodexHome))
+  ) {
+    throw new Error(
+      `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
+        `(no usable auth.json and OPENAI_API_KEY is empty). ` +
+        `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
+        `OPENAI_API_KEY.`,
+    );
+  }
   // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
   // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
   // target, so both local and sandboxed Codex processes pick up the routing.
