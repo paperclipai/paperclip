@@ -27,7 +27,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
 
     if (!res.ok) {
-      throw new Error(`HTTP invoke failed with status ${res.status}`);
+      const body = await res.text().catch(() => "");
+      const snippet = body.slice(0, 2000);
+      return {
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        errorMessage: `HTTP ${method} ${url} failed with status ${res.status}${snippet ? `: ${snippet}` : ""}`,
+        errorCode: "http_error",
+        errorMeta: { status: res.status, url, method },
+      };
     }
 
     return {
@@ -46,7 +55,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode: "timeout",
       };
     }
-    throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorMessage: `HTTP ${method} ${url} transport error: ${msg}`,
+      errorCode: "network_error",
+      errorMeta: { url, method },
+    };
   } finally {
     if (timer) clearTimeout(timer);
   }
