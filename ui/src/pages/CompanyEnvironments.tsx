@@ -589,7 +589,7 @@ export function CompanyEnvironments() {
                 onChange={(e) => setEnvironmentForm((current) => ({ ...current, description: e.target.value }))}
               />
             </Field>
-            <Field label="Driver" hint="Local runs on this host. SSH stores a remote machine target. Sandbox stores plugin-backed provider config on the shared environment seam.">
+            <Field label="Driver" hint="Sandbox stores plugin-backed provider config on the shared environment seam. SSH stores a remote machine target.">
               <select
                 className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                 value={environmentForm.driver}
@@ -610,19 +610,16 @@ export function CompanyEnvironments() {
                                 : {}
                           )
                         : current.sandboxConfig,
-                    driver:
-                      e.target.value === "local"
-                        ? "local"
-                        : e.target.value === "sandbox"
-                          ? "sandbox"
-                          : "ssh",
+                    driver: e.target.value === "sandbox" ? "sandbox" : "ssh",
                   }))}
               >
-                <option value="ssh">SSH</option>
                 {sandboxCreationEnabled || environmentForm.driver === "sandbox" ? (
                   <option value="sandbox">Sandbox</option>
                 ) : null}
-                <option value="local">Local</option>
+                <option value="ssh">SSH</option>
+                {environmentForm.driver === "local" ? (
+                  <option value="local">Local</option>
+                ) : null}
               </select>
             </Field>
 
@@ -788,7 +785,7 @@ export function CompanyEnvironments() {
                   onClick={() => draftEnvironmentProbeMutation.mutate(environmentForm)}
                   disabled={draftEnvironmentProbeMutation.isPending || !environmentFormValid}
                 >
-                  {draftEnvironmentProbeMutation.isPending ? "Testing..." : "Test draft"}
+                  {draftEnvironmentProbeMutation.isPending ? "Testing..." : "Test"}
                 </Button>
               ) : null}
               {environmentMutation.isError ? (

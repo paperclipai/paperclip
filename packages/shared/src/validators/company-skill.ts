@@ -4,10 +4,16 @@ export const companySkillSourceTypeSchema = z.enum(["local_path", "github", "url
 export const companySkillTrustLevelSchema = z.enum(["markdown_only", "assets", "scripts_executables"]);
 export const companySkillCompatibilitySchema = z.enum(["compatible", "unknown", "invalid"]);
 export const companySkillSourceBadgeSchema = z.enum(["paperclip", "github", "local", "url", "catalog", "skills_sh"]);
+export const companySkillSharingScopeSchema = z.enum(["private", "company", "public_link"]);
+export const companySkillListSortSchema = z.enum(["alphabetical", "recent", "installs", "stars", "agents", "forks"]);
 
 export const companySkillFileInventoryEntrySchema = z.object({
   path: z.string().min(1),
   kind: z.enum(["skill", "markdown", "reference", "script", "asset", "other"]),
+});
+
+export const companySkillVersionFileInventoryEntrySchema = companySkillFileInventoryEntrySchema.extend({
+  content: z.string(),
 });
 
 export const companySkillSchema = z.object({
@@ -24,6 +30,20 @@ export const companySkillSchema = z.object({
   trustLevel: companySkillTrustLevelSchema,
   compatibility: companySkillCompatibilitySchema,
   fileInventory: z.array(companySkillFileInventoryEntrySchema).default([]),
+  iconUrl: z.string().nullable(),
+  color: z.string().nullable(),
+  tagline: z.string().nullable(),
+  authorName: z.string().nullable(),
+  homepageUrl: z.string().nullable(),
+  categories: z.array(z.string().min(1)).default([]),
+  sharingScope: companySkillSharingScopeSchema,
+  publicShareToken: z.string().nullable(),
+  forkedFromSkillId: z.string().uuid().nullable(),
+  forkedFromCompanyId: z.string().uuid().nullable(),
+  starCount: z.number().int().nonnegative(),
+  installCount: z.number().int().nonnegative(),
+  forkCount: z.number().int().nonnegative(),
+  currentVersionId: z.string().uuid().nullable(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
@@ -50,6 +70,31 @@ export const companySkillUsageAgentSchema = z.object({
   actualState: z.string().nullable().describe(
     "Runtime adapter skill state when explicitly fetched; company skill detail reads return null without probing agent runtimes.",
   ),
+  versionId: z.string().uuid().nullable(),
+});
+
+export const companySkillListQuerySchema = z.object({
+  q: z.string().min(1).optional(),
+  sort: companySkillListSortSchema.optional(),
+  categories: z.array(z.string().min(1)).optional(),
+  scope: companySkillSharingScopeSchema.optional(),
+});
+
+export const companySkillCategoryCountSchema = z.object({
+  slug: z.string().min(1),
+  count: z.number().int().nonnegative(),
+});
+
+export const companySkillVersionSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  companySkillId: z.string().uuid(),
+  revisionNumber: z.number().int().positive(),
+  label: z.string().nullable(),
+  fileInventory: z.array(companySkillVersionFileInventoryEntrySchema).default([]),
+  authorAgentId: z.string().uuid().nullable(),
+  authorUserId: z.string().nullable(),
+  createdAt: z.coerce.date(),
 });
 
 export const companySkillDetailSchema = companySkillSchema.extend({
@@ -59,7 +104,58 @@ export const companySkillDetailSchema = companySkillSchema.extend({
   editableReason: z.string().nullable(),
   sourceLabel: z.string().nullable(),
   sourceBadge: companySkillSourceBadgeSchema,
+  currentVersion: companySkillVersionSchema.nullable(),
+  starredByCurrentActor: z.boolean(),
 });
+
+export const companySkillVersionCreateSchema = z.object({
+  label: z.string().trim().min(1).nullable().optional(),
+}).default({});
+
+export const companySkillStarResultSchema = z.object({
+  skillId: z.string().uuid(),
+  starred: z.boolean(),
+  starCount: z.number().int().nonnegative(),
+});
+
+export const companySkillCommentSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  companySkillId: z.string().uuid(),
+  parentCommentId: z.string().uuid().nullable(),
+  authorAgentId: z.string().uuid().nullable(),
+  authorUserId: z.string().nullable(),
+  body: z.string(),
+  deletedAt: z.coerce.date().nullable(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+});
+
+export const companySkillCommentCreateSchema = z.object({
+  body: z.string().min(1),
+  parentCommentId: z.string().uuid().nullable().optional(),
+});
+
+export const companySkillCommentUpdateSchema = z.object({
+  body: z.string().min(1),
+});
+
+export const companySkillForkSchema = z.object({
+  name: z.string().min(1).nullable().optional(),
+  slug: z.string().min(1).nullable().optional(),
+  sharingScope: companySkillSharingScopeSchema.optional(),
+}).default({});
+
+export const companySkillUpdateSchema = z.object({
+  description: z.string().nullable().optional(),
+  iconUrl: z.string().nullable().optional(),
+  color: z.string().nullable().optional(),
+  tagline: z.string().max(120).nullable().optional(),
+  authorName: z.string().nullable().optional(),
+  homepageUrl: z.string().nullable().optional(),
+  categories: z.array(z.string().min(1)).optional(),
+  sharingScope: companySkillSharingScopeSchema.optional(),
+}).default({});
 
 export const companySkillUpdateStatusSchema = z.object({
   supported: z.boolean(),
@@ -156,6 +252,14 @@ export const companySkillCreateSchema = z.object({
   slug: z.string().min(1).nullable().optional(),
   description: z.string().nullable().optional(),
   markdown: z.string().nullable().optional(),
+  iconUrl: z.string().nullable().optional(),
+  color: z.string().nullable().optional(),
+  tagline: z.string().max(120).nullable().optional(),
+  authorName: z.string().nullable().optional(),
+  homepageUrl: z.string().nullable().optional(),
+  categories: z.array(z.string().min(1)).optional(),
+  sharingScope: companySkillSharingScopeSchema.optional(),
+  forkedFromSkillId: z.string().uuid().nullable().optional(),
 });
 
 export const companySkillFileDetailSchema = z.object({
@@ -247,9 +351,15 @@ export const companySkillInstallCatalogResultSchema = z.object({
 });
 
 export type CompanySkillImport = z.infer<typeof companySkillImportSchema>;
+export type CompanySkillListQuery = z.infer<typeof companySkillListQuerySchema>;
 export type CompanySkillProjectScan = z.infer<typeof companySkillProjectScanRequestSchema>;
 export type CompanySkillCreate = z.infer<typeof companySkillCreateSchema>;
 export type CompanySkillFileUpdate = z.infer<typeof companySkillFileUpdateSchema>;
+export type CompanySkillVersionCreate = z.infer<typeof companySkillVersionCreateSchema>;
+export type CompanySkillCommentCreate = z.infer<typeof companySkillCommentCreateSchema>;
+export type CompanySkillCommentUpdate = z.infer<typeof companySkillCommentUpdateSchema>;
+export type CompanySkillFork = z.infer<typeof companySkillForkSchema>;
+export type CompanySkillUpdate = z.infer<typeof companySkillUpdateSchema>;
 export type CatalogSkillListQuery = z.infer<typeof catalogSkillListQuerySchema>;
 export type CompanySkillInstallCatalog = z.infer<typeof companySkillInstallCatalogSchema>;
 export type CompanySkillInstallUpdate = z.infer<typeof companySkillInstallUpdateSchema>;

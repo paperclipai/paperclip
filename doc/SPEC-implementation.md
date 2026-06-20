@@ -37,6 +37,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Visibility | Company-scoped visibility: board + all in-company agents can see all work objects by default; public/private deployment flags affect external exposure only and do **not** imply project/issue privacy |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
+| Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree and resolve only eligible task-level plan confirmations; it is not board authority, active-run output monitoring, or general liveness recovery. |
 | Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
@@ -233,6 +234,10 @@ Routine execution issues add a routine-scoped env overlay after project env and 
 - identifier fields: `issue_number`, `identifier`
 - origin fields: `origin_kind`, `origin_id`, `origin_run_id`, `origin_fingerprint`
 - `request_depth` int not null default 0
+- `work_mode` text not null default `standard`; supported values:
+  - `standard`: normal autonomous execution. Agents may investigate, edit files, create artifacts, and complete the task.
+  - `ask`: answer-only execution. Agents may use tools for investigation or temporary scratch work, but the deliverable is an issue-thread answer; they must not write implementation code or produce an implementation plan.
+  - `planning`: plan-only execution. Agents create or revise the plan without implementation work; accepted-plan continuations remain planning-specific and create child issues from the approved plan.
 - `billing_code` text null
 - `assignee_adapter_overrides` jsonb null
 - `execution_policy` jsonb null
@@ -402,6 +407,7 @@ Operational policy:
   - Inline-safe responses use `Content-Disposition: inline`; unsafe types and explicit download requests use `attachment`.
   - Video attachments are inline-safe and support single `Range: bytes=start-end` requests with `206`, `Content-Range`, and `Accept-Ranges: bytes` for browser playback/seeking.
 - Attachment-backed artifact work products use `type: "artifact"`, `provider: "paperclip"`, and metadata with `attachmentId`, `contentType`, `byteSize`, `contentPath`, `openPath`, `downloadPath`, and optional `originalFilename`.
+- Workspace-only file references use work product `metadata.resourceRef` with `kind: "workspace_file"`, `issueId`, `workspaceKind` (`execution_workspace` or `project_workspace`), `workspaceId`, `relativePath`, optional `line`/`column`, and `displayPath`. These references point at files in a workspace; they do not replace attachment-backed artifacts for deliverables that must be inspectable without workspace access.
 
 ## 7.15 `documents` + `document_revisions` + `issue_documents`
 
@@ -580,6 +586,80 @@ The approved term set is:
 
 When multiple constraint families are present, assignment must satisfy all of them. Denials return `403` with a generic scope explanation and do not disclose details about hidden or unrelated resources.
 
+## 9.9 Task Watchdog Authority Contract
+
+A task watchdog is a scoped execution capacity for a configured watchdog agent on one watched issue subtree. It is not a separate principal, does not inherit board auth, and does not expand the selected agent's company boundary. The server must enforce the watchdog contract from persisted watchdog configuration and run context; custom instructions and prompt text can narrow the mandate but cannot expand it.
+
+The watched subtree is the source issue plus descendants reached through `parent_id`, excluding every issue whose `origin_kind = 'task_watchdog'` and excluding all descendants below those watchdog issues. The generated reusable watchdog issue is outside the watched work subtree for scan purposes, but the watchdog agent may update that reusable watchdog issue to record its own review disposition.
+
+Task-watchdog wakes must include server-derived capability metadata that names the watched root, reusable watchdog issue, excluded `task_watchdog` origin branches, allowed operations, and denied operations. Watchdogs must use that metadata and server denials for capability discovery; they must not create visible probe issues, comments, or throwaway tasks to learn their permissions.
+
+### Allowed watchdog mutations
+
+Within the watched subtree, a watchdog run may perform only mutations that restore or clarify the next live/waiting path:
+
+- add comments that explain findings, evidence, and next action
+- create descendant follow-up issues under an included subtree issue, inheriting company, project, goal, and workspace context from that subtree
+- assign or reassign included issues to active, invokable, same-company agents when normal assignment checks and scoped assignment grants allow it
+- move included issues among `todo`, `in_progress`, `in_review`, and `blocked` when the transition is needed to restore a valid action path
+- reopen `done` or `cancelled` included issues only with explicit resume metadata and an audit comment when evidence shows the stopped disposition is wrong or incomplete
+- add, replace, or clear blockers on included issues when the blocker target is in the same company and the change makes the waiting path more accurate
+- set or refresh a one-shot monitor on an included issue when the current assignee owns the future check
+- accept or reject eligible task-level plan confirmations as defined below
+- update the reusable watchdog issue itself to `done`, `in_review`, or `blocked` with the evidence for the watchdog decision
+
+Every watchdog-triggered mutation must write activity with the watchdog id, source issue id, watchdog issue id when present, run id, and stop fingerprint. Mutations still use the normal status-transition, blocker, assignment, budget, and company-boundary guards.
+
+### Disallowed watchdog mutations
+
+A task watchdog must not:
+
+- mutate issues outside the watched subtree, except for comments or newly created follow-up issues that are children of included subtree issues
+- mutate company, project, goal, agent, auth, API key, budget, secret, environment, plugin, or deployment settings
+- approve or reject rows in the `approvals` table, including hiring, CEO strategy, spend, budget override, or `request_board_approval` decisions
+- resolve execution-policy decisions unless the watchdog agent is the typed participant under that policy outside of its watchdog capacity
+- force-release checkout/execution locks, cancel active runs, terminate processes, or perform active-run output watchdog decisions
+- create visible probe issues, comments, or throwaway tasks to discover whether an operation is allowed
+- delete issue documents, comments, attachments, work products, or activity records
+- change the watchdog configuration, select a different watchdog agent, or create nested watchdog configurations
+- treat custom instructions as authority to bypass approval gates, cross company boundaries, access secrets, or override this contract
+
+When the safe next action needs one of these disallowed mutations, the watchdog must leave a valid waiting path by commenting, creating an in-subtree escalation/follow-up issue, assigning to the correct owner, or leaving the source issue blocked on a first-class blocker.
+
+### Interaction resolution
+
+The initial V1 watchdog resolver may resolve exactly one interaction family: `request_confirmation` interactions that are eligible task-level plan confirmations. The watchdog may accept a coherent eligible plan or reject/request changes with a reason. It may not resolve `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`, linked approvals, board approvals, or ad hoc document comments.
+
+A plan confirmation is eligible only when all of these are true:
+
+- the interaction is pending and belongs to an issue inside the watched subtree, excluding the reusable watchdog issue and its descendants
+- the interaction target is an `issue_document` with key `plan` on that same issue, and the target revision is still current
+- the interaction has an explicit plan-approval purpose marker; title text, body prose, or idempotency key shape alone is not enough
+- accepting the plan authorizes decomposition or task-level continuation inside the watched subtree only
+- the plan does not request hiring, budget/spend approval, secret access, production deployment, security-sensitive policy changes, legal/compliance decisions, destructive data changes, cross-company work, or any other board-only governed action
+- no newer board/user comment, document revision, superseding interaction, custom instruction, or issue policy reserves the decision for a human, CTO, Security, or the board
+- the plan names concrete child/follow-up work, owners or assignee selection criteria, dependencies/blockers, and acceptance criteria clearly enough that decomposition can proceed without further judgment
+
+If any condition fails, the watchdog must not accept the interaction. It should reject with a reason when the plan is clearly invalid, or leave/escalate the decision when the right owner is a board user, CTO, Security, or another typed approver.
+
+### Downstream acceptance criteria
+
+Implementation, security, UI, and QA work for task watchdogs must prove these contract points:
+
+- server tests deny cross-company watched issues, watchdog agents, watchdog issues, blockers, interactions, and assignment targets
+- server tests deny paused, terminated, pending-approval, budget-blocked, or otherwise uninvokable watchdog agents
+- watchdog-scoped mutations can touch only the watched subtree and the reusable watchdog issue, with activity records for each mutation
+- interaction tests prove only eligible `request_confirmation` plan confirmations are accepted or rejected, and all other interaction kinds remain unavailable to watchdogs
+- plan-confirmation tests cover stale document revisions, missing purpose markers, outside-subtree targets, governed actions, newer user comments, and explicit human/CTO/Security reservations
+- scheduler tests prove live runs, queued wakes, and scheduled retries suppress watchdog wakeups, while terminal, cancelled, blocked, and review leaves are still verified when the subtree has no live path
+- tests prove `task_watchdog` origin issues and descendants are excluded from scans so watchdogs do not trigger themselves
+- regression tests prove watchdog capability discovery comes from wake metadata/denials and denied probes do not create visible issues
+- UI copy and badges distinguish task watchdogs from active-run output watchdogs, monitors, reviewers, approvers, and liveness recovery
+- prompt/context tests prove custom instructions are appended after non-overridable safety constraints and cannot expand authority
+- QA validates a full create/edit/remove/run/reuse flow with screenshots for UI changes
+
+No unresolved policy decision blocks implementation once CTO and Security accept this contract. Deliberately deferred and disallowed for the first implementation: resolving interaction kinds beyond eligible plan confirmations, letting watchdogs cancel active runs, approving board/governance actions, mutating outside the watched subtree, or allowing watchdog agents to modify their own watchdog configuration. Any expansion requires a new product/security review.
+
 ## 10. API Contract (REST)
 
 All endpoints are under `/api` and return JSON.
@@ -721,6 +801,7 @@ The current app also exposes V1-supporting surfaces for:
 - issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`)
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
 - execution workspaces, project workspaces, workspace runtime services, and workspace operations
+- task watchdog configuration and reusable watchdog issue orchestration for explicitly watched issue subtrees
 - routines and scheduled/API/webhook triggers
 - plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration
 - company import/export preview/apply, feedback export/vote routes, instance backup/config routes, invites, join requests, memberships, and permission grants

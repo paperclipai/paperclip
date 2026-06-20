@@ -65,6 +65,8 @@ describe("instance settings routes", () => {
       enableEnvironments: false,
       enableIsolatedWorkspaces: false,
       enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableTaskWatchdogs: false,
       enableCloudSync: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: true,
@@ -84,6 +86,8 @@ describe("instance settings routes", () => {
         enableEnvironments: true,
         enableIsolatedWorkspaces: true,
         enableIssuePlanDecompositions: true,
+        enableExperimentalFileViewer: true,
+        enableTaskWatchdogs: true,
         enableCloudSync: true,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: true,
@@ -128,6 +132,8 @@ describe("instance settings routes", () => {
       enableEnvironments: false,
       enableIsolatedWorkspaces: false,
       enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableTaskWatchdogs: false,
       enableCloudSync: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: true,
@@ -243,6 +249,43 @@ describe("instance settings routes", () => {
     expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
       enableEnvironments: true,
     });
+  });
+
+  it("allows local board users to update task watchdog controls", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableTaskWatchdogs: true })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableTaskWatchdogs: true,
+    });
+  });
+
+  it("allows non-admin board users with company access to read but not update experimental settings", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    await request(app).get("/api/instance/settings/experimental").expect(200);
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableTaskWatchdogs: true })
+      .expect(403);
+
+    expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
   });
 
   it("allows local board users to read and update general settings", async () => {

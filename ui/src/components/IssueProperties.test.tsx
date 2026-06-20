@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type {
   ExecutionWorkspace,
@@ -30,10 +30,16 @@ const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
   listLabels: vi.fn(),
   createLabel: vi.fn(),
+  upsertWatchdog: vi.fn(),
+  deleteWatchdog: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
+}));
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -56,6 +62,10 @@ vi.mock("../api/issues", () => ({
 
 vi.mock("../api/auth", () => ({
   authApi: mockAuthApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../context/ToastContext", () => ({
@@ -114,6 +124,14 @@ vi.mock("@/components/ui/popover", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 async function flush() {
   await act(async () => {
@@ -378,11 +396,130 @@ describe("IssueProperties", () => {
       name: "New label",
       color: "#6366f1",
     }));
+    mockIssuesApi.upsertWatchdog.mockResolvedValue({});
+    mockIssuesApi.deleteWatchdog.mockResolvedValue({ ok: true });
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+    });
   });
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("groups the assignee picker and gates a live-run reassign behind an interrupt confirm", async () => {
+    const minimalAgent = (id: string, name: string) =>
+      ({
+        id,
+        name,
+        role: "",
+        title: null,
+        icon: null,
+        status: "active",
+        orgChainHealth: { status: "ok" },
+      } as unknown as Parameters<typeof mockAgentsApi.list.mockResolvedValue>[0][number]);
+    mockAgentsApi.list.mockResolvedValue([minimalAgent("agent-1", "ClaudeCoder"), minimalAgent("agent-2", "QA")]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ assigneeAgentId: "agent-1" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+      hasActiveRun: true,
+    });
+    await flush();
+
+    // Wait for the agents query to resolve so the current assignee renders.
+    let trigger: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      trigger = Array.from(container.querySelectorAll("button")).find((b) =>
+        b.textContent?.includes("ClaudeCoder"),
+      );
+      expect(trigger).toBeTruthy();
+    });
+    await act(async () => {
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    // Live-run banner + grouped section headers are present.
+    expect(container.querySelector("[data-testid='assignee-running-banner']")?.textContent).toContain(
+      "ClaudeCoder is running",
+    );
+    expect(container.textContent).toContain("Agents");
+    expect(container.textContent).toContain("Board users");
+
+    // Picking a different agent mid-run stages a confirm rather than applying.
+    const qaOption = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "QA",
+    );
+    expect(qaOption).toBeTruthy();
+    await act(async () => {
+      qaOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector("[data-testid='interrupt-assign-confirm']")).not.toBeNull();
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    // Confirming applies the reassignment.
+    const confirmBtn = container.querySelector<HTMLButtonElement>(
+      "[data-testid='interrupt-assign-confirm-action']",
+    )!;
+    await act(async () => {
+      confirmBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(onUpdate).toHaveBeenCalledWith({ assigneeAgentId: "agent-2", assigneeUserId: null });
+
+    act(() => root.unmount());
+  });
+
+  it("filters the no-assignee option with assignee search", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "ClaudeCoder",
+        role: "",
+        title: null,
+        icon: null,
+        status: "active",
+        orgChainHealth: { status: "ok" },
+      } as unknown as Parameters<typeof mockAgentsApi.list.mockResolvedValue>[0][number],
+    ]);
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    const searchInput = container.querySelector(
+      'input[placeholder="Search assignees..."]',
+    ) as HTMLInputElement | null;
+    expect(searchInput).not.toBeNull();
+
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      nativeSetter?.call(searchInput, "no");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("No assignee");
+    expect(container.textContent).not.toContain("No matches.");
+
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      nativeSetter?.call(searchInput, "zzzz");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("No assignee");
+    expect(container.textContent).toContain("No matches.");
+
+    act(() => root.unmount());
   });
 
   it("always exposes the add sub-issue action", async () => {
@@ -407,6 +544,40 @@ describe("IssueProperties", () => {
     });
 
     expect(onAddSubIssue).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+  });
+
+  it("hides watchdog setup controls while the experimental flag is off", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("Watchdog");
+    expect(container.textContent).not.toContain("Set watchdog");
+
+    act(() => root.unmount());
+  });
+
+  it("shows watchdog setup controls when the experimental flag is enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: true,
+    });
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Watchdog");
+      expect(container.textContent).toContain("Set watchdog");
+    });
 
     act(() => root.unmount());
   });
@@ -937,9 +1108,13 @@ describe("IssueProperties", () => {
     expect(container.textContent).toContain("Custom · gpt-5.4 · high");
     expect(container.textContent).toContain("Model lane");
 
-    const modelButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("GPT-5.5"));
-    expect(modelButton).not.toBeUndefined();
+    // Wait for the adapter-models query to resolve so the model options render.
+    let modelButton: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      modelButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("GPT-5.5"));
+      expect(modelButton).not.toBeUndefined();
+    });
 
     await act(async () => {
       modelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1309,6 +1484,172 @@ describe("IssueProperties", () => {
         commentRequired: true,
         stages: [],
       },
+    });
+
+    act(() => root.unmount());
+  });
+
+  const watchdogAgent = {
+    id: "agent-1",
+    name: "ClaudeCoder",
+    role: "",
+    title: null,
+    icon: null,
+    status: "active",
+    orgChainHealth: { status: "ok" },
+  } as unknown as Parameters<typeof mockAgentsApi.list.mockResolvedValue>[0][number];
+
+  function createWatchdogSummary(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "watchdog-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      watchdogAgentId: "agent-1",
+      instructions: "Keep the tree moving.",
+      status: "active",
+      watchdogIssueId: null,
+      lastObservedFingerprint: null,
+      lastReviewedFingerprint: null,
+      lastTriggeredAt: null,
+      lastCompletedAt: null,
+      triggerCount: 0,
+      createdAt: new Date("2026-04-06T12:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+      ...overrides,
+    } as unknown as NonNullable<Issue["watchdog"]>;
+  }
+
+  it("shows the empty watchdog state and saves a new watchdog via the API", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: true,
+    });
+    mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ watchdog: null }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    let trigger: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Watchdog");
+      trigger = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Set watchdog"));
+      expect(trigger).toBeTruthy();
+    });
+
+    await act(async () => {
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    // Choose the agent through the inline selector, then save.
+    let agentOption: HTMLElement | undefined;
+    await waitForAssertion(() => {
+      agentOption = Array.from(container.querySelectorAll("button, [role='option']"))
+        .find((node) => node.textContent?.includes("ClaudeCoder")) as HTMLElement | undefined;
+      expect(agentOption).toBeTruthy();
+    });
+    // Open the selector if the option is not yet visible, then click it.
+    await act(async () => {
+      agentOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const instructions = Array.from(container.querySelectorAll("textarea"))
+      .find((node) => node.getAttribute("placeholder")?.includes("watchdog"));
+    expect(instructions).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(instructions!, "Watch the deploy");
+      instructions!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    const saveButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => /Set watchdog|Update/.test(button.textContent ?? "") && button.closest("[class*='space-y']"));
+    const finalSave = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Set watchdog" && button !== trigger) ?? saveButton;
+    expect(finalSave).toBeTruthy();
+    await act(async () => {
+      finalSave!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.upsertWatchdog).toHaveBeenCalledWith(
+      "issue-1",
+      expect.objectContaining({ agentId: "agent-1" }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("renders an existing watchdog and removes it via the API", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: true,
+    });
+    mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ watchdog: createWatchdogSummary() }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("ClaudeCoder");
+    });
+
+    const trigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("ClaudeCoder"));
+    await act(async () => {
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const removeButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Remove"));
+    expect(removeButton).toBeTruthy();
+    await act(async () => {
+      removeButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.deleteWatchdog).toHaveBeenCalledWith("issue-1");
+
+    act(() => root.unmount());
+  });
+
+  it("links to the generated watchdog task when one exists", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: true,
+    });
+    mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
+    const root = renderProperties(container, {
+      issue: createIssue({ watchdog: createWatchdogSummary({ watchdogIssueId: "issue-wd" }) }),
+      childIssues: [
+        createIssue({
+          id: "issue-wd",
+          identifier: "PAP-42",
+          title: "Watchdog: Parent issue",
+          originKind: "task_watchdog",
+        }),
+      ],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      const link = Array.from(container.querySelectorAll("a"))
+        .find((anchor) => anchor.getAttribute("href") === "/issues/issue-wd");
+      expect(link).toBeTruthy();
+      expect(link!.textContent).toContain("PAP-42");
     });
 
     act(() => root.unmount());

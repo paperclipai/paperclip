@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Clock, FlaskConical, Play, Search } from "lucide-react";
 import type {
+  InstanceExperimentalSettings,
   IssueGraphLivenessAutoRecoveryPreview,
   PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
@@ -29,6 +30,9 @@ function issueHref(identifier: string | null, issueId: string) {
 function formatRecoveryState(state: string) {
   return state.replace(/_/g, " ");
 }
+
+// PAP-11233: keep Conference Room code intact, but hide the user-facing opt-in for now.
+const SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING = false;
 
 function RecoveryPreviewDialog({
   preview,
@@ -139,17 +143,39 @@ export function InstanceExperimentalSettings() {
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
 
-  const toggleMutation = useMutation({
+  const toggleMutation = useMutation<
+    InstanceExperimentalSettings,
+    Error,
+    PatchInstanceExperimentalSettings,
+    { previousSettings?: InstanceExperimentalSettings }
+  >({
     mutationFn: async (patch: PatchInstanceExperimentalSettings) =>
       instanceSettingsApi.updateExperimental(patch),
-    onSuccess: async () => {
+    onMutate: async (patch) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.instance.experimentalSettings });
+      const previousSettings = queryClient.getQueryData<InstanceExperimentalSettings>(
+        queryKeys.instance.experimentalSettings,
+      );
+      if (previousSettings) {
+        queryClient.setQueryData<InstanceExperimentalSettings>(
+          queryKeys.instance.experimentalSettings,
+          { ...previousSettings, ...patch },
+        );
+      }
+      return { previousSettings };
+    },
+    onSuccess: async (updatedSettings) => {
       setActionError(null);
+      queryClient.setQueryData(queryKeys.instance.experimentalSettings, updatedSettings);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
       ]);
     },
-    onError: (error) => {
+    onError: (error, _patch, context) => {
+      if (context?.previousSettings) {
+        queryClient.setQueryData(queryKeys.instance.experimentalSettings, context.previousSettings);
+      }
       setActionError(error instanceof Error ? error.message : "Failed to update experimental settings.");
     },
   });
@@ -208,8 +234,12 @@ export function InstanceExperimentalSettings() {
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const enableStreamlinedLeftNavigation =
     experimentalQuery.data?.enableStreamlinedLeftNavigation === true;
+  const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
+  const enableExperimentalFileViewer =
+    experimentalQuery.data?.enableExperimentalFileViewer === true;
+  const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
@@ -289,6 +319,27 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Experimental File Viewer</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show task detail controls for browsing and previewing workspace files relative to a task.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableExperimentalFileViewer}
+            onCheckedChange={() =>
+              toggleMutation.mutate({
+                enableExperimentalFileViewer: !enableExperimentalFileViewer,
+              })
+            }
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle experimental file viewer setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Enable Isolated Workspaces</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show execution workspace controls in project configuration and allow isolated workspace behavior for new
@@ -326,6 +377,31 @@ export function InstanceExperimentalSettings() {
         </div>
       </section>
 
+      {SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING ? (
+        <section className="rounded-xl border border-border bg-card p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1.5">
+              <h2 className="text-sm font-semibold">Conference Room Chat</h2>
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                Adds a Conference Room — one chat where you and your whole team work together — plus the live activity
+                feed and the redesigned onboarding. Also restyles task threads as chat bubbles. Turn off anytime to
+                restore the classic UI.
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={enableConferenceRoomChat}
+              onCheckedChange={() =>
+                toggleMutation.mutate({
+                  enableConferenceRoomChat: !enableConferenceRoomChat,
+                })
+              }
+              disabled={toggleMutation.isPending}
+              aria-label="Toggle conference room chat experimental setting"
+            />
+          </div>
+        </section>
+      ) : null}
+
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
@@ -344,6 +420,28 @@ export function InstanceExperimentalSettings() {
             }
             disabled={toggleMutation.isPending}
             aria-label="Toggle task plan decomposition panel experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Task Watchdogs</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show task detail controls for configuring watchdog agents that verify stopped task subtrees and restore
+              live paths when work should continue.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableTaskWatchdogs}
+            onCheckedChange={(checked) =>
+              toggleMutation.mutate({
+                enableTaskWatchdogs: checked,
+              })
+            }
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle task watchdogs experimental setting"
           />
         </div>
       </section>

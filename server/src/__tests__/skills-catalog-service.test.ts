@@ -6,6 +6,8 @@ const mockExistsSync = vi.hoisted(() => vi.fn());
 const mockReadFileSync = vi.hoisted(() => vi.fn());
 const mockStatSync = vi.hoisted(() => vi.fn());
 const mockReadFile = vi.hoisted(() => vi.fn());
+const mockRequireResolve = vi.hoisted(() => vi.fn());
+const mockLoggerWarn = vi.hoisted(() => vi.fn());
 
 vi.doMock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -20,6 +22,22 @@ vi.doMock("node:fs", async () => {
     },
   };
 });
+
+vi.doMock("node:module", async () => {
+  const actual = await vi.importActual<typeof import("node:module")>("node:module");
+  return {
+    ...actual,
+    createRequire: () => ({
+      resolve: mockRequireResolve,
+    }),
+  };
+});
+
+vi.doMock("../middleware/logger.js", () => ({
+  logger: {
+    warn: mockLoggerWarn,
+  },
+}));
 
 function catalogSkill(slug: string, name = slug): CatalogSkill {
   return {
@@ -74,6 +92,15 @@ describe("skills catalog service", () => {
       size: Buffer.byteLength(manifestJson),
     }));
     mockReadFile.mockImplementation(async (filePath: string) => `content:${filePath}`);
+    mockRequireResolve.mockImplementation((specifier: string) => {
+      if (specifier === "@paperclipai/skills-catalog/package.json") {
+        return "/published/node_modules/@paperclipai/skills-catalog/package.json";
+      }
+      if (specifier === "@paperclipai/skills-catalog/catalog.json") {
+        return "/published/node_modules/@paperclipai/skills-catalog/generated/catalog.json";
+      }
+      throw new Error(`Unexpected specifier: ${specifier}`);
+    });
   });
 
   it("caches and reloads the generated catalog manifest when it changes", async () => {
@@ -149,5 +176,60 @@ describe("skills catalog service", () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(mockReadFile).not.toHaveBeenCalled();
+  });
+
+  it("resolves the manifest and bundled skill files from the published package layout", async () => {
+    const publishedMarkdown = "---\nname: published\n---\n\n# Published\n";
+    const publishedSkill = catalogSkill("published-skill", "Published Skill");
+    publishedSkill.files = [
+      {
+        path: "SKILL.md",
+        kind: "skill",
+        sizeBytes: Buffer.byteLength(publishedMarkdown),
+        sha256: sha256(publishedMarkdown),
+      },
+    ];
+    manifestJson = manifest([publishedSkill], "0.3.2");
+    mockReadFile.mockImplementationOnce(async () => Buffer.from(publishedMarkdown));
+    const service = await import("../services/skills-catalog.js");
+
+    expect(service.getCatalogPackageMetadata()).toEqual({
+      packageName: "@paperclipai/skills-catalog",
+      packageVersion: "0.3.2",
+    });
+    await expect(service.readCatalogSkillFile(publishedSkill.id, "SKILL.md")).resolves.toMatchObject({
+      catalogSkillId: publishedSkill.id,
+      path: "SKILL.md",
+      content: publishedMarkdown,
+      markdown: true,
+    });
+    expect(mockReadFileSync).toHaveBeenCalledWith(
+      "/published/node_modules/@paperclipai/skills-catalog/generated/catalog.json",
+      "utf8",
+    );
+    expect(mockReadFile).toHaveBeenCalledWith(
+      "/published/node_modules/@paperclipai/skills-catalog/catalog/bundled/software-development/published-skill/SKILL.md",
+    );
+    expect(mockRequireResolve).toHaveBeenCalledWith("@paperclipai/skills-catalog/package.json");
+    expect(mockRequireResolve).toHaveBeenCalledWith("@paperclipai/skills-catalog/catalog.json");
+  });
+
+  it("returns an empty list, caches package-resolution failure, and logs only once when the manifest cannot be resolved", async () => {
+    mockRequireResolve.mockImplementation(() => {
+      const error = new Error("not found") as Error & { code?: string };
+      error.code = "ERR_MODULE_NOT_FOUND";
+      throw error;
+    });
+    mockExistsSync.mockReturnValue(false);
+    const service = await import("../services/skills-catalog.js");
+
+    expect(service.listCatalogSkillsOrEmpty()).toEqual([]);
+    expect(service.listCatalogSkillsOrEmpty()).toEqual([]);
+    expect(mockRequireResolve).toHaveBeenCalledTimes(1);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      { err: expect.any(service.CatalogManifestUnavailableError) },
+      "skills catalog manifest unavailable; returning empty catalog",
+    );
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
   });
 });

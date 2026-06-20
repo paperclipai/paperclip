@@ -61,11 +61,24 @@ export {
   companySkillTrustLevelSchema,
   companySkillCompatibilitySchema,
   companySkillSourceBadgeSchema,
+  companySkillSharingScopeSchema,
+  companySkillListSortSchema,
   companySkillFileInventoryEntrySchema,
+  companySkillVersionFileInventoryEntrySchema,
   companySkillSchema,
   companySkillListItemSchema,
   companySkillUsageAgentSchema,
+  companySkillListQuerySchema,
+  companySkillCategoryCountSchema,
+  companySkillVersionSchema,
   companySkillDetailSchema,
+  companySkillVersionCreateSchema,
+  companySkillStarResultSchema,
+  companySkillCommentSchema,
+  companySkillCommentCreateSchema,
+  companySkillCommentUpdateSchema,
+  companySkillForkSchema,
+  companySkillUpdateSchema,
   companySkillUpdateStatusSchema,
   companySkillAuditFindingSchema,
   companySkillAuditResultSchema,
@@ -89,9 +102,14 @@ export {
   companySkillInstallUpdateSchema,
   companySkillResetSchema,
   type CompanySkillImport,
+  type CompanySkillListQuery,
   type CompanySkillProjectScan,
   type CompanySkillCreate,
   type CompanySkillFileUpdate,
+  type CompanySkillVersionCreate,
+  type CompanySkillCommentCreate,
+  type CompanySkillCommentUpdate,
+  type CompanySkillFork,
   type CatalogSkillListQuery,
   type CompanySkillInstallCatalog,
   type CompanySkillInstallUpdate,
@@ -121,6 +139,8 @@ export {
 export {
   agentSkillStateSchema,
   agentSkillSyncModeSchema,
+  agentDesiredSkillEntrySchema,
+  agentDesiredSkillSelectionSchema,
   agentSkillEntrySchema,
   agentSkillSnapshotSchema,
   agentSkillSyncSchema,
@@ -275,6 +295,7 @@ export {
   issueDocumentKeySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
+  upsertIssueWatchdogSchema,
   type CreateIssue,
   type CreateChildIssue,
   type CreateAcceptedPlanDecomposition,
@@ -295,6 +316,7 @@ export {
   type IssueDocumentFormat,
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
+  type UpsertIssueWatchdog,
 } from "./issue.js";
 
 export {
@@ -320,12 +342,14 @@ export {
 
 export {
   createIssueWorkProductSchema,
+  issueWorkProductMetadataSchema,
   updateIssueWorkProductSchema,
   attachmentArtifactWorkProductMetadataSchema,
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
   type CreateIssueWorkProduct,
+  type IssueWorkProductMetadata,
   type UpdateIssueWorkProduct,
 } from "./work-product.js";
 
@@ -355,6 +379,21 @@ export {
   executionWorkspaceCloseReadinessStateSchema,
   type UpdateExecutionWorkspace,
 } from "./execution-workspace.js";
+
+export {
+  resolvedWorkspaceResourceSchema,
+  workspaceFileListModeSchema,
+  workspaceFileListQuerySchema,
+  workspaceFileContentSchema,
+  workspaceFilePreviewKindSchema,
+  workspaceFileRefSchema,
+  workspaceFileResourceKindSchema,
+  workspaceFileResourceQuerySchema,
+  workspaceFileSelectorSchema,
+  workspaceFileWorkspaceKindSchema,
+  type WorkspaceFileListQuery,
+  type WorkspaceFileResourceQuery,
+} from "./workspace-file-resource.js";
 
 export {
   createGoalSchema,
