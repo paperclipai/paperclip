@@ -1142,4 +1142,39 @@ describe("agent issue mutation checkout ownership", () => {
     }));
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
+
+  it("allows a manager agent to patch a subordinate's issue via allow_manager_chain (200)", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:mutate" || input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason:
+        input.action === "issue:mutate" || input.action === "tasks:manage_active_checkouts"
+          ? "allow_manager_chain"
+          : "deny_missing_grant",
+      explanation:
+        input.action === "issue:mutate" || input.action === "tasks:manage_active_checkouts"
+          ? "Manager authorized via chain of command."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ priority: "low" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("still denies a peer agent with no manager chain on a subordinate issue (403)", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_missing_grant",
+      explanation: "No manager chain and no explicit grant.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ priority: "low" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
 });

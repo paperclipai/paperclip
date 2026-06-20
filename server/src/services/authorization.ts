@@ -1141,7 +1141,7 @@ export function authorizationService(db: Db) {
     }
 
     if (
-      input.action === "tasks:manage_active_checkouts" &&
+      (input.action === "tasks:manage_active_checkouts" || input.action === "issue:mutate") &&
       input.resource.type === "issue" &&
       input.resource.assigneeAgentId &&
       await isManagerOf(companyId, actorAgentId, input.resource.assigneeAgentId)
