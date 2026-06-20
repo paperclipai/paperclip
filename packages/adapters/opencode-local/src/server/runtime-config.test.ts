@@ -65,6 +65,72 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
   });
 
+  it("injects a Workers AI provider block for a cloudflare/ model", async () => {
+    const configHome = await makeConfigHome({
+      permission: {
+        read: "allow",
+      },
+    });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: {
+        XDG_CONFIG_HOME: configHome,
+        CLOUDFLARE_WORKERS_AI_TOKEN: "tok-123",
+      },
+      config: {
+        model: "cloudflare/@cf/moonshotai/kimi-k2.7-code",
+        workersAiBaseUrl: "https://cf/ai/v1",
+      },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+
+    const provider = (runtimeConfig.provider as Record<string, unknown>)
+      .cloudflare as Record<string, unknown>;
+    expect(provider.npm).toBe("@ai-sdk/openai-compatible");
+    expect((provider.options as Record<string, unknown>).baseURL).toBe("https://cf/ai/v1");
+    expect((provider.options as Record<string, unknown>).apiKey).toBe("tok-123");
+    expect(provider.models).toHaveProperty("@cf/moonshotai/kimi-k2.7-code");
+    // Permission block is still merged in alongside the provider.
+    expect(runtimeConfig).toMatchObject({
+      permission: { read: "allow", external_directory: "allow" },
+    });
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
+  it("does not add a provider key for a non-cloudflare model", async () => {
+    const configHome = await makeConfigHome({
+      permission: {
+        read: "allow",
+      },
+    });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { model: "anthropic/claude-sonnet-4" },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig).not.toHaveProperty("provider");
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
   it("respects explicit opt-out", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({
