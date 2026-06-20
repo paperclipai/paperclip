@@ -25,6 +25,7 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { prepareManagedCodexHome } from "./codex-home.js";
+import { assertCodexCommandReadyForExecution } from "./codex-command.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -213,19 +214,32 @@ export async function testEnvironment(
   });
   if (installCheck) checks.push(installCheck);
   try {
-    await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
-    checks.push({
-      code: "codex_command_resolvable",
-      level: "info",
-      message: `Command is executable: ${command}`,
-    });
+    assertCodexCommandReadyForExecution(command);
   } catch (err) {
     checks.push({
-      code: "codex_command_unresolvable",
+      code: "codex_command_not_absolute",
       level: "error",
       message: err instanceof Error ? err.message : "Command is not executable",
-      detail: command,
+      detail: command || undefined,
     });
+  }
+
+  if (!checks.some((check) => check.code === "codex_command_not_absolute")) {
+    try {
+      await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
+      checks.push({
+        code: "codex_command_resolvable",
+        level: "info",
+        message: `Command is executable: ${command}`,
+      });
+    } catch (err) {
+      checks.push({
+        code: "codex_command_unresolvable",
+        level: "error",
+        message: err instanceof Error ? err.message : "Command is not executable",
+        detail: command || undefined,
+      });
+    }
   }
 
   const configOpenAiKey = env.OPENAI_API_KEY;
@@ -261,7 +275,10 @@ export async function testEnvironment(
   }
 
   const canRunProbe =
-    checks.every((check) => check.code !== "codex_cwd_invalid" && check.code !== "codex_command_unresolvable");
+    checks.every((check) =>
+      check.code !== "codex_cwd_invalid"
+      && check.code !== "codex_command_unresolvable"
+      && check.code !== "codex_command_not_absolute");
   if (canRunProbe) {
     if (!commandLooksLike(command, "codex")) {
       checks.push({
