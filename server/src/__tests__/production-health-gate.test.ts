@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertProductionHealthyForClosure,
   getProductionHealthTargets,
@@ -124,5 +124,37 @@ describe("assertProductionHealthyForClosure", () => {
         probeFn: oneDown,
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("probe (real fetch path)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("follows redirects and treats a settled 200 as healthy", async () => {
+    const inits: RequestInit[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init: RequestInit) => {
+        inits.push(init);
+        return Promise.resolve(new Response("ok", { status: 200 }));
+      }),
+    );
+
+    // No probeFn -> the real probe() runs, exercising the fetch call.
+    await expect(
+      assertProductionHealthyForClosure({
+        issue: incidentIssue,
+        existingStatus: "in_progress",
+        requestedStatus: "done",
+        env: envWith(),
+      }),
+    ).resolves.toBeUndefined();
+
+    // One probe per configured target, each following redirects (not "manual",
+    // which would yield an opaque status 0 and falsely fail a healthy endpoint).
+    expect(inits).toHaveLength(2);
+    expect(inits.every((init) => init.redirect === "follow")).toBe(true);
   });
 });

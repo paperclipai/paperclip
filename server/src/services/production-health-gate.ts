@@ -42,9 +42,13 @@ export class ProductionHealthGateError extends Error {
 }
 
 const DEFAULT_EXPECT_STATUS = 200;
-const DEFAULT_RETRIES = 3;
-const DEFAULT_DELAY_MS = 4000;
-const DEFAULT_TIMEOUT_MS = 12_000;
+// Keep the total retry budget well under the ~30s where most HTTP clients,
+// ALBs, and nginx proxies cut the connection — otherwise an activated gate
+// holds the PATCH handler long enough that the caller sees a network timeout
+// instead of the intended 409. Worst case here: 2 * 5s timeout + 1 * 1s delay = 11s.
+const DEFAULT_RETRIES = 2;
+const DEFAULT_DELAY_MS = 1000;
+const DEFAULT_TIMEOUT_MS = 5000;
 
 /** Parse PRODUCTION_HEALTH_TARGETS (JSON: array or {targets:[...]}). Empty = gate disabled. */
 export function getProductionHealthTargets(env: NodeJS.ProcessEnv = process.env): ProductionHealthTarget[] {
@@ -104,7 +108,11 @@ async function probe(target: ProductionHealthTarget): Promise<ProductionHealthRe
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
     try {
-      const res = await fetch(target.url, { redirect: "manual", signal: controller.signal });
+      // Follow redirects and judge the final settled status. With redirect:"manual",
+      // undici returns an opaque response whose status is always 0, so a target that
+      // does any redirect (http->https, trailing-slash, etc.) would never match the
+      // expected 200 and the gate would block every closure on a healthy endpoint.
+      const res = await fetch(target.url, { redirect: "follow", signal: controller.signal });
       const body = target.bodyIncludes ? await res.text().catch(() => "") : "";
       const statusOk = res.status === expectStatus;
       const bodyOk =
