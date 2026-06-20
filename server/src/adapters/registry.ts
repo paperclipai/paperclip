@@ -23,6 +23,15 @@ import {
   models as acpxModels,
 } from "@paperclipai/adapter-acpx-local";
 import {
+  execute as agyExecute,
+  testEnvironment as agyTestEnvironment,
+} from "@paperclipai/adapter-agy-local/server";
+import {
+  agentConfigurationDoc as agyAgentConfigurationDoc,
+  models as agyModels,
+  SANDBOX_INSTALL_COMMAND as agySandboxInstallCommand,
+} from "@paperclipai/adapter-agy-local";
+import {
   execute as claudeExecute,
   listClaudeSkills,
   syncClaudeSkills,
@@ -251,6 +260,22 @@ const acpxLocalAdapter: ServerAdapterModule = {
   getConfigSchema: getAcpxConfigSchema,
 };
 
+const agyLocalAdapter: ServerAdapterModule = {
+  type: "agy_local",
+  execute: agyExecute,
+  testEnvironment: agyTestEnvironment,
+  models: agyModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  getRuntimeCommandSpec: (config) => ({
+    command: readConfiguredCommand(config, "agy"),
+    detectCommand: readConfiguredCommand(config, "agy"),
+    installCommand: agySandboxInstallCommand,
+  }),
+  agentConfigurationDoc: agyAgentConfigurationDoc,
+};
+
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
   execute: codexExecute,
@@ -414,6 +439,7 @@ const pausedOverrides = new Set<string>();
 function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
+    agyLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
