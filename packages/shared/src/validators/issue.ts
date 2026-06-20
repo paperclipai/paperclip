@@ -394,6 +394,7 @@ const createIssueBaseSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+  idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
