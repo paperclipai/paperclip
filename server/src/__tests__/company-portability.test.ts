@@ -3763,6 +3763,7 @@ describe("company portability", () => {
         type: "inline",
         rootPath: "gated-demo",
         files: {
+          "COMPANY.md": '---\nschema: "agentcompanies/v1"\nname: "Gated Company"\n---\n',
           "agents/importedbot/AGENTS.md": [
             "---",
             'name: "ImportedBot"',
