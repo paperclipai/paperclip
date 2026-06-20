@@ -2553,7 +2553,7 @@ describe("company portability", () => {
             "",
             "1. git add -A",
             "2. git commit -m \"msg\"",
-            "3. git push origin main",
+            "3. git push origin main", // paperclip:allow-git-push: PEN-1048 detector test fixture, not an invocation
             "",
           ].join("\n"),
           ".paperclip.yaml": ["schema: paperclip/v1", "agents:", "  engineer:", "    adapter:", "      type: codex_local", "      config: {}", ""].join("\n"),
@@ -2591,7 +2591,7 @@ describe("company portability", () => {
             "Never push directly to main/master — there is no direct-to-main path.",
             "",
             "1. git switch -c feat/x origin/master",
-            "2. git push -u origin feat/x",
+            "2. git push -u origin feat/x", // paperclip:allow-git-push: PEN-1048 control-case test fixture, not an invocation
             "3. gh pr create --fill",
             "",
           ].join("\n"),

@@ -2999,7 +2999,8 @@ export function parseGitHubSourceUrl(rawUrl: string) {
 
 /**
  * PEN-1048 guard: detect agent instruction bundles that prescribe a direct push
- * to the default branch (e.g. `git push origin main`) with no pull-request step.
+ * to the default branch with no pull-request step.
+ * paperclip:allow-git-push: `git push origin main` here is the anti-pattern this guard detects, not an invocation (the warning string + tests below are likewise) — satisfies scripts/check-no-git-push.mjs.
  * On PR-gated repos such a push is rejected, so the agent strands its work as a
  * "complete" comment instead of opening a PR. Advisory only — emitted as an
  * import warning so the operator can fix the bundle's git-workflow skill.
@@ -3022,7 +3023,7 @@ function detectDirectToMainBundleWarnings(
     if (DIRECT_PUSH_TO_DEFAULT_RE.test(content) && !PR_CREATION_VERB_RE.test(content)) {
       warnings.push(
         `Agent ${agentSlug} bundle file ${filePath} instructs a direct push to the default branch ` +
-        `(git push origin main/master) with no pull-request step. PR-gated repositories reject direct ` +
+        `(git push origin main/master) with no pull-request step. PR-gated repositories reject direct ` + // paperclip:allow-git-push: operator-facing warning text, not an invocation
         `pushes, so the agent will strand work as a "complete" comment instead of opening a PR (PEN-1048). ` +
         `Update the git-workflow skill to a PR flow (gh pr create) before relying on this agent.`,
       );
