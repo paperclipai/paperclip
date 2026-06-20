@@ -15,6 +15,7 @@ import {
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveLedgerIssueIdFromContext,
   resolveNextSessionState,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
@@ -816,6 +817,15 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });
 
+  it("preserves session context on issue-scoped heartbeat timer wakes", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "heartbeat_timer",
+        issueId: "issue-1",
+      }),
+    ).toBe(false);
+  });
+
   it("preserves session context on manual on-demand invokes by default", () => {
     expect(
       shouldResetTaskSessionForWake({
@@ -1033,6 +1043,20 @@ describe("normalizeSessionParams", () => {
   it("preserves a non-empty object", () => {
     const params = { sessionId: "thread-1" };
     expect(normalizeSessionParams(params)).toBe(params);
+  });
+});
+
+describe("resolveLedgerIssueIdFromContext", () => {
+  it("uses issueId when present", () => {
+    expect(resolveLedgerIssueIdFromContext({ issueId: "issue-1", taskId: "task-1" })).toBe("issue-1");
+  });
+
+  it("falls back to taskId for issue-scoped run contexts", () => {
+    expect(resolveLedgerIssueIdFromContext({ taskId: "issue-1" })).toBe("issue-1");
+  });
+
+  it("returns null when no issue-like context is present", () => {
+    expect(resolveLedgerIssueIdFromContext({ wakeReason: "heartbeat_timer" })).toBeNull();
   });
 });
 

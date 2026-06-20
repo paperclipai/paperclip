@@ -4,14 +4,13 @@ import {
   shouldResetTaskSessionForWake,
 } from "../services/heartbeat.ts";
 
-// PF-4: timer-driven wakes ("heartbeat_timer") are exploratory and do not
-// carry continuation state. Reusing the prior task session for repeated
-// timer wakes accumulates low-value context and pushes the session toward
-// the 64k compaction threshold (observed in CEO run 292a5fd1). The
-// shouldResetTaskSessionForWake / describeSessionResetReason pair must
-// agree that timer wakes start a fresh session, while preserving the
-// existing reset rules for assignment / review / approval / changes wakes
-// and the existing reuse policy for issue_commented and other reasons.
+// PF-4: generic timer-driven wakes ("heartbeat_timer") are exploratory and
+// do not carry continuation state. Reusing the prior task session for repeated
+// generic timer wakes accumulates low-value context and pushes the session
+// toward the 64k compaction threshold (observed in CEO run 292a5fd1). The
+// shouldResetTaskSessionForWake / describeSessionResetReason pair must agree
+// that generic timer wakes start fresh, while issue/task-scoped timer wakes
+// preserve recurring work cache continuity.
 
 describe("PF-4 shouldResetTaskSessionForWake", () => {
   it("resets the session when wakeReason is heartbeat_timer", () => {
@@ -22,6 +21,17 @@ describe("PF-4 shouldResetTaskSessionForWake", () => {
         wakeReason: "heartbeat_timer",
       }),
     ).toBe(true);
+  });
+
+  it("preserves the session when a heartbeat_timer wake is scoped to an issue task", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        source: "scheduler",
+        reason: "interval_elapsed",
+        wakeReason: "heartbeat_timer",
+        taskId: "issue-1",
+      }),
+    ).toBe(false);
   });
 
   it("still resets for the existing reset reasons", () => {
@@ -65,6 +75,14 @@ describe("PF-4 describeSessionResetReason", () => {
     expect(reason).toBe("wake reason is heartbeat_timer (timer-driven wake starts fresh)");
   });
 
+  it("does not report a reset reason for issue-scoped heartbeat_timer wakes", () => {
+    const reason = describeSessionResetReason({
+      wakeReason: "heartbeat_timer",
+      issueId: "issue-1",
+    });
+    expect(reason).toBeNull();
+  });
+
   it("returns the existing reasons for the existing reset triggers", () => {
     expect(describeSessionResetReason({ wakeReason: "issue_assigned" })).toBe(
       "wake reason is issue_assigned",
@@ -102,6 +120,7 @@ describe("PF-4 describeSessionResetReason", () => {
       { wakeReason: "execution_approval_requested" },
       { wakeReason: "execution_changes_requested" },
       { forceFreshSession: true },
+      { wakeReason: "heartbeat_timer", taskId: "issue-1" },
       { wakeReason: "issue_commented" },
       { wakeReason: "transient_failure_retry" },
       { wakeReason: "unknown_reason" },
