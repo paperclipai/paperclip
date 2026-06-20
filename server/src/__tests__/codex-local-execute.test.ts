@@ -704,6 +704,7 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
+    await seedSharedCodexAuth(root);
 
     try {
       const result = await execute({
@@ -858,6 +859,7 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
+    await seedSharedCodexAuth(root);
 
     try {
       const result = await execute({
@@ -956,6 +958,7 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
+    await seedSharedCodexAuth(root);
 
     let invocationPrompt = "";
     let invocationNotes: string[] = [];
