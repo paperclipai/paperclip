@@ -6,7 +6,6 @@ import {
   type EnvironmentProbeResult,
   type JsonSchema,
 } from "@paperclipai/shared";
-import { Settings } from "lucide-react";
 import { environmentsApi } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { secretsApi } from "@/api/secrets";
@@ -476,8 +475,6 @@ export function CompanyEnvironments() {
     instanceSettings?.defaultEnvironmentId ?? null,
     savedEnvironments,
   );
-  const instanceDefaultEnvironment =
-    nonLocalEnvironments.find((environment) => environment.id === instanceDefaultEnvironmentId) ?? null;
 
   if (!selectedCompanyId) {
     return <div className="text-sm text-muted-foreground">Select a company context to manage environment secrets and bindings.</div>;
@@ -486,10 +483,6 @@ export function CompanyEnvironments() {
   if (!environmentsEnabled) {
     return (
       <div className="max-w-3xl space-y-4">
-        <div className="flex items-center gap-2">
-          <Settings className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Environments</h1>
-        </div>
         <div className="rounded-md border border-border px-4 py-4 text-sm text-muted-foreground">
           Enable Environments in instance experimental settings to manage shared execution targets.
         </div>
@@ -499,24 +492,11 @@ export function CompanyEnvironments() {
 
   return (
     <div className="max-w-5xl space-y-6" data-testid="instance-settings-environments-section">
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <Settings className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Environments</h1>
-        </div>
-        <p className="max-w-3xl text-sm text-muted-foreground">
-          Define reusable execution targets for the instance. The built-in default is <span className="font-medium text-foreground">Local</span>; agents inherit that unless the instance default or an agent override points somewhere else.
-        </p>
-      </div>
-
       <div className="space-y-4 rounded-md border border-border px-4 py-4">
         <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="space-y-1">
-              <div className="text-sm font-medium">Instance default environment</div>
-              <div className="text-xs text-muted-foreground">
-                New agent configurations inherit this target unless they explicitly override it.
-              </div>
+              <div className="text-sm font-medium">Default</div>
             </div>
             <div className="min-w-[18rem] flex-1">
               <select
@@ -526,110 +506,100 @@ export function CompanyEnvironments() {
                   defaultEnvironmentMutation.mutate(event.target.value || null)}
                 disabled={defaultEnvironmentMutation.isPending}
               >
-                <option value="">Local (built-in default)</option>
+                <option value="">Local</option>
                 {nonLocalEnvironments.map((environment) => (
                   <option key={environment.id} value={environment.id}>
                     {environment.name} · {environment.driver}
                   </option>
                 ))}
               </select>
-              <div className="mt-1 text-[11px] text-muted-foreground">
-                {instanceDefaultEnvironment
-                  ? `Agents currently inherit ${instanceDefaultEnvironment.name} unless they override it.`
-                  : "Agents currently inherit the built-in Local environment unless they override it."}
-              </div>
             </div>
           </div>
         </div>
 
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm font-medium">Saved environments</div>
+          <div className="flex justify-end">
             <Button size="sm" onClick={handleStartCreateEnvironment}>
               Add environment
             </Button>
           </div>
-          {savedEnvironments.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No saved environments yet. Local remains the default until you add another target.</div>
-          ) : (
-            savedEnvironments.map((environment) => {
-              const probe = probeResults[environment.id] ?? null;
-              const isEditing = editingEnvironmentId === environment.id;
-              return (
-                <div
-                  key={environment.id}
-                  className="rounded-md border border-border/70 px-3 py-3"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="text-sm font-medium">
-                        {environment.name} <span className="text-muted-foreground">· {environment.driver}</span>
-                      </div>
-                      {environment.description ? (
-                        <div className="text-xs text-muted-foreground">{environment.description}</div>
-                      ) : null}
-                      {environment.driver === "ssh" ? (
-                        <div className="text-xs text-muted-foreground">
-                          {typeof environment.config.host === "string" ? environment.config.host : "SSH host"} ·{" "}
-                          {typeof environment.config.username === "string" ? environment.config.username : "user"}
-                        </div>
-                      ) : environment.driver === "sandbox" ? (
-                        <div className="text-xs text-muted-foreground">
-                          {(() => {
-                            const provider =
-                              typeof environment.config.provider === "string" ? environment.config.provider : "sandbox";
-                            const displayName =
-                              environmentCapabilities?.sandboxProviders?.[provider]?.displayName ?? provider;
-                            const summary = summarizeSandboxConfig(environment.config as Record<string, unknown>);
-                            return `${displayName} sandbox provider${summary ? ` · ${summary}` : ""}`;
-                          })()}
-                        </div>
-                      ) : (
-                        <div className="text-xs text-muted-foreground">Runs on this Paperclip host.</div>
-                      )}
+          {savedEnvironments.map((environment) => {
+            const probe = probeResults[environment.id] ?? null;
+            const isEditing = editingEnvironmentId === environment.id;
+            return (
+              <div
+                key={environment.id}
+                className="rounded-md border border-border/70 px-3 py-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="text-sm font-medium">
+                      {environment.name} <span className="text-muted-foreground">· {environment.driver}</span>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      {environment.driver !== "local" ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => environmentProbeMutation.mutate(environment.id)}
-                          disabled={testingEnvironmentId === environment.id}
-                        >
-                          {testingEnvironmentId === environment.id
-                            ? "Testing..."
-                            : environment.driver === "ssh"
-                              ? "Test connection"
-                              : "Test provider"}
-                        </Button>
-                      ) : null}
+                    {environment.description ? (
+                      <div className="text-xs text-muted-foreground">{environment.description}</div>
+                    ) : null}
+                    {environment.driver === "ssh" ? (
+                      <div className="text-xs text-muted-foreground">
+                        {typeof environment.config.host === "string" ? environment.config.host : "SSH host"} ·{" "}
+                        {typeof environment.config.username === "string" ? environment.config.username : "user"}
+                      </div>
+                    ) : environment.driver === "sandbox" ? (
+                      <div className="text-xs text-muted-foreground">
+                        {(() => {
+                          const provider =
+                            typeof environment.config.provider === "string" ? environment.config.provider : "sandbox";
+                          const displayName =
+                            environmentCapabilities?.sandboxProviders?.[provider]?.displayName ?? provider;
+                          const summary = summarizeSandboxConfig(environment.config as Record<string, unknown>);
+                          return `${displayName} sandbox provider${summary ? ` · ${summary}` : ""}`;
+                        })()}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-muted-foreground">Runs on this Paperclip host.</div>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {environment.driver !== "local" ? (
                       <Button
                         size="sm"
-                        variant="ghost"
-                        onClick={() => handleEditEnvironment(environment)}
+                        variant="outline"
+                        onClick={() => environmentProbeMutation.mutate(environment.id)}
+                        disabled={testingEnvironmentId === environment.id}
                       >
-                        {isEditing ? "Editing" : "Edit"}
+                        {testingEnvironmentId === environment.id
+                          ? "Testing..."
+                          : environment.driver === "ssh"
+                            ? "Test connection"
+                            : "Test provider"}
                       </Button>
-                    </div>
-                  </div>
-                  {probe ? (
-                    <div
-                      className={
-                        probe.ok
-                          ? "mt-3 rounded border border-green-500/30 bg-green-500/5 px-2.5 py-2 text-xs text-green-700"
-                          : "mt-3 rounded border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-xs text-destructive"
-                      }
+                    ) : null}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => handleEditEnvironment(environment)}
                     >
-                      <div className="font-medium">{probe.summary}</div>
-                      {probe.details?.error && typeof probe.details.error === "string" ? (
-                        <div className="mt-1 font-mono text-[11px]">{probe.details.error}</div>
-                      ) : null}
-                    </div>
-                  ) : null}
+                      {isEditing ? "Editing" : "Edit"}
+                    </Button>
+                  </div>
                 </div>
-              );
-            })
-          )}
+                {probe ? (
+                  <div
+                    className={
+                      probe.ok
+                        ? "mt-3 rounded border border-green-500/30 bg-green-500/5 px-2.5 py-2 text-xs text-green-700"
+                        : "mt-3 rounded border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-xs text-destructive"
+                    }
+                  >
+                    <div className="font-medium">{probe.summary}</div>
+                    {probe.details?.error && typeof probe.details.error === "string" ? (
+                      <div className="mt-1 font-mono text-[11px]">{probe.details.error}</div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       </div>
 
