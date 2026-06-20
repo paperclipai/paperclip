@@ -407,6 +407,7 @@ type PaperclipWakeIssue = {
   id: string | null;
   identifier: string | null;
   title: string | null;
+  description: string | null;
   status: string | null;
   workMode: string | null;
   priority: string | null;
@@ -514,6 +515,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   const id = asString(issue.id, "").trim() || null;
   const identifier = asString(issue.identifier, "").trim() || null;
   const title = asString(issue.title, "").trim() || null;
+  const description = asString(issue.description, "").trim() || null;
   const status = asString(issue.status, "").trim() || null;
   const workMode = asString(issue.workMode, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
@@ -522,6 +524,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
     id,
     identifier,
     title,
+    description,
     status,
     workMode,
     priority,
@@ -891,6 +894,9 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.issue?.description) {
+    lines.push("", "Issue description:", normalized.issue.description, "");
   }
   if (normalized.issue?.workMode === "planning" && !normalized.taskWatchdog) {
     const hasWakeComments = normalized.comments.length > 0;
