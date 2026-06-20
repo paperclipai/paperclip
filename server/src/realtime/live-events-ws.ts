@@ -73,6 +73,7 @@ function rejectUpgrade(socket: Duplex, statusLine: string, message: string) {
   }
 
   try {
+    socket.once("finish", () => closeUpgradeSocket(socket));
     socket.end(`HTTP/1.1 ${statusLine}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${safe}`);
   } catch (err) {
     logger.warn({ err }, "failed to reject live websocket upgrade");

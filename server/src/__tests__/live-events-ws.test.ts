@@ -23,6 +23,14 @@ class FakeUpgradeSocket extends EventEmitter {
   end(chunk?: string) {
     if (chunk) this.endedChunks.push(chunk);
     this.writableEnded = true;
+    this.writable = false;
+    setImmediate(() => {
+      if (this.destroyed) return;
+      this.emit("finish");
+      if (!this.destroyed) {
+        this.emit("close");
+      }
+    });
     return this;
   }
 
@@ -33,6 +41,12 @@ class FakeUpgradeSocket extends EventEmitter {
     this.writableDestroyed = true;
     this.emit("close");
     return this;
+  }
+
+  emitSocketError(err: Error) {
+    this.writable = false;
+    this.writableDestroyed = true;
+    this.emit("error", err);
   }
 }
 
@@ -79,7 +93,7 @@ describe("setupLiveEventsWebSocketServer", () => {
     const socket = new FakeUpgradeSocket();
 
     server.emit("upgrade", createUpgradeRequest(), socket as unknown as Duplex, Buffer.alloc(0));
-    expect(() => socket.emit("error", new Error("write EPIPE"))).not.toThrow();
+    expect(() => socket.emitSocketError(new Error("write EPIPE"))).not.toThrow();
     resolveSession(null);
     await flushPromises();
 
@@ -87,6 +101,23 @@ describe("setupLiveEventsWebSocketServer", () => {
       expect.objectContaining({ err: expect.any(Error), path: "/api/companies/company-1/events/ws" }),
       "live websocket upgrade socket error",
     );
+    expect(socket.endedChunks).toEqual([]);
+    expect(socket.destroyed).toBe(true);
+  });
+
+  it("destroys and cleans up listeners after flushing a rejection response", async () => {
+    const server = new EventEmitter();
+    setupLiveEventsWebSocketServer(server as never, {} as never, { deploymentMode: "authenticated" });
+    const socket = new FakeUpgradeSocket();
+
+    server.emit("upgrade", createUpgradeRequest(), socket as unknown as Duplex, Buffer.alloc(0));
+    await flushPromises();
+    await flushPromises();
+
     expect(socket.endedChunks[0]).toContain("403 Forbidden");
+    expect(socket.destroyed).toBe(true);
+    expect(socket.listenerCount("error")).toBe(0);
+    expect(socket.listenerCount("close")).toBe(0);
+    expect(socket.listenerCount("finish")).toBe(0);
   });
 });
