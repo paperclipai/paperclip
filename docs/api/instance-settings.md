@@ -5,6 +5,10 @@ summary: Manage Paperclip instance-level settings
 
 Configure instance-level options, general preferences, and experimental feature flags.
 
+### Permissions & Validation
+- **Read**: Any board organization member can fetch instance settings (`GET /api/instance/settings`).
+- **Update**: Modifying settings (including general preferences and experimental flags) requires local implicit board or instance admin privileges. Unauthorized update requests will receive a `403 Forbidden` response. Setting an invalid `defaultEnvironmentId` will return `422 Unprocessable` (unprocessable entity).
+
 ## Get Instance Settings
 
 ```
@@ -80,3 +84,25 @@ PATCH /api/instance/settings/experimental
 ```
 
 Enables or disables experimental control plane and runtime features.
+
+## Experimental Liveness Auto-Recovery Preview
+
+```
+POST /api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview
+{
+  "lookbackHours": 24
+}
+```
+
+Previews the list of stuck issues that would be recovered. Requires local implicit board or instance admin privileges.
+
+## Experimental Liveness Auto-Recovery Run
+
+```
+POST /api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run
+{
+  "lookbackHours": 24
+}
+```
+
+Runs the recovery actions for stuck issues. Requires local implicit board or instance admin privileges.

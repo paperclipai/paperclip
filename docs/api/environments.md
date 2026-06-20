@@ -8,7 +8,7 @@ Configure and inspect the execution runtimes (such as Local, SSH, Sandbox, or Pl
 Note: Environments are **instance-scoped** rather than company-scoped. However, company-prefixed routes (e.g. `/api/companies/{companyId}/environments`) are used to supply the necessary company context for verifying permissions and resolving company secret bindings.
 
 ### Permissions & Redaction
-List and get environment endpoints are readable by company board members, but non-instance-admin readers will receive redacted values for `config`, `envVars`, and `metadata`. Creating, updating, deleting, or probing environments requires local implicit board or instance admin access.
+List and get environment endpoints are readable by any board organization member. However, if the requester is not an instance admin, the `config`, `envVars`, and `metadata` fields are redacted (returned as empty/null). Creating, updating, deleting, or probing environments requires local implicit board or instance admin access (returns `403` otherwise). The route `{companyId}` is used for secret-binding validation context rather than restricting access to that company's environments.
 
 ## List Environments
 
@@ -105,4 +105,12 @@ Returns active leases (which agents are currently using the environment).
 POST /api/environments/{id}/probe?companyId={companyId}
 ```
 
-Triggers a heartbeat check to verify the host connection and credentials of the saved environment driver. The `companyId` query parameter is required to provide the company/secret context to resolve credentials.
+Triggers a heartbeat check to verify the host connection and credentials of the saved environment driver. The `companyId` query parameter is optional but recommended; it is required to provide the company/secret context to resolve credentials when using secret-backed environment configurations where context cannot be inferred.
+
+## Get Environment Lease
+
+```
+GET /api/environment-leases/{leaseId}
+```
+
+Returns a single environment lease by ID. Requires org-level board access.
