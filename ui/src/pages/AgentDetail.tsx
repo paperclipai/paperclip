@@ -106,6 +106,7 @@ import {
   arraysEqual,
   isReadOnlyUnmanagedSkillEntry,
 } from "../lib/agent-skills-state";
+import { SkillPresetsPanel } from "../components/SkillPresetsPanel";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -2750,6 +2751,14 @@ export function AgentSkillsTab({
           {unsupportedSkillMessage}
         </div>
       ) : null}
+
+      <SkillPresetsPanel
+        companyId={companyId ?? ""}
+        skillDraft={skillDraft}
+        availableSkillKeys={[...companySkillByKey.keys()]}
+        onApply={(keys) => setSkillDraft(keys)}
+        disabled={skillSnapshot?.mode === "unsupported"}
+      />
 
       {isLoading ? (
         <PageSkeleton variant="list" />
