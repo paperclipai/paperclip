@@ -20,11 +20,12 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Siren } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Siren, FlaskConical, FileText, LockKeyhole } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
+import { formatExperimentWindow, summarizeMicroRegistry } from "../lib/micro-registry";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
@@ -66,6 +67,13 @@ export function Dashboard() {
     refetchInterval: 60_000,
   });
 
+  const { data: microRegistry } = useQuery({
+    queryKey: [...queryKeys.dashboard(selectedCompanyId!), "micro-registry"],
+    queryFn: () => dashboardApi.microRegistry(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 60_000,
+  });
+
   const { data: activity } = useQuery({
     queryKey: [...queryKeys.activity(selectedCompanyId!), { limit: DASHBOARD_ACTIVITY_LIMIT }],
     queryFn: () => activityApi.list(selectedCompanyId!, { limit: DASHBOARD_ACTIVITY_LIMIT }),
@@ -97,6 +105,18 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+  const microSummary = useMemo(
+    () => microRegistry ? summarizeMicroRegistry(microRegistry) : null,
+    [microRegistry],
+  );
+  const visibleMicroExperiments = useMemo(
+    () => (microRegistry?.experiments ?? []).slice(0, 4),
+    [microRegistry?.experiments],
+  );
+  const openMicroDependencies = useMemo(
+    () => (microRegistry?.dependencyRequests ?? []).filter((request) => !["resolved", "cancelled", "closed"].includes(request.status)).slice(0, 3),
+    [microRegistry?.dependencyRequests],
+  );
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -287,6 +307,103 @@ export function Dashboard() {
                     )}
                   </div>
                 ))}
+              </div>
+            </div>
+          ) : null}
+
+          {microRegistry && microSummary ? (
+            <div className="overflow-hidden rounded-2xl border border-cyan-400/20 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.18),transparent_34%),linear-gradient(135deg,rgba(2,6,23,0.96),rgba(8,13,28,0.86))] shadow-[0_24px_80px_rgba(8,145,178,0.12)]">
+              <div className="flex flex-col gap-4 border-b border-white/10 px-4 py-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-xl border border-cyan-300/20 bg-cyan-300/10 p-2">
+                    <FlaskConical className="h-5 w-5 text-cyan-200" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold uppercase tracking-[0.22em] text-cyan-100/70">Micro research factory</p>
+                    <h2 className="mt-1 text-xl font-semibold text-white">Pod registry · evidence-gated experiments</h2>
+                    <p className="mt-1 max-w-3xl text-sm text-slate-300">
+                      Draft alpha work is visible here before execution. Broker actions, paid compute, overnight exposure, and promotion remain blocked until evidence and operator gates clear.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:min-w-[520px]">
+                  {[
+                    ["Pods", microSummary.pods],
+                    ["Active", microSummary.activeExperiments],
+                    ["Gates", microSummary.openDependencies],
+                    ["Evidence", microSummary.evidencePacks],
+                    ["Promote", microSummary.promotionRequests],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-center">
+                      <div className="text-lg font-semibold text-white">{value}</div>
+                      <div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">{label}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid gap-4 p-4 xl:grid-cols-[1.5fr_1fr]">
+                <div className="space-y-3">
+                  {visibleMicroExperiments.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-white/15 p-4 text-sm text-slate-300">No registered experiments yet.</div>
+                  ) : visibleMicroExperiments.map((experiment) => {
+                    const pod = microRegistry.pods.find((entry) => entry.id === experiment.podId);
+                    const evidence = microRegistry.evidencePacks.find((entry) => entry.experimentId === experiment.id);
+                    return (
+                      <div key={experiment.id} className="rounded-xl border border-white/10 bg-black/20 p-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-mono text-xs text-cyan-200">{experiment.identifier}</span>
+                              <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
+                                no overnight
+                              </span>
+                              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-300">
+                                {experiment.lifecycleState}
+                              </span>
+                            </div>
+                            <h3 className="mt-2 line-clamp-2 text-sm font-semibold text-white">{experiment.title}</h3>
+                            <p className="mt-1 line-clamp-2 text-xs text-slate-400">{experiment.hypothesis}</p>
+                          </div>
+                          <div className="shrink-0 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-right">
+                            <div className="text-sm font-semibold text-white">{formatExperimentWindow(experiment)}</div>
+                            <div className="text-[10px] uppercase tracking-wide text-slate-400">max {experiment.maxImprovementAttempts} improvements</div>
+                          </div>
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                          <span>{pod?.title ?? "Unassigned pod"}</span>
+                          {evidence ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-cyan-400/10 px-2 py-1 text-cyan-100">
+                              <FileText className="h-3 w-3" /> {evidence.title}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <LockKeyhole className="h-4 w-4 text-amber-200" />
+                    <h3 className="text-sm font-semibold text-white">Open gates</h3>
+                  </div>
+                  {openMicroDependencies.length === 0 ? (
+                    <p className="text-sm text-slate-400">No open dependency gates.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {openMicroDependencies.map((request) => (
+                        <div key={request.id} className="rounded-lg border border-amber-300/15 bg-amber-300/[0.04] px-3 py-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-xs font-medium text-amber-50">{request.title}</p>
+                            <span className="rounded-full bg-amber-300/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-100">{request.status}</span>
+                          </div>
+                          <p className="mt-1 line-clamp-2 text-xs text-amber-100/60">{request.description ?? request.kind}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           ) : null}

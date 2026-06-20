@@ -475,6 +475,14 @@ export type {
   CeoControlRoomSourceStatus,
   CeoControlRoomStatus,
 } from "./ceo-control-room.js";
+export type {
+  MicroRegistryDependencyRequest,
+  MicroRegistryEvidencePack,
+  MicroRegistryExperiment,
+  MicroRegistryOverview,
+  MicroRegistryPod,
+  MicroRegistryPromotionRequest,
+} from "./micro-registry.js";
 export type { ActivityEvent } from "./activity.js";
 export type {
   UserProfileActivitySummary,
