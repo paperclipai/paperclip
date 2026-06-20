@@ -467,3 +467,110 @@ describe("goals", () => {
     expect(client.requestJson).toHaveBeenCalledWith("PATCH", "/goals/g-1", { body: { description: "new desc" } });
   });
 });
+
+describe("agents (wave 2)", () => {
+  it("list_agents GETs the company agents path", async () => {
+    const client = okClient([]);
+    await tool(client, "list_agents").execute({}, {} as any);
+    expect(client.requestJson).toHaveBeenCalledWith("GET", "/companies/co-default/agents", { companyId: "co-default" });
+  });
+
+  it("invoke_agent_heartbeat POSTs /agents/<id>/heartbeat/invoke with no body and no company", async () => {
+    const client = okClient(null);
+    const res = await tool(client, "invoke_agent_heartbeat").execute({ agent_id: "ag-1" }, {} as any);
+    expect(client.requestJson).toHaveBeenCalledWith("POST", "/agents/ag-1/heartbeat/invoke");
+    expect(client.resolveCompany).not.toHaveBeenCalled();
+    expect(JSON.parse(res.content[0].text)).toEqual({ ok: true });
+  });
+});
+
+describe("approvals (wave 2)", () => {
+  it("list_approvals GETs company approvals with default status pending", async () => {
+    const client = okClient([]);
+    await tool(client, "list_approvals").execute({}, {} as any);
+    expect(client.requestJson).toHaveBeenCalledWith("GET", "/companies/co-default/approvals", {
+      query: { status: "pending" },
+      companyId: "co-default",
+    });
+  });
+
+  it("list_approvals forwards a valid status filter", async () => {
+    const client = okClient([]);
+    await tool(client, "list_approvals").execute({ status: "approved", company_id: "PEN" }, {} as any);
+    expect(client.requestJson).toHaveBeenCalledWith("GET", "/companies/PEN/approvals", {
+      query: { status: "approved" },
+      companyId: "PEN",
+    });
+  });
+
+  it("list_approvals errors on an invalid status (incl. empty string) without calling the API", async () => {
+    const c1 = okClient();
+    const r1 = await tool(c1, "list_approvals").execute({ status: "bogus" }, {} as any);
+    expect(JSON.parse(r1.content[0].text).isError).toBe(true);
+    expect(c1.requestJson).not.toHaveBeenCalled();
+    const c2 = okClient();
+    const r2 = await tool(c2, "list_approvals").execute({ status: "" }, {} as any);
+    expect(JSON.parse(r2.content[0].text).isError).toBe(true);
+    expect(c2.requestJson).not.toHaveBeenCalled();
+  });
+
+  it("approve POSTs an empty body object when no comment, and includes comment when given", async () => {
+    const c1 = okClient(null);
+    await tool(c1, "approve").execute({ approval_id: "ap-1" }, {} as any);
+    expect(c1.requestJson).toHaveBeenCalledWith("POST", "/approvals/ap-1/approve", { body: {} });
+    const c2 = okClient(null);
+    await tool(c2, "approve").execute({ approval_id: "ap-1", comment: "ok by me" }, {} as any);
+    expect(c2.requestJson).toHaveBeenCalledWith("POST", "/approvals/ap-1/approve", { body: { comment: "ok by me" } });
+  });
+
+  it("reject POSTs the comment (empty body object when none)", async () => {
+    const c1 = okClient(null);
+    await tool(c1, "reject").execute({ approval_id: "ap-1", comment: "nope" }, {} as any);
+    expect(c1.requestJson).toHaveBeenCalledWith("POST", "/approvals/ap-1/reject", { body: { comment: "nope" } });
+    const c2 = okClient(null);
+    await tool(c2, "reject").execute({ approval_id: "ap-1" }, {} as any);
+    expect(c2.requestJson).toHaveBeenCalledWith("POST", "/approvals/ap-1/reject", { body: {} });
+  });
+
+  it("request_approval_revision requires a non-blank comment", async () => {
+    const c1 = okClient();
+    const r1 = await tool(c1, "request_approval_revision").execute({ approval_id: "ap-1", comment: "   " }, {} as any);
+    expect(JSON.parse(r1.content[0].text).message).toMatch(/comment is required/i);
+    expect(c1.requestJson).not.toHaveBeenCalled();
+    const c2 = okClient(null);
+    await tool(c2, "request_approval_revision").execute({ approval_id: "ap-1", comment: "please fix X" }, {} as any);
+    expect(c2.requestJson).toHaveBeenCalledWith("POST", "/approvals/ap-1/request-revision", { body: { comment: "please fix X" } });
+  });
+});
+
+describe("monitoring (wave 2)", () => {
+  it("get_dashboard GETs the company dashboard path", async () => {
+    const client = okClient({ ok: true });
+    await tool(client, "get_dashboard").execute({}, {} as any);
+    expect(client.requestJson).toHaveBeenCalledWith("GET", "/companies/co-default/dashboard", { companyId: "co-default" });
+  });
+
+  it("get_cost_summary GETs the company costs/summary path", async () => {
+    const client = okClient({ ok: true });
+    await tool(client, "get_cost_summary").execute({ company_id: "PEN" }, {} as any);
+    expect(client.requestJson).toHaveBeenCalledWith("GET", "/companies/PEN/costs/summary", { companyId: "PEN" });
+  });
+
+  it("list_activity GETs company activity with default limit 20", async () => {
+    const client = okClient([]);
+    await tool(client, "list_activity").execute({}, {} as any);
+    expect(client.requestJson).toHaveBeenCalledWith("GET", "/companies/co-default/activity", {
+      query: { limit: 20 },
+      companyId: "co-default",
+    });
+  });
+
+  it("list_activity clamps limit to 100 and adds agentId filter", async () => {
+    const client = okClient([]);
+    await tool(client, "list_activity").execute({ limit: 9999, agent_id: "ag-1" }, {} as any);
+    expect(client.requestJson).toHaveBeenCalledWith("GET", "/companies/co-default/activity", {
+      query: { limit: 100, agentId: "ag-1" },
+      companyId: "co-default",
+    });
+  });
+});

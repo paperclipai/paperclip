@@ -116,7 +116,7 @@ describe("company-scoped tool wiring (list_issues)", () => {
     expect(b.limit).toBe("50");
   }, 15000);
 
-  it("tools/list advertises the wave-1 surface", async () => {
+  it("tools/list advertises the full external surface", async () => {
     const client = new Client({ name: "test", version: "0.0.0" });
     const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
       requestInit: { headers: { Authorization: "Bearer pcp_X" } },
@@ -130,9 +130,14 @@ describe("company-scoped tool wiring (list_issues)", () => {
         "checkout_issue", "release_issue", "delete_issue", "comment_on_issue",
         "paperclip_search_issues", "list_projects", "get_project",
         "create_project", "update_project", "list_goals", "create_goal", "update_goal",
+        "list_agents", "invoke_agent_heartbeat",
+        "list_approvals", "approve", "reject", "request_approval_revision",
+        "get_dashboard", "get_cost_summary", "list_activity",
       ]) {
         expect(names).toContain(expected);
       }
+      expect(names).toContain("get_agent");
+      expect(new Set(names).size).toBeGreaterThanOrEqual(25);
     } finally {
       await client.close();
     }
