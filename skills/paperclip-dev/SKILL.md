@@ -166,6 +166,18 @@ If any section is missing or empty, do NOT submit the PR. Go back and fill it in
 
 Only after completing Steps 1 and 2, run `gh pr create`. Use the template contents as the structure for `--body` — do not write a freeform summary.
 
+### Step 4 — Post-submit follow-up
+
+After posting to an external GitHub repository from a Paperclip task — including PRs, comments, or review replies on `paperclipai/paperclip` — you MUST complete a read-back loop before claiming the post succeeded:
+
+1. Re-read the created PR/comment/reply from GitHub and confirm the URL, author, body, head/base branch, and commit SHA match what you intended.
+2. Confirm the post satisfies the repo's contributing requirements and PR template sections you read in Step 1.
+3. Check CI/status checks, review bots, Vercel/GitHub app comments, and maintainer replies for failures or requested fixes.
+4. If a bot or maintainer requests fixes, either address them in a follow-up commit/comment or leave the Paperclip issue blocked with the exact external owner/action.
+5. Post durable Paperclip evidence with the GitHub URL, validation commands/results, current check/review state, and any remaining follow-up owner.
+
+Do not treat `gh pr create` or `gh pr comment` returning success as sufficient evidence. The proof is the GitHub read-back plus current checks/replies.
+
 ## Hard Rules — Do NOT Bypass
 
 These rules exist because agents have caused real damage by improvising around CLI failures. Follow them exactly.
@@ -265,3 +277,4 @@ lsof -nP -iTCP:<port> -sTCP:LISTEN
 | Agent tries manual postgres operations | NEVER do this — all DB ops go through the CLI (see Hard Rules above) |
 | Dev server dies between heartbeats | Launch in a detached `tmux` session — see "Persistent Dev Servers" above |
 | Pushed feature branch to `paperclipai/paperclip` when a fork exists | Push to the user's fork remote instead — see "Forks" above |
+| Treating `gh pr create` / `gh pr comment` success as proof the post is correct | Complete the read-back loop in Step 4 — verify URL, body, CI, and reviews before claiming success |
