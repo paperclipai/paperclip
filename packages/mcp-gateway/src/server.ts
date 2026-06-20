@@ -32,6 +32,33 @@ export interface GatewayState {
   sessions: Map<string, SessionStore>;
 }
 
+/**
+ * Request headers we must NOT copy verbatim to the upstream fetch.
+ *
+ * `host` is re-derived from the upstream URL. `content-length` and
+ * `transfer-encoding` are framing headers that undici recomputes from the
+ * body we hand it — critically, undici's fetch rejects ANY request whose
+ * headers carry `transfer-encoding` with `UND_ERR_INVALID_ARG: invalid
+ * transfer-encoding header`, so a chunked-framed inbound request (as the
+ * upstream auth-proxy sends) would 502 if forwarded. The remainder are the
+ * RFC 7230 §6.1 hop-by-hop headers, which are per-connection and meaningless
+ * on the new gateway→upstream connection.
+ *
+ * Names are lowercase because Node lowercases all incoming header names.
+ */
+const STRIPPED_REQUEST_HEADERS = [
+  "host",
+  "content-length",
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+] as const;
+
 function getOrCreateStore(state: GatewayState, prefix: string): SessionStore {
   const existing = state.sessions.get(prefix);
   if (existing) return existing;
@@ -120,10 +147,10 @@ async function forward(
       headers[k] = v;
     }
   }
-  // Strip hop-by-hop headers we shouldn't forward.
-  delete headers["host"];
-  delete headers["connection"];
-  delete headers["content-length"];
+  // Strip framing + hop-by-hop headers we shouldn't forward (see
+  // STRIPPED_REQUEST_HEADERS). Leaving `transfer-encoding` in place makes
+  // undici reject the fetch with UND_ERR_INVALID_ARG.
+  for (const h of STRIPPED_REQUEST_HEADERS) delete headers[h];
   // Override Mcp-Session-Id with the upstream id (or remove it for fresh init).
   delete headers[MCP_SESSION_HEADER];
   if (upstreamSessionId) {
@@ -310,9 +337,10 @@ export function createGatewayServer(state: GatewayState): http.Server {
 function safeOnError(e: unknown, req: http.IncomingMessage, res: http.ServerResponse): void {
   const cause = (e as { cause?: unknown }).cause;
   const causeCode = (cause as { code?: string } | undefined)?.code;
+  const causeMessage = (cause as { message?: string } | undefined)?.message;
   // eslint-disable-next-line no-console
   console.error(
-    `[mcp-gateway] request handler error: method=${req.method} url=${req.url} cause=${causeCode ?? (e as Error).name}: ${(e as Error).message}`,
+    `[mcp-gateway] request handler error: method=${req.method} url=${req.url} cause=${causeCode ?? (e as Error).name}: ${causeMessage ?? (e as Error).message}`,
   );
   if (!res.headersSent) {
     res.statusCode = 502;
