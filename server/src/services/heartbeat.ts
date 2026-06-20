@@ -1795,9 +1795,14 @@ function resolveLedgerBiller(result: AdapterExecutionResult): string {
   return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
 }
 
-function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
-  if (billingType === "subscription_included") return 0;
+export function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
+  // RFC paperclipai/paperclip#5066: subscription-included runs default to 0
+  // (the user paid a flat subscription fee, no incremental charge). But when
+  // the adapter opts into `estimateSubscriptionSpendCents`, it reports a
+  // usage-proxy cost so the company-level cost pipeline has a non-flat
+  // signal. We honor any non-zero costUsd the adapter handed us.
+  if (billingType === "subscription_included" && costUsd <= 0) return 0;
   return Math.max(0, Math.round(costUsd * 100));
 }
 

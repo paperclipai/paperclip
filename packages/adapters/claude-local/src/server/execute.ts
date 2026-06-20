@@ -46,6 +46,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { estimateAnthropicCostUsd } from "@paperclipai/adapter-utils";
 import {
   parseClaudeStreamJson,
   describeClaudeFailure,
@@ -131,6 +132,46 @@ function isBedrockAuth(env: Record<string, string>): boolean {
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
   if (isBedrockAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+}
+
+/**
+ * Resolve the costUsd we return to the server cost pipeline.
+ *
+ * Default path: hand back whatever the CLI reported (parseClaudeStreamJson's
+ * `total_cost_usd`, or 0 when absent). Behaviour unchanged for metered_api
+ * and bedrock callers.
+ *
+ * Opt-in path (RFC paperclipai/paperclip#5066): when running on subscription
+ * billing AND `estimateSubscriptionSpendCents=true` AND the CLI reported no
+ * cost (which is the canonical OAuth Max shape), compute an estimate from
+ * token usage so downstream `monthSpendCents` is non-zero. The estimate is
+ * NOT a real bill — it's a usage proxy.
+ */
+function resolveCostUsd(opts: {
+  billingType: "api" | "subscription" | "metered_api";
+  parsedCostUsd: number | null;
+  legacyParsedCost: number;
+  model: string | null;
+  usage: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } | null;
+  estimateSubscriptionSpendCents: boolean;
+}): number {
+  const providerReported = opts.parsedCostUsd ?? opts.legacyParsedCost;
+  if (Number.isFinite(providerReported) && providerReported > 0) {
+    return providerReported;
+  }
+  if (opts.billingType === "subscription" && opts.estimateSubscriptionSpendCents && opts.usage) {
+    const estimate = estimateAnthropicCostUsd(opts.model, opts.usage);
+    if (typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0) {
+      return estimate;
+    }
+  }
+  // metered_api (Bedrock) intentionally falls through to providerReported.
+  // AWS bills Bedrock usage directly at region-specific prices that differ
+  // from Anthropic direct rates, so applying our ANTHROPIC_MODEL_PRICING
+  // estimator here would replace one wrong number ($0) with another (10-30%
+  // off from the real AWS invoice). Bedrock cost visibility is tracked
+  // separately — see RFC discussion on paperclipai/paperclip#5066.
+  return providerReported || 0;
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -435,6 +476,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
+  // RFC paperclipai/paperclip#5066. Opt-in: when running on a Claude Code
+  // subscription (OAuth Max), the CLI does not report total_cost_usd and
+  // the downstream cost pipeline pins cost_cents to 0. Setting this flag
+  // makes the adapter populate costUsd with a usage-proxy estimate from
+  // published Anthropic prices, so monthSpendCents and budget signals
+  // become non-flat for subscription-authed runs. Default off.
+  const estimateSubscriptionSpendCents = asBoolean(config.estimateSubscriptionSpendCents, false);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
   // When instructionsFilePath is configured, build a stable content-addressed
@@ -972,7 +1020,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
-      costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
+      costUsd: resolveCostUsd({
+        billingType,
+        parsedCostUsd: parsedStream.costUsd,
+        legacyParsedCost: asNumber(parsed.total_cost_usd, 0),
+        model: parsedStream.model || asString(parsed.model, model),
+        usage,
+        estimateSubscriptionSpendCents,
+      }),
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:
