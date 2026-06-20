@@ -386,6 +386,116 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
   });
 
+  it("findManagedSandboxEnvironment returns any active sandbox provider, unlike findKubernetesEnvironment", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // No sandbox configured yet → both lookups null.
+    expect(await svc.findManagedSandboxEnvironment(companyId)).toBeNull();
+
+    // A non-Kubernetes sandbox (e.g. Daytona/E2B stand-in): findKubernetes
+    // ignores it, but the provider-agnostic lookup returns it so
+    // executionMode="sandbox" can pin onto it.
+    const fake = await svc.create(companyId, {
+      name: "Fake Sandbox",
+      driver: "sandbox",
+      config: { provider: "fake", image: "busybox", reuseLease: false },
+    });
+    expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
+    expect((await svc.findManagedSandboxEnvironment(companyId))?.id).toBe(fake.id);
+  });
+
+  it("ensureManagedSandboxEnvironment auto-provisions a generic sandbox and is idempotent", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const created = await svc.ensureManagedSandboxEnvironment(companyId, {
+      provider: "daytona",
+      config: { apiUrl: "https://daytona.example", target: "eu" },
+    });
+    expect(created.driver).toBe("sandbox");
+    expect(created.config.provider).toBe("daytona");
+    expect(created.config.apiUrl).toBe("https://daytona.example");
+    expect(created.metadata?.managedByPaperclip).toBe(true);
+    expect(created.metadata?.managedSandbox).toBe(true);
+
+    // Idempotent: second call refreshes config in place, no new row.
+    const refreshed = await svc.ensureManagedSandboxEnvironment(companyId, {
+      provider: "daytona",
+      config: { apiUrl: "https://daytona.example", target: "us" },
+    });
+    expect(refreshed.id).toBe(created.id);
+    expect(refreshed.config.target).toBe("us");
+
+    // It is the env the provider-agnostic lookup pins onto, and is NOT mistaken
+    // for the managed Kubernetes env.
+    expect((await svc.findManagedSandboxEnvironment(companyId))?.id).toBe(created.id);
+    expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("findManagedSandboxEnvironment ignores a provider-less sandbox env (treated as unconfigured)", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // A sandbox row without a provider key is a misconfiguration; the lookup
+    // must return null so the heartbeat raises the actionable
+    // "configure a sandbox provider" error instead of pinning onto it.
+    await svc.create(companyId, {
+      name: "Provider-less Sandbox",
+      driver: "sandbox",
+      config: { reuseLease: false },
+    });
+
+    expect(await svc.findManagedSandboxEnvironment(companyId)).toBeNull();
+  });
+
+  it("findManagedSandboxEnvironment prefers a Paperclip-managed sandbox when several exist", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await svc.create(companyId, {
+      name: "Tenant Sandbox",
+      driver: "sandbox",
+      config: { provider: "fake", image: "busybox", reuseLease: false },
+    });
+    const managed = await svc.ensureKubernetesEnvironment(companyId, {
+      backend: "job",
+      inCluster: true,
+    });
+
+    expect((await svc.findManagedSandboxEnvironment(companyId))?.id).toBe(managed.id);
+  });
+
   it("ignores a config.provider=kubernetes sandbox env without the managed marker", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

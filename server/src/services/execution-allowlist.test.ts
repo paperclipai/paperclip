@@ -85,12 +85,66 @@ describe("evaluateExecutionAllowlist", () => {
     });
   });
 
-  describe("isExecutionForcedToKubernetes helper", () => {
-    it("reflects the policy", async () => {
+  describe('executionMode "sandbox" (forced any-provider sandbox)', () => {
+    it("allows the kubernetes sandbox provider", () => {
+      const result = evaluateExecutionAllowlist({ executionMode: "sandbox" }, kubernetesEnv);
+      expect(result.allowed).toBe(true);
+    });
+
+    it("allows a non-kubernetes sandbox provider (e.g. fake/Daytona/E2B)", () => {
+      const result = evaluateExecutionAllowlist({ executionMode: "sandbox" }, fakeSandboxEnv);
+      expect(result.allowed).toBe(true);
+    });
+
+    it("DENIES the local environment", () => {
+      const result = evaluateExecutionAllowlist({ executionMode: "sandbox" }, localEnv);
+      expect(result.allowed).toBe(false);
+      if (!result.allowed) {
+        expect(result.deniedDriver).toBe("local");
+        expect(result.reason).toMatch(/executionMode=sandbox/);
+      }
+    });
+
+    it("DENIES an ssh environment", () => {
+      const result = evaluateExecutionAllowlist({ executionMode: "sandbox" }, sshEnv);
+      expect(result.allowed).toBe(false);
+    });
+
+    it("DENIES a sandbox driver with no provider, naming the missing provider", () => {
+      const result = evaluateExecutionAllowlist(
+        { executionMode: "sandbox" },
+        { driver: "sandbox", provider: null },
+      );
+      expect(result.allowed).toBe(false);
+      if (!result.allowed) {
+        expect(result.reason).toMatch(/no configured provider/);
+      }
+    });
+  });
+
+  describe("forcing helpers", () => {
+    it("isExecutionForcedToKubernetes reflects only the kubernetes mode", async () => {
       const { isExecutionForcedToKubernetes } = await import("./execution-allowlist.js");
       expect(isExecutionForcedToKubernetes({ executionMode: "kubernetes" })).toBe(true);
+      expect(isExecutionForcedToKubernetes({ executionMode: "sandbox" })).toBe(false);
       expect(isExecutionForcedToKubernetes({ executionMode: "any" })).toBe(false);
       expect(isExecutionForcedToKubernetes({})).toBe(false);
+    });
+
+    it("isExecutionForcedToSandbox reflects only the provider-agnostic mode", async () => {
+      const { isExecutionForcedToSandbox } = await import("./execution-allowlist.js");
+      expect(isExecutionForcedToSandbox({ executionMode: "sandbox" })).toBe(true);
+      expect(isExecutionForcedToSandbox({ executionMode: "kubernetes" })).toBe(false);
+      expect(isExecutionForcedToSandbox({ executionMode: "any" })).toBe(false);
+      expect(isExecutionForcedToSandbox({})).toBe(false);
+    });
+
+    it("isExecutionForcedToSandboxTier covers both forcing modes", async () => {
+      const { isExecutionForcedToSandboxTier } = await import("./execution-allowlist.js");
+      expect(isExecutionForcedToSandboxTier({ executionMode: "kubernetes" })).toBe(true);
+      expect(isExecutionForcedToSandboxTier({ executionMode: "sandbox" })).toBe(true);
+      expect(isExecutionForcedToSandboxTier({ executionMode: "any" })).toBe(false);
+      expect(isExecutionForcedToSandboxTier({})).toBe(false);
     });
   });
 });
