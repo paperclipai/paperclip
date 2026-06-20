@@ -2311,6 +2311,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("skips assignment_recovery requeue for a todo issue whose run was operator-pruned (cancelled with no errorCode)", async () => {
+    // An operator cancelling a queued run during incident recovery sets status=cancelled
+    // with no errorCode. Recovery should NOT immediately requeue as assignment_recovery
+    // — that would undo the operator's queue pruning and worsen the incident.
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      runErrorCode: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.issueIds).not.toContain(issueId);
+  });
+
+  it("still enqueues assignment_recovery for a todo issue whose run was watchdog-cancelled (has errorCode)", async () => {
+    // Watchdog auto-cancelled runs carry errorCode "watchdog_no_process_output_silence".
+    // These are NOT operator-pruned — the issue genuinely needs a new dispatch attempt.
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      runErrorCode: "watchdog_no_process_output_silence",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(1);
+    expect(result.issueIds).toContain(issueId);
+  });
+
   it.each([
     ["failed", "adapter_failed"],
     ["failed", "process_lost"],

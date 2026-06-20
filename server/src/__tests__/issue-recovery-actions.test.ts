@@ -616,6 +616,56 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
   });
 
+  it("resolves an active recovery action by intentionally parking the source issue in backlog without wakeup", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: managerId, assigneeUserId: null })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:intentional-backlog",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "manual" },
+    });
+    const app = createApp();
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "backlog",
+        resolutionNote: "Operator intentionally parked the source issue.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "backlog",
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "Operator intentionally parked the source issue.",
+    });
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups).toHaveLength(0);
+  });
+
   it("marks a recovery action stale when a blocked source issue is manually moved to todo", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     await db

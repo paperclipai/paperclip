@@ -131,6 +131,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
+    noProcessMetadata?: boolean;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -197,12 +198,12 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       invocationSource: "assignment",
       triggerDetail: "system",
       startedAt,
-      processStartedAt: startedAt,
+      processStartedAt: opts.noProcessMetadata ? null : startedAt,
       lastOutputAt,
       lastOutputSeq: opts.withOutput ? 3 : 0,
       lastOutputStream: opts.withOutput ? "stdout" : null,
       contextSnapshot: { issueId },
-      stdoutExcerpt: "OPENAI_API_KEY=sk-test-secret-value should not leak",
+      stdoutExcerpt: opts.noProcessMetadata ? null : "OPENAI_API_KEY=sk-test-secret-value should not leak",
       logBytes: 0,
     });
     if (opts.logChunk) {
@@ -321,9 +322,9 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db);
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
 
-    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const result = await recovery.scanSilentActiveRuns({ now, companyId });
 
     expect(result.created).toBe(1);
     const [evaluation] = await db
@@ -342,6 +343,51 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(source?.status).not.toBe("blocked");
+  });
+
+  it("auto-cancels critical silent runs that never acquired process or log metadata", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      noProcessMetadata: true,
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
+
+    const result = await recovery.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ created: 0, autoCancelled: 1, skipped: 0 });
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("watchdog_no_process_output_silence");
+    expect(run?.finishedAt?.toISOString()).toBe(now.toISOString());
+    expect(run?.resultJson).toMatchObject({
+      activeRunWatchdogAutoCancel: {
+        sourceIssueId: issueId,
+        processStartedAt: null,
+        processPid: null,
+        processGroupId: null,
+        lastOutputAt: null,
+        lastOutputSeq: 0,
+        cleanup: { outcome: "no_process_metadata" },
+      },
+    });
+
+    const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(source?.executionRunId).toBeNull();
+    const [agent] = await db.select().from(agents).where(eq(agents.id, coderId));
+    expect(agent?.status).toBe("idle");
+    const [event] = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(event?.message).toContain("auto-cancelled no-process silent run");
   });
 
   it("emits the source-issue escalation comment only once across repeated critical scans", async () => {

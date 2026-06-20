@@ -110,6 +110,8 @@ type RecoveryWakeup = (
   opts?: RecoveryWakeupOptions,
 ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
 
+type RecoveryFinalizedRunHook = (run: typeof heartbeatRuns.$inferSelect) => Promise<void>;
+
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
   "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
@@ -461,7 +463,7 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; onWatchdogAutoCancelled?: RecoveryFinalizedRunHook }) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -874,6 +876,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
   }
 
+  function isNoProcessCriticalSilentRun(run: typeof heartbeatRuns.$inferSelect, now: Date) {
+    return run.status === "running" &&
+      (silenceAgeMsForRun(run, now) ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS &&
+      !run.processStartedAt &&
+      typeof run.processPid !== "number" &&
+      typeof run.processGroupId !== "number" &&
+      !runningProcesses.has(run.id) &&
+      !run.lastOutputAt &&
+      (run.lastOutputSeq ?? 0) === 0 &&
+      !run.lastOutputStream &&
+      (run.lastOutputBytes ?? 0) === 0 &&
+      !run.stdoutExcerpt &&
+      !run.stderrExcerpt &&
+      !run.logStore &&
+      !run.logRef &&
+      (run.logBytes ?? 0) === 0;
+  }
+
   async function latestActiveOutputQuietUntilDecision(companyId: string, runId: string, now = new Date()) {
     const [row] = await db
       .select()
@@ -1235,7 +1255,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           resultJson,
           updatedAt: input.now,
         })
-        .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId), eq(heartbeatRuns.status, "running")))
+        .where(and(
+          eq(heartbeatRuns.id, input.run.id),
+          eq(heartbeatRuns.companyId, input.run.companyId),
+          eq(heartbeatRuns.status, "running"),
+        ))
         .returning();
       if (!updatedRun) return null;
 
@@ -1336,6 +1360,140 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     await finalizeAgentAfterSourceResolvedRun(finalizedRun, finalRunStatus);
     return { kind: "folded" as const, evaluationIssueId: input.existingEvaluation?.id ?? null };
+  }
+
+  async function autoCancelNoProcessSilentRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    existingEvaluation: Awaited<ReturnType<typeof findOpenStaleRunEvaluation>>;
+    silenceAgeMs: number | null;
+    now: Date;
+  }) {
+    const cleanup = await cleanupSourceResolvedRunProcess({ run: input.run, runningAgent: input.runningAgent });
+    const reason = "Auto-cancelled by active-run watchdog: critical output silence with no process, log, or output metadata.";
+    const resultJson = {
+      ...parseObject(input.run.resultJson),
+      activeRunWatchdogAutoCancel: {
+        sourceIssueId: input.sourceIssue?.id ?? null,
+        sourceIssueIdentifier: input.sourceIssue?.identifier ?? null,
+        silenceAgeMs: input.silenceAgeMs,
+        silenceStartedAt: silenceStartedAtForRun(input.run)?.toISOString() ?? null,
+        lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
+        lastOutputSeq: input.run.lastOutputSeq ?? 0,
+        processStartedAt: input.run.processStartedAt?.toISOString() ?? null,
+        processPid: input.run.processPid ?? null,
+        processGroupId: input.run.processGroupId ?? null,
+        evaluationIssueId: input.existingEvaluation?.id ?? null,
+        evaluationIssueIdentifier: input.existingEvaluation?.identifier ?? null,
+        cleanup,
+      },
+    };
+
+    const finalizedRun = await db.transaction(async (tx) => {
+      const [updatedRun] = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: input.now,
+          error: reason,
+          errorCode: "watchdog_no_process_output_silence",
+          resultJson,
+          updatedAt: input.now,
+        })
+        .where(and(
+          eq(heartbeatRuns.id, input.run.id),
+          eq(heartbeatRuns.companyId, input.run.companyId),
+          eq(heartbeatRuns.status, "running"),
+          isNull(heartbeatRuns.processStartedAt),
+          isNull(heartbeatRuns.processPid),
+          isNull(heartbeatRuns.processGroupId),
+          isNull(heartbeatRuns.lastOutputAt),
+          sql`coalesce(${heartbeatRuns.lastOutputSeq}, 0) = 0`,
+          isNull(heartbeatRuns.lastOutputStream),
+          sql`coalesce(${heartbeatRuns.lastOutputBytes}, 0) = 0`,
+          isNull(heartbeatRuns.stdoutExcerpt),
+          isNull(heartbeatRuns.stderrExcerpt),
+          isNull(heartbeatRuns.logStore),
+          isNull(heartbeatRuns.logRef),
+          sql`coalesce(${heartbeatRuns.logBytes}, 0) = 0`,
+        ))
+        .returning();
+      if (!updatedRun) return null;
+
+      if (input.run.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: input.now,
+            error: reason,
+            updatedAt: input.now,
+          })
+          .where(and(eq(agentWakeupRequests.id, input.run.wakeupRequestId), eq(agentWakeupRequests.companyId, input.run.companyId)));
+      }
+
+      if (input.sourceIssue) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: input.now,
+          })
+          .where(
+            and(
+              eq(issues.id, input.sourceIssue.id),
+              eq(issues.companyId, input.run.companyId),
+              eq(issues.executionRunId, input.run.id),
+            ),
+          );
+      }
+
+      return updatedRun;
+    });
+    if (!finalizedRun) return { kind: "skipped" as const };
+
+    if (input.existingEvaluation && !isTerminalIssueStatus(input.existingEvaluation.status)) {
+      await issuesSvc.update(input.existingEvaluation.id, { status: "done" });
+      await issuesSvc.addComment(input.existingEvaluation.id, [
+        "Watchdog auto-cancelled the source run.",
+        "",
+        `- Run: \`${input.run.id}\``,
+        `- Silent for: ${formatDuration(input.silenceAgeMs)}`,
+        "- Reason: critical output silence with no process, log, or output metadata.",
+      ].join("\n"), { runId: input.run.id });
+    }
+
+    await appendRecoveryRunEvent(finalizedRun, {
+      level: "warn",
+      message: "Active-run watchdog auto-cancelled no-process silent run",
+      payload: resultJson.activeRunWatchdogAutoCancel,
+    });
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_auto_cancelled",
+      entityType: "heartbeat_run",
+      entityId: input.run.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        sourceIssueId: input.sourceIssue?.id ?? null,
+        sourceIssueIdentifier: input.sourceIssue?.identifier ?? null,
+        silenceAgeMs: input.silenceAgeMs,
+        cleanup,
+      },
+    });
+    if (deps.onWatchdogAutoCancelled) {
+      await deps.onWatchdogAutoCancelled(finalizedRun);
+    } else {
+      await finalizeAgentAfterSourceResolvedRun(finalizedRun, "cancelled");
+    }
+    return { kind: "auto_cancelled" as const, runId: finalizedRun.id, evaluationIssueId: input.existingEvaluation?.id ?? null };
   }
 
   async function resolveStaleRunOwnerAgentId(input: {
@@ -1586,6 +1744,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
+    const silenceAgeMs = silenceAgeMsForRun(input.run, input.now);
     if (sourceIssue && isRecoveryOriginIssue(sourceIssue)) {
       await logActivity(db, {
         companyId: input.run.companyId,
@@ -1621,10 +1780,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           evidence: terminalEvidence,
           existingEvaluation: existing,
           silenceStartedAt,
-          silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
+          silenceAgeMs,
           now: input.now,
         });
       }
+    }
+
+    // Dedup: if a reviewer has dismissed this run's silence as a false positive, don't
+    // auto-cancel or re-file. Terminal same-run evidence is folded first so resolved
+    // source issues can still close their existing watchdog work idempotently.
+    if (await hasDismissedFalsePositiveDecision(input.run.companyId, input.run.id)) {
+      return { kind: "skipped" as const };
+    }
+
+    if (isNoProcessCriticalSilentRun(input.run, input.now)) {
+      return autoCancelNoProcessSilentRun({
+        run: input.run,
+        runningAgent,
+        sourceIssue,
+        existingEvaluation: existing,
+        silenceAgeMs,
+        now: input.now,
+      });
     }
 
     // Idle output is expected when the source issue is blocked — skip ticket creation entirely.
@@ -1633,10 +1810,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // Dedup: if a reviewer has dismissed this run's silence as a false positive, don't re-file.
     // A "continue" decision with a snooze window is allowed to re-arm normally — only an
     // explicit dismissed_false_positive blocks all further alerts for this run.
-    if (await hasDismissedFalsePositiveDecision(input.run.companyId, input.run.id)) {
-      return { kind: "skipped" as const };
-    }
-
     // Dedup: if a prior evaluation issue for this run was closed `done` on the board
     // without going through the watchdog decision API, no dismissed_false_positive record exists
     // and the watchdog would re-fire every cycle. Auto-record the suppression now so future
@@ -1829,6 +2002,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       existing: 0,
       escalated: 0,
       folded: 0,
+      autoCancelled: 0,
       snoozed: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
@@ -1844,6 +2018,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
       else if (outcome.kind === "folded") result.folded += 1;
+      else if (outcome.kind === "auto_cancelled") result.autoCancelled += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
@@ -2745,6 +2920,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (latestRun.status === "succeeded") {
+          result.skipped += 1;
+          continue;
+        }
+
+        // Operator-pruned detection: a cancelled run with no errorCode was not terminated
+        // by an execution failure path. Watchdog auto-cancels set errorCode
+        // "watchdog_no_process_output_silence"; adapter failures set other codes.
+        // A null errorCode is characteristic of an operator cancelling a queued run during
+        // incident recovery. Skip assignment_recovery requeue so the operator's queue
+        // pruning is not immediately undone; the issue stays todo until re-dispatched by
+        // assignment, routine cycle, or manual trigger.
+        if (latestRun.status === "cancelled" && !latestRun.errorCode) {
           result.skipped += 1;
           continue;
         }
