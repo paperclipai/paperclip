@@ -101,5 +101,21 @@ describeEmbeddedPostgres("heartbeat run list payloads", () => {
       wakeReason: "retry_failed_run",
       forceFreshSession: true,
     });
+
+    const displayRun = await heartbeat.getRunForDisplay(runId);
+    expect(displayRun?.resultJson).toEqual(resultJson);
+    expect(displayRun?.contextSnapshot).toEqual(contextSnapshot);
+
+    const accessRun = await heartbeat.getRunAccess(runId);
+    expect(accessRun).toMatchObject({
+      id: runId,
+      companyId,
+      agentId,
+      logStore: null,
+      logRef: null,
+      executionWorkspaceId: null,
+    });
+    expect(accessRun).not.toHaveProperty("resultJson");
+    expect(accessRun).not.toHaveProperty("contextSnapshot");
   });
 });

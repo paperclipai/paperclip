@@ -1528,6 +1528,40 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getRunForDisplay(runId: string) {
+    return db
+      .select(heartbeatRunListColumns)
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null)
+      .then((row) =>
+        row
+          ? {
+              ...row,
+              resultJson: summarizeHeartbeatRunResultJson(row.resultJson),
+            }
+          : null,
+      );
+  }
+
+  async function getRunAccess(runId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        logStore: heartbeatRuns.logStore,
+        logRef: heartbeatRuns.logRef,
+        executionWorkspaceId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'executionWorkspaceId'`.as(
+          "executionWorkspaceId",
+        ),
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function getRuntimeState(agentId: string) {
     return db
       .select()
@@ -4748,6 +4782,8 @@ export function heartbeatService(db: Db) {
     },
 
     getRun,
+    getRunForDisplay,
+    getRunAccess,
 
     getRuntimeState: async (agentId: string) => {
       const state = await getRuntimeState(agentId);
@@ -4825,8 +4861,12 @@ export function heartbeatService(db: Db) {
         .orderBy(asc(heartbeatRunEvents.seq))
         .limit(Math.max(1, Math.min(limit, 1000))),
 
-    readLog: async (runId: string, opts?: { offset?: number; limitBytes?: number }) => {
-      const run = await getRun(runId);
+    readLog: async (
+      runId: string,
+      opts?: { offset?: number; limitBytes?: number },
+      preloadedRun?: Awaited<ReturnType<typeof getRunAccess>>,
+    ) => {
+      const run = preloadedRun ?? (await getRunAccess(runId));
       if (!run) throw notFound("Heartbeat run not found");
       if (!run.logStore || !run.logRef) throw notFound("Run log not found");
 
