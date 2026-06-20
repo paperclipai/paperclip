@@ -1207,7 +1207,7 @@ export function pluginLoader(
               const val = deps[key];
               return (
                 key === targetPackageName ||
-                (typeof val === "string" && (val === targetPackageName || val.endsWith(targetPackageName) || val.includes(targetPackageName)))
+                (typeof val === "string" && val === targetPackageName)
               );
             });
             
