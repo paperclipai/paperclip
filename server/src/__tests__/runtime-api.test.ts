@@ -17,6 +17,83 @@ describe("runtime API discovery", () => {
     ).toBe("https://paperclip.example.com");
   });
 
+  it("prefers a specific bind host over allowedHostnames[0] when it is non-loopback and non-wildcard", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["localhost", "100.117.33.83"],
+        bindHost: "100.117.33.83",
+        port: 3100,
+      }),
+    ).toBe("http://100.117.33.83:3100");
+  });
+
+  it("falls back to allowedHostnames[0] when bindHost is the wildcard address", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["host1.example.test"],
+        bindHost: "0.0.0.0",
+        port: 3102,
+      }),
+    ).toBe("http://host1.example.test:3102");
+  });
+
+  it("falls back to allowedHostnames[0] when bindHost is loopback", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["host1.example.test"],
+        bindHost: "127.0.0.1",
+        port: 3102,
+      }),
+    ).toBe("http://host1.example.test:3102");
+  });
+
+  it("falls back to allowedHostnames[0] when bindHost is empty", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["host1.example.test"],
+        bindHost: "",
+        port: 3102,
+      }),
+    ).toBe("http://host1.example.test:3102");
+  });
+
+  it("authPublicBaseUrl always overrides bindHost and allowedHostnames", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: "https://x.example.com",
+        allowedHostnames: ["host1.example.test"],
+        bindHost: "100.117.33.83",
+        port: 3102,
+      }),
+    ).toBe("https://x.example.com");
+  });
+
+  it("falls back to bindHost loopback when there are no allowedHostnames", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: [],
+        bindHost: "127.0.0.1",
+        port: 3102,
+      }),
+    ).toBe("http://127.0.0.1:3102");
+  });
+
+  it("falls back to localhost when bindHost is wildcard and there are no allowedHostnames", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: [],
+        bindHost: "0.0.0.0",
+        port: 3102,
+      }),
+    ).toBe("http://localhost:3102");
+  });
+
   it("builds ordered callback candidates from explicit, allowed, bind, and interface hosts", () => {
     expect(
       buildRuntimeApiCandidateUrls({

@@ -61,6 +61,16 @@ export function choosePrimaryRuntimeApiUrl(input: {
     }
   }
 
+  // When the server actually listens on a specific (non-loopback, non-wildcard)
+  // address, that address is the only canonical URL that will reach this process.
+  // Returning allowedHostnames[0] in that case is order-sensitive and breaks
+  // setups where the bind address (e.g. a tailnet IP) is not the first allowed
+  // hostname.
+  const bindHost = normalizeHost(input.bindHost);
+  if (bindHost && !isLoopbackHost(bindHost) && !isWildcardHost(bindHost)) {
+    return formatOrigin("http:", bindHost, input.port);
+  }
+
   const allowedHostname = input.allowedHostnames
     .map((value) => value.trim())
     .find(Boolean);
@@ -68,7 +78,6 @@ export function choosePrimaryRuntimeApiUrl(input: {
     return formatOrigin("http:", allowedHostname, input.port);
   }
 
-  const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost)) {
     return formatOrigin("http:", bindHost, input.port);
   }
