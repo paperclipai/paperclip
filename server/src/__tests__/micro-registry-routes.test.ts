@@ -13,6 +13,7 @@ const mockRegistryService = vi.hoisted(() => ({
   createPod: vi.fn(),
   createExperiment: vi.fn(),
   updateExperimentVerdict: vi.fn(),
+  recordBoardReview: vi.fn(),
   createDependencyRequest: vi.fn(),
   createEvidencePack: vi.fn(),
   createPromotionRequest: vi.fn(),
@@ -84,6 +85,21 @@ describe("micro registry routes", () => {
       updatedAt: "2026-06-20T00:00:00.000Z",
     });
     mockRegistryService.updateExperimentVerdict.mockResolvedValue({ id: experimentId, companyId, verdict: "kill", verdictReason: "No edge after five improvements", lifecycleState: "killed" });
+    mockRegistryService.recordBoardReview.mockResolvedValue({
+      id: experimentId,
+      companyId,
+      lifecycleState: "approved_for_local_dry_run",
+      metrics: {
+        boardReview: {
+          decision: "approve_local_dry_run_plan",
+          reviewer: "board-user",
+          note: "Approve local-only dry-run preparation",
+          executionAuthorized: false,
+          paidComputeAuthorized: false,
+          brokerActionsAuthorized: false,
+        },
+      },
+    });
     mockRegistryService.createDependencyRequest.mockResolvedValue({ id: "77777777-7777-4777-8777-777777777777", companyId, podId, experimentId, kind: "data", title: "Need tick data", status: "open" });
     mockRegistryService.createEvidencePack.mockResolvedValue({ id: "88888888-8888-4888-8888-888888888888", companyId, podId, experimentId, title: "Evidence", artifactUri: "file:///tmp/evidence.md", status: "draft" });
     mockRegistryService.createPromotionRequest.mockResolvedValue({ id: "99999999-9999-4999-8999-999999999999", companyId, podId, experimentId, target: "paper_broker_review", status: "requested", rationale: "Shadow metrics passed" });
@@ -177,6 +193,33 @@ describe("micro registry routes", () => {
     });
     expect(promotion.status).toBe(201);
     expect(mockRegistryService.createPromotionRequest).toHaveBeenCalledWith(companyId, expect.objectContaining({ target: "paper_broker_review" }));
+  });
+
+  it("records board review decisions without authorizing execution side effects", async () => {
+    const app = await createApp({ type: "board", userId: "board-user", source: "session", isInstanceAdmin: true, companyIds: [companyId] });
+
+    const res = await request(app).patch(`/api/companies/${companyId}/micro-registry/experiments/${experimentId}/board-review`).send({
+      decision: "approve_local_dry_run_plan",
+      note: "Approve local-only dry-run preparation",
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistryService.recordBoardReview).toHaveBeenCalledWith(
+      companyId,
+      experimentId,
+      expect.objectContaining({ decision: "approve_local_dry_run_plan" }),
+      expect.objectContaining({ userId: "board-user" }),
+    );
+    expect(res.body).toMatchObject({
+      lifecycleState: "approved_for_local_dry_run",
+      metrics: {
+        boardReview: {
+          executionAuthorized: false,
+          paidComputeAuthorized: false,
+          brokerActionsAuthorized: false,
+        },
+      },
+    });
   });
 
   it("blocks cross-company reads", async () => {

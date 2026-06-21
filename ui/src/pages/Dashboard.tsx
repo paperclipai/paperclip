@@ -20,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Siren, FlaskConical, FileText, LockKeyhole } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Siren, FlaskConical, FileText, LockKeyhole, ClipboardCheck } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -324,6 +324,12 @@ export function Dashboard() {
                     <p className="mt-1 max-w-3xl text-sm text-slate-300">
                       Draft alpha work is visible here before execution. Broker actions, paid compute, overnight exposure, and promotion remain blocked until evidence and operator gates clear.
                     </p>
+                    <Link
+                      to="/micro-board-review"
+                      className="mt-3 inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-cyan-100 transition hover:bg-cyan-300/20"
+                    >
+                      <ClipboardCheck className="h-3.5 w-3.5" /> Open board review
+                    </Link>
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:min-w-[520px]">

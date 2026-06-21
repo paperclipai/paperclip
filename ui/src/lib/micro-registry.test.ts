@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { summarizeMicroRegistry, formatExperimentWindow } from "./micro-registry";
+import { summarizeMicroRegistry, formatExperimentWindow, boardReviewDecisionLabel, boardReviewQueue } from "./micro-registry";
 import type { MicroRegistryOverview } from "@paperclipai/shared";
 
 const overview: MicroRegistryOverview = {
@@ -7,7 +7,7 @@ const overview: MicroRegistryOverview = {
     { id: "p1", companyId: "c1", paperclipIssueId: null, identifier: "MPOD-FX", title: "FX", source: "operator", thesis: "x", ownerAgentId: null, lifecycleState: "draft", improvementAttemptCount: 0, dependencies: [], createdAt: "2026-06-20T00:00:00.000Z", updatedAt: "2026-06-20T00:00:00.000Z", closedAt: null },
   ],
   experiments: [
-    { id: "e1", companyId: "c1", podId: "p1", paperclipIssueId: null, identifier: "MEXP-FX", title: "FX exp", hypothesis: "h", sourceKind: "operator", sourceUrl: null, lifecycleState: "draft", maxImprovementAttempts: 5, improvementAttemptCount: 0, overnightAllowed: false, holdingPeriodMinMinutes: 1, holdingPeriodMaxMinutes: 390, metrics: {}, verdict: null, verdictReason: null, evidencePackId: null, promotionRequestId: null, createdAt: "2026-06-20T00:00:00.000Z", updatedAt: "2026-06-20T00:00:00.000Z", closedAt: null },
+    { id: "e1", companyId: "c1", podId: "p1", paperclipIssueId: null, identifier: "MEXP-FX", title: "FX exp", hypothesis: "h", sourceKind: "operator", sourceUrl: null, lifecycleState: "ready_for_board_review", maxImprovementAttempts: 5, improvementAttemptCount: 0, overnightAllowed: false, holdingPeriodMinMinutes: 1, holdingPeriodMaxMinutes: 390, metrics: {}, verdict: null, verdictReason: null, evidencePackId: null, promotionRequestId: null, createdAt: "2026-06-20T00:00:00.000Z", updatedAt: "2026-06-20T00:00:00.000Z", closedAt: null },
     { id: "e2", companyId: "c1", podId: "p1", paperclipIssueId: null, identifier: "MEXP-KILL", title: "Killed", hypothesis: "h", sourceKind: "paper", sourceUrl: null, lifecycleState: "killed", maxImprovementAttempts: 5, improvementAttemptCount: 5, overnightAllowed: false, holdingPeriodMinMinutes: 1, holdingPeriodMaxMinutes: 30, metrics: {}, verdict: "kill", verdictReason: "no edge", evidencePackId: null, promotionRequestId: null, createdAt: "2026-06-20T00:00:00.000Z", updatedAt: "2026-06-20T00:00:00.000Z", closedAt: null },
   ],
   dependencyRequests: [
@@ -33,5 +33,12 @@ describe("micro registry presentation", () => {
   it("formats day-trading holding windows", () => {
     expect(formatExperimentWindow(overview.experiments[0])).toBe("1m → EOD");
     expect(formatExperimentWindow(overview.experiments[1])).toBe("1m → 30m");
+  });
+
+  it("isolates board review queue experiments and labels decisions", () => {
+    expect(boardReviewQueue(overview).map((experiment) => experiment.identifier)).toEqual(["MEXP-FX"]);
+    expect(boardReviewDecisionLabel("approve_local_dry_run_plan")).toBe("Approve local dry-run plan");
+    expect(boardReviewDecisionLabel("needs_revision")).toBe("Send back for revision");
+    expect(boardReviewDecisionLabel("hold")).toBe("Hold at board review");
   });
 });

@@ -18,6 +18,7 @@ import {
   PanelLeftOpen,
   Pin,
   MessagesSquare,
+  ClipboardCheck,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -159,6 +160,7 @@ export function Sidebar() {
             );
           })()}
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/micro-board-review" label="Board Review" icon={ClipboardCheck} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"

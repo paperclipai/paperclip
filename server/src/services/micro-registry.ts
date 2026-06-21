@@ -45,6 +45,11 @@ export interface UpdateExperimentVerdictInput {
   lifecycleState?: string;
 }
 
+export interface BoardReviewInput {
+  decision: "approve_local_dry_run_plan" | "needs_revision" | "hold";
+  note?: string | null;
+}
+
 export interface CreateDependencyRequestInput {
   podId?: string | null;
   experimentId?: string | null;
@@ -157,6 +162,48 @@ export function microRegistryService(db: Db) {
     return updated;
   }
 
+  async function recordBoardReview(
+    companyId: string,
+    experimentId: string,
+    input: BoardReviewInput,
+    actor: RegistryActor,
+  ) {
+    const [existing] = await db.select({ metrics: microExperiments.metrics })
+      .from(microExperiments)
+      .where(and(eq(microExperiments.companyId, companyId), eq(microExperiments.id, experimentId)))
+      .limit(1);
+    if (!existing) throw notFound("Micro experiment not found");
+
+    const nextLifecycle = input.decision === "approve_local_dry_run_plan"
+      ? "approved_for_local_dry_run"
+      : input.decision === "needs_revision"
+        ? "needs_revision"
+        : "board_hold";
+    const metrics = {
+      ...(existing.metrics ?? {}),
+      boardReview: {
+        decision: input.decision,
+        note: input.note ?? null,
+        reviewerUserId: actor.userId ?? null,
+        reviewerAgentId: actor.agentId ?? null,
+        reviewedAt: new Date().toISOString(),
+        executionAuthorized: false,
+        paidComputeAuthorized: false,
+        brokerActionsAuthorized: false,
+      },
+      executionAuthorized: false,
+      paidComputeAuthorized: false,
+      brokerActionsAuthorized: false,
+    };
+
+    const [updated] = await db.update(microExperiments)
+      .set({ lifecycleState: nextLifecycle, metrics, updatedAt: new Date() })
+      .where(and(eq(microExperiments.companyId, companyId), eq(microExperiments.id, experimentId)))
+      .returning();
+    if (!updated) throw notFound("Micro experiment not found");
+    return updated;
+  }
+
   async function createDependencyRequest(companyId: string, input: CreateDependencyRequestInput) {
     const [created] = await db.insert(microDependencyRequests).values({
       companyId,
@@ -205,6 +252,7 @@ export function microRegistryService(db: Db) {
     createPod,
     createExperiment,
     updateExperimentVerdict,
+    recordBoardReview,
     createDependencyRequest,
     createEvidencePack,
     createPromotionRequest,

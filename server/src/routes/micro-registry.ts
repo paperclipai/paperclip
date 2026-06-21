@@ -35,6 +35,11 @@ const updateVerdictSchema = z.object({
   lifecycleState: z.string().trim().min(1).optional(),
 });
 
+const boardReviewSchema = z.object({
+  decision: z.enum(["approve_local_dry_run_plan", "needs_revision", "hold"]),
+  note: z.string().trim().max(2000).optional().nullable(),
+});
+
 const createDependencyRequestSchema = z.object({
   podId: z.string().uuid().optional().nullable(),
   experimentId: z.string().uuid().optional().nullable(),
@@ -107,6 +112,14 @@ export function microRegistryRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const input = updateVerdictSchema.parse(req.body);
     res.json(await svc.updateExperimentVerdict(companyId, experimentId, input));
+  });
+
+  router.patch("/companies/:companyId/micro-registry/experiments/:experimentId/board-review", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const experimentId = req.params.experimentId as string;
+    assertCompanyAccess(req, companyId);
+    const input = boardReviewSchema.parse(req.body);
+    res.json(await svc.recordBoardReview(companyId, experimentId, input, actorForAudit(req)));
   });
 
   router.post("/companies/:companyId/micro-registry/dependency-requests", async (req, res) => {

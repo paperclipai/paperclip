@@ -1,5 +1,7 @@
 import type { MicroRegistryExperiment, MicroRegistryOverview } from "@paperclipai/shared";
 
+export type MicroBoardReviewDecision = "approve_local_dry_run_plan" | "needs_revision" | "hold";
+
 export interface MicroRegistrySummary {
   pods: number;
   activeExperiments: number;
@@ -30,4 +32,19 @@ export function formatExperimentWindow(experiment: Pick<MicroRegistryExperiment,
 
 export function isExperimentExecutionGated(experiment: Pick<MicroRegistryExperiment, "lifecycleState" | "overnightAllowed">): boolean {
   return experiment.overnightAllowed === false && ["draft", "preregistering", "waiting_on_dependencies", "ready_for_board_review"].includes(experiment.lifecycleState);
+}
+
+export function boardReviewQueue(registry: MicroRegistryOverview): MicroRegistryExperiment[] {
+  return registry.experiments.filter((experiment) => experiment.lifecycleState === "ready_for_board_review");
+}
+
+export function boardReviewDecisionLabel(decision: MicroBoardReviewDecision): string {
+  switch (decision) {
+    case "approve_local_dry_run_plan":
+      return "Approve local dry-run plan";
+    case "needs_revision":
+      return "Send back for revision";
+    case "hold":
+      return "Hold at board review";
+  }
 }
