@@ -6,10 +6,11 @@ import type { Db } from "@paperclipai/db";
 import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
-import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 const SVG_CONTENT_TYPE = "image/svg+xml";
-const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
+const HTML_CONTENT_TYPES = new Set(["text/html", "application/xhtml+xml"]);
+const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",
   "image/jpg",
@@ -139,8 +140,8 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const namespaceSuffix = parsedMeta.data.namespace ?? "general";
     const contentType = (file.mimetype || "").toLowerCase();
-    if (contentType !== SVG_CONTENT_TYPE && !isAllowedContentType(contentType)) {
-      res.status(422).json({ error: `Unsupported file type: ${contentType || "unknown"}` });
+    if (!ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
+      res.status(422).json({ error: `Unsupported image type: ${contentType || "unknown"}` });
       return;
     }
     let fileBody = file.buffer;
@@ -235,7 +236,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
 
     const contentType = (file.mimetype || "").toLowerCase();
-    if (!ALLOWED_COMPANY_LOGO_CONTENT_TYPES.has(contentType)) {
+    if (!ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
       res.status(422).json({ error: `Unsupported image type: ${contentType || "unknown"}` });
       return;
     }
@@ -320,15 +321,17 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const object = await storage.getObject(asset.companyId, asset.objectKey);
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
+    const responseMediaType = responseContentType.split(";")[0]?.trim().toLowerCase() ?? "";
     res.setHeader("Content-Type", responseContentType);
     res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    if (responseContentType === SVG_CONTENT_TYPE) {
+    if (responseMediaType === SVG_CONTENT_TYPE || HTML_CONTENT_TYPES.has(responseMediaType)) {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
     }
     const filename = asset.originalFilename ?? "asset";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const disposition = HTML_CONTENT_TYPES.has(responseMediaType) ? "attachment" : "inline";
+    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
 
     object.stream.on("error", (err) => {
       next(err);

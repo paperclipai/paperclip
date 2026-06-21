@@ -1322,6 +1322,7 @@ export {
   pluginLauncherDeclarationSchema,
   pluginDatabaseDeclarationSchema,
   pluginApiRouteDeclarationSchema,
+  isSafePackageRelativeEntrypoint,
   pluginManifestV1Schema,
   installPluginSchema,
   upsertPluginConfigSchema,

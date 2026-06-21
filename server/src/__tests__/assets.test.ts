@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
+import { Readable } from "node:stream";
 import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import type { StorageService } from "../storage/types.js";
 
@@ -174,26 +175,65 @@ describe("POST /api/companies/:companyId/assets/images", () => {
     });
   });
 
-  it("allows supported non-image attachments outside the company logo flow", async () => {
-    const text = createStorageService("text/plain");
-    const app = await createApp(text);
-
-    createAssetMock.mockResolvedValue({
-      ...createAsset(),
-      contentType: "text/plain",
-      originalFilename: "note.txt",
-    });
+  it("rejects HTML uploads to the image asset endpoint", async () => {
+    const html = createStorageService("text/html");
+    const app = await createApp(html);
 
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
         .post("/api/companies/company-1/assets/images")
         .field("namespace", "issues/drafts")
-        .attach("file", Buffer.from("hello"), { filename: "note.txt", contentType: "text/plain" }),
+        .attach("file", Buffer.from("<script>alert(1)</script>"), { filename: "payload.html", contentType: "text/html" }),
     );
 
-    expect([200, 201]).toContain(res.status);
-    expect(res.body.contentPath).toBe("/api/assets/asset-1/content");
-    expect(res.body.contentType).toBe("text/plain");
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Unsupported image type: text/html");
+    expect(createAssetMock).not.toHaveBeenCalled();
+    expect(html.__calls.putFileInputs).toHaveLength(0);
+  });
+});
+
+describe("GET /api/assets/:assetId/content", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/assets.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/assets.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
+    createAssetMock.mockReset();
+    getAssetByIdMock.mockReset();
+    logActivityMock.mockReset();
+  });
+
+  it("forces stored HTML assets to download under a sandbox CSP", async () => {
+    const storage = createStorageService("text/html");
+    const app = await createApp(storage);
+    const body = Buffer.from("<script>alert(1)</script>");
+    getAssetByIdMock.mockResolvedValue({
+      ...createAsset(),
+      contentType: "text/html",
+      byteSize: body.length,
+      originalFilename: "payload.html",
+    });
+    vi.mocked(storage.getObject).mockResolvedValue({
+      stream: Readable.from([body]),
+      contentType: "text/html",
+      contentLength: body.length,
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.headers["content-disposition"]).toContain("attachment;");
+    expect(res.headers["content-security-policy"]).toContain("sandbox");
+    expect(storage.getObject).toHaveBeenCalledWith("company-1", "assets/abc");
   });
 });
 

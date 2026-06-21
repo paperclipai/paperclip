@@ -1017,24 +1017,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.processLossRetryCount).toBe(1);
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
 
-    const issue = await waitForValue(async () =>
-      db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          return row?.checkoutRunId === null ? row : null;
-        })
-    );
-    expect([retryRun?.id ?? null, null]).toContain(issue?.executionRunId ?? null);
+    const checkoutReleasedIssue = await waitForValue(async () => {
+      const row = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      if (row?.checkoutRunId !== null) return null;
 
-    const checkoutReleasedIssue = await waitForValue(async () =>
-      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
-        const row = rows[0] ?? null;
-        return row?.checkoutRunId === null ? row : null;
-      })
-    );
+      const latestRetryRun = retryRun?.id ? await heartbeat.getRun(retryRun.id) : null;
+      const retryIsActive = latestRetryRun?.status === "queued" || latestRetryRun?.status === "running";
+      if (retryIsActive && row.executionRunId !== retryRun?.id) return null;
+      if (!retryIsActive && row.executionRunId !== null) return null;
+
+      return row;
+    });
+    const latestRetryRun = retryRun?.id ? await heartbeat.getRun(retryRun.id) : null;
+    const retryIsActive = latestRetryRun?.status === "queued" || latestRetryRun?.status === "running";
+    expect(checkoutReleasedIssue?.executionRunId).toBe(retryIsActive ? retryRun?.id : null);
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });

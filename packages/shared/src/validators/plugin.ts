@@ -567,6 +567,34 @@ export const pluginApiRouteDeclarationSchema = z.object({
 
 export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclarationSchema>;
 
+const entrypointWindowsDrivePathPattern = /^[a-zA-Z]:/;
+const entrypointUrlSchemePattern = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
+
+export function isSafePackageRelativeEntrypoint(entrypoint: string): boolean {
+  const candidate = entrypoint.trim();
+  if (!candidate || candidate.includes("\0")) return false;
+  if (
+    candidate.startsWith("/")
+    || candidate.startsWith("\\")
+    || candidate.startsWith("//")
+    || candidate.startsWith("\\\\")
+    || entrypointWindowsDrivePathPattern.test(candidate)
+    || entrypointUrlSchemePattern.test(candidate)
+  ) {
+    return false;
+  }
+
+  return candidate
+    .replace(/\\/g, "/")
+    .split("/")
+    .every(segment => segment !== "..");
+}
+
+const pluginEntrypointPathSchema = z.string().min(1).refine(
+  isSafePackageRelativeEntrypoint,
+  "Entrypoint paths must be relative to the plugin package and cannot contain '..' segments",
+);
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1 schema
 // ---------------------------------------------------------------------------
@@ -589,8 +617,8 @@ export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclar
  * | `minimumHostVersion`     | string?    | semver lower bound if present, no leading `v`|
  * | `minimumPaperclipVersion`| string?    | legacy alias of `minimumHostVersion`         |
  * | `capabilities`           | enum[]     | at least one; values from PLUGIN_CAPABILITIES|
- * | `entrypoints.worker`     | string     | min 1 char                                   |
- * | `entrypoints.ui`         | string?    | required when `ui.slots` is declared         |
+ * | `entrypoints.worker`     | string     | relative package path; no `..` segments      |
+ * | `entrypoints.ui`         | string?    | relative package path; required for UI       |
  *
  * Cross-field rules enforced via `superRefine`:
  * - `entrypoints.ui` required when `ui.slots` declared
@@ -631,8 +659,8 @@ export const pluginManifestV1Schema = z.object({
   ).optional(),
   capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
   entrypoints: z.object({
-    worker: z.string().min(1),
-    ui: z.string().min(1).optional(),
+    worker: pluginEntrypointPathSchema,
+    ui: pluginEntrypointPathSchema.optional(),
   }),
   instanceConfigSchema: jsonSchemaSchema.optional(),
   jobs: z.array(pluginJobDeclarationSchema).optional(),

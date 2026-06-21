@@ -49,6 +49,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import { resolveExistingPackageEntrypoint } from "./plugin-entrypoint-paths.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2316,9 +2317,9 @@ function resolveWorkerEntrypoint(
   const workerRelPath = manifest.entrypoints.worker;
 
   // For local-path installs we persist the resolved package path; use it first
-  if (plugin.packagePath && existsSync(plugin.packagePath)) {
-    const entrypoint = path.resolve(plugin.packagePath, workerRelPath);
-    if (entrypoint.startsWith(path.resolve(plugin.packagePath)) && existsSync(entrypoint)) {
+  if (plugin.packagePath) {
+    const entrypoint = resolveExistingPackageEntrypoint(plugin.packagePath, workerRelPath, "file");
+    if (entrypoint) {
       return entrypoint;
     }
   }
@@ -2341,22 +2342,10 @@ function resolveWorkerEntrypoint(
 
   // Try in order: node_modules path, direct path
   for (const dir of [packageDir, directDir]) {
-    const entrypoint = path.resolve(dir, workerRelPath);
-
-    // Security: ensure entrypoint is actually inside the directory (prevent path traversal)
-    if (!entrypoint.startsWith(path.resolve(dir))) {
-      continue;
-    }
-
-    if (existsSync(entrypoint)) {
+    const entrypoint = resolveExistingPackageEntrypoint(dir, workerRelPath, "file");
+    if (entrypoint) {
       return entrypoint;
     }
-  }
-
-  // Fallback: try the worker path as-is (absolute or relative to cwd)
-  // ONLY if it's already an absolute path and we trust the manifest (which we've already validated)
-  if (path.isAbsolute(workerRelPath) && existsSync(workerRelPath)) {
-    return workerRelPath;
   }
 
   throw new Error(

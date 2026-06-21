@@ -1025,6 +1025,16 @@ describe("NewIssueDialog", () => {
       enableIsolatedWorkspaces: false,
       enableTaskWatchdogs: true,
     });
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-9",
+        name: "Watchdog",
+        role: "executor",
+        title: null,
+        icon: "scan-eye",
+        status: "idle",
+      },
+    ]);
     localStorage.setItem(
       "paperclip:issue-draft",
       JSON.stringify({
