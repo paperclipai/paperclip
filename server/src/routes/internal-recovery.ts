@@ -15,7 +15,7 @@ import {
   type LatestRunRow,
   type RecoveryWorkflowAdapterDeps,
 } from "../services/recovery-workflow-adapter.js";
-import { recordShadowDecision } from "../services/recovery-workflow-shadow.js";
+import { recordShadowDecision, diffShadow, type ObservedState } from "../services/recovery-workflow-shadow.js";
 
 // ---------------------------------------------------------------------------
 // Body schemas
@@ -33,6 +33,20 @@ const resolveEscalateBodySchema = z.object({
   sourceIssueId: z.string(),
   outcome: z.enum(ISSUE_RECOVERY_ACTION_OUTCOMES).optional(),
   note: z.string().optional(),
+});
+
+const shadowDiffQuerySchema = z.object({
+  companyId: z.string().min(1),
+  sourceIssueId: z.string().min(1),
+  liveActive: z
+    .string()
+    .transform((v) => v === "true")
+    .pipe(z.boolean()),
+  liveStatus: z.string().min(1),
+  liveAttemptCount: z
+    .string()
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().nonnegative()),
 });
 
 // ---------------------------------------------------------------------------
@@ -218,6 +232,27 @@ export function internalRecoveryRoutes(db: Db, deps: InternalRecoveryRoutesDeps)
       res.json({ status: result?.status ?? "cancelled" });
     },
   );
+
+  // ---- GET /internal/recovery/:actionId/shadow-diff ------------------------
+  // Compares recorded shadow decisions against the current live action state.
+
+  router.get("/internal/recovery/:actionId/shadow-diff", async (req, res) => {
+    const parsed = shadowDiffQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw badRequest("companyId, sourceIssueId, liveActive, liveStatus, liveAttemptCount query params are required");
+    }
+    const { liveActive, liveStatus, liveAttemptCount } = parsed.data;
+    const actionId = req.params.actionId as string;
+
+    const liveActual: ObservedState = {
+      active: liveActive,
+      status: liveStatus,
+      attemptCount: liveAttemptCount,
+    };
+
+    const result = await diffShadow(db, { actionId, liveActual });
+    res.json(result);
+  });
 
   return router;
 }

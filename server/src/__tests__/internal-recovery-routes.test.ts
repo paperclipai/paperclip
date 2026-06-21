@@ -30,6 +30,13 @@ vi.mock("../services/issue-recovery-actions.js", () => ({
   }),
 }));
 
+const mockDiffShadow = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/recovery-workflow-shadow.js", () => ({
+  recordShadowDecision: vi.fn(),
+  diffShadow: mockDiffShadow,
+}));
+
 // ---------------------------------------------------------------------------
 // App factory
 // ---------------------------------------------------------------------------
@@ -250,5 +257,57 @@ describe.sequential("internal recovery routes", () => {
       sourceIssueId: "i1",
       actionId: "action-1",
     });
+  });
+
+  // ---- GET /internal/recovery/:actionId/shadow-diff ------------------------
+
+  it("GET /shadow-diff returns 401 when x-internal-secret is missing", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(
+        "/internal/recovery/action-1/shadow-diff?companyId=c1&sourceIssueId=i1&liveActive=true&liveStatus=active&liveAttemptCount=1",
+      ),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("GET /shadow-diff returns 200 with diff result when auth is valid", async () => {
+    const diffResult = {
+      actionId: "action-1",
+      agreements: [{ attemptNumber: 1, field: "active", value: true }],
+      mismatches: [],
+      summary: "All 1 signal(s) in agreement. No mismatches.",
+      fidelityNote: "FIDELITY LIMIT: dry-run (mode=dry) is read-only and does NOT simulate the forward-looking owner/wake decision. This diff compares only LIFECYCLE/CADENCE signals (active, status, attemptCount). Owner and wake decisions are not recorded here and cannot be compared.",
+    };
+    mockDiffShadow.mockResolvedValue(diffResult);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(
+          "/internal/recovery/action-1/shadow-diff?companyId=c1&sourceIssueId=i1&liveActive=true&liveStatus=active&liveAttemptCount=1",
+        )
+        .set("x-internal-secret", INTERNAL_SECRET),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual(diffResult);
+    expect(mockDiffShadow).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        actionId: "action-1",
+        liveActual: { active: true, status: "active", attemptCount: 1 },
+      },
+    );
+  });
+
+  it("GET /shadow-diff returns 400 when required query params are missing", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get("/internal/recovery/action-1/shadow-diff?companyId=c1")
+        .set("x-internal-secret", INTERNAL_SECRET),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(mockDiffShadow).not.toHaveBeenCalled();
   });
 });

@@ -38,6 +38,9 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { recoveryWorkflowTrigger } from "./services/recovery-workflow-trigger.js";
+import { getRecoveryWorkflowMode } from "./services/recovery-workflow-flag.js";
+import type { IssueRecoveryAction } from "@paperclipai/shared";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -619,6 +622,35 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+
+  // Build the CF recovery trigger + onActionCreated callback (only when CF config is present).
+  // No-config → no-op (existing flag-off behaviour preserved).
+  const cfAccountId = process.env.PAPERCLIP_CF_ACCOUNT_ID?.trim();
+  const cfApiToken = process.env.PAPERCLIP_CF_API_TOKEN?.trim();
+  const cfWorkflowName = process.env.PAPERCLIP_CF_RECOVERY_WORKFLOW_NAME?.trim();
+  let recoveryTrigger: ReturnType<typeof recoveryWorkflowTrigger> | undefined;
+  if (cfAccountId && cfApiToken && cfWorkflowName) {
+    recoveryTrigger = recoveryWorkflowTrigger({ accountId: cfAccountId, apiToken: cfApiToken, workflowName: cfWorkflowName });
+  }
+  const onRecoveryActionCreated = recoveryTrigger
+    ? async (action: IssueRecoveryAction) => {
+        const mode = getRecoveryWorkflowMode(action.companyId);
+        if (mode === "off") return;
+        try {
+          await recoveryTrigger!.ensureInstance({
+            companyId: action.companyId,
+            actionId: action.id,
+            sourceIssueId: action.sourceIssueId,
+            mode,
+          });
+        } catch (e) {
+          logger.warn({ err: e, actionId: action.id }, "recovery workflow trigger failed (non-fatal)");
+        }
+      }
+    : undefined;
+
+  const heartbeat = heartbeatService(db as any, { pluginWorkerManager, onRecoveryActionCreated });
+
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -644,6 +676,7 @@ export async function startServer(): Promise<StartedServer> {
     resolveSession,
     pluginWorkerManager,
     heartbeatSchedulerIntervalMs: config.heartbeatSchedulerIntervalMs,
+    enqueueWakeup: heartbeat.wakeup,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -697,7 +730,6 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,

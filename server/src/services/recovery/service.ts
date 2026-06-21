@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
-import { isRecoveryWorkflowEnabled } from "../recovery-workflow-flag.js";
+import { getRecoveryWorkflowMode } from "../recovery-workflow-flag.js";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -7,6 +7,7 @@ import {
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
+  type IssueRecoveryAction,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -400,9 +401,9 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; onActionCreated?: (action: IssueRecoveryAction) => Promise<void> | void }) {
   const issuesSvc = issueService(db);
-  const recoveryActionsSvc = issueRecoveryActionService(db);
+  const recoveryActionsSvc = issueRecoveryActionService(db, { onActionCreated: deps.onActionCreated });
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -2373,7 +2374,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       // Phase 1 authority handoff: skip companies where the CF Workflow is authoritative.
       // When no company is in the allowlist this is a no-op (false for all companies).
-      if (isRecoveryWorkflowEnabled(issue.companyId)) {
+      // Shadow companies must NOT be skipped — they still run the poll loop.
+      if (getRecoveryWorkflowMode(issue.companyId) === "active") {
         result.skipped += 1;
         continue;
       }
