@@ -5040,11 +5040,11 @@ export function issueService(db: Db) {
       const runUpdate = async (tx: any) => {
         // FK pre-validation: ensure parentId exists in the same company
         if (issueData.parentId !== undefined && issueData.parentId !== null) {
-          const parentExists = await tx
+          const parentRows = await tx
             .select({ id: issues.id })
             .from(issues)
-            .where(and(eq(issues.id, issueData.parentId), eq(issues.companyId, existing.companyId)))
-            .then((rows) => rows.length > 0);
+            .where(and(eq(issues.id, issueData.parentId), eq(issues.companyId, existing.companyId)));
+          const parentExists = parentRows.length > 0;
           if (!parentExists) {
             throw new HttpError(422, "Parent issue not found");
           }
@@ -5159,11 +5159,11 @@ export function issueService(db: Db) {
 
         // FK pre-validation: ensure goalId exists (if changing)
         if (patch.goalId && patch.goalId !== existing.goalId) {
-          const goalExists = await tx
+          const goalRows = await tx
             .select({ id: goals.id })
             .from(goals)
-            .where(eq(goals.id, patch.goalId))
-            .then((rows) => rows.length > 0);
+            .where(eq(goals.id, patch.goalId));
+          const goalExists = goalRows.length > 0;
           if (!goalExists) {
             throw new HttpError(422, "Goal not found");
           }
