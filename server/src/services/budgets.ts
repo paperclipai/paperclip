@@ -21,7 +21,7 @@ import type {
   BudgetThresholdType,
   BudgetWindowKind,
 } from "@paperclipai/shared";
-import { notFound, unprocessable } from "../errors.js";
+import { HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 
 type ScopeRecord = {
@@ -137,6 +137,22 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
     paused: Boolean(row.pausedAt),
     pauseReason: (row.pauseReason as ScopeRecord["pauseReason"]) ?? null,
   };
+}
+
+// Read-path tolerant variant of resolveScopeRecord. Returns null instead of
+// throwing when the scoped entity (agent/project) has been deleted, so a single
+// dangling budget reference can't crash the whole budget overview / dashboard.
+async function resolveScopeRecordOrNull(
+  db: Db,
+  scopeType: BudgetScopeType,
+  scopeId: string,
+): Promise<ScopeRecord | null> {
+  try {
+    return await resolveScopeRecord(db, scopeType, scopeId);
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 404) return null;
+    throw err;
+  }
 }
 
 async function computeObservedAmount(
@@ -314,7 +330,11 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
   }
 
   async function buildPolicySummary(policy: PolicyRow): Promise<BudgetPolicySummary> {
-    const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+    const scope = await resolveScopeRecordOrNull(
+      db,
+      policy.scopeType as BudgetScopeType,
+      policy.scopeId,
+    );
     const observedAmount = await computeObservedAmount(db, policy);
     const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
     const amount = policy.isActive ? policy.amount : 0;
@@ -325,7 +345,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       companyId: policy.companyId,
       scopeType: policy.scopeType as BudgetScopeType,
       scopeId: policy.scopeId,
-      scopeName: normalizeScopeName(policy.scopeType as BudgetScopeType, scope.name),
+      scopeName: normalizeScopeName(policy.scopeType as BudgetScopeType, scope?.name ?? ""),
       metric: policy.metric as BudgetMetric,
       windowKind: policy.windowKind as BudgetWindowKind,
       amount,
@@ -339,8 +359,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       status: policy.isActive
         ? budgetStatusFromObserved(observedAmount, amount, policy.warnPercent)
         : "ok",
-      paused: scope.paused,
-      pauseReason: scope.pauseReason,
+      paused: scope?.paused ?? false,
+      pauseReason: scope?.pauseReason ?? null,
       windowStart: start,
       windowEnd: end,
     };
@@ -466,14 +486,18 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
 
     return Promise.all(
       rows.map(async (row) => {
-        const scope = await resolveScopeRecord(db, row.scopeType as BudgetScopeType, row.scopeId);
+        const scope = await resolveScopeRecordOrNull(
+          db,
+          row.scopeType as BudgetScopeType,
+          row.scopeId,
+        );
         return {
           id: row.id,
           companyId: row.companyId,
           policyId: row.policyId,
           scopeType: row.scopeType as BudgetScopeType,
           scopeId: row.scopeId,
-          scopeName: normalizeScopeName(row.scopeType as BudgetScopeType, scope.name),
+          scopeName: normalizeScopeName(row.scopeType as BudgetScopeType, scope?.name ?? ""),
           metric: row.metric as BudgetMetric,
           windowKind: row.windowKind as BudgetWindowKind,
           windowStart: row.windowStart,
