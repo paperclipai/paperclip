@@ -9,6 +9,7 @@ import {
   buildIssueGraphLivenessLeafKey,
   buildRunLivenessContinuationIdempotencyKey,
   classifyIssueGraphLiveness,
+  clampAutonomousDispositionStatus,
   decideRunLivenessContinuation,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
@@ -244,5 +245,169 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+
+  it("does not flag a routine-backed in_review issue as having no action path", () => {
+    const routineBackedAgents = [
+      {
+        id: agentId,
+        companyId,
+        name: "Coder",
+        role: "engineer",
+        status: "idle",
+        reportsTo: managerId,
+      },
+      {
+        id: managerId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "idle",
+        reportsTo: null,
+      },
+    ];
+
+    const findings = classifyIssueGraphLiveness({
+      now: "2026-06-21T12:00:00.000Z",
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "SAG-4439",
+          title: "Gamecam backfill monitor",
+          status: "in_review",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+        },
+      ],
+      relations: [],
+      agents: routineBackedAgents,
+      routineBackedIssueIds: new Set([issueId]),
+    });
+
+    expect(findings).toHaveLength(0);
+  });
+
+  it("still flags a non-routine-backed in_review issue with no action path (no fail-open)", () => {
+    const findings = classifyIssueGraphLiveness({
+      now: "2026-06-21T12:00:00.000Z",
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "SAG-4439",
+          title: "Gamecam backfill monitor",
+          status: "in_review",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+        },
+      ],
+      relations: [],
+      agents: [
+        {
+          id: agentId,
+          companyId,
+          name: "Coder",
+          role: "engineer",
+          status: "idle",
+          reportsTo: managerId,
+        },
+        {
+          id: managerId,
+          companyId,
+          name: "CTO",
+          role: "cto",
+          status: "idle",
+          reportsTo: null,
+        },
+      ],
+    });
+
+    expect(findings[0]?.state).toBe("in_review_without_action_path");
+  });
+
+  it("treats an issue with only archived/paused routines as not routine-backed (G1: active-status-only)", () => {
+    // Simulates the DB query filtering routines.status = 'active':
+    // archived/paused/cancelled routines must not count as a continuation path.
+    // routineBackedIssueIds is empty because no active routines exist for this issue.
+    const findings = classifyIssueGraphLiveness({
+      now: "2026-06-21T12:00:00.000Z",
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "SAG-4439",
+          title: "Gamecam backfill monitor",
+          status: "in_review",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+        },
+      ],
+      relations: [],
+      agents: [
+        {
+          id: agentId,
+          companyId,
+          name: "Coder",
+          role: "engineer",
+          status: "idle",
+          reportsTo: managerId,
+        },
+        {
+          id: managerId,
+          companyId,
+          name: "CTO",
+          role: "cto",
+          status: "idle",
+          reportsTo: null,
+        },
+      ],
+      routineBackedIssueIds: new Set(), // empty: only archived/paused routines existed; those don't count
+    });
+
+    expect(findings[0]?.state).toBe("in_review_without_action_path");
+  });
+
+  it("cancel floor: autonomous recovery never emits cancelled (SAG-4478 defense-in-depth, holds routine-detection ON and OFF)", () => {
+    // Routine-detection ON path: routine-backed issue produces no liveness finding → no disposal at all
+    const findingsWithRoutineBacking = classifyIssueGraphLiveness({
+      now: "2026-06-21T12:00:00.000Z",
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "SAG-4439",
+          title: "Gamecam backfill monitor",
+          status: "in_review",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+        },
+      ],
+      relations: [],
+      agents: [
+        { id: agentId, companyId, name: "Coder", role: "engineer", status: "idle", reportsTo: managerId },
+        { id: managerId, companyId, name: "CTO", role: "cto", status: "idle", reportsTo: null },
+      ],
+      routineBackedIssueIds: new Set([issueId]),
+    });
+    expect(findingsWithRoutineBacking).toHaveLength(0); // skipped; no disposition emitted
+
+    // Routine-detection OFF path: non-routine-backed issue still fires recovery,
+    // but the cancel floor ensures disposition is never 'cancelled'.
+    expect(clampAutonomousDispositionStatus("cancelled")).toBe("blocked");
+    expect(clampAutonomousDispositionStatus("blocked")).toBe("blocked");
+    expect(clampAutonomousDispositionStatus("done")).toBe("done");
   });
 });

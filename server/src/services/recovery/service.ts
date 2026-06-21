@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -26,6 +26,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -762,6 +763,23 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
+/**
+ * SAG-4478 defense-in-depth floor: autonomous recovery may NEVER emit a `cancelled`
+ * disposition. Cancellation is a human/board-grade terminal action. Any recovery code
+ * path that would produce `cancelled` is clamped to `blocked` (with a log entry) so
+ * a single missed signal can never destroy board legibility by cancelling live work.
+ */
+export function clampAutonomousDispositionStatus(proposedStatus: string): string {
+  if (proposedStatus === "cancelled") {
+    logger.warn(
+      { proposedStatus },
+      "Autonomous recovery clamped 'cancelled' to 'blocked' — SAG-4478 floor (ceiling is blocked, never cancelled)",
+    );
+    return "blocked";
+  }
+  return proposedStatus;
+}
+
 export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -1078,6 +1096,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function hasRoutineBackedContinuation(companyId: string, issueId: string) {
+    const [activeRoutine, openRoutineExecution] = await Promise.all([
+      db
+        .select({ id: routines.id })
+        .from(routines)
+        .where(
+          and(
+            eq(routines.companyId, companyId),
+            eq(routines.parentIssueId, issueId),
+            eq(routines.status, "active"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.parentId, issueId),
+            eq(issues.originKind, "routine_execution"),
+            notInArray(issues.status, ["done", "cancelled"]),
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+    return Boolean(activeRoutine || openRoutineExecution);
   }
 
   // GGU-809: visible-progress signal for stranded-recovery escalation guard.
@@ -3128,7 +3178,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    const updated = await issuesSvc.update(input.issue.id, { status: clampAutonomousDispositionStatus("blocked") as "blocked" });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -3337,7 +3387,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
+      status: clampAutonomousDispositionStatus("blocked") as "blocked",
       blockedByIssueIds: blockerIds,
       assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
@@ -3713,6 +3763,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasRoutineBackedContinuation(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
       }
@@ -4343,6 +4398,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       approvalRows,
       recoveryIssueRows,
       recoveryActionRows,
+      routineParentIssueIdRows,
+      openRoutineExecutionParentIdRows,
     ] = await Promise.all([
       issueRowsPromise,
       db
@@ -4452,6 +4509,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               ),
             );
       }),
+      db
+        .select({ parentIssueId: routines.parentIssueId })
+        .from(routines)
+        .where(
+          and(
+            eq(routines.status, "active"),
+            isNotNull(routines.parentIssueId),
+          ),
+        ),
+      db
+        .select({ parentId: issues.parentId })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.originKind, "routine_execution"),
+            notInArray(issues.status, ["done", "cancelled"]),
+            isNull(issues.hiddenAt),
+            isNotNull(issues.parentId),
+          ),
+        ),
     ]);
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
@@ -4481,6 +4558,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }];
     });
 
+    const routineBackedIssueIds = new Set<string>();
+    for (const row of routineParentIssueIdRows) {
+      if (row.parentIssueId) routineBackedIssueIds.add(row.parentIssueId);
+    }
+    for (const row of openRoutineExecutionParentIdRows) {
+      if (row.parentId) routineBackedIssueIds.add(row.parentId);
+    }
+
     return classifyIssueGraphLiveness({
       issues: issueRows,
       relations: relationRows,
@@ -4505,6 +4590,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
       openRecoveryIssues: openRecoveryIssues.concat(recoveryActionRows),
+      routineBackedIssueIds,
       now: new Date(),
     });
   }
