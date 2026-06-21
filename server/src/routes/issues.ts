@@ -1389,7 +1389,6 @@ export function issueRoutes(
       return "Recovery action became stale because the source issue was manually moved from blocked to todo.";
     }
 
-    if (input.trigger === "read_projection") return null;
     if (
       input.trigger === "comment" &&
       input.resumeRequested !== true &&
@@ -1400,6 +1399,7 @@ export function issueRoutes(
     }
 
     const durableSourceChange =
+      input.trigger === "read_projection" ||
       input.statusChanged === true ||
       input.assigneeChanged === true ||
       input.blockersChanged === true ||
@@ -1411,12 +1411,36 @@ export function issueRoutes(
       input.reopened === true;
     if (!durableSourceChange) return null;
 
+    const waitingPathResolution = async (): Promise<string | null> => {
+      const executionState = parseIssueExecutionState(issue.executionState);
+      const participant = executionState?.status === "pending" ? executionState.currentParticipant : null;
+      if (
+        (participant?.type === "agent" && readNonEmptyString(participant.agentId)) ||
+        (participant?.type === "user" && readNonEmptyString(participant.userId))
+      ) {
+        return "Recovery action became stale because the source issue now has a typed review participant.";
+      }
+      const interactions = await issueThreadInteractionsSvc.listForIssue(issue.id);
+      if (interactions.some((interaction) => interaction.status === "pending")) {
+        return "Recovery action became stale because the source issue now has a pending issue interaction.";
+      }
+      const approvals = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
+      if (approvals.some((approval) => approval.status === "pending" || approval.status === "revision_requested")) {
+        return "Recovery action became stale because the source issue now has a pending approval.";
+      }
+      const monitor = summarizeIssueMonitor(issue, normalizeIssueExecutionPolicy(issue.executionPolicy ?? null));
+      if (monitor.nextCheckAt && Date.parse(monitor.nextCheckAt) > Date.now()) {
+        return "Recovery action became stale because the source issue now has a scheduled monitor.";
+      }
+      return null;
+    };
+
     if (issue.status === "blocked") {
       const readiness = await svc.getDependencyReadiness(issue.id);
       if (readiness.unresolvedBlockerCount > 0) {
         return "Recovery action became stale because the source issue now has unresolved first-class blockers.";
       }
-      return null;
+      return waitingPathResolution();
     }
 
     if (issue.assigneeUserId && issue.status !== "done" && issue.status !== "cancelled") {
@@ -1428,32 +1452,10 @@ export function issueRoutes(
     }
 
     if (issue.status === "in_review") {
-      const executionState = parseIssueExecutionState(issue.executionState);
-      const participant = executionState?.status === "pending" ? executionState.currentParticipant : null;
-      if (
-        (participant?.type === "agent" && readNonEmptyString(participant.agentId)) ||
-        (participant?.type === "user" && readNonEmptyString(participant.userId))
-      ) {
-        return "Recovery action became stale because the source issue now has a typed review participant.";
-      }
-
-      const interactions = await issueThreadInteractionsSvc.listForIssue(issue.id);
-      if (interactions.some((interaction) => interaction.status === "pending")) {
-        return "Recovery action became stale because the source issue now has a pending issue interaction.";
-      }
-
-      const approvals = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
-      if (approvals.some((approval) => approval.status === "pending" || approval.status === "revision_requested")) {
-        return "Recovery action became stale because the source issue now has a pending approval.";
-      }
+      return waitingPathResolution();
     }
 
-    const monitor = summarizeIssueMonitor(issue, normalizeIssueExecutionPolicy(issue.executionPolicy ?? null));
-    if (monitor.nextCheckAt && Date.parse(monitor.nextCheckAt) > Date.now()) {
-      return "Recovery action became stale because the source issue now has a scheduled monitor.";
-    }
-
-    return null;
+    return waitingPathResolution();
   }
 
   async function revalidateActiveSourceRecovery(input: {
