@@ -380,6 +380,7 @@ Agent-level control-plane settings (not adapter-specific):
     "wakeOnAssignment": true,
     "wakeOnOnDemand": true,
     "wakeOnAutomation": true,
+    "skipTimerWhenNoActionableWork": true,
     "cooldownSec": 10
   }
 }
@@ -392,6 +393,7 @@ Defaults:
 - `wakeOnAssignment: true`
 - `wakeOnOnDemand: true`
 - `wakeOnAutomation: true`
+- `skipTimerWhenNoActionableWork: true`
 
 ## 8.5 Trigger integration rules
 

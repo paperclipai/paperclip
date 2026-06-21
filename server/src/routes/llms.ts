@@ -47,6 +47,7 @@ export function llmRoutes(db: Db) {
       "- New hires may be created in pending_approval state depending on company settings.",
       "- Use the paperclip-create-agent skill for end-to-end hiring: adapter reflection, config comparison, instruction source selection, icon choice, desiredSkills, sourceIssueId/sourceIssueIds, and approval follow-up.",
       "- Timer heartbeats are opt-in for new hires. Leave runtimeConfig.heartbeat.enabled false unless the role truly needs scheduled work or the user explicitly asked for it.",
+      "- Enabled timer heartbeats skip generic no-work invocations by default. Set runtimeConfig.heartbeat.skipTimerWhenNoActionableWork false only for agents that intentionally do unscoped proactive scheduled work.",
       "",
     ];
     res.type("text/plain").send(lines.join("\n"));

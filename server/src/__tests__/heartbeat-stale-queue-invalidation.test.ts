@@ -457,10 +457,48 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(runRows).toHaveLength(0);
   });
 
-  it("runs generic timer wakes by default for proactive agents without assigned issue work", async () => {
+  it("skips generic timer wakes by default when the agent has no assigned issue work", async () => {
     const { agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
         enabled: true,
+      },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const [wakeup] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const runRows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.timer.no_actionable_work",
+    });
+    expect(wakeup?.payload).toMatchObject({
+      heartbeatSkip: {
+        reason: expect.stringContaining("No assigned todo or in_progress issue"),
+      },
+    });
+    expect(runRows).toHaveLength(0);
+  });
+
+  it("allows generic timer wakes without assigned issue work when no-work skipping is disabled", async () => {
+    const { agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: false,
       },
     });
 
