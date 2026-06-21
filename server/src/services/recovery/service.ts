@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { isRecoveryWorkflowEnabled } from "../recovery-workflow-flag.js";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -2366,6 +2367,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const issue of candidates) {
       const agentId = issue.assigneeAgentId;
       if (!agentId) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // Phase 1 authority handoff: skip companies where the CF Workflow is authoritative.
+      // When no company is in the allowlist this is a no-op (false for all companies).
+      if (isRecoveryWorkflowEnabled(issue.companyId)) {
         result.skipped += 1;
         continue;
       }

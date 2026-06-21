@@ -93,7 +93,16 @@ function isUniqueRecoveryActionConflict(error: unknown) {
   );
 }
 
-export function issueRecoveryActionService(db: Db) {
+export type IssueRecoveryActionServiceDeps = {
+  /**
+   * Optional hook called ONLY when a brand-new active recovery action is
+   * inserted (not on updates to existing actions).  Errors are swallowed with
+   * a warning so the hook never blocks the upsert caller.
+   */
+  onActionCreated?: (action: IssueRecoveryAction) => Promise<void> | void;
+};
+
+export function issueRecoveryActionService(db: Db, deps: IssueRecoveryActionServiceDeps = {}) {
   const upsertQueues = new Map<string, Promise<void>>();
 
   async function runExclusiveUpsert<T>(
@@ -244,7 +253,16 @@ export function issueRecoveryActionService(db: Db) {
           lastAttemptAt: input.lastAttemptAt ?? now,
         })
         .returning();
-      return toReadModel(created!);
+      const action = toReadModel(created!);
+      if (deps.onActionCreated) {
+        try {
+          await deps.onActionCreated(action);
+        } catch (hookError) {
+          // Never let the hook block or abort the upsert
+          console.warn("[issueRecoveryActionService] onActionCreated hook error:", hookError);
+        }
+      }
+      return action;
     } catch (error) {
       if (!isUniqueRecoveryActionConflict(error)) throw error;
       return retryUpsertSourceScoped(input, retryCount, error);
