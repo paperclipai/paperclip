@@ -61,12 +61,13 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
   throw new Error("Timed out waiting for condition");
 }
 
-async function deleteHeartbeatRunsAfterActivityLogDrains(db: Db) {
+async function deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db: Db) {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 10; attempt += 1) {
     await db.delete(activityLog);
     try {
       await db.delete(heartbeatRuns);
+      await db.delete(agentWakeupRequests);
       return;
     } catch (error) {
       lastError = error;
@@ -527,8 +528,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     await db.delete(issueRelations);
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
-    await deleteHeartbeatRunsAfterActivityLogDrains(db);
-    await db.delete(agentWakeupRequests);
+    await deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db);
     await db.delete(issues);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
