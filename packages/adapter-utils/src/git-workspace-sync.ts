@@ -12,7 +12,9 @@ export interface GitCommandResult {
 export interface GitWorkspaceSnapshot {
   headCommit: string;
   branchName: string | null;
+  overlayPaths: string[];
   deletedPaths: string[];
+  ignoredPaths: string[];
 }
 
 export const GIT_ARCHIVE_EXCLUDES = [".git", ".git/*"] as const;
@@ -61,7 +63,7 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
       return null;
     }
 
-    const [headCommitResult, branchResult, deletedResult] = await Promise.all([
+    const [headCommitResult, branchResult, overlayDiffResult, untrackedResult, deletedResult, ignoredResult] = await Promise.all([
       runLocalGit(localDir, ["rev-parse", "HEAD"], {
         timeout: 10_000,
         maxBuffer: 16 * 1024,
@@ -70,20 +72,38 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
         timeout: 10_000,
         maxBuffer: 16 * 1024,
       }),
-      runLocalGit(localDir, ["ls-files", "--deleted", "-z"], {
+      runLocalGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD", "--"], {
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      }),
+      runLocalGit(localDir, ["ls-files", "--others", "--exclude-standard", "-z"], {
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      }),
+      runLocalGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", "--"], {
         timeout: 10_000,
         maxBuffer: 256 * 1024,
+      }),
+      runLocalGit(localDir, ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"], {
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
       }),
     ]);
 
     const branchName = branchResult.stdout.trim();
+    const splitNul = (value: string) => value.split("\0").map((entry) => entry.trim()).filter(Boolean);
     return {
       headCommit: headCommitResult.stdout.trim(),
       branchName: branchName && branchName !== "HEAD" ? branchName : null,
-      deletedPaths: deletedResult.stdout
-        .split("\0")
-        .map((entry) => entry.trim())
-        .filter(Boolean),
+      overlayPaths: [...new Set([...splitNul(overlayDiffResult.stdout), ...splitNul(untrackedResult.stdout)])]
+        .sort((left, right) => left.localeCompare(right)),
+      deletedPaths: [...new Set(splitNul(deletedResult.stdout))]
+        .sort((left, right) => left.localeCompare(right)),
+      ignoredPaths: splitNul(ignoredResult.stdout)
+        .filter((entry) => entry.startsWith("!! "))
+        .map((entry) => entry.slice(3).replace(/\/+$/, ""))
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right)),
     };
   } catch {
     return null;

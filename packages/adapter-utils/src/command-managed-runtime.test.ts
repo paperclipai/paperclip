@@ -22,7 +22,10 @@ interface SpawnRunnerHandle {
 // A runner that actually executes the shell scripts (piping stdin through a real
 // pipe so multi-MB payloads work) and replays stdout through onLog in several
 // chunks so the streaming readFile byte-counter is exercised.
-function makeSpawnRunner(options: { supportsSingleStreamStdinProgress?: boolean } = {}): SpawnRunnerHandle {
+function makeSpawnRunner(options: {
+  supportsSingleStreamStdinProgress?: boolean;
+  maxStdoutBytes?: number;
+} = {}): SpawnRunnerHandle {
   const calls: Array<{ command: string; args?: string[]; cwd?: string; stdin?: string }> = [];
   const runner: CommandManagedRuntimeRunner = {
     supportsSingleStreamStdinProgress: options.supportsSingleStreamStdinProgress,
@@ -48,6 +51,21 @@ function makeSpawnRunner(options: { supportsSingleStreamStdinProgress?: boolean 
           resolve({ exitCode: 127, signal: null, timedOut: false, stdout, stderr, pid: null, startedAt });
         });
         child.on("close", async (code) => {
+          if (
+            options.maxStdoutBytes != null &&
+            Buffer.byteLength(stdout, "utf8") > options.maxStdoutBytes
+          ) {
+            resolve({
+              exitCode: 1,
+              signal: null,
+              timedOut: false,
+              stdout,
+              stderr: `stdout exceeded ${options.maxStdoutBytes} bytes`,
+              pid: child.pid ?? null,
+              startedAt,
+            });
+            return;
+          }
           if (input.onLog && stdout.length > 0) {
             const chunkSize = Math.max(1, Math.ceil(stdout.length / 4));
             for (let offset = 0; offset < stdout.length; offset += chunkSize) {
@@ -73,6 +91,26 @@ function makeSpawnRunner(options: { supportsSingleStreamStdinProgress?: boolean 
 
 function toArrayBuffer(buffer: Buffer): ArrayBuffer {
   return Uint8Array.from(buffer).buffer;
+}
+
+async function withBase64StringByteLimit<T>(limitBytes: number, fn: () => Promise<T>): Promise<T> {
+  const originalToString = Buffer.prototype.toString;
+  Buffer.prototype.toString = function patchedToString(
+    this: Buffer,
+    encoding?: BufferEncoding,
+    start?: number,
+    end?: number,
+  ) {
+    if (encoding === "base64" && this.byteLength > limitBytes) {
+      throw new Error(`test guard: attempted to base64-encode ${this.byteLength} bytes at once`);
+    }
+    return originalToString.call(this, encoding, start, end);
+  } as typeof Buffer.prototype.toString;
+  try {
+    return await fn();
+  } finally {
+    Buffer.prototype.toString = originalToString;
+  }
 }
 
 describe("command managed runtime", () => {
@@ -243,10 +281,12 @@ describe("command managed runtime", () => {
     const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
 
     const progress: Array<{ done: number; total: number | null }> = [];
-    await client.writeFile(remotePath, toArrayBuffer(payload), {
-      onProgress: (done, total) => {
-        progress.push({ done, total });
-      },
+    await withBase64StringByteLimit(4 * 1024 * 1024, async () => {
+      await client.writeFile(remotePath, toArrayBuffer(payload), {
+        onProgress: (done, total) => {
+          progress.push({ done, total });
+        },
+      });
     });
 
     // Exactly one upload process: O(1) round-trips regardless of payload size.
@@ -288,6 +328,9 @@ describe("command managed runtime", () => {
     // Provider-backed sandbox runners cannot surface mid-flight progress for a
     // single stdin RPC, so we intentionally use several large append commands.
     expect(calls.length).toBeGreaterThan(2);
+    const stdinCalls = calls.filter((call) => call.stdin != null);
+    expect(stdinCalls.length).toBeGreaterThan(2);
+    expect(stdinCalls.every((call) => Buffer.byteLength(call.stdin ?? "", "utf8") <= 4.1 * 1024 * 1024)).toBe(true);
     expect(progress.length).toBeGreaterThan(2);
     for (let i = 1; i < progress.length; i++) {
       expect(progress[i].done).toBeGreaterThanOrEqual(progress[i - 1].done);
@@ -295,16 +338,41 @@ describe("command managed runtime", () => {
     expect(progress.at(-1)).toEqual({ done: payload.length, total: payload.length });
   });
 
-  it("streams a download through onLog and reports monotonic byte progress to the total", async () => {
+  it("falls back to bounded chunks when the runner does not explicitly opt in", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-write-fallback-no-progress-"));
+    cleanupDirs.push(rootDir);
+    const remotePath = path.join(rootDir, "nested", "payload.bin");
+
+    const payload = Buffer.alloc(12 * 1024 * 1024);
+    for (let i = 0; i < payload.length; i++) payload[i] = i % 256;
+
+    const { runner, calls } = makeSpawnRunner();
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
+
+    await withBase64StringByteLimit(4 * 1024 * 1024, async () => {
+      await client.writeFile(remotePath, toArrayBuffer(payload));
+    });
+
+    const written = await readFile(remotePath);
+    expect(written.equals(payload)).toBe(true);
+
+    // A runner that doesn't mark single-stream stdin support must avoid passing
+    // the whole base64 archive as one string, so we expect multiple append calls.
+    const stdinCalls = calls.filter((call) => call.stdin != null);
+    expect(stdinCalls.length).toBeGreaterThan(1);
+    expect(stdinCalls.every((call) => Buffer.byteLength(call.stdin ?? "", "utf8") <= 4.1 * 1024 * 1024)).toBe(true);
+  });
+
+  it("downloads in bounded stdout chunks and reports monotonic byte progress to the total", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-read-"));
     cleanupDirs.push(rootDir);
     const remotePath = path.join(rootDir, "download.bin");
 
-    const payload = Buffer.alloc(512 * 1024);
+    const payload = Buffer.alloc(7 * 1024 * 1024);
     for (let i = 0; i < payload.length; i++) payload[i] = (i * 7) % 256;
     await writeFile(remotePath, payload);
 
-    const { runner } = makeSpawnRunner();
+    const { runner, calls } = makeSpawnRunner({ maxStdoutBytes: 5 * 1024 * 1024 });
     const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
 
     const progress: Array<{ done: number; total: number | null }> = [];
@@ -316,7 +384,10 @@ describe("command managed runtime", () => {
 
     expect(Buffer.from(bytes as ArrayBuffer).equals(payload)).toBe(true);
 
-    // The runner replays stdout in several chunks, so progress arrives in steps.
+    // The old single `base64 < file` path would exceed the runner's stdout cap.
+    // The bounded path reads with several small `dd | base64` commands instead.
+    expect(calls.some((call) => call.args?.join(" ").includes("base64 <"))).toBe(false);
+    expect(calls.filter((call) => call.args?.join(" ").includes("dd if=")).length).toBeGreaterThan(1);
     expect(progress.length).toBeGreaterThan(1);
     for (let i = 1; i < progress.length; i++) {
       expect(progress[i].done).toBeGreaterThanOrEqual(progress[i - 1].done);

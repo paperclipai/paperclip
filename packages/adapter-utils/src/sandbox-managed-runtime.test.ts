@@ -20,6 +20,13 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout.trim();
 }
 
+async function listTarMembers(rootDir: string, name: string, bytes: Buffer): Promise<string[]> {
+  const tarPath = path.join(rootDir, name);
+  await writeFile(tarPath, bytes);
+  const { stdout } = await execFile("tar", ["-tf", tarPath], { maxBuffer: 32 * 1024 * 1024 });
+  return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
 describe("sandbox managed runtime", () => {
   const cleanupDirs: string[] = [];
 
@@ -150,15 +157,19 @@ describe("sandbox managed runtime", () => {
     await git(sourceRepoDir, ["checkout", "-b", "main"]);
     await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
     await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, ".gitignore"), "node_modules/\n", "utf8");
     await writeFile(path.join(sourceRepoDir, "tracked.txt"), "base\n", "utf8");
+    await writeFile(path.join(sourceRepoDir, "clean.txt"), "from git\n", "utf8");
     await writeFile(path.join(sourceRepoDir, "deleted.txt"), "delete me\n", "utf8");
-    await git(sourceRepoDir, ["add", "tracked.txt", "deleted.txt"]);
+    await git(sourceRepoDir, ["add", ".gitignore", "tracked.txt", "clean.txt", "deleted.txt"]);
     await git(sourceRepoDir, ["commit", "-m", "base"]);
     await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
 
     expect((await lstat(path.join(localWorkspaceDir, ".git"))).isFile()).toBe(true);
+    await mkdir(path.join(localWorkspaceDir, "node_modules"), { recursive: true });
     await writeFile(path.join(localWorkspaceDir, "tracked.txt"), "dirty local\n", "utf8");
     await writeFile(path.join(localWorkspaceDir, "untracked.txt"), "from local\n", "utf8");
+    await writeFile(path.join(localWorkspaceDir, "node_modules", "cache.bin"), "do not upload\n", "utf8");
     await rm(path.join(localWorkspaceDir, "deleted.txt"));
 
     const uploadedTars: { remotePath: string; bytes: Buffer }[] = [];
@@ -210,20 +221,18 @@ describe("sandbox managed runtime", () => {
     expect(await git(remoteWorkspaceDir, ["status", "--short"])).toContain("?? untracked.txt");
     await expect(readFile(path.join(remoteWorkspaceDir, "deleted.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 
-    const listTarMembers = async (name: string, bytes: Buffer) => {
-      const tarPath = path.join(rootDir, name);
-      await writeFile(tarPath, bytes);
-      const { stdout } = await execFile("tar", ["-tf", tarPath], { maxBuffer: 32 * 1024 * 1024 });
-      return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-    };
     const gitUpload = uploadedTars.find((entry) => path.posix.basename(entry.remotePath) === "git-workspace-upload.tar");
     const workspaceUpload = uploadedTars.find((entry) => path.posix.basename(entry.remotePath) === "workspace-upload.tar");
     expect(gitUpload).toBeDefined();
     expect(workspaceUpload).toBeDefined();
-    const gitMembers = await listTarMembers("git-upload-list.tar", gitUpload!.bytes);
-    const workspaceMembers = await listTarMembers("workspace-upload-list.tar", workspaceUpload!.bytes);
+    const gitMembers = await listTarMembers(rootDir, "git-upload-list.tar", gitUpload!.bytes);
+    const workspaceMembers = await listTarMembers(rootDir, "workspace-upload-list.tar", workspaceUpload!.bytes);
     expect(gitMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(true);
     expect(workspaceMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
+    expect(workspaceMembers).toContain("tracked.txt");
+    expect(workspaceMembers).toContain("untracked.txt");
+    expect(workspaceMembers).not.toContain("clean.txt");
+    expect(workspaceMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
 
     await git(remoteWorkspaceDir, ["config", "user.name", "Paperclip Sandbox"]);
     await git(remoteWorkspaceDir, ["config", "user.email", "sandbox@paperclip.dev"]);
@@ -239,10 +248,119 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "tracked.txt"), "utf8")).resolves.toBe("remote dirty\n");
     await expect(readFile(path.join(localWorkspaceDir, "remote-only.txt"), "utf8")).resolves.toBe("from sandbox\n");
     await expect(readFile(path.join(localWorkspaceDir, "deleted.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(localWorkspaceDir, "node_modules", "cache.bin"), "utf8")).resolves.toBe("do not upload\n");
 
     expect(downloadedTars).toHaveLength(1);
-    const downloadMembers = await listTarMembers("workspace-download-list.tar", downloadedTars[0]!.bytes);
+    const downloadMembers = await listTarMembers(rootDir, "workspace-download-list.tar", downloadedTars[0]!.bytes);
     expect(downloadMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
+    expect(downloadMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
+  });
+
+  it("excludes unignored dependency trees from git-backed workspace overlay archives", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-unignored-deps-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-worktree");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await mkdir(path.join(sourceRepoDir, "src"), { recursive: true });
+    await writeFile(path.join(sourceRepoDir, "src", "tracked.ts"), "export const tracked = true;\n", "utf8");
+    await git(sourceRepoDir, ["add", "src/tracked.ts"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+
+    await mkdir(path.join(localWorkspaceDir, "node_modules", "root-package"), { recursive: true });
+    await mkdir(path.join(localWorkspaceDir, "packages", "ui", "node_modules", "nested-package"), { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "node_modules", "root-package", "cache.bin"), "root dependency\n", "utf8");
+    await writeFile(
+      path.join(localWorkspaceDir, "packages", "ui", "node_modules", "nested-package", "cache.bin"),
+      "nested dependency\n",
+      "utf8",
+    );
+    await writeFile(path.join(localWorkspaceDir, "src", "local-only.ts"), "export const local = true;\n", "utf8");
+
+    const uploadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const downloadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        const buffer = Buffer.from(bytes);
+        if (remotePath.endsWith("-upload.tar")) uploadedTars.push({ remotePath, bytes: buffer });
+        await writeFile(remotePath, buffer);
+      },
+      readFile: async (remotePath) => {
+        const buffer = await readFile(remotePath);
+        if (remotePath.endsWith("workspace-download.tar")) downloadedTars.push({ remotePath, bytes: buffer });
+        return buffer;
+      },
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    const workspaceUpload = uploadedTars.find((entry) => path.posix.basename(entry.remotePath) === "workspace-upload.tar");
+    expect(workspaceUpload).toBeDefined();
+    const workspaceMembers = await listTarMembers(rootDir, "unignored-deps-workspace-upload.tar", workspaceUpload!.bytes);
+    expect(workspaceMembers).toContain("src/local-only.ts");
+    expect(workspaceMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
+    expect(workspaceMembers.some((entry) => entry.includes("/node_modules/") || entry.endsWith("/node_modules"))).toBe(false);
+
+    await expect(readFile(path.join(remoteWorkspaceDir, "src", "local-only.ts"), "utf8")).resolves.toBe("export const local = true;\n");
+    await expect(readFile(path.join(remoteWorkspaceDir, "node_modules", "root-package", "cache.bin"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(path.join(remoteWorkspaceDir, "packages", "ui", "node_modules", "nested-package", "cache.bin"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+
+    await mkdir(path.join(remoteWorkspaceDir, "node_modules", "sandbox-package"), { recursive: true });
+    await mkdir(path.join(remoteWorkspaceDir, "packages", "ui", "node_modules", "sandbox-package"), { recursive: true });
+    await writeFile(path.join(remoteWorkspaceDir, "node_modules", "sandbox-package", "cache.bin"), "sandbox root dependency\n", "utf8");
+    await writeFile(
+      path.join(remoteWorkspaceDir, "packages", "ui", "node_modules", "sandbox-package", "cache.bin"),
+      "sandbox nested dependency\n",
+      "utf8",
+    );
+    await writeFile(path.join(remoteWorkspaceDir, "src", "remote-only.ts"), "export const remote = true;\n", "utf8");
+
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(localWorkspaceDir, "node_modules", "root-package", "cache.bin"), "utf8")).resolves.toBe("root dependency\n");
+    await expect(
+      readFile(path.join(localWorkspaceDir, "packages", "ui", "node_modules", "nested-package", "cache.bin"), "utf8"),
+    ).resolves.toBe("nested dependency\n");
+    await expect(readFile(path.join(localWorkspaceDir, "src", "remote-only.ts"), "utf8")).resolves.toBe("export const remote = true;\n");
+    await expect(readFile(path.join(localWorkspaceDir, "node_modules", "sandbox-package", "cache.bin"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+    expect(downloadedTars).toHaveLength(1);
+    const downloadMembers = await listTarMembers(rootDir, "unignored-deps-workspace-download.tar", downloadedTars[0]!.bytes);
+    expect(downloadMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
+    expect(downloadMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
+    expect(downloadMembers.some((entry) => entry.includes("/node_modules/") || entry.endsWith("/node_modules"))).toBe(false);
   });
 
   it("builds workspace/asset tarballs without a './' self-entry (so untar does not chmod/utime an unowned target dir)", async () => {

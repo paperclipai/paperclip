@@ -23,6 +23,23 @@ import {
 } from "./runtime-progress.js";
 
 const execFile = promisify(execFileCallback);
+const SANDBOX_WORKSPACE_HEAVY_DIR_NAMES = [
+  "node_modules",
+  "vendor",
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  ".next",
+  ".turbo",
+  ".cache",
+] as const;
+const SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES = SANDBOX_WORKSPACE_HEAVY_DIR_NAMES.flatMap((entry) => [
+  entry,
+  `${entry}/*`,
+  `*/${entry}`,
+  `*/${entry}/*`,
+]);
 
 export interface SandboxRemoteExecutionSpec {
   transport: "sandbox";
@@ -228,6 +245,55 @@ function isRelativePathOrDescendant(relative: string, candidate: string): boolea
   return relative === candidate || relative.startsWith(`${candidate}/`);
 }
 
+function pathContainsSegmentOrDescendant(relative: string, segment: string): boolean {
+  return relative === segment ||
+    relative.startsWith(`${segment}/`) ||
+    relative.endsWith(`/${segment}`) ||
+    relative.includes(`/${segment}/`);
+}
+
+function excludePatternMatches(relative: string, pattern: string): boolean {
+  if (pattern.startsWith("*/") && pattern.endsWith("/*")) {
+    return pathContainsSegmentOrDescendant(relative, pattern.slice(2, -2));
+  }
+  if (pattern.startsWith("*/")) {
+    return pathContainsSegmentOrDescendant(relative, pattern.slice(2));
+  }
+  if (pattern.endsWith("/*")) {
+    const base = pattern.slice(0, -2);
+    return relative.startsWith(`${base}/`);
+  }
+  return isRelativePathOrDescendant(relative, pattern);
+}
+
+function shouldExcludePath(relative: string, exclude: readonly string[]): boolean {
+  return exclude.some((entry) => excludePatternMatches(relative, entry));
+}
+
+async function copyWorkspaceEntry(sourceRoot: string, targetRoot: string, relative: string): Promise<void> {
+  const sourcePath = path.join(sourceRoot, relative);
+  const targetPath = path.join(targetRoot, relative);
+  const stats = await fs.lstat(sourcePath);
+
+  if (stats.isDirectory()) {
+    await fs.mkdir(targetPath, { recursive: true });
+    return;
+  }
+
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.rm(targetPath, { recursive: true, force: true }).catch(() => undefined);
+  if (stats.isSymbolicLink()) {
+    const linkTarget = await fs.readlink(sourcePath);
+    await fs.symlink(linkTarget, targetPath);
+    return;
+  }
+
+  await fs.copyFile(sourcePath, targetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+    await fs.copyFile(sourcePath, targetPath);
+  });
+  await fs.chmod(targetPath, stats.mode);
+}
+
 export async function mirrorDirectory(
   sourceDir: string,
   targetDir: string,
@@ -247,33 +313,24 @@ export async function mirrorDirectory(
     }
   }
 
-  const copyEntry = async (relative: string) => {
-    const sourcePath = path.join(sourceDir, relative);
-    const targetPath = path.join(targetDir, relative);
-    const stats = await fs.lstat(sourcePath);
-
-    if (stats.isDirectory()) {
-      await fs.mkdir(targetPath, { recursive: true });
-      return;
-    }
-
-    await fs.mkdir(path.dirname(targetPath), { recursive: true });
-    await fs.rm(targetPath, { recursive: true, force: true }).catch(() => undefined);
-    if (stats.isSymbolicLink()) {
-      const linkTarget = await fs.readlink(sourcePath);
-      await fs.symlink(linkTarget, targetPath);
-      return;
-    }
-
-    await fs.copyFile(sourcePath, targetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
-      await fs.copyFile(sourcePath, targetPath);
-    });
-    await fs.chmod(targetPath, stats.mode);
-  };
-
   const entries = (await walkDirectory(sourceDir)).sort((left, right) => left.localeCompare(right));
   for (const relative of entries) {
-    await copyEntry(relative);
+    await copyWorkspaceEntry(sourceDir, targetDir, relative);
+  }
+}
+
+async function copySelectedWorkspaceEntries(input: {
+  sourceDir: string;
+  targetDir: string;
+  relativePaths: string[];
+  exclude: string[];
+}): Promise<void> {
+  await fs.mkdir(input.targetDir, { recursive: true });
+  for (const relative of input.relativePaths) {
+    if (shouldExcludePath(relative, input.exclude)) continue;
+    const sourceStats = await fs.lstat(path.join(input.sourceDir, relative)).catch(() => null);
+    if (!sourceStats) continue;
+    await copyWorkspaceEntry(input.sourceDir, input.targetDir, relative);
   }
 }
 
@@ -359,12 +416,20 @@ export async function prepareSandboxManagedRuntime(input: {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
   const gitSnapshot = await readGitWorkspaceSnapshot(input.workspaceLocalDir);
-  const workspaceArchiveExclude = mergeExcludes(gitSnapshot ? [...GIT_ARCHIVE_EXCLUDES] : undefined, input.workspaceExclude);
+  const gitIgnoredExcludes = gitSnapshot?.ignoredPaths;
+  const workspaceArchiveExclude = mergeExcludes(
+    SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
+    [...GIT_ARCHIVE_EXCLUDES],
+    input.workspaceExclude,
+    gitIgnoredExcludes,
+  );
   const restoreExclude = mergeExcludes(
-    gitSnapshot ? [...GIT_ARCHIVE_EXCLUDES] : undefined,
+    SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
+    [...GIT_ARCHIVE_EXCLUDES],
     [".paperclip-runtime"],
     input.preserveAbsentOnRestore,
     input.workspaceExclude,
+    gitIgnoredExcludes,
   );
   const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
     exclude: restoreExclude,
@@ -406,10 +471,19 @@ export async function prepareSandboxManagedRuntime(input: {
     }
 
     const workspaceTarPath = path.join(tempDir, "workspace.tar");
+    const workspaceArchiveDir = gitSnapshot ? path.join(tempDir, "workspace-overlay") : input.workspaceLocalDir;
+    if (gitSnapshot) {
+      await copySelectedWorkspaceEntries({
+        sourceDir: input.workspaceLocalDir,
+        targetDir: workspaceArchiveDir,
+        relativePaths: gitSnapshot.overlayPaths,
+        exclude: workspaceArchiveExclude,
+      });
+    }
     await createTarballFromDirectory({
-      localDir: input.workspaceLocalDir,
+      localDir: workspaceArchiveDir,
       archivePath: workspaceTarPath,
-      exclude: workspaceArchiveExclude,
+      exclude: gitSnapshot ? undefined : workspaceArchiveExclude,
     });
     const workspaceTarBytes = await fs.readFile(workspaceTarPath);
     const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-upload.tar");
@@ -421,14 +495,16 @@ export async function prepareSandboxManagedRuntime(input: {
       workspaceUpload.options,
     );
     await workspaceUpload.finish();
-    const findPreserveArgs = preserveFindArgs([...preservedNames]);
+    const extractWorkspaceTarCommand = gitSnapshot
+      ? `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
+        `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
+        `rm -f ${shellQuote(remoteWorkspaceTar)}`
+      : `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
+        `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${preserveFindArgs([...preservedNames])} -exec rm -rf -- {} + && ` +
+        `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
+        `rm -f ${shellQuote(remoteWorkspaceTar)}`;
     await input.client.run(
-      `sh -c ${shellQuote(
-        `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
-          `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${findPreserveArgs} -exec rm -rf -- {} + && ` +
-          `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
-          `rm -f ${shellQuote(remoteWorkspaceTar)}`,
-      )}`,
+      `sh -c ${shellQuote(extractWorkspaceTarCommand)}`,
       { timeoutMs: input.spec.timeoutMs },
     );
     if (gitSnapshot) {
