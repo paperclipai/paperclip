@@ -25,7 +25,7 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
-export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
+export type InboxTab = "mine" | "waiting" | "recent" | "unread" | "blocked" | "all";
 export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"

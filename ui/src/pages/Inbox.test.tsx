@@ -382,9 +382,9 @@ describe("Inbox toolbar", () => {
     });
   });
 
-  it("renders 'Waiting on you' section with awaiting human interactions", async () => {
+  it("renders the 'Waiting on you' tab with awaiting human interactions", async () => {
     resetInboxApiMocks();
-    routerMock.location.pathname = "/inbox/mine";
+    routerMock.location.pathname = "/inbox/waiting";
     const issue = createIssue({ id: "issue-1", identifier: "PAP-100", title: "Test issue" });
     apiMocks.issuesList.mockResolvedValue([issue]);
     apiMocks.listAwaitingHumanInteractions.mockResolvedValue([
@@ -430,10 +430,6 @@ describe("Inbox toolbar", () => {
       const text = container.textContent || "";
       expect(text).toContain("Questions for you");
     });
-
-    const headings = Array.from(container.querySelectorAll("h3"));
-    const waitingHeading = headings.find((h) => h.textContent?.includes("Waiting on you"));
-    expect(waitingHeading).not.toBeNull();
 
     const text = container.textContent || "";
     expect(text).toContain("PAP-100");

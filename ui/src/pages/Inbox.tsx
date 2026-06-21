@@ -834,6 +834,7 @@ export function Inbox() {
   const pathSegment = location.pathname.split("/").pop() ?? "mine";
   const tab: InboxTab =
     pathSegment === "mine"
+    || pathSegment === "waiting"
     || pathSegment === "recent"
     || pathSegment === "all"
     || pathSegment === "unread"
@@ -1213,16 +1214,17 @@ export function Inbox() {
     return failedRuns;
   }, [failedRuns, tab, showFailedRunsCategory]);
 
-  const awaitingHumanInteractionsForTab = useMemo(() => {
-    if (tab === "mine") {
-      return awaitingHumanInteractionsData.filter(
-        // Compare against updatedAt to match the server badge query, so a dismissal
-        // never leaves the badge counting a row the list has already hidden (or vice versa).
+  // Non-dismissed awaiting-human asks, independent of the active tab so the "Waiting on you"
+  // tab badge stays accurate from any tab. Compare against updatedAt to match the server badge
+  // query, so a dismissal never leaves the badge counting a row the list has hidden (or vice versa).
+  const awaitingHumanVisible = useMemo(
+    () =>
+      awaitingHumanInteractionsData.filter(
         (item) => !isInboxEntityDismissed(dismissedAtByKey, `interaction:${item.interaction.id}`, item.interaction.updatedAt),
-      );
-    }
-    return [];
-  }, [awaitingHumanInteractionsData, tab, dismissedAtByKey]);
+      ),
+    [awaitingHumanInteractionsData, dismissedAtByKey],
+  );
+  const awaitingHumanInteractionsForTab = tab === "waiting" ? awaitingHumanVisible : [];
 
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
@@ -2075,14 +2077,8 @@ export function Inbox() {
     showOnAll: hasAlerts,
   });
   const hasAwaitingHuman = awaitingHumanInteractionsForTab.length > 0;
-  const showAwaitingHumanSection = shouldShowInboxSection({
-    tab,
-    hasItems: hasAwaitingHuman,
-    showOnMine: hasAwaitingHuman,
-    showOnRecent: false,
-    showOnUnread: false,
-    showOnAll: false,
-  });
+  // "Waiting on you" is its own tab, so the section only renders there.
+  const showAwaitingHumanSection = tab === "waiting" && hasAwaitingHuman;
 
   const visibleSections = [
     showAwaitingHumanSection ? "waiting_on_you" : null,
@@ -2106,7 +2102,7 @@ export function Inbox() {
     .map((issue) => issue.id);
   const canMarkAllRead = unreadIssueIds.length > 0;
   const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
-  const showGeneralIssueToolbarControls = tab !== "blocked";
+  const showGeneralIssueToolbarControls = tab !== "blocked" && tab !== "waiting";
   return (
     <div className="space-y-6">
       <div className="space-y-2">
@@ -2146,6 +2142,19 @@ export function Inbox() {
               {
                 value: "mine",
                 label: "Mine",
+              },
+              {
+                value: "waiting",
+                label: (
+                  <span className="inline-flex items-center gap-1.5">
+                    Waiting on you
+                    {awaitingHumanVisible.length > 0 && (
+                      <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-500/20 px-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400">
+                        {awaitingHumanVisible.length}
+                      </span>
+                    )}
+                  </span>
+                ),
               },
               {
                 value: "recent",
@@ -2447,7 +2456,7 @@ export function Inbox() {
         />
       ) : null}
 
-      {tab !== "blocked" && !allLoaded && visibleSections.length === 0 && (
+      {tab !== "blocked" && tab !== "waiting" && !allLoaded && visibleSections.length === 0 && (
         <PageSkeleton variant="inbox" />
       )}
 
@@ -2457,6 +2466,8 @@ export function Inbox() {
           message={
             searchQuery.trim()
               ? "No inbox items match your search."
+              : tab === "waiting"
+              ? "Nothing is waiting on you right now."
               : tab === "mine"
               ? "Inbox zero."
               : tab === "unread"
@@ -2468,7 +2479,7 @@ export function Inbox() {
         />
       )}
 
-      {tab !== "blocked" && showWorkItemsSection && (
+      {tab !== "blocked" && tab !== "waiting" && showWorkItemsSection && (
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
@@ -2902,9 +2913,6 @@ export function Inbox() {
         <>
           {showSeparatorBefore("waiting_on_you") && <Separator />}
           <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Waiting on you
-            </h3>
             <div className="divide-y divide-border border border-border">
               {awaitingHumanInteractionsForTab.map(({ interaction, issue }) => {
                 const interactionKey = `interaction:${interaction.id}`;
@@ -2925,7 +2933,7 @@ export function Inbox() {
                     isNavigating={false}
                     unreadState={nonIssueUnreadState(interactionKey)}
                     onMarkRead={() => handleMarkNonIssueRead(interactionKey)}
-                    onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(interactionKey) : undefined}
+                    onArchive={() => handleArchiveNonIssue(interactionKey)}
                     archiveDisabled={isArchiving}
                     className={
                       isArchiving
