@@ -31,6 +31,14 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "text/plain",
   "application/json",
   "text/csv",
+  // Office documents (OOXML)
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation", // .pptx
+  // Office documents (legacy binary)
+  "application/msword", // .doc
+  "application/vnd.ms-excel", // .xls
+  "application/vnd.ms-powerpoint", // .ppt
   "text/html",
   "video/mp4",
   "video/webm",
@@ -51,6 +59,13 @@ export const INLINE_ATTACHMENT_TYPES: readonly string[] = [
   "video/webm",
   "video/quicktime",
   "video/x-m4v",
+  // Office documents (inline for preview)
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
 ];
 
 /**

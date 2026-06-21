@@ -321,6 +321,44 @@ describe("issue attachment routes", () => {
     expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
   });
 
+  it("accepts xlsx upload with proper OOXML MIME type", async () => {
+    const storage = createStorageService();
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    const xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment(xlsx, "report.xlsx"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.from("xlsx"), { filename: "report.xlsx", contentType: xlsx });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.createAttachment).toHaveBeenCalled();
+  });
+
+  it("accepts xlsx upload with octet-stream MIME and infers type from filename", async () => {
+    const storage = createStorageService();
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    const xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment(xlsx, "raw-data.xlsx"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.from("xlsx"), { filename: "raw-data.xlsx", contentType: "application/octet-stream" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.createAttachment).toHaveBeenCalled();
+  });
+
   it("enforces the process-level issue attachment limit even when the company limit allows more", async () => {
     const storage = createStorageService();
     mockIssueService.getById.mockResolvedValue({

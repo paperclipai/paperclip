@@ -224,6 +224,17 @@ function inferVideoContentTypeFromFilename(filename: string | null | undefined):
   return null;
 }
 
+function inferOfficeContentTypeFromFilename(filename: string | null | undefined): string | null {
+  const lower = (filename ?? "").toLowerCase();
+  if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (lower.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (lower.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  if (lower.endsWith(".doc")) return "application/msword";
+  if (lower.endsWith(".xls")) return "application/vnd.ms-excel";
+  if (lower.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+  return null;
+}
+
 function resolveAttachmentResponseContentType(input: {
   storedContentType: string | null | undefined;
   objectContentType?: string | null;
@@ -231,7 +242,9 @@ function resolveAttachmentResponseContentType(input: {
 }) {
   const storedContentType = normalizeContentType(input.storedContentType || input.objectContentType);
   if (!GENERIC_ATTACHMENT_CONTENT_TYPES.has(storedContentType)) return storedContentType;
-  return inferVideoContentTypeFromFilename(input.originalFilename) ?? storedContentType;
+  return inferOfficeContentTypeFromFilename(input.originalFilename)
+    ?? inferVideoContentTypeFromFilename(input.originalFilename)
+    ?? storedContentType;
 }
 
 function requiresPaperclipAttachmentMetadata(input: {
@@ -7020,11 +7033,15 @@ export function issueRoutes(
       return;
     }
     const contentType = normalizeContentType(file.mimetype);
+    // For generic binary uploads, infer a specific Office MIME from the filename before validation
+    const resolvedContentType = GENERIC_ATTACHMENT_CONTENT_TYPES.has(contentType)
+      ? inferOfficeContentTypeFromFilename(file.originalname) ?? contentType
+      : contentType;
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: "Attachment is empty" });
       return;
     }
-    if (!isAllowedContentType(contentType)) {
+    if (!isAllowedContentType(resolvedContentType)) {
       res.status(422).json({ error: `Unsupported attachment content type: ${contentType}` });
       return;
     }
@@ -7040,7 +7057,7 @@ export function issueRoutes(
       companyId,
       namespace: `issues/${issueId}`,
       originalFilename: file.originalname || null,
-      contentType,
+      contentType: resolvedContentType,
       body: file.buffer,
     });
 
