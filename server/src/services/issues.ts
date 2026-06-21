@@ -5044,7 +5044,7 @@ export function issueService(db: Db) {
             .select({ id: issues.id })
             .from(issues)
             .where(and(eq(issues.id, issueData.parentId), eq(issues.companyId, existing.companyId)))
-            .then((rows) => rows.length > 0);
+            .then((rows: Array<{ id: string }>) => rows.length > 0);
           if (!parentExists) {
             throw new HttpError(422, "Parent issue not found");
           }
@@ -5163,7 +5163,7 @@ export function issueService(db: Db) {
             .select({ id: goals.id })
             .from(goals)
             .where(eq(goals.id, patch.goalId))
-            .then((rows) => rows.length > 0);
+            .then((rows: Array<{ id: string }>) => rows.length > 0);
           if (!goalExists) {
             throw new HttpError(422, "Goal not found");
           }
