@@ -53,9 +53,18 @@ Key facts confirmed:
 
 ## Caveats / notes
 
-- Not yet tested against the *real* Cloudflare endpoint with a live token — the mock proves OpenCode's routing/auth/model-id behavior, which was the unknown. A single real-token smoke test is still worthwhile before production.
+- ~~Not yet tested against the real Cloudflare endpoint~~ — **now done, see § Real-token verification below.**
 - The exact `models` map value shape (`{ "name": ... }`) was accepted by OpenCode 1.17.8; pin OpenCode's config version in the recipe doc.
+
+## Real-token verification (2026-06-21)
+
+Re-run against the **live Cloudflare Workers AI endpoint** (account `a5b299b3…`, model `@cf/openai/gpt-oss-120b`, auth via an existing wrangler OAuth token):
+
+1. **Direct OpenAI-compatible endpoint** — `POST /accounts/<id>/ai/v1/chat/completions` → `HTTP 200`, `content: "SMOKE_OK"`, `finish_reason: stop`, `usage: {prompt_tokens: 78, completion_tokens: 52}`. (An earlier 20-token cap returned `content: null` with output in `reasoning_content` and `finish_reason: length` — gpt-oss is a reasoning model; raising `max_tokens` resolved it. Worth noting for low `max_tokens` configs.)
+2. **End-to-end through OpenCode** — `opencode run -m cloudflare/@cf/openai/gpt-oss-120b "…"` with the real baseURL + token in `opencode.json` → returned `SMOKE_OK`. This exercises the exact path Paperclip uses (provider injection → OpenCode → real Cloudflare).
+
+**Result: ✅ real-token PASS, both layers.** The routing, auth (`Bearer`), and `@cf/…` model-id handling all work against production Cloudflare, not just the mock. (Token-bearing temp configs were deleted after the test.)
 
 ## Conclusion
 
-OpenCode is a viable adapter for Workers AI routing. The OpenCode follow-up plan (`docs/superpowers/plans/2026-06-21-workers-ai-opencode.md`) Task 1 gate is satisfied; Tasks 2–3 are unblocked, using the verified config above.
+OpenCode is a viable adapter for Workers AI routing, **verified end-to-end against the real Cloudflare endpoint**. The OpenCode follow-up plan (`docs/superpowers/plans/2026-06-21-workers-ai-opencode.md`) Task 1 gate is satisfied; Tasks 2–3 are complete.

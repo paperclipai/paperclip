@@ -125,16 +125,13 @@ below routes `workMode=bulk` requests to the `bulk` profile and falls back to th
 
 **Verification status:**
 
-The injection mechanism has been proven correct against a mock HTTP endpoint (see the
-spike doc linked above). The model catalog entries (`cloudflare/@cf/...`) and the
+✅ **Verified end-to-end against the real Cloudflare Workers AI endpoint** (2026-06-21,
+OpenCode 1.17.8). With a live token + account endpoint, OpenCode (`-m cloudflare/@cf/openai/gpt-oss-120b`)
+returned a real completion from Cloudflare; the direct OpenAI-compatible endpoint also returned
+`HTTP 200` with valid output. See the spike doc linked above (§ Real-token verification) for
+evidence. The model catalog entries (`cloudflare/@cf/...`) and the
 `WORKERS_AI_OPENAI_BASE_URL_TEMPLATE` constant are covered by unit tests in
 `packages/adapters/opencode-local/src/server/workers-ai-models.test.ts`.
-
-Before going to production, run **one real-token smoke test**:
-- Set `CLOUDFLARE_WORKERS_AI_TOKEN` to a live token in your local environment.
-- Point `workersAiBaseUrl` at your account's endpoint.
-- Trigger a short Paperclip run with `workMode=bulk` and confirm OpenCode returns a
-  non-error response from Cloudflare.
 
 > **Note:** Remote/sandboxed execution targets (e.g. Cloudflare Workers sandboxes)
 > are not yet wired for `opencode_local`; this recipe applies to **local** agent
