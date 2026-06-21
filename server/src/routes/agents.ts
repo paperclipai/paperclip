@@ -1,6 +1,5 @@
 import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import os from "node:os";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
@@ -1152,53 +1151,33 @@ export function agentRoutes(
     return path.resolve(instanceRoot, "companies", companyId, "agents", agentId, "codex-home");
   }
 
-  function normalizeCodexLocalHomePath(rawHome: string): string {
-    if (rawHome === "~") return path.resolve(os.homedir());
-    if (rawHome.startsWith("~/") || rawHome.startsWith("~\\")) {
-      return path.resolve(path.join(os.homedir(), rawHome.slice(2)));
-    }
-    return path.resolve(rawHome);
+  function codexLocalEnvKeyConfigured(value: unknown): boolean {
+    if (asEnvBindingString(value)) return true;
+    const record = asRecord(value);
+    return record?.type === "secret_ref" && typeof record.secretId === "string";
   }
 
-  function assertCodexLocalHomeIsNotShared(companyId: string, configuredHome: string) {
-    const instanceRoot = resolvePaperclipInstanceRootForAdapter({
-      homeDir: asNonEmptyString(process.env.PAPERCLIP_HOME) ?? undefined,
-      instanceId: asNonEmptyString(process.env.PAPERCLIP_INSTANCE_ID) ?? undefined,
-      env: process.env,
-    });
-    const normalizedHome = normalizeCodexLocalHomePath(configuredHome);
-    const sharedHomes = [
-      path.resolve(instanceRoot, "companies", companyId, "codex-home"),
-      path.resolve(path.join(os.homedir(), ".codex")),
-    ];
-    const hostCodexHome = asNonEmptyString(process.env.CODEX_HOME);
-    if (hostCodexHome) {
-      sharedHomes.push(normalizeCodexLocalHomePath(hostCodexHome));
-    }
-    if (!sharedHomes.some((sharedHome) => sharedHome === normalizedHome)) return;
-    throw unprocessable(
-      "codex_local agents must use an isolated adapterConfig.env.CODEX_HOME; shared company codex-home or host Codex auth home is not allowed",
-    );
-  }
-
-  function applyCodexLocalIsolationGuard(
+  // codex_local agents inherit whatever Codex login is already on the device
+  // (the host's ~/.codex or $CODEX_HOME) by default, so a fresh agent needs no
+  // env overrides at all. We only carve out an isolated per-agent CODEX_HOME
+  // when the agent sets its own OPENAI_API_KEY, so that key's api-key auth.json
+  // does not collide with the shared company home other agents use for the host
+  // login. Agents without a key share the host credentials.
+  function applyCodexLocalKeyIsolation(
     companyId: string,
     agentId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     if (adapterType !== "codex_local") return adapterConfig;
-    const env = asRecord(adapterConfig.env) ? { ...(adapterConfig.env as Record<string, unknown>) } : {};
-    const configuredHome = asEnvBindingString(env.CODEX_HOME);
-    if (configuredHome) {
-      assertCodexLocalHomeIsNotShared(companyId, configuredHome);
-    } else {
-      env.CODEX_HOME = codexLocalAgentHome(companyId, agentId);
-    }
-    if (!Object.prototype.hasOwnProperty.call(env, "OPENAI_API_KEY")) {
-      env.OPENAI_API_KEY = "";
-    }
-    return { ...adapterConfig, env };
+    const existingEnv = asRecord(adapterConfig.env);
+    if (!existingEnv) return adapterConfig;
+    if (!codexLocalEnvKeyConfigured(existingEnv.OPENAI_API_KEY)) return adapterConfig;
+    if (codexLocalEnvKeyConfigured(existingEnv.CODEX_HOME)) return adapterConfig;
+    return {
+      ...adapterConfig,
+      env: { ...existingEnv, CODEX_HOME: codexLocalAgentHome(companyId, agentId) },
+    };
   }
 
   function applyCreateDefaultsByAdapterType(
@@ -2216,7 +2195,7 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
     const hiredAgentId = randomUUID();
-    const requestedAdapterConfig = applyCodexLocalIsolationGuard(
+    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       hiredAgentId,
       hireInput.adapterType,
@@ -2409,7 +2388,7 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
     const agentId = randomUUID();
-    const requestedAdapterConfig = applyCodexLocalIsolationGuard(
+    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       agentId,
       createInput.adapterType,
@@ -2883,7 +2862,7 @@ export function agentRoutes(
           rawEffectiveAdapterConfig,
         );
       }
-      const effectiveAdapterConfig = applyCodexLocalIsolationGuard(
+      const effectiveAdapterConfig = applyCodexLocalKeyIsolation(
         existing.companyId,
         existing.id,
         requestedAdapterType,
