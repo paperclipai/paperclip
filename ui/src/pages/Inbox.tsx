@@ -990,6 +990,9 @@ export function Inbox() {
     queryKey: queryKeys.issues.awaitingHumanInteractions(selectedCompanyId!),
     queryFn: () => issuesApi.listAwaitingHumanInteractions(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    // Keep the list in lockstep with the sidebar badge (which polls every 5s) so a new
+    // ask appears here instead of only after a reload.
+    refetchInterval: 5000,
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const { data: companyMembers } = useQuery({
@@ -1213,7 +1216,9 @@ export function Inbox() {
   const awaitingHumanInteractionsForTab = useMemo(() => {
     if (tab === "mine") {
       return awaitingHumanInteractionsData.filter(
-        (item) => !isInboxEntityDismissed(dismissedAtByKey, `interaction:${item.interaction.id}`, item.interaction.createdAt),
+        // Compare against updatedAt to match the server badge query, so a dismissal
+        // never leaves the badge counting a row the list has already hidden (or vice versa).
+        (item) => !isInboxEntityDismissed(dismissedAtByKey, `interaction:${item.interaction.id}`, item.interaction.updatedAt),
       );
     }
     return [];
