@@ -66,6 +66,7 @@ import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
+import { serverVersion } from "./version.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -122,6 +123,15 @@ export function shouldEnablePrivateHostnameGuard(opts: {
     opts.deploymentExposure === "private" &&
     (opts.deploymentMode === "local_trusted" || opts.deploymentMode === "authenticated")
   );
+}
+
+/**
+ * Resolve the host version advertised to the plugin runtime.
+ * Falls back to the real server package version so version-gated plugins
+ * compare against the actual running version, not the "0.0.0" placeholder.
+ */
+export function resolveHostVersion(explicitHostVersion?: string): string {
+  return explicitHostVersion ?? serverVersion;
 }
 
 export async function createApp(
@@ -280,7 +290,7 @@ export async function createApp(
       lifecycleManager: lifecycle,
       instanceInfo: {
         instanceId: opts.instanceId ?? "default",
-        hostVersion: opts.hostVersion ?? "0.0.0",
+        hostVersion: resolveHostVersion(opts.hostVersion),
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
       },
