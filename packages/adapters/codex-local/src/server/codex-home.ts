@@ -180,7 +180,18 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
 }
 
 /**
- * Writes an `auth.json` containing only `OPENAI_API_KEY` so the codex CLI can
+ * Builds the canonical managed `auth.json` contents for API-key auth. The codex
+ * CLI (>= 0.122) requires both `auth_mode: "apikey"` and `OPENAI_API_KEY` to be
+ * present, otherwise it falls back to the (absent) ChatGPT login flow. Shared by
+ * the persisted managed home writer and the ephemeral probe-home builder so the
+ * two paths can never drift.
+ */
+export function buildApiKeyAuthContents(apiKey: string): string {
+  return JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: apiKey });
+}
+
+/**
+ * Writes an `auth.json` containing API-key credentials so the codex CLI can
  * authenticate via API key. Overwrites any existing file or symlink at that
  * path. Required because the codex CLI (>= 0.122) ignores the `OPENAI_API_KEY`
  * environment variable and only reads credentials from `$CODEX_HOME/auth.json`.
@@ -189,7 +200,7 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   await fs.mkdir(home, { recursive: true });
   const target = path.join(home, "auth.json");
   await fs.rm(target, { force: true });
-  await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+  await fs.writeFile(target, buildApiKeyAuthContents(apiKey), { mode: 0o600 });
 }
 
 /**
@@ -260,7 +271,14 @@ export async function prepareManagedCodexHome(
   options: { apiKey?: string | null } = {},
 ): Promise<string> {
   const targetHome = resolveManagedCodexHomeDir(env, companyId);
-  await seedManagedCodexHome(targetHome, env, onLog, options);
+  // When the caller does not explicitly pass an apiKey, fall back to the
+  // process/agent `OPENAI_API_KEY` so the env-driven test/runtime path
+  // (testEnvironment) seeds an API-key auth.json instead of symlinking the
+  // shared subscription auth. An explicit `null` (e.g. the remote-probe path)
+  // still means "no key" and is preserved — only `undefined` triggers the
+  // env fallback, so reconcile's intentional downgrade is never overridden.
+  const apiKey = options.apiKey === undefined ? nonEmpty(env.OPENAI_API_KEY) : options.apiKey;
+  await seedManagedCodexHome(targetHome, env, onLog, { apiKey });
   return targetHome;
 }
 

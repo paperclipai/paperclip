@@ -430,7 +430,7 @@ describe("seedManagedCodexHome", () => {
       });
 
       const written = JSON.parse(await fs.readFile(path.join(agentHome, "auth.json"), "utf8"));
-      expect(written).toEqual({ OPENAI_API_KEY: "sk-test-123" });
+      expect(written).toEqual({ auth_mode: "apikey", OPENAI_API_KEY: "sk-test-123" });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -602,7 +602,7 @@ describe("reconcileManagedCodexHome", () => {
       });
       expect(result.status).toBe("seeded");
       const written = JSON.parse(await fs.readFile(fx.agentAuth, "utf8"));
-      expect(written).toEqual({ OPENAI_API_KEY: "sk-reconcile-1" });
+      expect(written).toEqual({ auth_mode: "apikey", OPENAI_API_KEY: "sk-reconcile-1" });
 
       const second = await reconcileManagedCodexHome({
         companyId: "company-1",
@@ -612,6 +612,7 @@ describe("reconcileManagedCodexHome", () => {
       });
       expect(second.status).toBe("already_seeded");
       expect(JSON.parse(await fs.readFile(fx.agentAuth, "utf8"))).toEqual({
+        auth_mode: "apikey",
         OPENAI_API_KEY: "sk-reconcile-1",
       });
     } finally {

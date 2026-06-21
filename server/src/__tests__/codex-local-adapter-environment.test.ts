@@ -112,7 +112,7 @@ describe("codex_local environment diagnostics", () => {
     const script = [
       "#!/bin/sh",
       "AUTH_FILE=\"$CODEX_HOME/auth.json\"",
-      "if grep -q '\"auth_mode\": \"apikey\"' \"$AUTH_FILE\" && grep -q '\"OPENAI_API_KEY\": \"sk-test-key\"' \"$AUTH_FILE\"; then",
+      "if grep -qE '\"auth_mode\": *\"apikey\"' \"$AUTH_FILE\" && grep -qE '\"OPENAI_API_KEY\": *\"sk-test-key\"' \"$AUTH_FILE\"; then",
       "  echo '{\"type\":\"thread.started\",\"thread_id\":\"test-thread\"}'",
       "  echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"hello\"}}'",
       "  echo '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1}}'",
@@ -169,7 +169,7 @@ describe("codex_local environment diagnostics", () => {
     const script = [
       "#!/bin/sh",
       "AUTH_FILE=\"$CODEX_HOME/auth.json\"",
-      "if grep -q '\"auth_mode\": \"apikey\"' \"$AUTH_FILE\" && grep -q '\"OPENAI_API_KEY\": \"sk-config-key\"' \"$AUTH_FILE\"; then",
+      "if grep -qE '\"auth_mode\": *\"apikey\"' \"$AUTH_FILE\" && grep -qE '\"OPENAI_API_KEY\": *\"sk-config-key\"' \"$AUTH_FILE\"; then",
       "  echo '{\"type\":\"thread.started\",\"thread_id\":\"test-thread\"}'",
       "  echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"hello\"}}'",
       "  echo '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1}}'",
