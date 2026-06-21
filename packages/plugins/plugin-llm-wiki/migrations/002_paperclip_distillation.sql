@@ -1,4 +1,4 @@
-CREATE TABLE plugin_llm_wiki_8f50da974f.paperclip_distillation_cursors (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.paperclip_distillation_cursors (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -18,7 +18,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.paperclip_distillation_cursors (
   UNIQUE (company_id, wiki_id, source_scope, scope_key, source_kind)
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.paperclip_distillation_work_items (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.paperclip_distillation_work_items (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -35,7 +35,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.paperclip_distillation_work_items (
   UNIQUE (company_id, wiki_id, idempotency_key)
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.paperclip_distillation_runs (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.paperclip_distillation_runs (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -56,7 +56,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.paperclip_distillation_runs (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.paperclip_source_snapshots (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.paperclip_source_snapshots (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -72,7 +72,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.paperclip_source_snapshots (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.paperclip_page_bindings (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.paperclip_page_bindings (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
