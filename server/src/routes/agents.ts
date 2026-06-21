@@ -579,7 +579,9 @@ export function agentRoutes(
     if (req.actor.type !== "agent" || req.actor.agentId !== agent.id) {
       return { kind: "standard" as const };
     }
-    const run = req.actor.type === "agent" && req.actor.runId
+    const rawRunId = req.actor.runId;
+    const normalizedRunId = rawRunId?.startsWith("heartbeat-") ? rawRunId.slice("heartbeat-".length) : rawRunId;
+    const run = req.actor.type === "agent" && normalizedRunId
       ? await db
           .select({
             companyId: heartbeatRuns.companyId,
@@ -587,7 +589,7 @@ export function agentRoutes(
             contextSnapshot: heartbeatRuns.contextSnapshot,
           })
           .from(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.id, req.actor.runId), eq(heartbeatRuns.companyId, agent.companyId)))
+          .where(and(eq(heartbeatRuns.id, normalizedRunId), eq(heartbeatRuns.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
     const runContext = run?.agentId === agent.id ? readObject(run.contextSnapshot) : null;

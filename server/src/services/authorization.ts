@@ -553,6 +553,7 @@ export function authorizationService(db: Db) {
 
   async function loadRunPolicy(runId: string | null | undefined, companyId: string, agentId: string) {
     if (!runId) return null;
+    const normalizedRunId = runId.startsWith("heartbeat-") ? runId.slice("heartbeat-".length) : runId;
     const row = await db
       .select({
         id: heartbeatRuns.id,
@@ -561,7 +562,7 @@ export function authorizationService(db: Db) {
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
+      .where(eq(heartbeatRuns.id, normalizedRunId))
       .then((rows) => rows[0] ?? null);
     if (!row || row.companyId !== companyId || row.agentId !== agentId) return null;
     const context = isPlainRecord(row.contextSnapshot) ? row.contextSnapshot : null;
