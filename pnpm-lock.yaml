@@ -858,6 +858,9 @@ importers:
       '@paperclipai/adapter-grok-local':
         specifier: workspace:*
         version: link:../packages/adapters/grok-local
+      '@paperclipai/adapter-ollama-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/ollama-local
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway

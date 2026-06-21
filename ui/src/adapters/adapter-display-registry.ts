@@ -83,6 +83,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Grok Build agent",
     icon: Bot,
   },
+  ollama_local: {
+    label: "Ollama",
+    description: "Local Ollama model runner",
+    icon: Cpu,
+  },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",

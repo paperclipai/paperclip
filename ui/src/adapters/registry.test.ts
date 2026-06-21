@@ -35,6 +35,14 @@ describe("ui adapter registry", () => {
     expect(listUIAdapters().some((adapter) => adapter.type === "external_test")).toBe(true);
   });
 
+  it("registers Ollama as a built-in adapter", () => {
+    const ollama = findUIAdapter("ollama_local");
+
+    expect(ollama).not.toBeNull();
+    expect(ollama?.label).toBe("Ollama (local)");
+    expect(listUIAdapters().some((adapter) => adapter.type === "ollama_local")).toBe(true);
+  });
+
   it("falls back to the process parser for unknown types after unregistering", () => {
     registerUIAdapter(externalUIAdapter);
 
