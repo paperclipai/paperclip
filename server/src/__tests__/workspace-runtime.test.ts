@@ -736,6 +736,102 @@ describe("realizeExecutionWorkspace", () => {
     expect(path.basename(realized.cwd)).toBe(realized.branchName);
   });
 
+  it("strips issue-style identifiers from slug to prevent duplicate branch identifiers", async () => {
+    const repoRoot = await createTempRepo();
+
+    // 1. Title starting with identifier: slug should not contain "pap-991"
+    const realized1 = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-ident-stripped",
+        identifier: "PAP-991",
+        title: "PAP-991 fix adapters guard",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized1.branchName).toBe("PAP-991-fix-adapters-guard");
+    expect(realized1.branchName?.includes("pap-991")).toBe(false);
+
+    // 2. Title containing embedded identifier: slug should not contain "api-71"
+    const realized2 = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-ident-embedded",
+        identifier: "PAP-991",
+        title: "Fix API-71: adapters broken",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized2.branchName).toBe("PAP-991-fix-adapters-broken");
+    expect(realized2.branchName?.includes("api-71")).toBe(false);
+
+    // 3. Title with no identifier: should remain unchanged
+    const realized3 = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-ident-none",
+        identifier: "PAP-991",
+        title: "fix adapters guard",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized3.branchName).toBe("PAP-991-fix-adapters-guard");
+  });
+
   it("preserves intentional slashes and dots from the branch template", async () => {
     const repoRoot = await createTempRepo();
 
