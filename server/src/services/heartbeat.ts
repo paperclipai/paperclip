@@ -8773,11 +8773,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       companyId: agent.companyId,
       issueId,
     });
-    const preflightSkillConfig = applyRunScopedMentionedSkillKeys(
-      executionRunConfig,
-      runScopedMentionedSkillKeys,
-    );
-    const runtimeSkillPreference = readPaperclipSkillSyncPreference(preflightSkillConfig);
     const pushCapabilityPreflightRequired = requiresPushCapabilityPreflight({
       adapterType: agent.adapterType,
       issueId,
@@ -8818,6 +8813,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       resolvedConfig,
       runScopedMentionedSkillKeys,
     );
+    const runtimeSkillPreference = readPaperclipSkillSyncPreference(effectiveResolvedConfig);
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
       versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries),
     });

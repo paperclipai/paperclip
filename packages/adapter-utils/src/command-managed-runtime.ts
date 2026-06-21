@@ -155,6 +155,9 @@ export function createCommandManagedRuntimeClient(input: {
       await options?.onProgress?.(total, total);
     },
     readFile: async (remotePath, options) => {
+      // Chunked reads intentionally query the remote size first, even without
+      // a progress sink, so each sandbox RPC stays bounded and truncation is
+      // detected without materializing the whole file as one stdout string.
       const sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`);
       const totalBytes = Number.parseInt(sizeResult.stdout.trim(), 10);
       if (!Number.isFinite(totalBytes) || totalBytes < 0) {

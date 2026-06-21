@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
+import { shouldExcludePath } from "./exclude-patterns.js";
 
 type SnapshotEntry =
   | { kind: "dir" }
@@ -11,35 +12,6 @@ type SnapshotEntry =
 export interface DirectorySnapshot {
   exclude: string[];
   entries: Map<string, SnapshotEntry>;
-}
-
-function isRelativePathOrDescendant(relative: string, candidate: string): boolean {
-  return relative === candidate || relative.startsWith(`${candidate}/`);
-}
-
-function pathContainsSegmentOrDescendant(relative: string, segment: string): boolean {
-  return relative === segment ||
-    relative.startsWith(`${segment}/`) ||
-    relative.endsWith(`/${segment}`) ||
-    relative.includes(`/${segment}/`);
-}
-
-function excludePatternMatches(relative: string, pattern: string): boolean {
-  if (pattern.startsWith("*/") && pattern.endsWith("/*")) {
-    return pathContainsSegmentOrDescendant(relative, pattern.slice(2, -2));
-  }
-  if (pattern.startsWith("*/")) {
-    return pathContainsSegmentOrDescendant(relative, pattern.slice(2));
-  }
-  if (pattern.endsWith("/*")) {
-    const base = pattern.slice(0, -2);
-    return relative.startsWith(`${base}/`);
-  }
-  return isRelativePathOrDescendant(relative, pattern);
-}
-
-function shouldExclude(relative: string, exclude: readonly string[]): boolean {
-  return exclude.some((candidate) => excludePatternMatches(relative, candidate));
 }
 
 async function hashFile(filePath: string): Promise<string> {
@@ -64,7 +36,7 @@ async function walkDirectory(
 
   for (const entry of entries) {
     const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
-    if (shouldExclude(nextRelative, exclude)) continue;
+    if (shouldExcludePath(nextRelative, exclude)) continue;
 
     const fullPath = path.join(root, nextRelative);
     const stats = await fs.lstat(fullPath);
