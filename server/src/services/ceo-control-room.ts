@@ -6,6 +6,7 @@ import type { CeoControlRoomStatus, CeoControlRoomCategoryKey, CeoControlRoomSou
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { dashboardService } from "./dashboard.js";
+import { issueService } from "./issues.js";
 
 const DEFAULT_EXTERNAL_TIMEOUT_MS = 1_500;
 const STALE_RUNNING_RUN_MS = 15 * 60 * 1000;
@@ -198,8 +199,133 @@ function category(key: CeoControlRoomCategoryKey, label: string, severity: "ok" 
   };
 }
 
+const OPEN_INCIDENT_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
+
+function incidentTitleForRoutine(title: string) {
+  return `Operational incident: ${title}`;
+}
+
+function normalizeOperatorNote(note?: string | null) {
+  const trimmed = note?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
 export function ceoControlRoomService(db: Db) {
+  const issuesSvc = issueService(db);
+
+  async function findRoutine(companyId: string, input: { routineId?: string | null; routineTitle?: string | null }) {
+    if (input.routineId) {
+      const row = await db
+        .select()
+        .from(routines)
+        .where(and(eq(routines.companyId, companyId), eq(routines.id, input.routineId)))
+        .then((rows) => rows[0] ?? null);
+      if (row) return row;
+    }
+    if (input.routineTitle?.trim()) {
+      return db
+        .select()
+        .from(routines)
+        .where(and(eq(routines.companyId, companyId), eq(routines.title, input.routineTitle.trim())))
+        .then((rows) => rows[0] ?? null);
+    }
+    return null;
+  }
+
+  async function pauseRoutine(companyId: string, routineId: string, note?: string | null) {
+    const routine = await findRoutine(companyId, { routineId });
+    if (!routine) throw notFound("Routine not found");
+    const lastResult = normalizeOperatorNote(note) ?? "Paused by CEO Operations: watchdog output is owned by a durable incident";
+    await db.transaction(async (tx) => {
+      await tx.update(routines).set({ status: "paused", updatedAt: new Date() }).where(eq(routines.id, routine.id));
+      await tx
+        .update(routineTriggers)
+        .set({ enabled: false, updatedAt: new Date(), lastResult })
+        .where(eq(routineTriggers.routineId, routine.id));
+    });
+    return { routineId: routine.id, title: routine.title, status: "paused" as const };
+  }
+
+  async function createOrUpdateOperationalIncident(companyId: string, input: { routineId?: string | null; routineTitle: string; note?: string | null }) {
+    const routine = await findRoutine(companyId, input);
+    const routineTitle = routine?.title ?? input.routineTitle.trim();
+    if (!routineTitle) throw notFound("Routine title required");
+    const title = incidentTitleForRoutine(routineTitle);
+    const note = normalizeOperatorNote(input.note);
+    const existing = await db
+      .select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.title, title),
+        inArray(issues.status, OPEN_INCIDENT_STATUSES),
+        isNull(issues.hiddenAt),
+      ))
+      .orderBy(desc(issues.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const body = [
+      "CEO Operations detected a recurring watchdog loop and is routing it to one durable incident instead of disposable liveness reports.",
+      "",
+      `Routine: ${routineTitle}`,
+      routine ? `Routine ID: ${routine.id}` : null,
+      routine?.assigneeAgentId ? `Suggested owner agent ID: ${routine.assigneeAgentId}` : null,
+      "Policy: keep this incident open until the underlying stale/degraded state is actually resolved; append further checks here instead of creating new watchdog issues.",
+      note ? `Operator note: ${note}` : null,
+      "",
+      "Safety: no Vast launch, paid compute, broker action, trading, secret change, or job requeue is authorized by this incident.",
+    ].filter(Boolean).join("\n");
+
+    let issue = existing;
+    if (issue) {
+      await issuesSvc.addComment(issue.id, body, {}, { authorType: "system" });
+    } else {
+      issue = await issuesSvc.create(companyId, {
+        title,
+        description: body,
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: null,
+        originKind: "manual",
+        originFingerprint: `operational-loop:${routineTitle}`,
+      });
+    }
+
+    if (routine) {
+      await pauseRoutine(companyId, routine.id, "Paused by CEO Operations: durable incident owns this watchdog loop");
+    }
+
+    return { issue, routine: routine ? { id: routine.id, title: routine.title, status: "paused" } : null };
+  }
+
+  async function resolveOperationalIncident(companyId: string, input: { issueId: string; routineId?: string | null; reenableRoutine?: boolean; note?: string | null }) {
+    const [issue] = await db
+      .select({ id: issues.id, title: issues.title, companyId: issues.companyId })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, input.issueId)))
+      .limit(1);
+    if (!issue) throw notFound("Issue not found");
+    const note = normalizeOperatorNote(input.note);
+    await issuesSvc.addComment(issue.id, [
+      "CEO Operations marked this durable watchdog incident resolved.",
+      note ? `Operator note: ${note}` : null,
+      input.reenableRoutine ? "Routine schedule re-enabled by operator." : "Routine schedule remains paused until separately re-enabled.",
+    ].filter(Boolean).join("\n"), {}, { authorType: "system" });
+    await db.update(issues).set({ status: "done", completedAt: new Date(), updatedAt: new Date() }).where(eq(issues.id, issue.id));
+    if (input.reenableRoutine && input.routineId) {
+      await db.transaction(async (tx) => {
+        await tx.update(routines).set({ status: "active", updatedAt: new Date() }).where(and(eq(routines.companyId, companyId), eq(routines.id, input.routineId!)));
+        await tx.update(routineTriggers).set({ enabled: true, updatedAt: new Date(), lastResult: "Re-enabled by CEO Operations after durable incident resolution" }).where(eq(routineTriggers.routineId, input.routineId!));
+      });
+    }
+    return { issueId: issue.id, status: "done" as const, routineReenabled: Boolean(input.reenableRoutine && input.routineId) };
+  }
+
   return {
+    pauseRoutine,
+    createOrUpdateOperationalIncident,
+    resolveOperationalIncident,
     status: async (companyId: string): Promise<CeoControlRoomStatus> => {
       const company = await db
         .select()
@@ -208,7 +334,7 @@ export function ceoControlRoomService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!company) throw notFound("Company not found");
 
-      const [dashboard, budgetOverview, blockedIssueRows, pendingApprovalRows, suspiciousSecretIssueRows, unboundSecretRows, errorAgentRows, staleRunRows, promotionIssueRows, repeatedRoutineRows, activeNoisyRoutineRows] = await Promise.all([
+      const [dashboard, budgetOverview, blockedIssueRows, pendingApprovalRows, suspiciousSecretIssueRows, unboundSecretRows, errorAgentRows, staleRunRows, promotionIssueRows, repeatedRoutineRows, noisyRoutineRows] = await Promise.all([
         dashboardService(db).summary(companyId),
         budgetService(db).overview(companyId),
         db
@@ -304,8 +430,6 @@ export function ceoControlRoomService(db: Db) {
           .leftJoin(routineTriggers, eq(routineTriggers.routineId, routines.id))
           .where(and(
             eq(routines.companyId, companyId),
-            eq(routines.status, "active"),
-            eq(routineTriggers.enabled, true),
             or(
               sql`lower(${routines.title}) like '%liveness check%'`,
               sql`lower(${routines.title}) like '%active job and worker check%'`,
@@ -372,14 +496,16 @@ export function ceoControlRoomService(db: Db) {
         }
       }
 
+      const noisyRoutineByTitle = new Map(noisyRoutineRows.map((row) => [row.title, row]));
       for (const row of repeatedRoutineRows) {
+        const routine = noisyRoutineByTitle.get(row.title) ?? null;
         categories.operational_loop.items.push({
           type: "routine_repeat",
           summary: `${row.title} created ${row.count} inbox issues in the last 24h`,
-          metadata: { title: row.title, count: row.count, latestAt: row.latestAt },
+          metadata: { title: row.title, count: row.count, latestAt: row.latestAt, routine },
         });
       }
-      for (const row of activeNoisyRoutineRows) {
+      for (const row of noisyRoutineRows.filter((entry) => entry.status === "active" && entry.triggerEnabled)) {
         categories.operational_loop.items.push({
           type: "routine_active_trigger",
           summary: `${row.title} still has an active schedule (${row.cronExpression ?? "unscheduled"})`,

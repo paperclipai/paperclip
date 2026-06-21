@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
@@ -10,6 +10,7 @@ import { projectsApi } from "../api/projects";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
+import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
@@ -20,7 +21,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Siren, FlaskConical, FileText, LockKeyhole, ClipboardCheck } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Siren, FlaskConical, FileText, LockKeyhole, ClipboardCheck, ShieldAlert, Wrench } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -35,8 +36,38 @@ function getRecentIssues(issues: Issue[]): Issue[] {
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
+type OperationalLoopMetadata = {
+  title?: string;
+  routine?: { id?: string | null; title?: string | null; status?: string | null; triggerEnabled?: boolean | null } | null;
+  id?: string | null;
+};
+
+function readOperationalLoopMetadata(value: unknown): OperationalLoopMetadata {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const record = value as Record<string, unknown>;
+  const routine = record.routine && typeof record.routine === "object" && !Array.isArray(record.routine)
+    ? record.routine as Record<string, unknown>
+    : null;
+  return {
+    title: typeof record.title === "string" ? record.title : undefined,
+    id: typeof record.id === "string" ? record.id : undefined,
+    routine: routine ? {
+      id: typeof routine.id === "string" ? routine.id : null,
+      title: typeof routine.title === "string" ? routine.title : null,
+      status: typeof routine.status === "string" ? routine.status : null,
+      triggerEnabled: typeof routine.triggerEnabled === "boolean" ? routine.triggerEnabled : null,
+    } : null,
+  };
+}
+
+function routineTitleFromLoopSummary(summary: string) {
+  return summary.split(" created ")[0]?.trim() || summary;
+}
+
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
@@ -72,6 +103,35 @@ export function Dashboard() {
     queryFn: () => dashboardApi.microRegistry(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     refetchInterval: 60_000,
+  });
+
+  const refreshControlRoom = () => {
+    if (!selectedCompanyId) return;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) });
+    void queryClient.invalidateQueries({ queryKey: [...queryKeys.dashboard(selectedCompanyId), "ceo-control-room"] });
+  };
+
+  const incidentMutation = useMutation({
+    mutationFn: (input: { routineTitle: string; routineId?: string | null }) => dashboardApi.openOperationalIncident(selectedCompanyId!, {
+      ...input,
+      note: "Created from CEO Operations panel to coalesce repeated watchdog reports.",
+    }),
+    onSuccess: () => {
+      pushToast({ title: "Durable incident opened", body: "Watchdog output will be routed to one owner instead of a fresh inbox issue.", tone: "success" });
+      refreshControlRoom();
+    },
+    onError: (err) => pushToast({ title: "Could not open incident", body: err instanceof Error ? err.message : String(err), tone: "error" }),
+  });
+
+  const pauseRoutineMutation = useMutation({
+    mutationFn: (routineId: string) => dashboardApi.pauseOperationalRoutine(selectedCompanyId!, routineId, {
+      note: "Paused from CEO Operations panel while durable incident owns this watchdog loop.",
+    }),
+    onSuccess: () => {
+      pushToast({ title: "Routine paused", body: "The noisy watchdog trigger is disabled.", tone: "success" });
+      refreshControlRoom();
+    },
+    onError: (err) => pushToast({ title: "Could not pause routine", body: err instanceof Error ? err.message : String(err), tone: "error" }),
   });
 
   const { data: activity } = useQuery({
@@ -117,6 +177,8 @@ export function Dashboard() {
     () => (microRegistry?.dependencyRequests ?? []).filter((request) => !["resolved", "cancelled", "closed"].includes(request.status)).slice(0, 3),
     [microRegistry?.dependencyRequests],
   );
+  const operationalLoopCategory = controlRoom?.categories.find((entry) => entry.key === "operational_loop");
+  const operationalLoopItems = operationalLoopCategory?.items ?? [];
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -307,6 +369,74 @@ export function Dashboard() {
                     )}
                   </div>
                 ))}
+              </div>
+            </div>
+          ) : null}
+
+          {operationalLoopItems.length > 0 ? (
+            <div className="overflow-hidden rounded-2xl border border-red-400/25 bg-[radial-gradient(circle_at_8%_0%,rgba(248,113,113,0.22),transparent_32%),linear-gradient(135deg,rgba(26,8,8,0.96),rgba(10,10,18,0.92))] shadow-[0_24px_80px_rgba(127,29,29,0.18)]">
+              <div className="flex flex-col gap-3 border-b border-red-200/10 px-4 py-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-xl border border-red-200/20 bg-red-300/10 p-2">
+                    <ShieldAlert className="h-5 w-5 text-red-100" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold uppercase tracking-[0.22em] text-red-100/70">CEO Operations</p>
+                    <h2 className="mt-1 text-xl font-semibold text-white">Watchdog loops need durable owners</h2>
+                    <p className="mt-1 max-w-3xl text-sm text-red-100/70">
+                      Repeated liveness checks should become one open incident, not a treadmill of done reports. Actions here only create/append Paperclip incidents and pause routines; they do not launch compute or touch brokers.
+                    </p>
+                  </div>
+                </div>
+                <div className="rounded-xl border border-red-200/10 bg-black/20 px-4 py-3 text-center">
+                  <div className="text-2xl font-semibold text-white">{operationalLoopCategory?.count ?? operationalLoopItems.length}</div>
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-red-100/60">loop signals</div>
+                </div>
+              </div>
+              <div className="grid gap-3 p-4 lg:grid-cols-3">
+                {operationalLoopItems.slice(0, 6).map((item) => {
+                  const metadata = readOperationalLoopMetadata(item.metadata);
+                  const routine = metadata.routine;
+                  const routineId = routine?.id ?? metadata.id ?? null;
+                  const routineTitle = routine?.title ?? metadata.title ?? routineTitleFromLoopSummary(item.summary);
+                  const isPaused = routine?.status === "paused" || routine?.triggerEnabled === false;
+                  return (
+                    <div key={`${item.type}:${item.summary}`} className="rounded-xl border border-red-100/10 bg-black/25 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Wrench className="h-3.5 w-3.5 text-red-100/70" />
+                            <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-red-100/60">{item.type.replace(/_/g, " ")}</span>
+                          </div>
+                          <p className="mt-2 line-clamp-3 text-sm font-medium text-red-50">{item.summary}</p>
+                          <p className="mt-2 text-xs text-red-100/55">
+                            Routine: {routineTitle}{isPaused ? " · paused" : routineId ? " · active/unknown" : " · not linked"}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => incidentMutation.mutate({ routineTitle, routineId })}
+                          disabled={incidentMutation.isPending}
+                          className="rounded-full border border-red-100/20 bg-red-100/10 px-3 py-1.5 text-xs font-semibold text-red-50 transition hover:bg-red-100/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Open/update incident
+                        </button>
+                        {routineId ? (
+                          <button
+                            type="button"
+                            onClick={() => pauseRoutineMutation.mutate(routineId)}
+                            disabled={pauseRoutineMutation.isPending || isPaused}
+                            className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-red-100 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"
+                          >
+                            {isPaused ? "Routine paused" : "Pause routine"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ) : null}
