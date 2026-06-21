@@ -1,4 +1,4 @@
-CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_instances (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.wiki_instances (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -13,7 +13,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_instances (
   UNIQUE (company_id, wiki_id)
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_sources (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.wiki_sources (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_sources (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_pages (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.wiki_pages (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -45,7 +45,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_pages (
   UNIQUE (company_id, wiki_id, path)
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_page_revisions (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.wiki_page_revisions (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -58,7 +58,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_page_revisions (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_operations (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.wiki_operations (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -75,7 +75,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_operations (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_query_sessions (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.wiki_query_sessions (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -87,7 +87,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_query_sessions (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.wiki_resource_bindings (
+CREATE TABLE IF NOT EXISTS plugin_llm_wiki_8f50da974f.wiki_resource_bindings (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
