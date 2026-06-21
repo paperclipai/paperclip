@@ -5794,6 +5794,24 @@ export function issueRoutes(
       actorType: req.actor.type,
     });
 
+    // Validate parentId references a real issue in the same company (prevents FK 500)
+    if (updateFields.parentId !== undefined && updateFields.parentId !== null) {
+      const parentIssue = await svc.getById(updateFields.parentId as string);
+      if (!parentIssue || parentIssue.companyId !== existing.companyId) {
+        res.status(422).json({ error: "parent issue not found" });
+        return;
+      }
+    }
+
+    // Validate goalId references a real goal in the same company (prevents FK 500)
+    if (updateFields.goalId !== undefined && updateFields.goalId !== null) {
+      const goal = await goalsSvc.getById(updateFields.goalId as string);
+      if (!goal || goal.companyId !== existing.companyId) {
+        res.status(422).json({ error: "goal not found" });
+        return;
+      }
+    }
+
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
     const nextAssigneeUserId =
