@@ -95,6 +95,11 @@ function readIssueIdFromRunContext(contextSnapshot: Record<string, unknown> | nu
   return typeof nestedIssueId === "string" && nestedIssueId.trim().length > 0 ? nestedIssueId : null;
 }
 
+const attentionHeartbeatRunConditionSql = sql`(
+  ${heartbeatRuns.livenessState} in ('blocked', 'failed', 'needs_followup', 'empty_response')
+  or ${heartbeatRuns.status} in ('failed', 'timed_out', 'cancelled')
+)`;
+
 function mapByCompanyId(rows: CompanyCountRow[]) {
   return new Map(rows.map((row) => [row.companyId, row]));
 }
@@ -468,7 +473,24 @@ export function managementService(db: Db) {
       db
         .select({
           heartbeatRunCount: sql<number>`count(*)`,
-          attentionHeartbeatRunCount: sql<number>`coalesce(sum(case when ${heartbeatRuns.livenessState} in ('blocked', 'failed', 'needs_followup', 'empty_response') or ${heartbeatRuns.status} in ('failed', 'timed_out', 'cancelled') then 1 else 0 end), 0)`,
+          attentionHeartbeatRunCount: sql<number>`
+            coalesce(sum(case when (
+              ${attentionHeartbeatRunConditionSql}
+              and coalesce(
+                nullif(${heartbeatRuns.contextSnapshot} ->> 'issueId', ''),
+                nullif(${heartbeatRuns.contextSnapshot} -> 'paperclipIssue' ->> 'id', '')
+              ) is not null
+            ) then 1 else 0 end), 0)
+          `,
+          timerAttentionHeartbeatRunCount: sql<number>`
+            coalesce(sum(case when (
+              ${attentionHeartbeatRunConditionSql}
+              and coalesce(
+                nullif(${heartbeatRuns.contextSnapshot} ->> 'issueId', ''),
+                nullif(${heartbeatRuns.contextSnapshot} -> 'paperclipIssue' ->> 'id', '')
+              ) is null
+            ) then 1 else 0 end), 0)
+          `,
           failedHeartbeatRunCount: sql<number>`coalesce(sum(case when ${heartbeatRuns.status} in ('failed', 'timed_out', 'cancelled') then 1 else 0 end), 0)`,
         })
         .from(heartbeatRuns)
@@ -519,7 +541,7 @@ export function managementService(db: Db) {
         .where(and(
           eq(heartbeatRuns.companyId, companyId),
           gte(heartbeatRuns.createdAt, since),
-          sql`(${heartbeatRuns.livenessState} in ('blocked', 'failed', 'needs_followup', 'empty_response') or ${heartbeatRuns.status} in ('failed', 'timed_out', 'cancelled'))`,
+          attentionHeartbeatRunConditionSql,
         ))
         .orderBy(desc(heartbeatRuns.createdAt))
         .limit(input.evidenceLimit),
@@ -692,6 +714,7 @@ export function managementService(db: Db) {
         runId: row.runId,
         status: row.status as ManagementAnalyzerRunEvidence["status"],
         livenessState: row.livenessState as ManagementAnalyzerRunEvidence["livenessState"],
+        attentionCategory: linkedIssueId ? "issue_run" : "timer_telemetry",
         invocationSource: row.invocationSource,
         startedAt: row.startedAt,
         finishedAt: row.finishedAt,
@@ -741,6 +764,7 @@ export function managementService(db: Db) {
       activeApprovalCount: companySummary.pendingApprovalCount,
       heartbeatRunCount: asNumber(heartbeatRunMetrics?.heartbeatRunCount),
       attentionHeartbeatRunCount: asNumber(heartbeatRunMetrics?.attentionHeartbeatRunCount),
+      timerAttentionHeartbeatRunCount: asNumber(heartbeatRunMetrics?.timerAttentionHeartbeatRunCount),
       failedHeartbeatRunCount: asNumber(heartbeatRunMetrics?.failedHeartbeatRunCount),
       routineRunCount: asNumber(routineRunMetrics?.routineRunCount),
       failedRoutineRunCount: asNumber(routineRunMetrics?.failedRoutineRunCount),

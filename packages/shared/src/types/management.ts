@@ -175,6 +175,7 @@ export interface ManagementAnalyzerMetricSummary {
   activeApprovalCount: number;
   heartbeatRunCount: number;
   attentionHeartbeatRunCount: number;
+  timerAttentionHeartbeatRunCount: number;
   failedHeartbeatRunCount: number;
   routineRunCount: number;
   failedRoutineRunCount: number;
@@ -247,6 +248,7 @@ export interface ManagementAnalyzerRunEvidence {
   runId: string;
   status: HeartbeatRunStatus;
   livenessState: RunLivenessState | null;
+  attentionCategory: "issue_run" | "timer_telemetry";
   invocationSource: string;
   startedAt: Date | null;
   finishedAt: Date | null;

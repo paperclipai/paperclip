@@ -422,6 +422,7 @@ describeEmbeddedPostgres("management routes", () => {
       statusChangeCount: 1,
       assignmentChangeCount: 1,
       attentionHeartbeatRunCount: 1,
+      timerAttentionHeartbeatRunCount: 0,
       failedRoutineRunCount: 1,
     });
     expect(analyzerRes.body.evidence.boardComments).toEqual([
@@ -462,6 +463,7 @@ describeEmbeddedPostgres("management routes", () => {
     expect(analyzerRes.body.evidence.attentionRuns).toEqual([
       expect.objectContaining({
         runId: run.id,
+        attentionCategory: "issue_run",
         runIssuesApiPath: `/api/heartbeat-runs/${run.id}/issues`,
         issueId: blockedIssue.id,
         resultSummary: null,
@@ -525,6 +527,86 @@ describeEmbeddedPostgres("management routes", () => {
         payload: { title: "Mutating write" },
       });
     expect(writeRes.status).toBe(403);
+  }, 15_000);
+
+  it("separates timer-only attention heartbeats from issue-linked attention counts", async () => {
+    const company = await seedCompany(db, undefined, "TimerSeparation");
+    const agent = await seedAgent(db, company.id, "TimerSeparationAgent");
+    const issue = await seedIssue(db, {
+      companyId: company.id,
+      assigneeAgentId: agent.id,
+      title: "Investigate analyzer noise",
+      status: "blocked",
+      identifier: `${company.issuePrefix}-1`,
+    });
+
+    const issueRun = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "running",
+        invocationSource: "assignment",
+        livenessState: "blocked",
+        startedAt: minutesAgo(60),
+        lastOutputAt: minutesAgo(58),
+        contextSnapshot: { issueId: issue.id },
+        createdAt: minutesAgo(57),
+        updatedAt: minutesAgo(57),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const timerRun = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "running",
+        invocationSource: "automation",
+        livenessState: "empty_response",
+        startedAt: minutesAgo(56),
+        lastOutputAt: minutesAgo(55),
+        contextSnapshot: {},
+        createdAt: minutesAgo(54),
+        updatedAt: minutesAgo(54),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const app = await createApp(db, {
+      type: "agent",
+      agentId: agent.id,
+      companyId: company.id,
+      runId: issueRun.id,
+    });
+
+    const analyzerRes = await request(app)
+      .get(`/api/management/companies/${company.id}/analyzer-snapshot`)
+      .query({ windowHours: 24, evidenceLimit: 5 });
+    expect(analyzerRes.status, JSON.stringify(analyzerRes.body)).toBe(200);
+    expect(analyzerRes.body.metrics).toMatchObject({
+      heartbeatRunCount: 2,
+      attentionHeartbeatRunCount: 1,
+      timerAttentionHeartbeatRunCount: 1,
+      failedHeartbeatRunCount: 0,
+    });
+    expect(analyzerRes.body.evidence.attentionRuns).toEqual([
+      expect.objectContaining({
+        runId: timerRun.id,
+        attentionCategory: "timer_telemetry",
+        issueId: null,
+        issueIdentifier: null,
+        issueTitle: null,
+      }),
+      expect.objectContaining({
+        runId: issueRun.id,
+        attentionCategory: "issue_run",
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        issueTitle: issue.title,
+      }),
+    ]);
   }, 15_000);
 
   it("lets same-company agents read full analyzer evidence without cross-company audit", async () => {
@@ -629,6 +711,7 @@ describeEmbeddedPostgres("management routes", () => {
     expect(analyzerRes.body.evidence.attentionRuns).toEqual([
       expect.objectContaining({
         runId: run.id,
+        attentionCategory: "issue_run",
         resultSummary: expect.objectContaining({ summary: expect.any(String) }),
       }),
     ]);
