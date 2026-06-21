@@ -218,6 +218,35 @@ function buildCodexTransientHandoffNote(input: {
     .join("\n");
 }
 
+function buildCodexResumeFallbackPrompt(input: {
+  wakeReason: string | null;
+  wakeTaskId: string | null;
+  wakeCommentId: string | null;
+  approvalId: string | null;
+  approvalStatus: string | null;
+  linkedIssueIds: string[];
+  issueWorkMode: string | null;
+}): string {
+  const lines = [
+    "## Paperclip Resume Delta",
+    "",
+    "You are resuming an existing Paperclip session.",
+    "No inline wake payload was provided for this heartbeat, so continue from the existing session state and fetch Paperclip API context only when needed.",
+    "",
+    "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists.",
+  ];
+
+  if (input.wakeReason) lines.push(`- reason: ${input.wakeReason}`);
+  if (input.wakeTaskId) lines.push(`- issue id: ${input.wakeTaskId}`);
+  if (input.wakeCommentId) lines.push(`- wake comment id: ${input.wakeCommentId}`);
+  if (input.approvalId) lines.push(`- approval id: ${input.approvalId}`);
+  if (input.approvalStatus) lines.push(`- approval status: ${input.approvalStatus}`);
+  if (input.issueWorkMode) lines.push(`- issue work mode: ${input.issueWorkMode}`);
+  if (input.linkedIssueIds.length > 0) lines.push(`- linked issue ids: ${input.linkedIssueIds.join(", ")}`);
+
+  return lines.join("\n");
+}
+
 export async function ensureCodexSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCodexSkillsInjectedOptions = {},
@@ -608,7 +637,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
     const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
-    const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
+    const resumeFallbackPrompt =
+      sessionId && wakePrompt.length === 0
+        ? buildCodexResumeFallbackPrompt({
+            wakeReason,
+            wakeTaskId,
+            wakeCommentId,
+            approvalId,
+            approvalStatus,
+            linkedIssueIds,
+            issueWorkMode,
+          })
+        : "";
+    const resumePrompt = wakePrompt || resumeFallbackPrompt;
+    const shouldUseResumeDeltaPrompt = Boolean(sessionId) && resumePrompt.length > 0;
     const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
     instructionsChars = promptInstructionsPrefix.length;
     const continuationSummary = parseObject(context.paperclipContinuationSummary);
@@ -685,7 +727,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const prompt = joinPromptSections([
       promptInstructionsPrefix,
       renderedBootstrapPrompt,
-      wakePrompt,
+      resumePrompt,
       codexFallbackHandoffNote,
       sessionHandoffNote,
       renderedPrompt,
@@ -695,6 +737,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       instructionsChars,
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
+      resumeFallbackPromptChars: resumeFallbackPrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     };

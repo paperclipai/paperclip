@@ -339,6 +339,73 @@ describe("codex remote execution", () => {
     ]);
   });
 
+  it("uses a compact fallback prompt for resumed sessions without an inline wake payload", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-resume-fallback-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    const instructionsFile = path.join(rootDir, "instructions.md");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+    await writeFile(instructionsFile, "FULL AGENT INSTRUCTIONS SHOULD NOT REPLAY\n", "utf8");
+
+    await execute({
+      runId: "run-resume-fallback",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "session-123",
+        sessionParams: {
+          sessionId: "session-123",
+          cwd: workspaceDir,
+        },
+        sessionDisplayId: "session-123",
+        taskKey: null,
+      },
+      config: {
+        command: "codex",
+        env: {
+          CODEX_HOME: codexHomeDir,
+        },
+        instructionsFilePath: instructionsFile,
+        promptTemplate: "FULL DEFAULT HEARTBEAT PROMPT SHOULD NOT REPLAY",
+      },
+      context: {
+        taskId: "issue-123",
+        wakeReason: "heartbeat_timer",
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { stdin?: string }]
+      | undefined;
+    expect(call?.[2]).toEqual([
+      "exec",
+      "--json",
+      "resume",
+      "session-123",
+      "-",
+    ]);
+    expect(call?.[3].stdin).toContain("## Paperclip Resume Delta");
+    expect(call?.[3].stdin).toContain("No inline wake payload was provided");
+    expect(call?.[3].stdin).toContain("- reason: heartbeat_timer");
+    expect(call?.[3].stdin).toContain("- issue id: issue-123");
+    expect(call?.[3].stdin).not.toContain("FULL AGENT INSTRUCTIONS SHOULD NOT REPLAY");
+    expect(call?.[3].stdin).not.toContain("FULL DEFAULT HEARTBEAT PROMPT SHOULD NOT REPLAY");
+  });
+
   it("uses the provider-neutral execution target contract for remote SSH execution", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-target-"));
     cleanupDirs.push(rootDir);
