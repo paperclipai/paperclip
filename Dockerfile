@@ -165,7 +165,12 @@ ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98
 # move regenerable caches back onto the shared PVC. PR
 # kkroo/paperclip-adapter-opencode-k8s#30; local adapter verification passed
 # job-manifest tests, typecheck, and build.
-ARG OPENCODE_K8S_REF=42d2d995a2f966e134f1b62a637497f9fe98c101
+# Bumped 2026-06-21 to ce9b7b8: split the opencode pod schedule wait from the
+# post-schedule container startup wait. Slow init containers no longer consume
+# the 120s scheduler timeout and report as bogus "pod scheduling failed";
+# scheduled pods get a bounded 10m startup window instead. Local adapter
+# verification: execute.test.ts (101 tests) and typecheck passed.
+ARG OPENCODE_K8S_REF=ce9b7b8c8ab6b2d5cc8715da7543c89da65a2323
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
