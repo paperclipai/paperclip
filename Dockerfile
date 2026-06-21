@@ -170,7 +170,18 @@ ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98
 # the 120s scheduler timeout and report as bogus "pod scheduling failed";
 # scheduled pods get a bounded 10m startup window instead. Local adapter
 # verification: execute.test.ts (101 tests) and typecheck passed.
-ARG OPENCODE_K8S_REF=ce9b7b8fd7fe09311f054552bbdedd400311735c
+# Bumped 2026-06-21 to 33794ca: reset the per-agent opencode.db when the
+# vendored opencode binary is upgraded. A DB built by an older opencode can
+# carry a schema the current binary's insert path violates — observed live on
+# the Blockcast MulticastEngineer agent as `NOT NULL constraint failed:
+# session_message.seq` at SessionPrompt.createUserMessage, which bricked EVERY
+# run with a generic "Unexpected server error / UnknownError" thrown before any
+# model call (model/ccrotate/shim all probed healthy). Best-effort,
+# version-stamped, idempotent reset; never wipes a DB matching the current
+# binary, never fails the run. PR kkroo/paperclip-adapter-opencode-k8s#31;
+# 33794ca's parent is ce9b7b8 (no regress). Local adapter verification:
+# job-manifest.test.ts (102 tests) and typecheck passed.
+ARG OPENCODE_K8S_REF=33794ca1eaa6af7e6bcc9e5e9b276472d0f8d247
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
