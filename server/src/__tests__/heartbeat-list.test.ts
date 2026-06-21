@@ -101,6 +101,50 @@ describeEmbeddedPostgres("heartbeat list", () => {
     }
   });
 
+  it("reports task-scoped runs under issueId when contextSnapshot only has taskId", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      contextSnapshot: { taskId: issueId, wakeReason: "issue_assigned" },
+    });
+
+    const runs = await heartbeatService(db).list(companyId, agentId, 5);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.contextSnapshot).toMatchObject({
+      issueId,
+      taskId: issueId,
+      wakeReason: "issue_assigned",
+    });
+  });
+
   it("returns small result json payloads unchanged from getRun", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
