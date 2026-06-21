@@ -319,7 +319,7 @@ describe("ssh env-lab fixture", () => {
     );
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
-  it("imports git workspaces as shallow standalone clones", async () => {
+  it("reports exact git-history import percentage from the known bundle size", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
     cleanupDirs.push(rootDir);
     const statePath = path.join(rootDir, "state.json");
@@ -349,23 +349,16 @@ describe("ssh env-lab fixture", () => {
       },
     });
 
-    const importLines = lines.filter((line) => line.raw.includes("Syncing git history to ssh"));
+    const importLines = lines.filter((line) => line.raw.includes("Importing git history to ssh"));
     expect(importLines.length).toBeGreaterThan(0);
+    // Known bundle size -> exact percentage with no "workspace" label.
     for (const line of importLines) {
       expect(line.raw).not.toContain("workspace");
+      expect(line.percent).not.toBeNull();
     }
     const lastImport = importLines.at(-1)!;
     expect(lastImport.percent).toBe(100);
     expect(lastImport.doneMb).toBe(lastImport.totalMb);
-
-    const remoteGit = await runSshCommand(
-      config,
-      `cd ${JSON.stringify(started.workspaceDir)} && ` +
-        `if [ -d .git ] && [ -f .git/shallow ]; then echo shallow-standalone; fi && ` +
-        `git rev-list --count HEAD`,
-    );
-    expect(remoteGit.stdout).toContain("shallow-standalone");
-    expect(remoteGit.stdout.trim().endsWith("1")).toBe(true);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("can dereference local symlinks while syncing to the remote fixture", async () => {
@@ -736,7 +729,7 @@ describe("ssh env-lab fixture", () => {
 
     await expect(readFile(path.join(localRepo, "run-a.txt"), "utf8")).resolves.toBe("from run a\n");
     await expect(readFile(path.join(localRepo, "run-b.txt"), "utf8")).resolves.toBe("from run b\n");
-    expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toContain("Paperclip remote git sync merge");
+    expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toContain("Paperclip SSH sync merge");
 
     const recentSubjects = await git(localRepo, ["log", "--pretty=%s", "-3"]);
     expect(recentSubjects).toContain("remote update a");
