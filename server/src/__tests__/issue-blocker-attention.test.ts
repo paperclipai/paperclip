@@ -255,6 +255,49 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("ignores cancelled direct children in unresolved blocker count and sample identifier", async () => {
+    const { companyId, agentId } = await createCompany("PBB");
+    const parentId = await insertIssue({ companyId, identifier: "PBB-1", title: "Parent", status: "blocked" });
+    const activeBlocker1Id = await insertIssue({
+      companyId,
+      identifier: "PBB-2",
+      title: "Active blocker 1",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    const activeBlocker2Id = await insertIssue({
+      companyId,
+      identifier: "PBB-3",
+      title: "Active blocker 2",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    const cancelledChildId = await insertIssue({
+      companyId,
+      identifier: "PBB-4",
+      title: "Cancelled direct child",
+      status: "cancelled",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: activeBlocker1Id, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: activeBlocker2Id, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: cancelledChildId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    // Cancelled direct children are excluded from both child rows and explicit
+    // blocker queries, so only the 2 active blockers count.
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 2,
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 2,
+    });
+    expect(parent?.blockerAttention?.sampleBlockerIdentifier).not.toBe("PBB-4");
+  });
+
   it("covers recursive blocker chains when the downstream leaf has active work", async () => {
     const { companyId, agentId } = await createCompany("PBR");
     const parentId = await insertIssue({ companyId, identifier: "PBR-1", title: "Parent", status: "blocked" });
@@ -404,7 +447,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  it("prefers needs_attention over stalled when the chain also has a hard attention case", async () => {
+  it("flags a chain whose only blocker is a review leaf as stalled after excluding cancelled", async () => {
     const { companyId, agentId } = await createCompany("PBQ");
     const parentId = await insertIssue({ companyId, identifier: "PBQ-1", title: "Parent", status: "blocked" });
     const reviewLeafId = await insertIssue({
@@ -426,12 +469,13 @@ describeEmbeddedPostgres("issue blocker attention", () => {
 
     const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
 
+    // Cancelled blockers are excluded, leaving only the stalled review leaf.
     expect(parent?.blockerAttention).toMatchObject({
-      state: "needs_attention",
-      reason: "attention_required",
+      state: "stalled",
+      reason: "stalled_review",
       coveredBlockerCount: 0,
       stalledBlockerCount: 1,
-      attentionBlockerCount: 1,
+      attentionBlockerCount: 0,
       sampleStalledBlockerIdentifier: "PBQ-2",
     });
   });
@@ -473,11 +517,12 @@ describeEmbeddedPostgres("issue blocker attention", () => {
 
     const parent = (await svc.list(companyId, { status: "blocked,todo" })).find((issue) => issue.id === parentId);
 
+    // Cancelled blocker (PBL-2) is excluded, only the escalation issue counts.
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
       reason: "active_dependency",
-      unresolvedBlockerCount: 2,
-      coveredBlockerCount: 2,
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
       attentionBlockerCount: 0,
     });
   });
