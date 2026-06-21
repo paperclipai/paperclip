@@ -956,11 +956,29 @@ export function workflowHandoffBridgeService(db: Db) {
       attachmentTaskId: config.attachmentTaskId,
     };
 
-    for (const bridge of bridges) {
-      await closeBridgeRow(db, bridge, outcome, overrides);
+    const results = await Promise.allSettled(
+      bridges.map(async (bridge) => {
+        await closeBridgeRow(db, bridge, outcome, overrides);
+        return getBridgeForHandoff(bridge.workflowHandoffId);
+      }),
+    );
+
+    const closed: Array<Awaited<ReturnType<typeof getBridgeForHandoff>>> = [];
+    for (const [index, result] of results.entries()) {
+      if (result.status === "fulfilled") {
+        closed.push(result.value);
+        continue;
+      }
+      const bridge = bridges[index];
+      logger.warn({
+        err: result.reason,
+        bridgeId: bridge?.id ?? null,
+        companyId: bridge?.companyId ?? null,
+        workflowRunId,
+      }, "workflow handoff bridge: failed to close terminal bridge during batch cleanup");
     }
 
-    return Promise.all(bridges.map((bridge) => getBridgeForHandoff(bridge.workflowHandoffId)));
+    return closed;
   }
 
   return {

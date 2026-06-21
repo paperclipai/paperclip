@@ -138,6 +138,10 @@ export function workflowRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, detail.companyId);
+    if (["succeeded", "failed", "cancelled"].includes(detail.status)) {
+      res.status(409).json({ error: "Workflow run is already in a terminal state" });
+      return;
+    }
     const actor = getActorInfo(req);
     const cancelled = await svc.cancelRun(detail.id, { userId: req.actor.userId ?? "board" });
     if (cancelled) {
