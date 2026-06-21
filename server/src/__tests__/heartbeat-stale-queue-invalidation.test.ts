@@ -23,6 +23,7 @@ import {
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
 } from "../services/heartbeat.ts";
+import { FINISH_SUCCESSFUL_RUN_HANDOFF_REASON } from "../services/recovery/index.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -913,6 +914,65 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_continuation_waiting_on_review" });
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("continuation summary says the executor should wait");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("cancels finish_successful_run_handoff wakes on done issues (GH#8146)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Already closed issue",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+      contextExtras: {
+        resumeIntent: true,
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_terminal_status");
+    expect(run?.resultJson).toMatchObject({ stopReason: "issue_terminal_status" });
+    expect(wakeup?.status).toBe("skipped");
+    expect(wakeup?.error).toContain("terminal status");
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 });
