@@ -610,6 +610,13 @@
       "when": 1778976000000,
       "tag": "0086_routine_env_runtime_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1782033988786,
+      "tag": "0087_naive_sphinx",
+      "breakpoints": true
     }
   ]
 }
