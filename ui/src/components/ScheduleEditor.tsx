@@ -41,6 +41,11 @@ const DAYS_OF_MONTH = Array.from({ length: 31 }, (_, i) => ({
   label: String(i + 1),
 }));
 
+// Returns true only for a bare wildcard or an integer, never for step/range/list expressions.
+function isSimpleField(val: string): boolean {
+  return val === "*" || /^\d+$/.test(val);
+}
+
 function parseCronToPreset(cron: string): {
   preset: SchedulePreset;
   hour: string;
@@ -66,28 +71,28 @@ function parseCronToPreset(cron: string): {
     return { preset: "every_minute", ...defaults };
   }
 
-  // Every hour: "0 * * * *"
-  if (hr === "*" && dom === "*" && dow === "*") {
+  // Every hour: "N * * * *" where N is a plain integer minute (0-59)
+  if (isSimpleField(min) && hr === "*" && dom === "*" && dow === "*") {
     return { preset: "every_hour", ...defaults, minute: min === "*" ? "0" : min };
   }
 
   // Every day: "M H * * *"
-  if (dom === "*" && dow === "*" && hr !== "*") {
+  if (isSimpleField(min) && isSimpleField(hr) && dom === "*" && dow === "*" && hr !== "*") {
     return { preset: "every_day", ...defaults, hour: hr, minute: min === "*" ? "0" : min };
   }
 
   // Weekdays: "M H * * 1-5"
-  if (dom === "*" && dow === "1-5" && hr !== "*") {
+  if (isSimpleField(min) && isSimpleField(hr) && dom === "*" && dow === "1-5" && hr !== "*") {
     return { preset: "weekdays", ...defaults, hour: hr, minute: min === "*" ? "0" : min };
   }
 
   // Weekly: "M H * * D" (single day)
-  if (dom === "*" && /^\d$/.test(dow) && hr !== "*") {
+  if (isSimpleField(min) && isSimpleField(hr) && dom === "*" && /^\d$/.test(dow) && hr !== "*") {
     return { preset: "weekly", ...defaults, hour: hr, minute: min === "*" ? "0" : min, dayOfWeek: dow };
   }
 
   // Monthly: "M H D * *"
-  if (/^\d{1,2}$/.test(dom) && dow === "*" && hr !== "*") {
+  if (isSimpleField(min) && isSimpleField(hr) && /^\d{1,2}$/.test(dom) && dow === "*" && hr !== "*") {
     return { preset: "monthly", ...defaults, hour: hr, minute: min === "*" ? "0" : min, dayOfMonth: dom };
   }
 
@@ -144,7 +149,7 @@ function ordinalSuffix(n: number): string {
   return s[(v - 20) % 10] || s[v] || s[0];
 }
 
-export { describeSchedule };
+export { describeSchedule, parseCronToPreset };
 
 export function ScheduleEditor({
   value,
