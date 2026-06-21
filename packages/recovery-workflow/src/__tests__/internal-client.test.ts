@@ -42,7 +42,7 @@ describe("makeInternalClient", () => {
         actionId: "act_1",
         sourceIssueId: "iss_1",
         attemptNumber: 1,
-        mode: "shadow",
+        mode: "dry",
       });
 
       const mockedFetch = vi.mocked(fetch);
@@ -56,7 +56,7 @@ describe("makeInternalClient", () => {
         companyId: "co_1",
         sourceIssueId: "iss_1",
         attemptNumber: 1,
-        mode: "shadow",
+        mode: "dry",
       });
     });
 
@@ -88,7 +88,7 @@ describe("makeInternalClient", () => {
           actionId: "act_1",
           sourceIssueId: "iss_1",
           attemptNumber: 1,
-          mode: "shadow",
+          mode: "dry",
         })
       ).rejects.toThrow(/500/);
     });

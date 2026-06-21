@@ -15,7 +15,12 @@ export interface AttemptRequest {
   actionId: string;
   sourceIssueId: string;
   attemptNumber: number;
-  mode: "shadow" | "active";
+  // WIRE vocabulary expected by the server attempt endpoint: "dry" (no writes,
+  // shadow) | "active" (real writes). This is intentionally NOT the workflow's
+  // authority mode ("shadow"|"active") — the loop translates shadow->dry before
+  // calling. Keeping this typed as the wire enum makes tsc reject a stray
+  // "shadow" so the two halves of the seam cannot drift again.
+  mode: "dry" | "active";
 }
 
 export interface AttemptResponse {

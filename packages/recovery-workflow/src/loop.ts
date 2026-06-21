@@ -59,6 +59,11 @@ export async function runRecoveryLoop({
   client,
 }: RunRecoveryLoopOptions): Promise<void> {
   const { companyId, actionId, sourceIssueId, mode } = payload;
+  // Translate the workflow's authority mode to the server attempt endpoint's
+  // WIRE mode: shadow authority => "dry" (observe, no writes); active => "active".
+  // The server validates mode against z.enum(["dry","active"]) and would 400 on
+  // a raw "shadow", so this translation is required for shadow runs to function.
+  const attemptMode: "dry" | "active" = mode === "active" ? "active" : "dry";
   let n = 0;
 
   while (true) {
@@ -67,7 +72,7 @@ export async function runRecoveryLoop({
     const res = await step.do(
       `attempt-${n}`,
       { retries: { limit: 5, delay: "10 seconds", backoff: "exponential" } },
-      () => client.attempt({ companyId, actionId, sourceIssueId, attemptNumber: n, mode })
+      () => client.attempt({ companyId, actionId, sourceIssueId, attemptNumber: n, mode: attemptMode })
     );
 
     if (!res.active) {

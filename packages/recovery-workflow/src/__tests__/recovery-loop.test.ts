@@ -77,13 +77,14 @@ describe("runRecoveryLoop", () => {
     // Should have been called 3 times (N+1 — 2 active + 1 final inactive)
     expect(mockAttempt).toHaveBeenCalledTimes(3);
 
-    // First call: attemptNumber 1
+    // First call: attemptNumber 1. Payload mode "shadow" must be translated to
+    // the server WIRE mode "dry" (the server 400s on a raw "shadow").
     expect(mockAttempt.mock.calls[0][0]).toMatchObject({
       companyId: "co_1",
       actionId: "act_1",
       sourceIssueId: "iss_1",
       attemptNumber: 1,
-      mode: "shadow",
+      mode: "dry",
     });
 
     // Second call: attemptNumber 2
