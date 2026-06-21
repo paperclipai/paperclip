@@ -20,6 +20,13 @@ export type RunDatabaseBackupOptions = {
   filenamePrefix?: string;
   connectTimeoutSeconds?: number;
   /**
+   * Upper bound on how long the pg_dump pipeline may run before it is aborted
+   * and treated as a hang. Defaults to 30 minutes. Set to a small value in
+   * tests; set to a larger value for very large databases. A non-positive
+   * value disables the watchdog (not recommended outside of tests).
+   */
+  backupTimeoutSeconds?: number;
+  /**
    * @deprecated Migration-journal schemas are included with the normal backup
    * scope. This option is kept for compatibility and no longer changes backup
    * engine selection.
@@ -29,6 +36,25 @@ export type RunDatabaseBackupOptions = {
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
 };
+
+/**
+ * Raised when the pg_dump pipeline inside {@link runDatabaseBackup} does not
+ * settle within the configured backup timeout. Callers (notably the in-process
+ * backup scheduler) rely on this being thrown — rather than the pipeline
+ * hanging — so their `try/finally` mutex can clear and the next scheduled
+ * backup can run.
+ */
+export class BackupTimeoutError extends Error {
+  readonly code = "BACKUP_TIMEOUT" as const;
+  constructor(
+    message: string,
+    readonly elapsedMs: number,
+    readonly bytesWritten: number,
+  ) {
+    super(message);
+    this.name = "BackupTimeoutError";
+  }
+}
 
 export type RunDatabaseBackupResult = {
   backupFile: string;
@@ -70,6 +96,9 @@ const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
 const BACKUP_DATA_CURSOR_ROWS = 100;
 const BACKUP_CLI_STDERR_BYTES = 64 * 1024;
 const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
+const DEFAULT_BACKUP_TIMEOUT_MS = 30 * 60 * 1000;
+// Grace window between SIGTERM and SIGKILL when forcibly stopping a hung pg_dump child.
+const PG_DUMP_KILL_GRACE_MS = 5_000;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
@@ -315,6 +344,7 @@ async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
+  timeoutMs: number;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
@@ -340,10 +370,68 @@ async function runPgDumpBackup(opts: {
     throw new Error("pg_dump did not expose stdout");
   }
 
-  await Promise.all([
-    pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
-    waitForChildExit(child, pgDumpBin),
-  ]);
+  const startedAt = Date.now();
+  const fileWriter = createWriteStream(opts.backupFile);
+  const controller = new AbortController();
+  let timedOut = false;
+  let watchdog: NodeJS.Timeout | undefined;
+  let killGraceTimer: NodeJS.Timeout | undefined;
+
+  if (opts.timeoutMs > 0) {
+    watchdog = setTimeout(() => {
+      // Order matters: abort the pipeline first so the gzip/file writers tear
+      // down cleanly, then SIGTERM the child so waitForChildExit settles.
+      timedOut = true;
+      controller.abort();
+      try {
+        if (!child.killed) child.kill("SIGTERM");
+      } catch {
+        // Best-effort: the child may have already exited between checks.
+      }
+      killGraceTimer = setTimeout(() => {
+        try {
+          if (!child.killed) child.kill("SIGKILL");
+        } catch {
+          // Best-effort: ignore — there is nothing useful to do here.
+        }
+      }, PG_DUMP_KILL_GRACE_MS);
+      // Don't keep the event loop alive just for the kill grace timer.
+      killGraceTimer.unref?.();
+    }, opts.timeoutMs);
+    watchdog.unref?.();
+  }
+
+  try {
+    // allSettled (rather than Promise.all) so we wait for BOTH the pipeline
+    // and the child to settle before throwing. On a timeout, the pipeline
+    // aborts and the child is killed; we want both to be torn down before
+    // runDatabaseBackup proceeds with cleanup so there is no dangling work.
+    const [pipelineResult, childResult] = await Promise.allSettled([
+      pipeline(child.stdout, createGzip(), fileWriter, { signal: controller.signal }),
+      waitForChildExit(child, pgDumpBin),
+    ]);
+
+    if (timedOut) {
+      const elapsedMs = Date.now() - startedAt;
+      const bytesWritten = fileWriter.bytesWritten;
+      throw new BackupTimeoutError(
+        `${pgDumpBin} backup timed out after ${opts.timeoutMs}ms ` +
+          `(elapsed ${elapsedMs}ms, wrote ${bytesWritten} bytes before timeout)`,
+        elapsedMs,
+        bytesWritten,
+      );
+    }
+
+    if (pipelineResult.status === "rejected") {
+      throw pipelineResult.reason;
+    }
+    if (childResult.status === "rejected") {
+      throw childResult.reason;
+    }
+  } finally {
+    if (watchdog) clearTimeout(watchdog);
+    if (killGraceTimer) clearTimeout(killGraceTimer);
+  }
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -522,6 +610,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
+  // 0 (or negative) disables the watchdog; otherwise apply a hard ceiling so a
+  // stalled pg_dump child or gzip pipeline can never hang runDatabaseBackup
+  // indefinitely. The in-process backup scheduler relies on this function
+  // settling so its mutex `try/finally` can reset databaseBackupInFlight.
+  const backupTimeoutSeconds = opts.backupTimeoutSeconds ?? DEFAULT_BACKUP_TIMEOUT_MS / 1000;
+  const pgDumpTimeoutMs = backupTimeoutSeconds > 0
+    ? Math.max(1, Math.trunc(backupTimeoutSeconds * 1000))
+    : 0;
   const backupEngine = opts.backupEngine ?? "auto";
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
@@ -547,6 +643,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           connectionString: opts.connectionString,
           backupFile,
           connectTimeout,
+          timeoutMs: pgDumpTimeoutMs,
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
@@ -561,6 +658,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           try { unlinkSync(backupFile); } catch { /* ignore */ }
         }
         if (backupEngine === "pg_dump") {
+          throw error;
+        }
+        // The watchdog ceiling is the operator's hard guarantee that this
+        // function settles; do not silently re-attempt with the JS engine
+        // after already burning the full timeout budget.
+        if (error instanceof BackupTimeoutError) {
           throw error;
         }
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
