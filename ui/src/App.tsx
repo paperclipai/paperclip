@@ -284,6 +284,7 @@ function boardRoutes() {
       <Route path="decisions/queues/:key" element={<DecisionQueuePage />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
+      <Route path="inbox/waiting" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
       <Route path="inbox/unread" element={<Inbox />} />
       <Route path="inbox/blocked" element={<Inbox />} />
