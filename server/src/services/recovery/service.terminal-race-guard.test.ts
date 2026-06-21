@@ -1,9 +1,39 @@
 import { describe, expect, it, vi } from "vitest";
+
+// Module-level mocks for the issue service and recovery-action service so we
+// can spy on issuesSvc.update and observe whether the terminal-status guards
+// short-circuit before any write happens.
+const { issueUpdateSpy, ensureRecoveryActionSpy, enqueueWakeupSpy } = vi.hoisted(() => ({
+  issueUpdateSpy: vi.fn(),
+  ensureRecoveryActionSpy: vi.fn(),
+  enqueueWakeupSpy: vi.fn(),
+}));
+
+vi.mock("../issues.js", async () => {
+  const actual = await vi.importActual<typeof import("../issues.js")>("../issues.js");
+  return {
+    ...actual,
+    issueService: () => ({
+      update: issueUpdateSpy,
+      existingUnresolvedBlockerIssueIds: async () => [],
+    }),
+  };
+});
+
+vi.mock("../issue-recovery-actions.js", async () => {
+  const actual = await vi.importActual<typeof import("../issue-recovery-actions.js")>(
+    "../issue-recovery-actions.js",
+  );
+  return {
+    ...actual,
+    issueRecoveryActionService: () => ({
+      upsertSourceScoped: ensureRecoveryActionSpy,
+    }),
+  };
+});
+
 import { recoveryService } from "./service.js";
 
-// Minimal DB mock for the terminal-status race-guard tests.
-// We only need to stub the `select` chain used by escalateStrandedAssignedIssue
-// to re-read the issue status before overwriting it.
 function makeDb(freshStatus: string | null) {
   const selectResult = freshStatus !== null ? [{ status: freshStatus }] : [];
   return {
@@ -27,6 +57,7 @@ function makeIssue(status: string) {
     executionState: null,
     parentId: null,
     metadata: null,
+    originKind: null,
   } as any;
 }
 
@@ -40,54 +71,48 @@ const latestRun = {
   lastOutputAt: null,
 } as any;
 
-describe("escalateStrandedAssignedIssue — terminal-status race guard (TEAAAA-229)", () => {
-  it("returns null without calling issuesSvc.update when DB re-read shows done", async () => {
+describe("escalateStrandedAssignedIssue — terminal-status race guard", () => {
+  it("returns null and skips issuesSvc.update + recovery-action upsert when fresh DB status is done", async () => {
+    issueUpdateSpy.mockReset();
+    ensureRecoveryActionSpy.mockReset();
     const db = makeDb("done");
-    const issueUpdateSpy = vi.fn();
-    const svc = recoveryService(db, { enqueueWakeup: vi.fn() } as any);
+    const svc = recoveryService(db, { enqueueWakeup: enqueueWakeupSpy } as any);
 
-    // Patch internal issuesSvc — we reach it through recoveryService's closure,
-    // but here we verify the guard fires before any update by checking the spy.
-    // Since the real issuesSvc is not injected (it comes from the module),
-    // the test verifies that escalation returns null for a terminal issue.
-    const result = await (svc as any).escalateStrandedAssignedIssue({
+    const result = await svc.escalateStrandedAssignedIssue({
       issue: makeIssue("in_progress"),
       previousStatus: "in_progress",
       latestRun,
-    }).catch(() => null); // The real issuesSvc will fail without a real DB; null is the expected guard return.
+    });
 
-    // If the guard fires correctly, result is null and issueUpdateSpy was never called.
     expect(result).toBeNull();
     expect(issueUpdateSpy).not.toHaveBeenCalled();
+    // The recovery-action upsert lives after the guard, so it must not run either —
+    // this catches a regression where the guard is deleted but issuesSvc.update is
+    // also removed: ensureRecoveryActionSpy would still get called.
+    expect(ensureRecoveryActionSpy).not.toHaveBeenCalled();
   });
 
-  it("returns null without calling issuesSvc.update when DB re-read shows cancelled", async () => {
+  it("returns null and skips issuesSvc.update + recovery-action upsert when fresh DB status is cancelled", async () => {
+    issueUpdateSpy.mockReset();
+    ensureRecoveryActionSpy.mockReset();
     const db = makeDb("cancelled");
-    const issueUpdateSpy = vi.fn();
-    const svc = recoveryService(db, { enqueueWakeup: vi.fn() } as any);
+    const svc = recoveryService(db, { enqueueWakeup: enqueueWakeupSpy } as any);
 
-    const result = await (svc as any).escalateStrandedAssignedIssue({
+    const result = await svc.escalateStrandedAssignedIssue({
       issue: makeIssue("in_progress"),
       previousStatus: "in_progress",
       latestRun,
-    }).catch(() => null);
+    });
 
     expect(result).toBeNull();
     expect(issueUpdateSpy).not.toHaveBeenCalled();
+    expect(ensureRecoveryActionSpy).not.toHaveBeenCalled();
   });
-});
 
-describe("enqueueSourceScopedStrandedRecoveryWake — terminal-status skip guard (TEAAAA-229)", () => {
-  it("does not call enqueueWakeup when source issue status is done", async () => {
-    const db = makeDb("done");
-    const enqueueWakeup = vi.fn();
-    const svc = recoveryService(db, { enqueueWakeup } as any);
-
-    // Calling through reconcileStrandedAssignedIssues would require a full DB;
-    // instead verify the guard logic by inspecting that no wake is sent when
-    // the issue is already terminal by the time enqueueSourceScopedStrandedRecoveryWake runs.
-    // This is a documentation-level integration reminder — the full integration test
-    // lives in the reconcile integration suite.
-    expect(enqueueWakeup).not.toHaveBeenCalled();
-  });
+  // Regression-detection note: the two tests above NO LONGER use a
+  // `.catch(() => null)` swallow. If the guard at service.ts:2562 is removed,
+  // the next line (`ensureSourceScopedStrandedRecoveryAction`) reaches into
+  // the real DB through `resolveStrandedIssueRecoveryOwnerAgentId`, which
+  // fails against the stub `db` here — the resulting unhandled rejection
+  // surfaces as a failed test rather than a silently-green one.
 });

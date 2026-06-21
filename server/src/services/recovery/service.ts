@@ -2351,7 +2351,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (input.recoveryCause === "workspace_validation_failed") return;
     if (input.recoveryCause === "configuration_incomplete") return;
     if (!input.action.ownerAgentId) return;
-    // TEAAAA-229 fix: Don't send recovery wakes when source issue already reached terminal state.
+    // Don't enqueue recovery wakes when the source issue already reached a
+    // terminal state — otherwise the recovery action would keep firing and
+    // re-flipping a completed issue back to in_progress.
     if (isTerminalIssueStatus(input.issue.status)) return;
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
@@ -2557,8 +2559,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
-    // TEAAAA-229 fix: Re-read status before overwriting — guards against race condition where
-    // the assignee patched done/cancelled between the reconcile scan and this update.
+    // Re-read status before overwriting — guards against the race where the
+    // assignee patched the issue to done/cancelled between the reconcile scan
+    // and this update, which would otherwise trigger an infinite reopen loop
+    // via the source_scoped_recovery_action wake.
     const freshStatus = await db.select({ status: issues.status }).from(issues)
       .where(eq(issues.id, input.issue.id)).then(rows => rows[0]?.status ?? null);
     if (freshStatus !== null && isTerminalIssueStatus(freshStatus)) {
