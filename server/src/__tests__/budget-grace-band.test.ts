@@ -193,6 +193,21 @@ describeEmbeddedPostgres("budget hard-stop grace band", () => {
     }
   });
 
+  it("an invalid explicit graceFactor (0) clamps to 1.0 — fails safe, cancels at the cap", async () => {
+    const s = await seed();
+    await tokenCap(s.planId, s.companyId, 100);
+    const event = await recordTokens(s, 60, 40); // observed exactly 100
+
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    // 0 is invalid; must clamp to 1.0 (strictest), NOT fall to the 1.25 default.
+    const budgets = budgetService(db, { cancelWorkForScope }, { hardStopGraceFactor: 0 });
+    await budgets.evaluateCostEvent(event);
+
+    expect(cancelWorkForScope).toHaveBeenCalledWith(
+      expect.objectContaining({ scopeType: "issue", scopeId: s.planId }),
+    );
+  });
+
   it("graceFactor 1.0 reproduces pre-grace behavior: cancels at exactly the cap", async () => {
     const s = await seed();
     await tokenCap(s.planId, s.companyId, 100); // ceiling at 1.0x = 100

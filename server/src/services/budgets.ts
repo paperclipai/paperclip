@@ -63,15 +63,17 @@ export type BudgetServiceOptions = {
 const DEFAULT_HARD_STOP_GRACE_FACTOR = 1.25;
 
 /**
- * Resolve the hard-stop grace factor from an explicit override, else the
- * `PAPERCLIP_BUDGET_HARDSTOP_GRACE_FACTOR` env var, else the default. Never
- * returns a value below 1.0 (a sub-1 factor would pause before the cap is even
- * reached, which is never intended).
+ * Resolve the hard-stop grace factor. Precedence: explicit `override`, else the
+ * `PAPERCLIP_BUDGET_HARDSTOP_GRACE_FACTOR` env var, else the default. An invalid
+ * env value (absent, non-numeric, <= 0) falls back to the default. An invalid
+ * *explicit* override (non-finite or < 1) clamps to 1.0 — the strictest safe
+ * band (cancel exactly at the cap) — because a budget safety knob given bad
+ * input must fail to the most conservative behavior, never to more headroom.
  */
 function resolveHardStopGraceFactor(override?: number): number {
-  const raw = override ?? Number(process.env.PAPERCLIP_BUDGET_HARDSTOP_GRACE_FACTOR);
-  const value = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_HARD_STOP_GRACE_FACTOR;
-  return Math.max(1, value);
+  const fromEnv = Number(process.env.PAPERCLIP_BUDGET_HARDSTOP_GRACE_FACTOR);
+  const raw = override ?? (Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_HARD_STOP_GRACE_FACTOR);
+  return Number.isFinite(raw) && raw >= 1 ? raw : 1;
 }
 
 function currentUtcMonthWindow(now = new Date()) {
