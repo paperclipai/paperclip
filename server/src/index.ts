@@ -997,29 +997,34 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      const telemetryClient = getTelemetryClient();
-      if (telemetryClient) {
-        telemetryClient.stop();
-        await telemetryClient.flush();
-      }
-
-      const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
-      appShutdown?.();
-
-      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-        logger.info({ signal }, "Stopping embedded PostgreSQL");
-        try {
-          await embeddedPostgres?.stop();
-        } catch (err) {
-          logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+      try {
+        const telemetryClient = getTelemetryClient();
+        if (telemetryClient) {
+          telemetryClient.stop();
+          await telemetryClient.flush();
         }
+
+        const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
+        appShutdown?.();
+
+        if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+          logger.info({ signal }, "Stopping embedded PostgreSQL");
+          try {
+            await embeddedPostgres?.stop();
+          } catch (err) {
+            logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+          }
+        }
+
+        // Flush buffered OTel spans before the process goes away; without this
+        // await the exporter's final batch is dropped on exit.
+        await shutdownInstrumentation();
+
+        process.exit(0);
+      } catch (err) {
+        logger.error({ err, signal }, "Failed to shut down cleanly");
+        process.exit(1);
       }
-
-      // Flush buffered OTel spans before the process goes away; without this
-      // await the exporter's final batch is dropped on exit.
-      await shutdownInstrumentation();
-
-      process.exit(0);
     };
 
     process.once("SIGINT", () => {
