@@ -85,6 +85,11 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  logRetentionEnabled: boolean;
+  logRetentionIntervalMs: number;
+  activityLogRetentionDays: number;
+  heartbeatRunEventsRetentionDays: number;
+  agentWakeupRequestsRetentionDays: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -331,6 +336,23 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    logRetentionEnabled: process.env.PAPERCLIP_LOG_RETENTION_ENABLED !== "false",
+    logRetentionIntervalMs: Math.max(
+      60_000,
+      Number(process.env.PAPERCLIP_LOG_RETENTION_INTERVAL_MS) || 60 * 60 * 1000,
+    ),
+    activityLogRetentionDays: Math.max(
+      1,
+      Number(process.env.PAPERCLIP_ACTIVITY_LOG_RETENTION_DAYS) || 30,
+    ),
+    heartbeatRunEventsRetentionDays: Math.max(
+      1,
+      Number(process.env.PAPERCLIP_HEARTBEAT_EVENTS_RETENTION_DAYS) || 14,
+    ),
+    agentWakeupRequestsRetentionDays: Math.max(
+      1,
+      Number(process.env.PAPERCLIP_WAKEUP_REQUESTS_RETENTION_DAYS) || 14,
+    ),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };

@@ -932,6 +932,27 @@ export async function startServer(): Promise<StartedServer> {
     }, config.heartbeatSchedulerIntervalMs);
   }
   
+  if (config.logRetentionEnabled) {
+    const { startLogTableRetention } = await import("./services/log-table-retention.js");
+    logger.info(
+      {
+        intervalMs: config.logRetentionIntervalMs,
+        activityLogDays: config.activityLogRetentionDays,
+        heartbeatRunEventsDays: config.heartbeatRunEventsRetentionDays,
+        agentWakeupRequestsDays: config.agentWakeupRequestsRetentionDays,
+      },
+      "Log-table retention sweeper enabled",
+    );
+    startLogTableRetention(db, {
+      intervalMs: config.logRetentionIntervalMs,
+      retention: [
+        { table: "activity_log", days: config.activityLogRetentionDays },
+        { table: "heartbeat_run_events", days: config.heartbeatRunEventsRetentionDays },
+        { table: "agent_wakeup_requests", days: config.agentWakeupRequestsRetentionDays },
+      ],
+    });
+  }
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
