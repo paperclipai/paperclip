@@ -12,6 +12,7 @@ const mockApprovalService = vi.hoisted(() => ({
   resubmit: vi.fn(),
   listComments: vi.fn(),
   addComment: vi.fn(),
+  findPendingForIssueIds: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -106,6 +107,7 @@ describe("approval routes idempotent retries", () => {
     mockApprovalService.resubmit.mockReset();
     mockApprovalService.listComments.mockReset();
     mockApprovalService.addComment.mockReset();
+    mockApprovalService.findPendingForIssueIds.mockReset();
     mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
@@ -346,5 +348,69 @@ describe("approval routes idempotent retries", () => {
         action: "approval.created",
       }),
     );
+  });
+
+  it("returns existing pending approval instead of creating a duplicate for same issueId+type", async () => {
+    const existingApproval = {
+      id: "approval-existing",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve hosting spend" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    };
+    mockApprovalService.findPendingForIssueIds.mockResolvedValue(existingApproval);
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe("approval-existing");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("creates a new approval after previous one is resolved", async () => {
+    mockApprovalService.findPendingForIssueIds.mockResolvedValue(null);
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-new",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve hosting spend v2" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve hosting spend v2" },
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBe("approval-new");
+    expect(mockApprovalService.create).toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalled();
   });
 });
