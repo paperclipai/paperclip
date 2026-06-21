@@ -1480,18 +1480,13 @@ export function agentRoutes(
       companyId,
       requestedDesiredSkills,
     );
-    const resolvedRequestedSkills = resolvedRequestedSkillEntries.map((entry) => entry.key);
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
       versionSelections: skillVersionSelectionMap(resolvedRequestedSkillEntries),
     });
-    const requiredSkills = runtimeSkillEntries
-      .filter((entry) => entry.required)
-      .map((entry) => entry.key);
-    const desiredSkillEntries = [
-      ...requiredSkills.map((key) => ({ key, versionId: null })),
-      ...resolvedRequestedSkillEntries,
-    ].filter((entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index);
+    const desiredSkillEntries = resolvedRequestedSkillEntries.filter(
+      (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
+    );
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
 
     return {
@@ -1712,15 +1707,9 @@ export function agentRoutes(
       const preference = readPaperclipSkillSyncPreference(
         agent.adapterConfig as Record<string, unknown>,
       );
-      const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
-        materializeMissing: false,
-        versionSelections: skillVersionSelectionMap(preference.desiredSkillEntries),
-      });
-      const requiredSkills = runtimeSkillEntries.filter((entry) => entry.required).map((entry) => entry.key);
-      const desiredSkillEntries = [
-        ...requiredSkills.map((key) => ({ key, versionId: null })),
-        ...preference.desiredSkillEntries,
-      ].filter((entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index);
+      const desiredSkillEntries = preference.desiredSkillEntries.filter(
+        (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
+      );
       res.json(buildUnsupportedSkillSnapshot(agent.adapterType, desiredSkillEntries));
       return;
     }

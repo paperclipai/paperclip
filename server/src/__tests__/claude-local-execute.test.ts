@@ -1046,6 +1046,9 @@ describe("claude execute", () => {
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath1,
           },
           promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipSkillSync: {
+            desiredSkills: ["paperclip"],
+          },
         },
         context: {},
         authToken: "run-jwt-token",
@@ -1083,6 +1086,9 @@ describe("claude execute", () => {
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath2,
           },
           promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipSkillSync: {
+            desiredSkills: ["paperclip"],
+          },
         },
         context: {
           issueId: "issue-1",
