@@ -1253,44 +1253,36 @@ const plugin = definePlugin({
       }
 
       // Phase 1.5: Linear → Paperclip issue-membership backfill.
-      // For each project link, fetch Linear issues that have a projectMilestone set
-      // and stamp the corresponding PC milestoneId where it is currently null.
-      // Idempotent: skips issues whose milestoneId is already set.
+      // Iterate ALL bound MilestoneLinks (not just same-run imports) and stamp
+      // PC issues where milestoneId is null.  Idempotent; null-safe; guards
+      // milestone.projectId === issue.projectId to prevent cross-project leaks.
       let membershipBackfilled = 0;
       let membershipSkipped = 0;
-      projectLinkOffset = 0;
+      let milestoneLinkOffset = 0;
       // eslint-disable-next-line no-constant-condition
       while (true) {
         const page = await ctx.state.list({
           scopeKind: "instance",
           namespace: "default",
-          stateKeyPrefix: STATE_KEYS.projectLinkPrefix,
+          stateKeyPrefix: STATE_KEYS.milestoneLinkPrefix,
           limit: 50,
-          offset: projectLinkOffset,
+          offset: milestoneLinkOffset,
         });
         if (page.entries.length === 0) break;
-        projectLinkOffset += page.entries.length;
+        milestoneLinkOffset += page.entries.length;
 
         for (const entry of page.entries) {
-          if (!isProjectLink(entry.value)) continue;
+          if (!isMilestoneLinkEntry(entry.value)) continue;
           if (entry.value.paperclipCompanyId !== companyId) continue;
 
           let cursor: string | null = null;
           // eslint-disable-next-line no-constant-condition
           while (true) {
             const { issues: linearIssues, hasNextPage, endCursor } =
-              await linear.listProjectIssuesWithMilestone(
-                ctx.http.fetch.bind(ctx.http), token, entry.value.linearProjectId, cursor ?? undefined,
+              await linear.listIssuesByMilestone(
+                ctx.http.fetch.bind(ctx.http), token, entry.value.linearMilestoneId, cursor ?? undefined,
               );
             for (const li of linearIssues) {
-              const milestoneLink = await sync.getMilestoneLinkByLinear(ctx, li.projectMilestone.id);
-              if (!milestoneLink) {
-                ctx.logger.warn(
-                  `reconcile-milestones phase 1.5: skipping ${li.identifier} — Linear milestone ${li.projectMilestone.id} (${li.projectMilestone.name}) has no PC mapping`,
-                );
-                membershipSkipped++;
-                continue;
-              }
               const issueLink = await sync.getLinkByLinear(ctx, li.id);
               if (!issueLink) {
                 ctx.logger.debug(`reconcile-milestones phase 1.5: skipping ${li.identifier} — no PC issue link`);
@@ -1303,6 +1295,14 @@ const plugin = definePlugin({
                 membershipSkipped++;
                 continue;
               }
+              // Guard same-project invariant to prevent cross-project leaks.
+              if (entry.value.paperclipProjectId && pcIssue.projectId !== entry.value.paperclipProjectId) {
+                ctx.logger.warn(
+                  `reconcile-milestones phase 1.5: skipping ${li.identifier} — project mismatch (milestone=${entry.value.paperclipProjectId} issue=${pcIssue.projectId})`,
+                );
+                membershipSkipped++;
+                continue;
+              }
               if (pcIssue.milestoneId) {
                 // Already set — idempotent skip.
                 membershipSkipped++;
@@ -1310,7 +1310,7 @@ const plugin = definePlugin({
               }
               await ctx.issues.update(
                 issueLink.paperclipIssueId,
-                { milestoneId: milestoneLink.paperclipMilestoneId } as Parameters<typeof ctx.issues.update>[1],
+                { milestoneId: entry.value.paperclipMilestoneId } as Parameters<typeof ctx.issues.update>[1],
                 companyId,
               );
               membershipBackfilled++;
@@ -4205,6 +4205,15 @@ function isProjectLink(value: unknown): value is sync.ProjectLink {
     && typeof candidate.linearProjectId === "string"
     && typeof candidate.linearProjectName === "string"
     && typeof candidate.syncDirection === "string";
+}
+
+function isMilestoneLinkEntry(value: unknown): value is sync.MilestoneLink {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<sync.MilestoneLink>;
+  return typeof candidate.paperclipMilestoneId === "string"
+    && typeof candidate.paperclipCompanyId === "string"
+    && typeof candidate.linearMilestoneId === "string"
+    && typeof candidate.linearMilestoneName === "string";
 }
 
 function issueLabelIdsForReconcile(issue: Issue): string[] | undefined {

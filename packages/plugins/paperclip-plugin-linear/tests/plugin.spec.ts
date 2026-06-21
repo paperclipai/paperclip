@@ -127,6 +127,7 @@ vi.mock("../src/linear.js", () => ({
   markDuplicate: vi.fn().mockResolvedValue({ success: true, issueRelationId: null, alreadyRelated: false }),
   listProjectMilestones: vi.fn().mockResolvedValue([]),
   listProjectIssuesWithMilestone: vi.fn().mockResolvedValue({ issues: [], hasNextPage: false, endCursor: null }),
+  listIssuesByMilestone: vi.fn().mockResolvedValue({ issues: [], hasNextPage: false, endCursor: null }),
   createProjectMilestone: vi.fn().mockResolvedValue({ id: "lin-ms-new", name: "New Milestone", description: null, targetDate: null }),
 }));
 
@@ -4179,7 +4180,7 @@ describe("paperclip-plugin-linear", () => {
         { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
         "comp-reconcile",
       );
-      // A project link: lin-proj-A ↔ pc-proj-A
+      // A project link: lin-proj-A ↔ pc-proj-A (needed for Phase 1 / Phase 2 iteration)
       await h.ctx.state.set(
         { scopeKind: "instance", stateKey: `${STATE_KEYS.projectLinkPrefix}pc-proj-A` },
         {
@@ -4193,28 +4194,37 @@ describe("paperclip-plugin-linear", () => {
       );
     }
 
+    async function seedMilestoneLink(h: TestHarness, opts: {
+      pcMilestoneId: string;
+      linearMilestoneId: string;
+      name: string;
+      pcProjectId: string;
+    }) {
+      await h.ctx.state.set(
+        { scopeKind: "instance", stateKey: `${STATE_KEYS.milestoneLinkPrefix}${opts.pcMilestoneId}` },
+        {
+          paperclipMilestoneId: opts.pcMilestoneId,
+          paperclipCompanyId: "comp-reconcile",
+          paperclipProjectId: opts.pcProjectId,
+          linearMilestoneId: opts.linearMilestoneId,
+          linearMilestoneName: opts.name,
+          lastSyncAt: new Date().toISOString(),
+        },
+      );
+    }
+
     it("stamps milestoneId on a PC issue whose Linear mirror is attached to a mapped milestone", async () => {
       await seedReconcileEnv(harness);
+      await seedMilestoneLink(harness, { pcMilestoneId: "pc-ms-1", linearMilestoneId: "lin-ms-1", name: "M1", pcProjectId: "pc-proj-A" });
 
-      // Linear reports one issue with a projectMilestone
-      const { listProjectIssuesWithMilestone, listProjectMilestones } = await import("../src/linear.js");
+      const { listIssuesByMilestone, listProjectMilestones } = await import("../src/linear.js");
       (listProjectMilestones as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-      (listProjectIssuesWithMilestone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        issues: [{ id: "lin-iss-1", identifier: "LUC-1", projectMilestone: { id: "lin-ms-1", name: "M1" } }],
+      (listIssuesByMilestone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        issues: [{ id: "lin-iss-1", identifier: "LUC-1" }],
         hasNextPage: false,
         endCursor: null,
       });
 
-      // MilestoneLink: lin-ms-1 → pc-ms-1
-      syncModule.getMilestoneLinkByLinear.mockResolvedValueOnce({
-        paperclipMilestoneId: "pc-ms-1",
-        paperclipCompanyId: "comp-reconcile",
-        paperclipProjectId: "pc-proj-A",
-        linearMilestoneId: "lin-ms-1",
-        linearMilestoneName: "M1",
-      });
-
-      // IssueLink: lin-iss-1 → pc-iss-1
       syncModule.getLinkByLinear.mockResolvedValueOnce({
         paperclipIssueId: "pc-iss-1",
         paperclipCompanyId: "comp-reconcile",
@@ -4232,6 +4242,7 @@ describe("paperclip-plugin-linear", () => {
           {
             id: "pc-iss-1",
             companyId: "comp-reconcile",
+            projectId: "pc-proj-A",
             title: "T",
             status: "todo",
             priority: "low",
@@ -4257,21 +4268,92 @@ describe("paperclip-plugin-linear", () => {
       );
     });
 
-    it("skips and logs when the Linear milestone has no PC mapping", async () => {
+    it("stamps on steady state (0 imports this run) — the regression proof", async () => {
+      // This is the exact scenario that was broken: milestoneLink exists from a prior run,
+      // no milestones are imported this run, but an issue needs stamping.
       await seedReconcileEnv(harness);
+      await seedMilestoneLink(harness, { pcMilestoneId: "pc-ms-ss", linearMilestoneId: "lin-ms-ss", name: "Steady", pcProjectId: "pc-proj-A" });
 
-      const { listProjectIssuesWithMilestone, listProjectMilestones } = await import("../src/linear.js");
-      (listProjectMilestones as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-      (listProjectIssuesWithMilestone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        issues: [{ id: "lin-iss-2", identifier: "LUC-2", projectMilestone: { id: "lin-ms-unmapped", name: "Unmapped" } }],
+      const { listIssuesByMilestone, listProjectMilestones } = await import("../src/linear.js");
+      // Phase 1 returns no new milestones (steady state)
+      (listProjectMilestones as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: "lin-ms-ss", name: "Steady", description: null, targetDate: null },
+      ]);
+      // Phase 1.5 uses listIssuesByMilestone directly by milestone ID
+      (listIssuesByMilestone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        issues: [{ id: "lin-iss-ss", identifier: "LUC-SS" }],
         hasNextPage: false,
         endCursor: null,
       });
 
-      // No MilestoneLink for lin-ms-unmapped
-      syncModule.getMilestoneLinkByLinear.mockResolvedValue(null);
+      // getMilestoneLinkByLinear is used by Phase 1 only; Phase 1.5 reads state directly.
+      syncModule.getMilestoneLinkByLinear.mockResolvedValue({
+        paperclipMilestoneId: "pc-ms-ss",
+        paperclipCompanyId: "comp-reconcile",
+        paperclipProjectId: "pc-proj-A",
+        linearMilestoneId: "lin-ms-ss",
+        linearMilestoneName: "Steady",
+        lastSyncAt: "2020-01-01T00:00:00.000Z",
+      });
 
-      const warn = vi.spyOn(harness.ctx.logger, "warn");
+      syncModule.getLinkByLinear.mockResolvedValueOnce({
+        paperclipIssueId: "pc-iss-ss",
+        paperclipCompanyId: "comp-reconcile",
+        linearIssueId: "lin-iss-ss",
+        linearIdentifier: "LUC-SS",
+        linearUrl: "https://linear.app/t/LUC-SS",
+        syncDirection: "bidirectional",
+        lastSyncAt: "2020-01-01T00:00:00.000Z",
+        lastLinearStateType: "unstarted",
+        lastCommentSyncAt: null,
+      });
+
+      harness.seed({
+        issues: [
+          {
+            id: "pc-iss-ss",
+            companyId: "comp-reconcile",
+            projectId: "pc-proj-A",
+            title: "Steady-state issue",
+            status: "todo",
+            priority: "low",
+            milestoneId: null, // null despite Linear attachment — the bug scenario
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          } as never,
+        ],
+      });
+
+      const update = vi.spyOn(harness.ctx.issues, "update");
+
+      const result = await harness.performAction<{ membershipBackfilled: number; imported: number }>(
+        ACTION_KEYS.reconcileMilestones,
+        { companyId: "comp-reconcile" },
+      );
+
+      expect(result.imported).toBe(0); // steady state: nothing new imported
+      expect(result.membershipBackfilled).toBe(1); // but Phase 1.5 self-heals it
+      expect(update).toHaveBeenCalledWith(
+        "pc-iss-ss",
+        expect.objectContaining({ milestoneId: "pc-ms-ss" }),
+        "comp-reconcile",
+      );
+    });
+
+    it("skips an issue whose Linear mirror has no PC link", async () => {
+      await seedReconcileEnv(harness);
+      await seedMilestoneLink(harness, { pcMilestoneId: "pc-ms-1", linearMilestoneId: "lin-ms-1", name: "M1", pcProjectId: "pc-proj-A" });
+
+      const { listIssuesByMilestone, listProjectMilestones } = await import("../src/linear.js");
+      (listProjectMilestones as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+      (listIssuesByMilestone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        issues: [{ id: "lin-iss-2", identifier: "LUC-2" }],
+        hasNextPage: false,
+        endCursor: null,
+      });
+
+      syncModule.getLinkByLinear.mockResolvedValue(null); // no PC link
+
       const update = vi.spyOn(harness.ctx.issues, "update");
 
       const result = await harness.performAction<{ membershipBackfilled: number }>(
@@ -4281,26 +4363,18 @@ describe("paperclip-plugin-linear", () => {
 
       expect(result.membershipBackfilled).toBe(0);
       expect(update).not.toHaveBeenCalled();
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("lin-ms-unmapped"));
     });
 
     it("leaves milestoneId unchanged when it is already set on the PC issue", async () => {
       await seedReconcileEnv(harness);
+      await seedMilestoneLink(harness, { pcMilestoneId: "pc-ms-1", linearMilestoneId: "lin-ms-1", name: "M1", pcProjectId: "pc-proj-A" });
 
-      const { listProjectIssuesWithMilestone, listProjectMilestones } = await import("../src/linear.js");
+      const { listIssuesByMilestone, listProjectMilestones } = await import("../src/linear.js");
       (listProjectMilestones as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-      (listProjectIssuesWithMilestone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        issues: [{ id: "lin-iss-3", identifier: "LUC-3", projectMilestone: { id: "lin-ms-1", name: "M1" } }],
+      (listIssuesByMilestone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        issues: [{ id: "lin-iss-3", identifier: "LUC-3" }],
         hasNextPage: false,
         endCursor: null,
-      });
-
-      syncModule.getMilestoneLinkByLinear.mockResolvedValueOnce({
-        paperclipMilestoneId: "pc-ms-1",
-        paperclipCompanyId: "comp-reconcile",
-        paperclipProjectId: "pc-proj-A",
-        linearMilestoneId: "lin-ms-1",
-        linearMilestoneName: "M1",
       });
 
       syncModule.getLinkByLinear.mockResolvedValueOnce({
@@ -4320,6 +4394,7 @@ describe("paperclip-plugin-linear", () => {
           {
             id: "pc-iss-3",
             companyId: "comp-reconcile",
+            projectId: "pc-proj-A",
             title: "T",
             status: "todo",
             priority: "low",
@@ -4343,27 +4418,21 @@ describe("paperclip-plugin-linear", () => {
 
     it("paginates across multiple pages and stamps issues on each page", async () => {
       await seedReconcileEnv(harness);
-      const { listProjectIssuesWithMilestone, listProjectMilestones } = await import("../src/linear.js");
+      await seedMilestoneLink(harness, { pcMilestoneId: "pc-ms-1", linearMilestoneId: "lin-ms-1", name: "M1", pcProjectId: "pc-proj-A" });
+
+      const { listIssuesByMilestone, listProjectMilestones } = await import("../src/linear.js");
       (listProjectMilestones as ReturnType<typeof vi.fn>).mockResolvedValue([]);
       // Page 1: hasNextPage=true
-      (listProjectIssuesWithMilestone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        issues: [{ id: "lin-iss-p1", identifier: "LUC-P1", projectMilestone: { id: "lin-ms-1", name: "M1" } }],
+      (listIssuesByMilestone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        issues: [{ id: "lin-iss-p1", identifier: "LUC-P1" }],
         hasNextPage: true,
         endCursor: "cursor-1",
       });
       // Page 2: hasNextPage=false
-      (listProjectIssuesWithMilestone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        issues: [{ id: "lin-iss-p2", identifier: "LUC-P2", projectMilestone: { id: "lin-ms-1", name: "M1" } }],
+      (listIssuesByMilestone as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        issues: [{ id: "lin-iss-p2", identifier: "LUC-P2" }],
         hasNextPage: false,
         endCursor: null,
-      });
-
-      syncModule.getMilestoneLinkByLinear.mockResolvedValue({
-        paperclipMilestoneId: "pc-ms-1",
-        paperclipCompanyId: "comp-reconcile",
-        paperclipProjectId: "pc-proj-A",
-        linearMilestoneId: "lin-ms-1",
-        linearMilestoneName: "M1",
       });
 
       syncModule.getLinkByLinear
@@ -4392,8 +4461,8 @@ describe("paperclip-plugin-linear", () => {
 
       harness.seed({
         issues: [
-          { id: "pc-iss-p1", companyId: "comp-reconcile", title: "P1", status: "todo", priority: "low", milestoneId: null, assigneeAgentId: null, assigneeUserId: null } as never,
-          { id: "pc-iss-p2", companyId: "comp-reconcile", title: "P2", status: "todo", priority: "low", milestoneId: null, assigneeAgentId: null, assigneeUserId: null } as never,
+          { id: "pc-iss-p1", companyId: "comp-reconcile", projectId: "pc-proj-A", title: "P1", status: "todo", priority: "low", milestoneId: null, assigneeAgentId: null, assigneeUserId: null } as never,
+          { id: "pc-iss-p2", companyId: "comp-reconcile", projectId: "pc-proj-A", title: "P2", status: "todo", priority: "low", milestoneId: null, assigneeAgentId: null, assigneeUserId: null } as never,
         ],
       });
 
@@ -4404,8 +4473,8 @@ describe("paperclip-plugin-linear", () => {
 
       expect(result.membershipBackfilled).toBe(2);
       // Verify cursor was passed on second call
-      expect(listProjectIssuesWithMilestone).toHaveBeenCalledTimes(2);
-      expect((listProjectIssuesWithMilestone as ReturnType<typeof vi.fn>).mock.calls[1][3]).toBe("cursor-1");
+      expect(listIssuesByMilestone).toHaveBeenCalledTimes(2);
+      expect((listIssuesByMilestone as ReturnType<typeof vi.fn>).mock.calls[1][3]).toBe("cursor-1");
     });
   });
 });

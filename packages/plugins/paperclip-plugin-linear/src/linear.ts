@@ -1242,6 +1242,40 @@ export async function listProjectIssuesWithMilestone(
   };
 }
 
+export async function listIssuesByMilestone(
+  fetch: LinearFetch,
+  token: string,
+  milestoneId: string,
+  cursor?: string,
+): Promise<{ issues: Array<{ id: string; identifier: string }>; hasNextPage: boolean; endCursor: string | null }> {
+  const data = await gql<{
+    projectMilestone: {
+      issues: {
+        nodes: Array<{ id: string; identifier: string }>;
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      };
+    } | null;
+  }>(fetch, token, `
+    query ListIssuesByMilestone($milestoneId: String!, $after: String) {
+      projectMilestone(id: $milestoneId) {
+        issues(first: 50, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id identifier }
+        }
+      }
+    }
+  `, { milestoneId, after: cursor ?? null });
+
+  if (!data.projectMilestone) {
+    return { issues: [], hasNextPage: false, endCursor: null };
+  }
+  return {
+    issues: data.projectMilestone.issues.nodes,
+    hasNextPage: data.projectMilestone.issues.pageInfo.hasNextPage,
+    endCursor: data.projectMilestone.issues.pageInfo.endCursor,
+  };
+}
+
 export function parseLinearIssueRef(
   ref: string,
 ): { identifier: string } | null {
