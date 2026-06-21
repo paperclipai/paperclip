@@ -65,6 +65,14 @@ export function createPluginBundlerPresets(input: PluginBundlerPresetInput = {})
     "react",
     "react-dom",
     "react/jsx-runtime",
+    "@codemirror/state",
+    "@codemirror/view",
+    "@codemirror/language",
+    "@codemirror/commands",
+    "@codemirror/lang-javascript",
+    "@codemirror/markdown",
+    "@lezer/highlight",
+    "codemirror",
   ];
 
   const outdir = input.outdir ?? "dist";

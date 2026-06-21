@@ -19,6 +19,12 @@ await esbuild.build({
     "react-dom",
     "react/jsx-runtime",
     "@paperclipai/plugin-sdk/ui",
+    "@codemirror/state",
+    "@codemirror/view",
+    "@codemirror/language",
+    "@codemirror/lang-javascript",
+    "@lezer/highlight",
+    "codemirror",
   ],
   logLevel: "info",
 });

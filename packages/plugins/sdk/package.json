@@ -117,10 +117,14 @@
     "typescript": "^5.7.3"
   },
   "peerDependencies": {
-    "react": ">=18"
+    "react": ">=18",
+    "@codemirror/state": "^6"
   },
   "peerDependenciesMeta": {
     "react": {
+      "optional": true
+    },
+    "@codemirror/state": {
       "optional": true
     }
   }

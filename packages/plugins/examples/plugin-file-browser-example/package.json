@@ -19,13 +19,7 @@
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
-    "@codemirror/lang-javascript": "^6.2.5",
-    "@codemirror/language": "^6.12.3",
-    "@codemirror/state": "^6.4.0",
-    "@codemirror/view": "^6.28.0",
-    "@lezer/highlight": "^1.2.1",
-    "@paperclipai/plugin-sdk": "workspace:*",
-    "codemirror": "^6.0.1"
+    "@paperclipai/plugin-sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
@@ -37,6 +31,12 @@
     "typescript": "^5.7.3"
   },
   "peerDependencies": {
-    "react": ">=18"
+    "react": ">=18",
+    "@codemirror/state": "^6",
+    "@codemirror/view": "^6",
+    "@codemirror/language": "^6",
+    "@codemirror/lang-javascript": "^6",
+    "@lezer/highlight": "^1",
+    "codemirror": "^6"
   }
 }
