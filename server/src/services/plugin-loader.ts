@@ -1211,10 +1211,12 @@ export function pluginLoader(
               );
             });
             
-            // Valid npm package names: unscoped [a-z0-9._-] or scoped @scope/name
-            const NPM_PKG_RE = /^(?:@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z0-9._-]+)$/;
+            // Valid npm package names: unscoped [a-z0-9][a-z0-9._-]* or scoped @scope/name
+            // Must start with alphanumeric (not . or _) to reject `.`, `..`, `.dotfiles`, etc.
+            const NPM_PKG_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*|[a-z0-9][a-z0-9._-]*)$/;
+            const isDirectoryTraversal = !!matchedKey && (matchedKey === "." || matchedKey === ".." || matchedKey.startsWith("."));
 
-            if (matchedKey && NPM_PKG_RE.test(matchedKey)) {
+            if (matchedKey && !isDirectoryTraversal && NPM_PKG_RE.test(matchedKey)) {
               log.info(
                 { packageName: targetPackageName, matchedKey },
                 "plugin-loader: resolved alias for installed package",
