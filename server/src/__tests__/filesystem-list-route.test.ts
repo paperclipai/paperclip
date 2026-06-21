@@ -59,11 +59,9 @@ describe("GET /filesystem/list", () => {
     if (process.platform === "win32") {
       expect(res.body.entries.length).toBeGreaterThan(0);
     } else {
-      expect(res.body.entries).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ name: "/", isDir: true, isSymlink: false }),
-        ]),
-      );
+      // "/" must not be exposed as a root; it would defeat containment.
+      const rootNames = res.body.entries.map((entry: { name: string }) => entry.name);
+      expect(rootNames).not.toContain("/");
     }
   });
 
@@ -94,8 +92,37 @@ describe("GET /filesystem/list", () => {
       .get("/api/filesystem/list")
       .query({ path: target });
 
+    // Denied system paths live outside the home root, so containment rejects
+    // them before the explicit deny-list is even consulted.
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Path is not allowed" });
+    expect(res.body.error).toMatch(/not allowed|outside the allowed filesystem roots/);
+  });
+
+  it("rejects absolute paths outside the allowed roots", async () => {
+    // fixture.root is the parent of homeDir, so it is outside the home root.
+    const res = await request(createApp("local_trusted"))
+      .get("/api/filesystem/list")
+      .query({ path: fixture.root });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Path is outside the allowed filesystem roots" });
+  });
+
+  it("rejects a symlink whose resolved target escapes the allowed roots", async () => {
+    if (process.platform === "win32") return;
+
+    // Directory outside the home root, reached via a symlink that lives inside it.
+    const outsideDir = path.join(fixture.root, "outside");
+    await fs.mkdir(outsideDir, { recursive: true });
+    const escapeLink = path.join(fixture.homeDir, "escape");
+    await fs.symlink(outsideDir, escapeLink, "dir");
+
+    const res = await request(createApp("local_trusted"))
+      .get("/api/filesystem/list")
+      .query({ path: escapeLink });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Resolved path is outside the allowed filesystem roots" });
   });
 
   it("rejects non-absolute paths", async () => {
@@ -108,7 +135,7 @@ describe("GET /filesystem/list", () => {
   });
 
   it("returns 404 for non-existent paths", async () => {
-    const missingPath = path.join(fixture.root, "missing");
+    const missingPath = path.join(fixture.homeDir, "missing");
     const res = await request(createApp("local_trusted"))
       .get("/api/filesystem/list")
       .query({ path: missingPath });
