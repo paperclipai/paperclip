@@ -133,6 +133,13 @@ evidence. The model catalog entries (`cloudflare/@cf/...`) and the
 `WORKERS_AI_OPENAI_BASE_URL_TEMPLATE` constant are covered by unit tests in
 `packages/adapters/opencode-local/src/server/workers-ai-models.test.ts`.
 
-> **Note:** Remote/sandboxed execution targets (e.g. Cloudflare Workers sandboxes)
-> are not yet wired for `opencode_local`; this recipe applies to **local** agent
-> execution only.
+> **Note:** Remote/SSH execution targets are supported for `opencode_local`. The
+> runtime `opencode.json` carrying the `provider.cloudflare` block is staged in a
+> temp `XDG_CONFIG_HOME` and synced to the remote box's `XDG_CONFIG_HOME` as the
+> `xdgConfig` runtime asset, so the Workers AI provider routing applies to remote
+> runs just as it does locally. This path is verified via the mocked-SSH
+> integration test in
+> `packages/adapters/opencode-local/src/server/execute.remote.test.ts` (which
+> asserts the synced config contains the provider block with the correct
+> `baseURL`/`apiKey`/model). A true live remote-SSH run against a real sandbox was
+> **not** exercised as part of this change.

@@ -75,7 +75,6 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
-  targetIsRemote?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   const workersAiProvider = buildWorkersAiProvider(input.config, input.env);
@@ -91,23 +90,11 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     };
   }
 
-  // For remote execution targets the host XDG_CONFIG_HOME path is meaningless
-  // (and actively harmful — it leaks a macOS-only path into the remote Linux
-  // env). Callers that need to ship a runtime opencode config to the remote
-  // box do that via prepareAdapterExecutionTargetRuntime in execute.ts; this
-  // host-fs helper is local-only.
-  //
-  // NOTE: Workers AI provider injection for remote execution targets is a
-  // follow-up. The provider block built above is intentionally NOT shipped to
-  // remote here; remote runtime config is produced by a separate path.
-  if (input.targetIsRemote) {
-    return {
-      env: input.env,
-      notes: [],
-      cleanup: async () => {},
-    };
-  }
-
+  // This helper writes a temp opencode.json under a fresh XDG_CONFIG_HOME and
+  // returns that path. For remote execution targets, execute.ts stages this
+  // temp dir as the `xdgConfig` runtime asset, syncs it to the remote box, and
+  // repoints XDG_CONFIG_HOME at the remote synced path — so the permission and
+  // Workers AI provider blocks injected below ship to remote as well as local.
   const sourceConfigDir = path.join(resolveXdgConfigHome(input.env), "opencode");
   const runtimeConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-config-"));
   const runtimeConfigDir = path.join(runtimeConfigHome, "opencode");

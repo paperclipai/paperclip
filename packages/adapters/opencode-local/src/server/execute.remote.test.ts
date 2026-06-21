@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -301,6 +301,91 @@ describe("opencode remote execution", () => {
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     expect((runChildProcess.mock.calls[0]?.[2] as string[] | undefined) ?? []).toEqual(["models"]);
     expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
+  });
+
+  it("ships the Workers AI provider block to the remote XDG config for remote SSH execution", async () => {
+    // Override the "models" probe so the Cloudflare model is reported as
+    // available on the remote target (otherwise the availability check throws).
+    runChildProcess.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "opencode/gpt-5-nano\ncloudflare/@cf/moonshotai/kimi-k2.7-code\n",
+      stderr: "",
+      pid: 789,
+      startedAt: new Date().toISOString(),
+    }));
+
+    // Capture the staged opencode.json contents at sync time. execute() removes
+    // the temp config dir in its own finally block before returning, so the file
+    // only exists on disk at the moment it is synced to the remote box.
+    let stagedXdgConfigRaw: string | null = null;
+    syncDirectoryToSsh.mockImplementation((async (input: { localDir: string; remoteDir: string }) => {
+      if (input.remoteDir.endsWith("/xdgConfig")) {
+        stagedXdgConfigRaw = await readFile(
+          path.join(input.localDir, "opencode", "opencode.json"),
+          "utf8",
+        );
+      }
+      return undefined;
+    }) as typeof syncDirectoryToSsh);
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-cf-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    await execute({
+      runId: "run-ssh-cf",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "opencode",
+        model: "cloudflare/@cf/moonshotai/kimi-k2.7-code",
+        workersAiBaseUrl: "https://cf.example/ai/v1",
+        env: { CLOUDFLARE_WORKERS_AI_TOKEN: "tok-remote-123" },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    // Verify the xdgConfig asset (whose remoteDir ends in "/xdgConfig") carried
+    // an opencode.json with the Workers AI provider block to the remote box.
+    expect(stagedXdgConfigRaw).toBeTruthy();
+    const stagedConfig = JSON.parse(stagedXdgConfigRaw as unknown as string) as {
+      provider?: { cloudflare?: { options?: { baseURL?: string; apiKey?: string }; models?: Record<string, unknown> } };
+    };
+    expect(stagedConfig.provider?.cloudflare?.options?.baseURL).toBe("https://cf.example/ai/v1");
+    expect(stagedConfig.provider?.cloudflare?.options?.apiKey).toBe("tok-remote-123");
+    expect(stagedConfig.provider?.cloudflare?.models).toHaveProperty("@cf/moonshotai/kimi-k2.7-code");
   });
 
   it("resumes saved OpenCode sessions for remote SSH execution only when the identity matches", async () => {
