@@ -591,6 +591,31 @@ describe("paperclip-plugin-linear", () => {
     });
   });
 
+  describe("manifest: tool parameter schemas", () => {
+    // The MCP server builds each tool's Zod schema from the manifest's
+    // parametersSchema and `.parse()`s the agent's arguments through it, which
+    // strips any field the schema does not declare. So a manifest schema that
+    // omits a parameter the runtime handler requires silently drops that
+    // argument before it ever reaches the host RPC. This regression guards
+    // BLO-11247: link-linear-issue's manifest schema was missing
+    // `paperclipIssueId`, so it was stripped and linkLinearIssue ran
+    // `getIssueByUuid(undefined)` -> empty `$1` -> 500 on every call.
+    it("link-linear-issue declares both linearRef and paperclipIssueId (matches the runtime handler)", () => {
+      const tool = manifest.tools?.find((t) => t.name === TOOL_NAMES.link);
+      expect(tool, "link tool must be present in the manifest").toBeDefined();
+      const schema = tool!.parametersSchema as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+      expect(Object.keys(schema.properties ?? {})).toEqual(
+        expect.arrayContaining(["linearRef", "paperclipIssueId"]),
+      );
+      expect(schema.required ?? []).toEqual(
+        expect.arrayContaining(["linearRef", "paperclipIssueId"]),
+      );
+    });
+  });
+
   // -----------------------------------------------------------------------
   // Events: bidirectional sync
   // -----------------------------------------------------------------------
