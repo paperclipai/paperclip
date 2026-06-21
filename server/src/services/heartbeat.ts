@@ -260,6 +260,9 @@ const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
+const GITHUB_PR_WORKFLOW_SKILL_KEY = "paperclipai/bundled/software-development/github-pr-workflow";
+const GITHUB_PR_WORKFLOW_SKILL_SLUG = "github-pr-workflow";
+const PUSH_CAPABILITY_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
 // Keep this in sync with local adapters that require a git workspace before launch.
 const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "acpx_local",
@@ -411,6 +414,34 @@ function formatMissingBindingForOperator(missing: MissingRuntimeBinding): string
   return `secret ${secretLabel} not bound at ${missing.consumerType} ${missing.configPath}`;
 }
 
+function isConfiguredEnvBindingValue(binding: unknown) {
+  const parsed = envBindingSchema.safeParse(binding);
+  if (!parsed.success) return false;
+  const value = parsed.data;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (value.type === "plain") return value.value.trim().length > 0;
+  return true;
+}
+
+function hasGithubPrWorkflowSkill(desiredSkills: string[]) {
+  return desiredSkills.some((skill) => {
+    const normalized = skill.trim();
+    return normalized === GITHUB_PR_WORKFLOW_SKILL_KEY
+      || normalized === GITHUB_PR_WORKFLOW_SKILL_SLUG
+      || normalized.endsWith(`/${GITHUB_PR_WORKFLOW_SKILL_SLUG}`);
+  });
+}
+
+export function requiresPushCapabilityPreflight(input: {
+  adapterType: string;
+  issueId: string | null | undefined;
+  explicitRunScopedSkillKeys: string[];
+}) {
+  return Boolean(input.issueId)
+    && GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.adapterType)
+    && hasGithubPrWorkflowSkill(input.explicitRunScopedSkillKeys);
+}
+
 const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
@@ -466,11 +497,18 @@ export async function resolveExecutionRunAdapterConfig(input: {
   routineEnv?: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
   trustPreset?: TrustPresetResolution;
+  requiredScopedEnvBinding?: {
+    keys: string[];
+    consumerScopes: Array<"agent" | "project">;
+    reason: string;
+    remediation: string;
+  };
 }) {
   const executionRunConfig = stripPaperclipRuntimeEnvFromAdapterConfig(input.executionRunConfig);
   const environmentEnv = stripPaperclipRuntimeEnvBindings(input.environmentEnv);
   const projectEnv = stripPaperclipRuntimeEnvBindings(input.projectEnv);
   const routineEnv = stripPaperclipRuntimeEnvBindings(input.routineEnv);
+  const agentEnv = parseObject(executionRunConfig.env);
   const lowTrustAllowedBindingIds = input.trustPreset?.kind === "low_trust_review"
     ? input.trustPreset.boundary.allowedSecretBindingIds ?? []
     : undefined;
@@ -479,6 +517,31 @@ export async function resolveExecutionRunAdapterConfig(input: {
     assertLowTrustEnvConfigAllowed(executionRunConfig.env, "agent.env");
     assertLowTrustEnvConfigAllowed(projectEnv, "project.env");
     assertLowTrustEnvConfigAllowed(routineEnv, "routine.env");
+  }
+  const requiredScopedEnvBinding = input.requiredScopedEnvBinding ?? null;
+  const requiredScopedBindingsConfigured = requiredScopedEnvBinding
+    ? requiredScopedEnvBinding.keys.some((key) => (
+      requiredScopedEnvBinding.consumerScopes.includes("agent")
+      && isConfiguredEnvBindingValue(agentEnv[key])
+    ) || (
+      requiredScopedEnvBinding.consumerScopes.includes("project")
+      && isConfiguredEnvBindingValue(projectEnv?.[key])
+    ))
+    : false;
+  if (requiredScopedEnvBinding && !requiredScopedBindingsConfigured) {
+    throw new ConfigurationIncompleteFailure(`configuration incomplete: ${requiredScopedEnvBinding.remediation}`, {
+      configurationIncomplete: {
+        reason: requiredScopedEnvBinding.reason,
+        companyId: input.companyId,
+        agentId: input.agentId ?? null,
+        issueId: input.issueId ?? null,
+        projectId: input.projectId ?? null,
+        routineId: input.routineId ?? null,
+        requiredEnvKeys: requiredScopedEnvBinding.keys,
+        requiredScopes: requiredScopedEnvBinding.consumerScopes,
+        missingBindings: [],
+      },
+    });
   }
   // Pre-dispatch binding-validation gate: detect declared secret refs that have
   // no binding before resolving any secret value. Missing bindings short-circuit
@@ -521,6 +584,33 @@ export async function resolveExecutionRunAdapterConfig(input: {
           { consumerType: "routine", consumerId: input.routineId },
         )),
       );
+    }
+    if (requiredScopedEnvBinding) {
+      const requiredEnvKeys = new Set(requiredScopedEnvBinding.keys);
+      const requiredScopes = new Set(requiredScopedEnvBinding.consumerScopes);
+      const requiredMissingBindings = missingBindings.filter((binding) =>
+        requiredScopes.has(binding.consumerType as "agent" | "project")
+        && requiredEnvKeys.has(binding.envKey),
+      );
+      if (requiredMissingBindings.length > 0) {
+        const detail = requiredMissingBindings.map(formatMissingBindingForOperator).join("; ");
+        throw new ConfigurationIncompleteFailure(
+          `configuration incomplete: ${requiredScopedEnvBinding.remediation}; ${detail}`,
+          {
+            configurationIncomplete: {
+              reason: requiredScopedEnvBinding.reason,
+              companyId: input.companyId,
+              agentId: input.agentId ?? null,
+              issueId: input.issueId ?? null,
+              projectId: input.projectId ?? null,
+              routineId: input.routineId ?? null,
+              requiredEnvKeys: requiredScopedEnvBinding.keys,
+              requiredScopes: requiredScopedEnvBinding.consumerScopes,
+              missingBindings: requiredMissingBindings,
+            },
+          },
+        );
+      }
     }
     if (missingBindings.length > 0) {
       const detail = missingBindings.map(formatMissingBindingForOperator).join("; ");
@@ -1078,6 +1168,53 @@ function sameResolvedPath(left: string | null | undefined, right: string | null 
   const rightPath = readNonEmptyString(right);
   if (!leftPath || !rightPath) return false;
   return path.resolve(leftPath) === path.resolve(rightPath);
+}
+
+async function hasGitPushRemote(cwd: string | null | undefined) {
+  const normalized = readNonEmptyString(cwd);
+  if (!normalized) return false;
+  const remoteNames = await execFile("git", ["remote"], { cwd: normalized })
+    .then((result) =>
+      result.stdout
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0),
+    )
+    .catch(() => []);
+
+  for (const remoteName of remoteNames) {
+    const pushUrl = await execFile("git", ["remote", "get-url", "--push", remoteName], { cwd: normalized })
+      .then((result) => readNonEmptyString(result.stdout))
+      .catch(() => null);
+    if (pushUrl) return true;
+  }
+  return false;
+}
+
+export async function assertPushCapabilityCheckoutValid(input: {
+  enabled: boolean;
+  issue: {
+    id: string;
+    identifier: string | null;
+  } | null;
+  cwd: string | null | undefined;
+}) {
+  if (!input.enabled || !input.issue) return;
+  const cwd = readNonEmptyString(input.cwd);
+  if (!cwd) return;
+  if (await hasGitPushRemote(cwd)) return;
+  throw new WorkspaceValidationFailure(
+    `Issue ${input.issue.identifier ?? input.issue.id} requested the GitHub PR workflow, but checkout "${cwd}" has no configured push remote. Bind the run to a writable repo checkout before dispatching the agent.`,
+    {
+      workspaceValidation: {
+        reason: "missing_git_push_remote",
+        issueId: input.issue.id,
+        issueIdentifier: input.issue.identifier,
+        executionWorkspaceCwd: cwd,
+        requiredEnvKeys: [...PUSH_CAPABILITY_ENV_KEYS],
+      },
+    },
+  );
 }
 
 export async function assertGitSensitiveAdapterWorkspaceValid(input: {
@@ -8631,6 +8768,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : selectedEnvironmentId
         ? await environmentsSvc.getById(selectedEnvironmentId)
         : null;
+    const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
+      db,
+      companyId: agent.companyId,
+      issueId,
+    });
+    const preflightSkillConfig = applyRunScopedMentionedSkillKeys(
+      executionRunConfig,
+      runScopedMentionedSkillKeys,
+    );
+    const runtimeSkillPreference = readPaperclipSkillSyncPreference(preflightSkillConfig);
+    const pushCapabilityPreflightRequired = requiresPushCapabilityPreflight({
+      adapterType: agent.adapterType,
+      issueId,
+      explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
+    });
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
@@ -8645,6 +8797,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       routineEnv: routineEnvContext.env,
       secretsSvc,
       trustPreset,
+      requiredScopedEnvBinding: pushCapabilityPreflightRequired
+        ? {
+            keys: [...PUSH_CAPABILITY_ENV_KEYS],
+            consumerScopes: ["agent", "project"],
+            reason: "push_write_credential_missing",
+            remediation:
+              "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at project or agent scope.",
+          }
+        : undefined,
     });
     if (secretManifest.length > 0) {
       context.paperclipSecrets = {
@@ -8653,16 +8814,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipSecrets;
     }
-    const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
-      db,
-      companyId: agent.companyId,
-      issueId,
-    });
     const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
       resolvedConfig,
       runScopedMentionedSkillKeys,
     );
-    const runtimeSkillPreference = readPaperclipSkillSyncPreference(effectiveResolvedConfig);
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
       versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries),
     });
@@ -9270,6 +9425,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionTarget,
         environmentDriver: selectedEnvironment.driver,
         leaseMetadata: activeEnvironmentLease.lease.metadata,
+      });
+      await assertPushCapabilityCheckoutValid({
+        enabled: pushCapabilityPreflightRequired && executionTarget?.kind === "local",
+        issue: issueRef
+          ? {
+              id: issueRef.id,
+              identifier: issueRef.identifier,
+            }
+          : null,
+        cwd: executionWorkspace.cwd,
       });
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(
