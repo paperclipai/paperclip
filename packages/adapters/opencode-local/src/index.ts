@@ -53,12 +53,25 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
   return Boolean(trimmed) && slashIndex > 0 && slashIndex !== trimmed.length - 1;
 }
 
+/** OpenAI-compatible base URL template for Cloudflare Workers AI.
+ *  Replace `{ACCOUNT_ID}` with your Cloudflare account ID before use.
+ *  The resulting URL is passed as `workersAiBaseUrl` in an agent's adapter
+ *  config so that opencode-local can inject the `provider.cloudflare` block
+ *  into the runtime opencode.json.
+ */
+export const WORKERS_AI_OPENAI_BASE_URL_TEMPLATE =
+  "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1";
+
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
   { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
   { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
   { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  // Cloudflare Workers AI models (OpenAI-compatible endpoint, provider-prefixed)
+  { id: "cloudflare/@cf/moonshotai/kimi-k2.7-code", label: "Kimi K2.7-Code (Workers AI)" },
+  { id: "cloudflare/@cf/zhipu/glm-5.2", label: "GLM-5.2 (Workers AI)" },
+  { id: "cloudflare/@cf/openai/gpt-oss-120b", label: "GPT-OSS-120B (Workers AI)" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
