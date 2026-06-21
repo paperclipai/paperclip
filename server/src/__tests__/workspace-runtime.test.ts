@@ -94,6 +94,57 @@ async function createTempRepo(defaultBranch = "main") {
   return repoRoot;
 }
 
+async function createClonedRepoWithRemote() {
+  const sourceRepo = await createTempRepo("master");
+  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
+  const remotePath = path.join(remoteDir, "paperclip.git");
+  await execFileAsync("git", ["clone", "--bare", sourceRepo, remotePath]);
+
+  const cloneRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-clone-"));
+  const repoRoot = path.join(cloneRoot, "paperclip");
+  await execFileAsync("git", ["clone", remotePath, repoRoot]);
+  await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
+  await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+  return { sourceRepo, remotePath, repoRoot };
+}
+
+async function advanceRemoteMaster(sourceRepo: string, remotePath: string, fileName: string) {
+  await fs.writeFile(path.join(sourceRepo, fileName), `${fileName}\n`, "utf8");
+  await runGit(sourceRepo, ["add", fileName]);
+  await runGit(sourceRepo, ["commit", "-m", `Add ${fileName}`]);
+  await runGit(sourceRepo, ["push", remotePath, "master"]);
+  return readGit(sourceRepo, ["rev-parse", "master"]);
+}
+
+function realizeWorktreeForTest(repoRoot: string, repoRef: string | null) {
+  return realizeExecutionWorkspace({
+    base: {
+      baseCwd: repoRoot,
+      source: "project_primary",
+      projectId: "project-1",
+      workspaceId: "workspace-1",
+      repoUrl: null,
+      repoRef,
+    },
+    config: {
+      workspaceStrategy: {
+        type: "git_worktree",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+      },
+    },
+    issue: {
+      id: "issue-1",
+      identifier: "PAP-447",
+      title: "Add Worktree Support",
+    },
+    agent: {
+      id: "agent-1",
+      name: "Codex Coder",
+      companyId: "company-1",
+    },
+  });
+}
+
 function buildWorkspace(cwd: string): RealizedExecutionWorkspace {
   return {
     baseCwd: cwd,
@@ -505,6 +556,123 @@ describe("realizeExecutionWorkspace", () => {
     expect(reused.cwd).toBe(initial.cwd);
     expect(reused.warnings).toEqual([
       expect.stringContaining("is behind main by 1 commit"),
+    ]);
+  });
+
+  it("bases a fresh worktree on origin/master even when local master has unpushed commits", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    const originHead = await readGit(repoRoot, ["rev-parse", "origin/master"]);
+
+    await fs.writeFile(path.join(repoRoot, "unpushed.txt"), "local only\n", "utf8");
+    await runGit(repoRoot, ["add", "unpushed.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Unpushed local work"]);
+    const localHead = await readGit(repoRoot, ["rev-parse", "master"]);
+    expect(localHead).not.toBe(originHead);
+
+    const workspace = await realizeWorktreeForTest(repoRoot, null);
+
+    expect(workspace.baseRefSha).toBe(originHead);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(originHead);
+  });
+
+  it("maps a configured local branch base ref to origin/<branch> for fresh worktrees", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    const originHead = await readGit(repoRoot, ["rev-parse", "origin/master"]);
+
+    await fs.writeFile(path.join(repoRoot, "unpushed.txt"), "local only\n", "utf8");
+    await runGit(repoRoot, ["add", "unpushed.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Unpushed local work"]);
+    const localHead = await readGit(repoRoot, ["rev-parse", "master"]);
+    expect(localHead).not.toBe(originHead);
+
+    const workspace = await realizeWorktreeForTest(repoRoot, "master");
+
+    expect(workspace.repoRef).toBe("origin/master");
+    expect(workspace.baseRefSha).toBe(originHead);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(originHead);
+  });
+
+  it("fast-forwards an unstarted reused worktree to the advanced origin/master", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+
+    const initial = await realizeWorktreeForTest(repoRoot, null);
+    const initialHead = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
+
+    const advancedHead = await advanceRemoteMaster(sourceRepo, remotePath, "auth-fix.txt");
+    expect(advancedHead).not.toBe(initialHead);
+
+    const reused = await realizeWorktreeForTest(repoRoot, null);
+
+    expect(reused.created).toBe(false);
+    expect(reused.cwd).toBe(initial.cwd);
+    expect(await readGit(reused.cwd, ["rev-parse", "HEAD"])).toBe(advancedHead);
+    expect(reused.baseRefSha).toBe(advancedHead);
+    expect(reused.warnings).toEqual([]);
+  });
+
+  it("does not reset a reused worktree that already has task commits", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+
+    const initial = await realizeWorktreeForTest(repoRoot, null);
+    await fs.writeFile(path.join(initial.cwd, "task-work.txt"), "in progress\n", "utf8");
+    await runGit(initial.cwd, ["add", "task-work.txt"]);
+    await runGit(initial.cwd, ["commit", "-m", "Task work in progress"]);
+    const taskHead = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
+
+    await advanceRemoteMaster(sourceRepo, remotePath, "auth-fix.txt");
+
+    const reused = await realizeWorktreeForTest(repoRoot, null);
+
+    expect(reused.created).toBe(false);
+    expect(await readGit(reused.cwd, ["rev-parse", "HEAD"])).toBe(taskHead);
+    expect(reused.warnings).toEqual([
+      expect.stringContaining("is behind origin/master by 1 commit"),
+    ]);
+  });
+
+  it("does not reset a reused worktree with untracked changes", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+
+    const initial = await realizeWorktreeForTest(repoRoot, null);
+    const initialHead = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
+    await fs.writeFile(path.join(initial.cwd, "scratch.txt"), "uncommitted scratch\n", "utf8");
+
+    await advanceRemoteMaster(sourceRepo, remotePath, "auth-fix.txt");
+
+    const reused = await realizeWorktreeForTest(repoRoot, null);
+
+    expect(reused.created).toBe(false);
+    expect(await readGit(reused.cwd, ["rev-parse", "HEAD"])).toBe(initialHead);
+    await expect(fs.readFile(path.join(reused.cwd, "scratch.txt"), "utf8")).resolves.toBe(
+      "uncommitted scratch\n",
+    );
+    expect(reused.warnings).toEqual([
+      expect.stringContaining("is behind origin/master by 1 commit"),
+    ]);
+  });
+
+  it("does not reset a reused worktree with untracked changes when status.showUntrackedFiles=no", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+
+    const initial = await realizeWorktreeForTest(repoRoot, null);
+    const initialHead = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
+    // Without `--untracked-files=all`, this config hides untracked files from
+    // `git status --porcelain`, which would let the clean-tree guard pass and a
+    // `reset --hard` destroy the scratch file below.
+    await readGit(initial.cwd, ["config", "status.showUntrackedFiles", "no"]);
+    await fs.writeFile(path.join(initial.cwd, "scratch.txt"), "uncommitted scratch\n", "utf8");
+
+    await advanceRemoteMaster(sourceRepo, remotePath, "auth-fix.txt");
+
+    const reused = await realizeWorktreeForTest(repoRoot, null);
+
+    expect(reused.created).toBe(false);
+    expect(await readGit(reused.cwd, ["rev-parse", "HEAD"])).toBe(initialHead);
+    await expect(fs.readFile(path.join(reused.cwd, "scratch.txt"), "utf8")).resolves.toBe(
+      "uncommitted scratch\n",
+    );
+    expect(reused.warnings).toEqual([
+      expect.stringContaining("is behind origin/master by 1 commit"),
     ]);
   });
 
