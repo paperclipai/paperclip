@@ -25,7 +25,19 @@ export const envBindingSchema = z.union([
   envBindingSecretRefSchema,
 ]);
 
-export const envConfigSchema = z.record(z.string(), envBindingSchema);
+export const envConfigSchema = z
+  .record(z.string(), envBindingSchema)
+  .superRefine((record, ctx) => {
+    for (const key of Object.keys(record)) {
+      if (key.startsWith("PAPERCLIP_")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `"${key}" uses the reserved PAPERCLIP_ prefix — these variables are injected by the runtime and cannot be overridden via agent config.`,
+        });
+      }
+    }
+  });
 
 export const createSecretSchema = z.object({
   name: z.string().min(1),
