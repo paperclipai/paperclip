@@ -4686,6 +4686,27 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      // Idempotency: if an idempotencyKey is provided, check for an existing
+      // non-cancelled issue with the same key (partial unique index guards
+      // against duplicates under concurrent inserts, but this pre-check
+      // avoids the INSERT + error round-trip on the happy path).
+      if (data.idempotencyKey) {
+        const existing = await db
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              eq(issues.idempotencyKey, data.idempotencyKey),
+              ne(issues.status, "cancelled"),
+            ),
+          )
+          .limit(1);
+        if (existing.length > 0) {
+          const [enriched] = await withIssueLabels(db, [existing[0]]);
+          return enriched;
+        }
+      }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -4881,7 +4902,33 @@ export function issueService(db: Db) {
           }),
         );
 
-        const [issue] = await tx.insert(issues).values(values).returning();
+        // Insert the issue.  If a concurrent insert already claimed this
+        // idempotency key (unique partial index), catch the error and
+        // re-fetch the existing issue rather than propagating a 500.
+        let issue: typeof issues.$inferSelect;
+        try {
+          const [inserted] = await tx.insert(issues).values(values).returning();
+          issue = inserted;
+        } catch (err: any) {
+          // PostgreSQL unique violation error code is 23505.
+          if (err?.code === "23505" && data.idempotencyKey) {
+            const [dup] = await tx
+              .select()
+              .from(issues)
+              .where(
+                and(
+                  eq(issues.companyId, companyId),
+                  eq(issues.idempotencyKey, data.idempotencyKey),
+                ),
+              )
+              .limit(1);
+            if (dup) {
+              const [enriched] = await withIssueLabels(tx, [dup]);
+              return enriched;
+            }
+          }
+          throw err;
+        }
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
