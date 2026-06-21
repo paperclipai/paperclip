@@ -7960,10 +7960,15 @@ export function issueRoutes(
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      // Local-CLI agents can write through board/user auth while still carrying
+      // the active heartbeat run id. Treat those as self-comments too; otherwise
+      // a run's own completion/reconciliation comment requeues the same issue and
+      // creates comment -> promoted execution -> re-close loops.
+      const runSelfComment = Boolean(actor.runId && currentIssue.executionRunId === actor.runId);
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
-      const skipWake = selfComment || isClosedIssueStatus(currentIssue.status);
+      const skipWake = selfComment || runSelfComment || isClosedIssueStatus(currentIssue.status);
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           addWakeup(assigneeId, {

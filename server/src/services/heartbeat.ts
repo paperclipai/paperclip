@@ -10599,6 +10599,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             deferred.requestedByActorType === "user" ||
             deferredWakeReason === "issue_reopened_via_comment"
           );
+        const shouldSuppressClosedIssueCommentWake =
+          deferredCommentIds.length > 0 &&
+          !shouldReopenDeferredCommentWake &&
+          (issue.status === "done" || issue.status === "cancelled");
+        if (shouldSuppressClosedIssueCommentWake) {
+          const now = new Date();
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: "Deferred comment wake suppressed because the issue is already closed",
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
+
         let reopenedActivity: LogActivityInput | null = null;
 
         if (shouldReopenDeferredCommentWake) {
