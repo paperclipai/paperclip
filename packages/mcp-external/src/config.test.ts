@@ -11,6 +11,19 @@ describe("config", () => {
     expect(() => readConfigFromEnv({})).toThrow(/PAPERCLIP_API_URL/);
   });
 
+  it("accepts PAPERCLIP_BASE_URL as a fallback (Python/deployed-secret parity)", () => {
+    const cfg = readConfigFromEnv({ PAPERCLIP_BASE_URL: "http://paperclip.paperclip.svc:3100/api" });
+    expect(cfg.apiUrl).toBe("http://paperclip.paperclip.svc:3100/api");
+  });
+
+  it("prefers PAPERCLIP_API_URL over PAPERCLIP_BASE_URL when both are set", () => {
+    const cfg = readConfigFromEnv({
+      PAPERCLIP_API_URL: "http://primary:3100",
+      PAPERCLIP_BASE_URL: "http://fallback:3100",
+    });
+    expect(cfg.apiUrl).toBe("http://primary:3100/api");
+  });
+
   it("apiKey is optional (multi-tenant: inbound bearer is primary)", () => {
     const cfg = readConfigFromEnv({ PAPERCLIP_API_URL: "http://x:3100" });
     expect(cfg.apiUrl).toBe("http://x:3100/api");

@@ -23,9 +23,12 @@ export function normalizeApiUrl(apiUrl: string): string {
 export function readConfigFromEnv(
   env: Record<string, string | undefined> = process.env,
 ): PaperclipExternalConfig {
-  const apiUrl = nonEmpty(env.PAPERCLIP_API_URL);
+  // PAPERCLIP_API_URL is the canonical key; PAPERCLIP_BASE_URL is the Python
+  // external server's key (and what the deployed paperclip-mcp-credentials
+  // secret provides). Accept both so the Node server is a true drop-in.
+  const apiUrl = nonEmpty(env.PAPERCLIP_API_URL) ?? nonEmpty(env.PAPERCLIP_BASE_URL);
   if (!apiUrl) {
-    throw new Error("Missing PAPERCLIP_API_URL");
+    throw new Error("Missing PAPERCLIP_API_URL (or PAPERCLIP_BASE_URL)");
   }
   return {
     apiUrl: normalizeApiUrl(apiUrl),
