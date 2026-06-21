@@ -5,7 +5,7 @@ const baseInput = {
   namespace: "paperclip-acme",
   sandboxName: "pc-01h00000000000000000000000",
   adapterType: "claude_local",
-  image: "ghcr.io/paperclipai/agent-runtime-claude:v1",
+  image: "ghcr.io/paperclipai/runtime-claude:v1",
   envSecretName: "pc-01h00000000000000000000000-env",
   serviceAccountName: "paperclip-tenant-sa",
   labels: { "paperclip.io/run-id": "r1" },

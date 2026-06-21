@@ -6,7 +6,7 @@ describe("adapterRegistrySchema", () => {
     const parsed = adapterRegistrySchema.parse([
       {
         adapterType: "opencode_local",
-        runtimeImage: "ghcr.io/paperclipai/agent-runtime-opencode:v1",
+        runtimeImage: "ghcr.io/paperclipai/runtime-opencode:v1",
         envKeys: ["ANTHROPIC_API_KEY"],
         allowFqdns: [],
         probeCommand: ["opencode", "--version"],

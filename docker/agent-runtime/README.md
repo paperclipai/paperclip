@@ -1,16 +1,16 @@
 # Agent Runtime Image Family
 
-Container images for running coding-agent harnesses in sandboxed environments (for example the kubernetes sandbox provider, stage 1 of the k8s contribution). Images are named `agent-runtime-{harness}:{version}` and published to `ghcr.io/paperclipai/` by the `agent-runtime-images` workflow. The registry is overridable: every reference flows through the `REGISTRY` bake variable.
+Container images for running coding-agent harnesses in sandboxed environments (for example the kubernetes sandbox provider, stage 1 of the k8s contribution). Images are named `runtime-{harness}:{version}` and published to `ghcr.io/paperclipai/` by the `runtime-images` workflow. The registry is overridable: every reference flows through the `REGISTRY` bake variable.
 
 ## Image Lineup
 
-- **`agent-runtime-base`**: Foundation. Ubuntu 22.04 + Node 22 + git + tini + non-root user (uid 1000) + the agent shim.
-- **`agent-runtime-opencode`**: Extends base with `opencode-ai` globally installed.
-- **`agent-runtime-pi`**: Extends base with `@mariozechner/pi-coding-agent`.
-- **`agent-runtime-codex`**: Extends base with `@openai/codex`.
-- **`agent-runtime-gemini`**: Extends base with `@google/gemini-cli` plus headless auth-mode settings.
-- **`agent-runtime-claude`**: Extends base with `@anthropic-ai/claude-code` (symlinked as `claude-code`).
-- **`agent-runtime-acpx`** / **`agent-runtime-hermes`**: Dockerfiles included in the bake group, not in the default publish scope (hermes is a stub until a CLI package exists).
+- **`runtime-base`**: Foundation. Ubuntu 22.04 + Node 22 + git + tini + non-root user (uid 1000) + the agent shim.
+- **`runtime-opencode`**: Extends base with `opencode-ai` globally installed.
+- **`runtime-pi`**: Extends base with `@mariozechner/pi-coding-agent`.
+- **`runtime-codex`**: Extends base with `@openai/codex`.
+- **`runtime-gemini`**: Extends base with `@google/gemini-cli` plus headless auth-mode settings.
+- **`runtime-claude`**: Extends base with `@anthropic-ai/claude-code` (symlinked as `claude-code`).
+- **`runtime-acpx`** / **`runtime-hermes`**: Dockerfiles included in the bake group, not in the default publish scope (hermes is a stub until a CLI package exists).
 
 ## Base Image Contents
 
@@ -47,11 +47,11 @@ REGISTRY=myregistry VERSION=mytag \
 
 ## Quickstart Smoke Test
 
-Build and verify the `agent-runtime-claude` image runs locally:
+Build and verify the `runtime-claude` image runs locally:
 
 ```bash
 docker buildx bake -f docker/agent-runtime/buildx-bake.hcl base claude --load
-docker run --rm ghcr.io/paperclipai/agent-runtime-claude:dev claude-code --version
+docker run --rm ghcr.io/paperclipai/runtime-claude:dev claude-code --version
 ```
 
 ## Agent Container (paperclip-agent-shim)
@@ -82,4 +82,4 @@ The shim makes no assumptions about command structure; it is harness-agnostic. N
 
 ## Publishing
 
-`.github/workflows/agent-runtime-images.yml` builds and pushes the default scope (base, opencode, pi, codex, gemini, claude) on `workflow_dispatch` (with an explicit version tag) or on pushes to `master` touching these paths, then signs each digest with cosign keyless OIDC.
+`.github/workflows/runtime-images.yml` builds and pushes the default scope (base, opencode, pi, codex, gemini, claude) on `workflow_dispatch` (with an explicit version tag) or on pushes to `master` touching these paths, then signs each digest with cosign keyless OIDC.

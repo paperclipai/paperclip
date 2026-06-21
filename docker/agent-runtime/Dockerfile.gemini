@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.6
 ARG BASE_TAG=dev
-FROM paperclipai/agent-runtime-base:${BASE_TAG}
+FROM paperclipai/runtime-base:${BASE_TAG}
 
 USER root
 RUN npm install -g @google/gemini-cli@latest \

@@ -66,7 +66,7 @@ curl -s -X POST -H "Content-Type: application/json" \
       \"kubeconfig\": $KUBECONFIG_CONTENT,
       \"companySlug\": \"smoke\",
       \"adapterType\": \"claude_local\",
-      \"imageAllowList\": [\"ghcr.io/paperclipai/agent-runtime-claude:v1\"]
+      \"imageAllowList\": [\"ghcr.io/paperclipai/runtime-claude:v1\"]
     }
   }" \
   http://127.0.0.1:3100/api/companies/$CO_ID/environments | jq

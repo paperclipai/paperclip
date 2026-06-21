@@ -9,19 +9,19 @@ target "base" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.base"
   platforms = ["linux/amd64"]
-  tags = ["${REGISTRY}/agent-runtime-base:${VERSION}"]
+  tags = ["${REGISTRY}/runtime-base:${VERSION}"]
 }
 
 target "claude" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.claude"
   platforms = ["linux/amd64"]
-  tags = ["${REGISTRY}/agent-runtime-claude:${VERSION}"]
+  tags = ["${REGISTRY}/runtime-claude:${VERSION}"]
   args = {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
-    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+    "paperclipai/runtime-base:${VERSION}" = "target:base"
   }
 }
 
@@ -29,12 +29,12 @@ target "codex" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.codex"
   platforms = ["linux/amd64"]
-  tags = ["${REGISTRY}/agent-runtime-codex:${VERSION}"]
+  tags = ["${REGISTRY}/runtime-codex:${VERSION}"]
   args = {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
-    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+    "paperclipai/runtime-base:${VERSION}" = "target:base"
   }
 }
 
@@ -42,12 +42,12 @@ target "gemini" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.gemini"
   platforms = ["linux/amd64"]
-  tags = ["${REGISTRY}/agent-runtime-gemini:${VERSION}"]
+  tags = ["${REGISTRY}/runtime-gemini:${VERSION}"]
   args = {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
-    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+    "paperclipai/runtime-base:${VERSION}" = "target:base"
   }
 }
 
@@ -55,12 +55,12 @@ target "acpx" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.acpx"
   platforms = ["linux/amd64"]
-  tags = ["${REGISTRY}/agent-runtime-acpx:${VERSION}"]
+  tags = ["${REGISTRY}/runtime-acpx:${VERSION}"]
   args = {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
-    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+    "paperclipai/runtime-base:${VERSION}" = "target:base"
   }
 }
 
@@ -68,12 +68,12 @@ target "opencode" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.opencode"
   platforms = ["linux/amd64"]
-  tags = ["${REGISTRY}/agent-runtime-opencode:${VERSION}"]
+  tags = ["${REGISTRY}/runtime-opencode:${VERSION}"]
   args = {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
-    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+    "paperclipai/runtime-base:${VERSION}" = "target:base"
   }
 }
 
@@ -81,12 +81,12 @@ target "pi" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.pi"
   platforms = ["linux/amd64"]
-  tags = ["${REGISTRY}/agent-runtime-pi:${VERSION}"]
+  tags = ["${REGISTRY}/runtime-pi:${VERSION}"]
   args = {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
-    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+    "paperclipai/runtime-base:${VERSION}" = "target:base"
   }
 }
 
@@ -94,11 +94,11 @@ target "hermes" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.hermes"
   platforms = ["linux/amd64"]
-  tags = ["${REGISTRY}/agent-runtime-hermes:${VERSION}"]
+  tags = ["${REGISTRY}/runtime-hermes:${VERSION}"]
   args = {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
-    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+    "paperclipai/runtime-base:${VERSION}" = "target:base"
   }
 }

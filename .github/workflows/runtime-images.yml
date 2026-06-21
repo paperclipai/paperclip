@@ -1,4 +1,4 @@
-name: Agent runtime images
+name: Runtime images
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
     paths:
       - "docker/agent-runtime/**"
       - "tools/agent-shim/**"
-      - ".github/workflows/agent-runtime-images.yml"
+      - ".github/workflows/runtime-images.yml"
   workflow_dispatch:
     inputs:
       version:
@@ -75,24 +75,24 @@ jobs:
 
       - name: Cosign sign base
         run: |
-          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-base@${{ steps.bake.outputs.base_digest }}"
+          cosign sign --yes "${{ env.REGISTRY }}/runtime-base@${{ steps.bake.outputs.base_digest }}"
 
       - name: Cosign sign opencode
         run: |
-          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-opencode@${{ steps.bake.outputs.opencode_digest }}"
+          cosign sign --yes "${{ env.REGISTRY }}/runtime-opencode@${{ steps.bake.outputs.opencode_digest }}"
 
       - name: Cosign sign pi
         run: |
-          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-pi@${{ steps.bake.outputs.pi_digest }}"
+          cosign sign --yes "${{ env.REGISTRY }}/runtime-pi@${{ steps.bake.outputs.pi_digest }}"
 
       - name: Cosign sign codex
         run: |
-          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-codex@${{ steps.bake.outputs.codex_digest }}"
+          cosign sign --yes "${{ env.REGISTRY }}/runtime-codex@${{ steps.bake.outputs.codex_digest }}"
 
       - name: Cosign sign gemini
         run: |
-          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-gemini@${{ steps.bake.outputs.gemini_digest }}"
+          cosign sign --yes "${{ env.REGISTRY }}/runtime-gemini@${{ steps.bake.outputs.gemini_digest }}"
 
       - name: Cosign sign claude
         run: |
-          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-claude@${{ steps.bake.outputs.claude_digest }}"
+          cosign sign --yes "${{ env.REGISTRY }}/runtime-claude@${{ steps.bake.outputs.claude_digest }}"

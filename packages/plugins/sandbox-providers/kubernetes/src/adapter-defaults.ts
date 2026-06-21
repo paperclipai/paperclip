@@ -11,43 +11,43 @@ export interface AdapterDefaults {
 
 const REGISTRY: Record<string, AdapterDefaults> = {
   claude_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:v1",
+    runtimeImage: "ghcr.io/paperclipai/runtime-claude:v1",
     envKeys: ["ANTHROPIC_API_KEY"],
     allowFqdns: ["api.anthropic.com"],
     probeCommand: ["claude", "--version"],
   },
   codex_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-codex:v1",
+    runtimeImage: "ghcr.io/paperclipai/runtime-codex:v1",
     envKeys: ["OPENAI_API_KEY"],
     allowFqdns: ["api.openai.com"],
     probeCommand: ["codex", "--version"],
   },
   gemini_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-gemini:v1",
+    runtimeImage: "ghcr.io/paperclipai/runtime-gemini:v1",
     envKeys: ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
     allowFqdns: ["generativelanguage.googleapis.com"],
     probeCommand: ["gemini", "--version"],
   },
   cursor_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-cursor:v1",
+    runtimeImage: "ghcr.io/paperclipai/runtime-cursor:v1",
     envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
     allowFqdns: ["api.anthropic.com", "api.openai.com"],
     probeCommand: ["cursor-agent", "--version"],
   },
   opencode_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-opencode:v1",
+    runtimeImage: "ghcr.io/paperclipai/runtime-opencode:v1",
     envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
     allowFqdns: ["api.anthropic.com", "api.openai.com", "openrouter.ai"],
     probeCommand: ["opencode", "--version"],
   },
   acpx_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-acpx:v1",
+    runtimeImage: "ghcr.io/paperclipai/runtime-acpx:v1",
     envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
     allowFqdns: ["api.anthropic.com", "api.openai.com"],
     probeCommand: ["acpx", "--version"],
   },
   pi_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-pi:v1",
+    runtimeImage: "ghcr.io/paperclipai/runtime-pi:v1",
     envKeys: ["ANTHROPIC_API_KEY"],
     allowFqdns: ["api.anthropic.com"],
     probeCommand: ["pi", "--version"],
