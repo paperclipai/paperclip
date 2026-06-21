@@ -2350,6 +2350,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     if (input.recoveryCause === "workspace_validation_failed") return;
     if (input.recoveryCause === "configuration_incomplete") return;
+    // Defence-in-depth: if the source issue already reached a terminal status,
+    // do not emit a recovery wake. The primary guard lives in
+    // escalateStrandedAssignedIssue, but this is a cheap second check that
+    // prevents stale callers from waking owners against a `done`/`cancelled`
+    // issue.
+    if (isTerminalIssueStatus(input.issue.status)) return;
     if (!input.action.ownerAgentId) return;
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
@@ -2553,6 +2559,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
       });
+    }
+
+    // Race guard: between the reconcile scan that produced `input.issue` and this
+    // call, the assignee may have patched the issue to a terminal status. Re-read
+    // the latest status; if terminal, skip escalation entirely so we do not
+    // overwrite the assignee's completion with `blocked` and trigger a reopen loop.
+    const freshStatusRow = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, input.issue.id))
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (freshStatusRow && isTerminalIssueStatus(freshStatusRow.status)) {
+      return null;
     }
 
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
