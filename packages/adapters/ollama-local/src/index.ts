@@ -34,15 +34,6 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     },
     source: "adapter_default",
   },
-  {
-    key: "balanced",
-    label: "Balanced",
-    description: "Use a balanced model for general-purpose operations.",
-    adapterConfig: {
-      model: "llama3.2",
-    },
-    source: "adapter_default",
-  },
 ];
 
 export const agentConfigurationDoc = `# ollama_local agent configuration
