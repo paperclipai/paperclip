@@ -1,0 +1,10 @@
+{
+  "name": "paperclip-recovery-workflow",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "workflows": [
+    { "name": "recovery-workflow", "binding": "RECOVERY_WORKFLOW", "class_name": "RecoveryWorkflow" }
+  ],
+  "vars": { "INTERNAL_API_BASE_URL": "" }
+}
