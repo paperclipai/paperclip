@@ -763,7 +763,9 @@ async function buildRuntime(input: {
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  if (!executionTargetIsRemote) {
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  }
 
   const acpxAgent = normalizeAgent(config);
   const mode = normalizeMode(config);
