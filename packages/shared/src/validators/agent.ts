@@ -37,13 +37,28 @@ export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructions
 const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
   if (envValue === undefined) return;
-  const parsed = envConfigSchema.safeParse(envValue);
-  if (!parsed.success) {
+
+  // Check for reserved PAPERCLIP_-prefixed keys first and report them specifically
+  const envRecord = typeof envValue === "object" && envValue !== null ? envValue : {};
+  const reservedKeys = Object.keys(envRecord).filter((k) => k.startsWith("PAPERCLIP_"));
+  for (const key of reservedKeys) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "adapterConfig.env must be a map of valid env bindings",
-      path: ["env"],
+      message: `"${key}" uses the reserved PAPERCLIP_ prefix; choose a different name`,
+      path: ["env", key],
     });
+  }
+
+  const parsed = envConfigSchema.safeParse(envValue);
+  if (!parsed.success) {
+    // Only add generic shape error if there were no reserved-key violations
+    if (reservedKeys.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "adapterConfig.env must be a map of valid env bindings",
+        path: ["env"],
+      });
+    }
   }
 });
 
