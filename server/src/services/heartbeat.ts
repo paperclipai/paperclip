@@ -6815,6 +6815,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
         );
+        if (staleness.errorCode === "issue_assignee_changed") {
+          const newOwnerId = staleness.details.currentAssigneeAgentId as string | undefined;
+          if (newOwnerId) {
+            await enqueueWakeup(newOwnerId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_assignee_changed_recovery",
+              idempotencyKey: `assignee-wake:${issueId}:${run.id}`,
+              payload: { issueId, sourceIssueId: run.id },
+            });
+            logger.info(
+              { runId: run.id, issueId, newOwnerId },
+              "claimQueuedRun: enqueued wake for new owner after stale-assignee cancel",
+            );
+          }
+        }
         return null;
       }
     }

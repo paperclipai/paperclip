@@ -361,6 +361,95 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it("enqueues wake for new owner when queued run cancelled due to issue_assignee_changed", async () => {
+    const { companyId, agentId: agentAId } = await seedCompanyAndAgent({ agentName: "AgentA" });
+    const agentBId = randomUUID();
+    await db.insert(agents).values({
+      id: agentBId,
+      companyId,
+      name: "AgentB",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    // Issue initially assigned to agent A
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned task",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentAId,
+    });
+
+    // Enqueue a run for agent A
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId: agentAId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    // Reassign issue to agent B (simulating in-run reassignment)
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: agentBId,
+        status: "todo",
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+
+    // Trigger stale-run evaluation
+    await heartbeat.resumeQueuedRuns();
+
+    // Wait for the run to be cancelled
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    // Verify: original run cancelled with issue_assignee_changed
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_assignee_changed");
+
+    // Verify: new wake enqueued for agent B
+    const newWakeup = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        agentId: agentWakeupRequests.agentId,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentBId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    expect(newWakeup).not.toBeNull();
+    expect(newWakeup?.agentId).toBe(agentBId);
+    expect(newWakeup?.reason).toBe("issue_assignee_changed_recovery");
+  });
+
   it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
