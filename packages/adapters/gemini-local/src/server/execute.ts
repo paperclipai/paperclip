@@ -204,7 +204,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  if (!executionTargetIsRemote) {
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  }
   const geminiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredGeminiSkillNames = resolvePaperclipDesiredSkillNames(config, geminiSkillEntries);
   if (!executionTargetIsRemote) {

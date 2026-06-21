@@ -175,7 +175,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  if (!executionTargetIsRemote) {
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  }
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
