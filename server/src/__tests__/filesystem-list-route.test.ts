@@ -73,13 +73,35 @@ describe("GET /filesystem/list", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       path: fixture.homeDir,
-      parent: path.dirname(fixture.homeDir) === fixture.homeDir ? null : path.dirname(fixture.homeDir),
+      // homeDir is a root; its parent is outside the allowed roots, so it must
+      // be capped to null to keep the UI "Up" button from issuing a 403 request.
+      parent: null,
       entries: [
         { name: "linked-projects", isDir: true, isSymlink: true },
         { name: "projects", isDir: true, isSymlink: false },
         { name: "notes.txt", isDir: false, isSymlink: false },
       ],
     });
+  });
+
+  it("caps the parent at the root boundary so 'Up' never escapes allowed roots", async () => {
+    // Listing a nested directory returns its in-root parent...
+    const nested = await request(createApp("local_trusted"))
+      .get("/api/filesystem/list")
+      .query({ path: path.join(fixture.homeDir, "projects") });
+
+    expect(nested.status).toBe(200);
+    expect(nested.body.parent).toBe(fixture.homeDir);
+
+    // ...and clicking "Up" to that in-root parent (the root itself) succeeds
+    // while reporting a null parent, instead of leaving a clickable path that
+    // would 403 on the next request.
+    const atRoot = await request(createApp("local_trusted"))
+      .get("/api/filesystem/list")
+      .query({ path: nested.body.parent });
+
+    expect(atRoot.status).toBe(200);
+    expect(atRoot.body.parent).toBeNull();
   });
 
   it("rejects denied paths", async () => {

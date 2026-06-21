@@ -199,9 +199,16 @@ export function filesystemRoutes(opts: { deploymentMode: DeploymentMode }) {
       throw badRequest("Path must be a directory");
     }
 
+    const rawParent = pathParent(resolvedPath);
+    const parent =
+      rawParent !== null &&
+      roots.some((rootPath) => isPathWithinRoot(rawParent, rootPath))
+        ? rawParent
+        : null;
+
     res.json({
       path: resolvedPath,
-      parent: pathParent(resolvedPath),
+      parent,
       entries: await listDirectoryEntries(resolvedPath),
     } satisfies FilesystemListResponse);
   });
