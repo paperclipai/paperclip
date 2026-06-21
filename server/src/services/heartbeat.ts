@@ -3049,6 +3049,52 @@ export function resolveNextSessionState(input: {
   };
 }
 
+/**
+ * Recover a projectId from a project workspace row.
+ *
+ * Called when `issue.projectId` is NULL but the issue (or its run context)
+ * carries a `projectWorkspaceId`.  Looks up the workspace row to find the
+ * owning project.
+ *
+ * @returns The recovered projectId, or null if not found / not applicable.
+ */
+export async function resolveProjectIdForWorkspaceRecovery({
+  issueProjectId,
+  preferredProjectWorkspaceId,
+  contextProjectId,
+  agentCompanyId,
+  db,
+}: {
+  issueProjectId: string | null;
+  preferredProjectWorkspaceId: string | null;
+  contextProjectId: string | null;
+  agentCompanyId: string;
+  db: Db;
+}): Promise<string | null> {
+  // Fast path: issue already has a projectId — no recovery needed.
+  if (issueProjectId) {
+    return issueProjectId;
+  }
+
+  // Fast path: nothing to recover from.
+  if (!preferredProjectWorkspaceId) {
+    return null;
+  }
+
+  const [workspaceRow] = await db
+    .select()
+    .from(projectWorkspaces)
+    .where(
+      and(
+        eq(projectWorkspaces.id, preferredProjectWorkspaceId),
+        eq(projectWorkspaces.companyId, agentCompanyId),
+      ),
+    )
+    .limit(1);
+
+  return workspaceRow?.projectId ?? null;
+}
+
 export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeService>;
 
 export interface HeartbeatServiceOptions {
@@ -4285,23 +4331,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueProjectId = issueProjectRef?.projectId ?? null;
     const preferredProjectWorkspaceId =
       issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
-    // If issue.projectId is NULL but context provides projectWorkspaceId,
-    // recover projectId from the projectWorkspaces table so the downstream
-    // workspace query has a projectId to filter on.
-    let recoveredProjectId: string | null = null;
-    if (!issueProjectId && contextProjectWorkspaceId) {
-      const pwRow = await db
-        .select({ projectId: projectWorkspaces.projectId })
-        .from(projectWorkspaces)
-        .where(
-          and(
-            eq(projectWorkspaces.companyId, agent.companyId),
-            eq(projectWorkspaces.id, contextProjectWorkspaceId),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
-      recoveredProjectId = pwRow?.projectId ?? null;
-    }
+    // If issue.projectId is NULL but preferredProjectWorkspaceId (which merges
+    // issue.projectWorkspaceId and contextProjectWorkspaceId) is set, recover
+    // projectId from the projectWorkspaces table so the downstream workspace
+    // query has a projectId to filter on.
+    const recoveredProjectId = await resolveProjectIdForWorkspaceRecovery({
+      issueProjectId,
+      preferredProjectWorkspaceId,
+      contextProjectId,
+      agentCompanyId: agent.companyId,
+      db,
+    });
     const resolvedProjectId = issueProjectId ?? contextProjectId ?? recoveredProjectId;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
