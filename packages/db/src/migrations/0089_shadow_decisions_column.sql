@@ -1,0 +1,1 @@
+ALTER TABLE "recovery_workflow_links" ADD COLUMN "shadow_decisions" jsonb DEFAULT '[]'::jsonb NOT NULL;

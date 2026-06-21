@@ -15,6 +15,7 @@ import {
   type LatestRunRow,
   type RecoveryWorkflowAdapterDeps,
 } from "../services/recovery-workflow-adapter.js";
+import { recordShadowDecision } from "../services/recovery-workflow-shadow.js";
 
 // ---------------------------------------------------------------------------
 // Body schemas
@@ -150,6 +151,27 @@ export function internalRecoveryRoutes(db: Db, deps: InternalRecoveryRoutesDeps)
         attemptNumber,
         mode,
       });
+
+      // In dry/shadow mode, record the observed lifecycle signals best-effort.
+      // A recording failure must NOT break the attempt response.
+      if (mode === "dry") {
+        try {
+          await recordShadowDecision(db, {
+            actionId,
+            attemptNumber,
+            observed: {
+              active: result.active,
+              status: result.status,
+              attemptCount: result.attemptCount,
+            },
+            recordedAtMs: Date.now(),
+          });
+        } catch (err) {
+          // Best-effort — log and swallow so the attempt response is unaffected
+          console.warn("[recovery-shadow] recordShadowDecision failed (non-fatal):", err);
+        }
+      }
+
       res.json(result);
     },
   );
