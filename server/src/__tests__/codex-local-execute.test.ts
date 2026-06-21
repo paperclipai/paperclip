@@ -1114,6 +1114,9 @@ describe("codex execute", () => {
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
           },
           promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipSkillSync: {
+            desiredSkills: ["paperclip"],
+          },
         },
         context: {},
         authToken: "run-jwt-token",
@@ -1222,6 +1225,9 @@ describe("codex execute", () => {
             CODEX_HOME: explicitCodexHome,
           },
           promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipSkillSync: {
+            desiredSkills: ["paperclip"],
+          },
         },
         context: {},
         authToken: "run-jwt-token",
