@@ -324,14 +324,24 @@ const plugin: PaperclipPlugin = definePlugin({
 
     const telemetryCtx: TelemetryContext | null = otel
       ? {
-          meter: otel.meter,
-          tracer: otel.tracer,
+          // Resolve meter/tracer/otelLogger from the *current* otel handle at
+          // access time. onConfigChanged() shuts the old SDK down and swaps in a
+          // new one; without dynamic getters this context would keep emitting
+          // through the torn-down provider after a config change.
+          get meter() {
+            return otel!.meter;
+          },
+          get tracer() {
+            return otel!.tracer;
+          },
           state: ctx.state,
           logger: ctx.logger,
           issues: ctx.issues,
           companies: ctx.companies,
           agents: ctx.agents,
-          otelLogger: otel.otelLogger,
+          get otelLogger() {
+            return otel!.otelLogger;
+          },
           activeRunSpans,
           activeIssueSpans,
           activeApprovalSpans,
@@ -768,14 +778,14 @@ const plugin: PaperclipPlugin = definePlugin({
         });
 
         await ctx.activity.log({
-          companyId: "615e9564-65df-4465-9b19-a5afb73446c6",
+          companyId: "",
           message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${govSnapshots.length} governance snapshots, ${healthSnapshots.length} health scores, ${eventsProcessed} events processed since startup`,
         });
       },
     );
 
     await ctx.activity.log({
-      companyId: "615e9564-65df-4465-9b19-a5afb73446c6",
+      companyId: "",
       message:
         "Observability plugin initialised and subscribed to domain events",
     });
