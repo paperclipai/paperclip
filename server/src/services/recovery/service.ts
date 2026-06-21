@@ -639,7 +639,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function hasRoutineBackedContinuation(companyId: string, issueId: string) {
-    const [activeRoutine, openRoutineExecution] = await Promise.all([
+    const [activeRoutine, openRoutineExecution, selfIsLiveExecution] = await Promise.all([
       db
         .select({ id: routines.id })
         .from(routines)
@@ -666,8 +666,55 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
+      // SAG-4477 AR2: the issue itself may be a routine_execution whose source routine
+      // is active. Link via originId (the routine's id — set on issue creation) or, as
+      // a fallback, via an active routine whose parentIssueId matches the issue's parentId.
+      // G1: only status='active' routines qualify.
+      db
+        .select({ originId: issues.originId, parentId: issues.parentId })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.id, issueId),
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "routine_execution"),
+            notInArray(issues.status, ["done", "cancelled"]),
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .limit(1)
+        .then(async (rows) => {
+          const execIssue = rows[0];
+          if (!execIssue) return null;
+          // Primary: originId is the source routine's id
+          if (execIssue.originId) {
+            const found = await db
+              .select({ id: routines.id })
+              .from(routines)
+              .where(and(eq(routines.id, execIssue.originId), eq(routines.status, "active")))
+              .limit(1)
+              .then((r) => r[0] ?? null);
+            if (found) return found;
+          }
+          // Fallback: find an active routine whose parentIssueId matches the execution issue's parentId
+          if (execIssue.parentId) {
+            return db
+              .select({ id: routines.id })
+              .from(routines)
+              .where(
+                and(
+                  eq(routines.companyId, companyId),
+                  eq(routines.parentIssueId, execIssue.parentId),
+                  eq(routines.status, "active"),
+                ),
+              )
+              .limit(1)
+              .then((r) => r[0] ?? null);
+          }
+          return null;
+        }),
     ]);
-    return Boolean(activeRoutine || openRoutineExecution);
+    return Boolean(activeRoutine || openRoutineExecution || selfIsLiveExecution);
   }
 
   // GGU-809: visible-progress signal for stranded-recovery escalation guard.
@@ -3136,6 +3183,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryActionRows,
       routineParentIssueIdRows,
       openRoutineExecutionParentIdRows,
+      liveRoutineExecutionIssueIdRows,
     ] = await Promise.all([
       issueRowsPromise,
       db
@@ -3265,6 +3313,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             isNotNull(issues.parentId),
           ),
         ),
+      // SAG-4477 AR2: ids of open routine_execution issues whose source routine is active.
+      // Protects execution issues themselves (e.g. SAG-4499) in addition to their parent.
+      // Primary link via originId = routines.id; G1: only status='active' routines count.
+      // routines.id is UUID; issues.originId is text — cast UUID to text in the join.
+      db
+        .select({ id: issues.id })
+        .from(issues)
+        .innerJoin(routines, sql`${routines.id}::text = ${issues.originId}`)
+        .where(
+          and(
+            eq(issues.originKind, "routine_execution"),
+            notInArray(issues.status, ["done", "cancelled"]),
+            isNull(issues.hiddenAt),
+            isNotNull(issues.originId),
+            eq(routines.status, "active"),
+          ),
+        ),
     ]);
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
@@ -3300,6 +3365,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
     for (const row of openRoutineExecutionParentIdRows) {
       if (row.parentId) routineBackedIssueIds.add(row.parentId);
+    }
+    // AR2: also protect the execution issues themselves (SAG-4499 topology)
+    for (const row of liveRoutineExecutionIssueIdRows) {
+      routineBackedIssueIds.add(row.id);
     }
 
     return classifyIssueGraphLiveness({
