@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import fs from "node:fs/promises";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, companySecretBindings, companySecrets, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, approvals, companies, companySecretBindings, companySecrets, heartbeatRuns, issues, routines, routineTriggers } from "@paperclipai/db";
 import type { CeoControlRoomStatus, CeoControlRoomCategoryKey, CeoControlRoomSourceStatus } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
@@ -9,7 +9,7 @@ import { dashboardService } from "./dashboard.js";
 
 const DEFAULT_EXTERNAL_TIMEOUT_MS = 1_500;
 const STALE_RUNNING_RUN_MS = 15 * 60 * 1000;
-const SOURCE_UNAVAILABLE_CATEGORY: CeoControlRoomCategoryKey = "worker_offline";
+const SOURCE_UNAVAILABLE_CATEGORY = "worker_offline" as const;
 
 interface ExternalProbe {
   key: string;
@@ -208,7 +208,7 @@ export function ceoControlRoomService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!company) throw notFound("Company not found");
 
-      const [dashboard, budgetOverview, blockedIssueRows, pendingApprovalRows, suspiciousSecretIssueRows, unboundSecretRows, errorAgentRows, staleRunRows, promotionIssueRows] = await Promise.all([
+      const [dashboard, budgetOverview, blockedIssueRows, pendingApprovalRows, suspiciousSecretIssueRows, unboundSecretRows, errorAgentRows, staleRunRows, promotionIssueRows, repeatedRoutineRows, activeNoisyRoutineRows] = await Promise.all([
         dashboardService(db).summary(companyId),
         budgetService(db).overview(companyId),
         db
@@ -273,6 +273,45 @@ export function ceoControlRoomService(db: Db) {
           ))
           .orderBy(desc(issues.updatedAt))
           .limit(10),
+        db
+          .select({
+            title: issues.title,
+            count: sql<number>`count(*)::int`,
+            latestAt: sql<Date>`max(${issues.createdAt})`,
+          })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, companyId),
+            isNull(issues.hiddenAt),
+            sql`${issues.createdAt} > now() - interval '24 hours'`,
+          ))
+          .groupBy(issues.title)
+          .having(sql`count(*) >= 6`)
+          .orderBy(sql`count(*) desc`)
+          .limit(10),
+        db
+          .select({
+            id: routines.id,
+            title: routines.title,
+            status: routines.status,
+            triggerId: routineTriggers.id,
+            triggerEnabled: routineTriggers.enabled,
+            cronExpression: routineTriggers.cronExpression,
+            lastTriggeredAt: routines.lastTriggeredAt,
+            lastEnqueuedAt: routines.lastEnqueuedAt,
+          })
+          .from(routines)
+          .leftJoin(routineTriggers, eq(routineTriggers.routineId, routines.id))
+          .where(and(
+            eq(routines.companyId, companyId),
+            eq(routines.status, "active"),
+            eq(routineTriggers.enabled, true),
+            or(
+              sql`lower(${routines.title}) like '%liveness check%'`,
+              sql`lower(${routines.title}) like '%active job and worker check%'`,
+            ),
+          ))
+          .limit(20),
       ]);
 
       const microBase = firstNonEmpty(process.env.PAPERCLIP_MICRO_API_BASE, process.env.MICRO_API_BASE, "http://127.0.0.1:8093");
@@ -299,6 +338,7 @@ export function ceoControlRoomService(db: Db) {
         blocked_by_human: category("blocked_by_human", "Blocked by human", "ok"),
         missing_secret: category("missing_secret", "Missing secret", "ok"),
         worker_offline: category("worker_offline", "Worker offline", "ok"),
+        operational_loop: category("operational_loop", "Operational loop", "ok"),
         spend_cap: category("spend_cap", "Spend cap", "ok"),
         promotion_candidate: category("promotion_candidate", "Promotion candidate", "ok"),
       };
@@ -332,6 +372,21 @@ export function ceoControlRoomService(db: Db) {
         }
       }
 
+      for (const row of repeatedRoutineRows) {
+        categories.operational_loop.items.push({
+          type: "routine_repeat",
+          summary: `${row.title} created ${row.count} inbox issues in the last 24h`,
+          metadata: { title: row.title, count: row.count, latestAt: row.latestAt },
+        });
+      }
+      for (const row of activeNoisyRoutineRows) {
+        categories.operational_loop.items.push({
+          type: "routine_active_trigger",
+          summary: `${row.title} still has an active schedule (${row.cronExpression ?? "unscheduled"})`,
+          metadata: row,
+        });
+      }
+
       for (const incident of budgetOverview.activeIncidents) {
         categories.spend_cap.items.push({ type: "budget", summary: `${incident.scopeName} budget incident is active`, metadata: incident });
       }
@@ -349,13 +404,14 @@ export function ceoControlRoomService(db: Db) {
       for (const entry of Object.values(categories)) {
         entry.count = entry.items.length;
         if (entry.count === 0) continue;
-        entry.severity = entry.key === "promotion_candidate" ? "info" : entry.key === "spend_cap" ? "critical" : "warning";
+        entry.severity = entry.key === "promotion_candidate" ? "info" : entry.key === "spend_cap" ? "critical" : entry.key === "operational_loop" ? "critical" : "warning";
       }
 
       const orderedCategories = [
         categories.blocked_by_human,
         categories.missing_secret,
         categories.worker_offline,
+        categories.operational_loop,
         categories.spend_cap,
         categories.promotion_candidate,
       ];

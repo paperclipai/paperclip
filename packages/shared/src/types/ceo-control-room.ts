@@ -2,6 +2,7 @@ export type CeoControlRoomCategoryKey =
   | "blocked_by_human"
   | "missing_secret"
   | "worker_offline"
+  | "operational_loop"
   | "spend_cap"
   | "promotion_candidate";
 
