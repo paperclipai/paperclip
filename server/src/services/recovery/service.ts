@@ -2351,6 +2351,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (input.recoveryCause === "workspace_validation_failed") return;
     if (input.recoveryCause === "configuration_incomplete") return;
     if (!input.action.ownerAgentId) return;
+    // TEAAAA-229 fix: Don't send recovery wakes when source issue already reached terminal state.
+    if (isTerminalIssueStatus(input.issue.status)) return;
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",
@@ -2553,6 +2555,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
       });
+    }
+
+    // TEAAAA-229 fix: Re-read status before overwriting — guards against race condition where
+    // the assignee patched done/cancelled between the reconcile scan and this update.
+    const freshStatus = await db.select({ status: issues.status }).from(issues)
+      .where(eq(issues.id, input.issue.id)).then(rows => rows[0]?.status ?? null);
+    if (freshStatus !== null && isTerminalIssueStatus(freshStatus)) {
+      logger.info({ issueId: input.issue.id, freshStatus }, "escalateStrandedAssignedIssue: skipping — issue already terminal");
+      return null;
     }
 
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
