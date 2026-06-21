@@ -71,6 +71,8 @@ export function Dashboard() {
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
+  const [selectedControlRoomCategoryKey, setSelectedControlRoomCategoryKey] = useState<string | null>(null);
+  const [selectedMicroPanel, setSelectedMicroPanel] = useState<"pods" | "experiments" | "gates" | "evidence" | "promotions" | null>(null);
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
@@ -179,6 +181,19 @@ export function Dashboard() {
   );
   const operationalLoopCategory = controlRoom?.categories.find((entry) => entry.key === "operational_loop");
   const operationalLoopItems = operationalLoopCategory?.items ?? [];
+  const selectedControlRoomCategory = controlRoom?.categories.find((entry) => entry.key === selectedControlRoomCategoryKey) ?? null;
+  const selectedControlRoomItems = selectedControlRoomCategory?.items ?? [];
+  const selectedMicroPanelLabel = selectedMicroPanel === "pods"
+    ? "Pods"
+    : selectedMicroPanel === "experiments"
+      ? "Active experiments"
+      : selectedMicroPanel === "gates"
+        ? "Open gates"
+        : selectedMicroPanel === "evidence"
+          ? "Evidence packs"
+          : selectedMicroPanel === "promotions"
+            ? "Promotion requests"
+            : null;
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -343,33 +358,102 @@ export function Dashboard() {
                 </span>
               </div>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-                {controlRoom.categories.map((entry) => (
-                  <div key={entry.key} className="rounded-lg border border-white/10 bg-black/10 px-3 py-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-medium text-foreground">{entry.label}</span>
-                      <span
-                        className={cn(
-                          "rounded-full px-2 py-0.5 text-xs font-medium",
-                          entry.severity === "critical"
-                            ? "bg-red-500/20 text-red-100"
-                            : entry.severity === "warning"
-                              ? "bg-amber-500/20 text-amber-100"
-                              : entry.severity === "info"
-                                ? "bg-blue-500/20 text-blue-100"
-                                : "bg-emerald-500/20 text-emerald-100",
-                        )}
-                      >
-                        {entry.count}
-                      </span>
-                    </div>
-                    {entry.items[0] ? (
-                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{entry.items[0].summary}</p>
-                    ) : (
-                      <p className="mt-1 text-xs text-muted-foreground">Clear</p>
-                    )}
-                  </div>
-                ))}
+                {controlRoom.categories.map((entry) => {
+                  const isSelected = selectedControlRoomCategoryKey === entry.key;
+                  return (
+                    <button
+                      key={entry.key}
+                      type="button"
+                      onClick={() => setSelectedControlRoomCategoryKey((current) => current === entry.key ? null : entry.key)}
+                      className={cn(
+                        "rounded-lg border bg-black/10 px-3 py-2 text-left transition hover:border-amber-200/40 hover:bg-white/[0.04] focus:outline-none focus:ring-2 focus:ring-amber-200/40",
+                        isSelected ? "border-amber-200/50 bg-white/[0.05]" : "border-white/10",
+                      )}
+                      aria-expanded={isSelected}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-foreground">{entry.label}</span>
+                        <span
+                          className={cn(
+                            "rounded-full px-2 py-0.5 text-xs font-medium",
+                            entry.severity === "critical"
+                              ? "bg-red-500/20 text-red-100"
+                              : entry.severity === "warning"
+                                ? "bg-amber-500/20 text-amber-100"
+                                : entry.severity === "info"
+                                  ? "bg-blue-500/20 text-blue-100"
+                                  : "bg-emerald-500/20 text-emerald-100",
+                          )}
+                        >
+                          {entry.count}
+                        </span>
+                      </div>
+                      {entry.items[0] ? (
+                        <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{entry.items[0].summary}</p>
+                      ) : (
+                        <p className="mt-1 text-xs text-muted-foreground">Clear</p>
+                      )}
+                      <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-amber-100/55">
+                        {entry.count > 0 ? "Click to inspect" : "Click to confirm clear"}
+                      </p>
+                    </button>
+                  );
+                })}
               </div>
+              {selectedControlRoomCategory ? (
+                <div className="mt-3 rounded-xl border border-amber-200/15 bg-black/20 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold text-amber-50">{selectedControlRoomCategory.label}</h3>
+                    <span className="text-xs text-amber-100/60">{selectedControlRoomCategory.count} item{selectedControlRoomCategory.count === 1 ? "" : "s"}</span>
+                  </div>
+                  {selectedControlRoomItems.length === 0 ? (
+                    <p className="mt-2 text-sm text-amber-100/65">No blockers in this category.</p>
+                  ) : (
+                    <div className="mt-3 grid gap-2 lg:grid-cols-2">
+                      {selectedControlRoomItems.map((item, index) => {
+                        const record = item as typeof item & {
+                          issue?: { id?: string; identifier?: string | null; title?: string; status?: string; priority?: string | null };
+                          metadata?: { id?: string; name?: string; status?: string; routine?: { id?: string | null; title?: string | null; status?: string | null } };
+                        };
+                        const issue = record.issue;
+                        const metadata = record.metadata;
+                        const routine = metadata?.routine;
+                        const target = issue?.identifier
+                          ? `/issues/${issue.identifier}`
+                          : issue?.id
+                            ? `/issues/${issue.id}`
+                            : routine?.id
+                              ? `/routines/${routine.id}`
+                              : metadata?.id
+                                ? `/agents/${metadata.id}`
+                                : null;
+                        const content = (
+                          <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 transition hover:bg-white/[0.06]">
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-sm font-medium text-amber-50">{item.summary}</p>
+                              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-100/70">{item.type.replace(/_/g, " ")}</span>
+                            </div>
+                            {issue ? (
+                              <p className="mt-1 text-xs text-amber-100/60">{issue.identifier ?? issue.id} · {issue.status}{issue.priority ? ` · ${issue.priority}` : ""}</p>
+                            ) : routine ? (
+                              <p className="mt-1 text-xs text-amber-100/60">Routine: {routine.title ?? routine.id} · {routine.status ?? "unknown"}</p>
+                            ) : metadata?.name ? (
+                              <p className="mt-1 text-xs text-amber-100/60">Agent: {metadata.name} · {metadata.status ?? "unknown"}</p>
+                            ) : null}
+                          </div>
+                        );
+                        return target ? (
+                          <Link key={`${item.type}:${item.summary}:${index}`} to={target} className="block">
+                            {content}
+                          </Link>
+                        ) : (
+                          <div key={`${item.type}:${item.summary}:${index}`}>{content}</div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -464,19 +548,138 @@ export function Dashboard() {
                 </div>
                 <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:min-w-[520px]">
                   {[
-                    ["Pods", microSummary.pods],
-                    ["Active", microSummary.activeExperiments],
-                    ["Gates", microSummary.openDependencies],
-                    ["Evidence", microSummary.evidencePacks],
-                    ["Promote", microSummary.promotionRequests],
-                  ].map(([label, value]) => (
-                    <div key={label} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-center">
-                      <div className="text-lg font-semibold text-white">{value}</div>
-                      <div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">{label}</div>
-                    </div>
-                  ))}
+                    ["pods", "Pods", microSummary.pods],
+                    ["experiments", "Active", microSummary.activeExperiments],
+                    ["gates", "Gates", microSummary.openDependencies],
+                    ["evidence", "Evidence", microSummary.evidencePacks],
+                    ["promotions", "Promote", microSummary.promotionRequests],
+                  ].map(([key, label, value]) => {
+                    const panelKey = key as "pods" | "experiments" | "gates" | "evidence" | "promotions";
+                    const isSelected = selectedMicroPanel === panelKey;
+                    return (
+                      <button
+                        key={panelKey}
+                        type="button"
+                        onClick={() => setSelectedMicroPanel((current) => current === panelKey ? null : panelKey)}
+                        className={cn(
+                          "rounded-xl border bg-white/[0.04] px-3 py-2 text-center transition hover:border-cyan-200/40 hover:bg-cyan-300/10 focus:outline-none focus:ring-2 focus:ring-cyan-200/40",
+                          isSelected ? "border-cyan-200/50 bg-cyan-300/10" : "border-white/10",
+                        )}
+                        aria-expanded={isSelected}
+                      >
+                        <div className="text-lg font-semibold text-white">{value}</div>
+                        <div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">{label}</div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
+
+              {selectedMicroPanel && selectedMicroPanelLabel ? (
+                <div className="border-b border-white/10 bg-black/20 px-4 py-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold text-cyan-50">{selectedMicroPanelLabel}</h3>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMicroPanel(null)}
+                      className="text-xs font-medium text-cyan-100/65 transition hover:text-cyan-50"
+                    >
+                      Close
+                    </button>
+                  </div>
+                  {selectedMicroPanel === "pods" ? (
+                    <div className="grid gap-2 lg:grid-cols-2">
+                      {microRegistry.pods.map((pod) => {
+                        const owner = pod.ownerAgentId ? agentMap.get(pod.ownerAgentId) : null;
+                        return (
+                          <div key={pod.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="font-mono text-xs text-cyan-200">{pod.identifier}</p>
+                                <p className="mt-1 text-sm font-semibold text-white">{pod.title}</p>
+                                <p className="mt-1 line-clamp-2 text-xs text-slate-400">{pod.thesis}</p>
+                              </div>
+                              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">{pod.lifecycleState}</span>
+                            </div>
+                            {owner ? (
+                              <Link to={`/agents/${owner.id}`} className="mt-2 inline-flex text-xs font-medium text-cyan-100 hover:text-cyan-50">
+                                Owner: {owner.name}
+                              </Link>
+                            ) : (
+                              <p className="mt-2 text-xs text-slate-500">No owner agent linked.</p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : selectedMicroPanel === "experiments" ? (
+                    <div className="grid gap-2 lg:grid-cols-2">
+                      {microRegistry.experiments.map((experiment) => {
+                        const pod = microRegistry.pods.find((entry) => entry.id === experiment.podId);
+                        return (
+                          <div key={experiment.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-mono text-xs text-cyan-200">{experiment.identifier}</span>
+                              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">{experiment.lifecycleState}</span>
+                              <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200">no overnight</span>
+                            </div>
+                            <p className="mt-2 text-sm font-semibold text-white">{experiment.title}</p>
+                            <p className="mt-1 line-clamp-2 text-xs text-slate-400">{experiment.hypothesis}</p>
+                            <p className="mt-2 text-xs text-slate-500">{pod?.title ?? "Unassigned pod"} · {formatExperimentWindow(experiment)}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : selectedMicroPanel === "gates" ? (
+                    <div className="grid gap-2 lg:grid-cols-2">
+                      {microRegistry.dependencyRequests.filter((request) => !["resolved", "cancelled", "closed"].includes(request.status)).length === 0 ? (
+                        <p className="text-sm text-slate-400">No open dependency gates.</p>
+                      ) : microRegistry.dependencyRequests.filter((request) => !["resolved", "cancelled", "closed"].includes(request.status)).map((request) => (
+                        <div key={request.id} className="rounded-xl border border-amber-300/15 bg-amber-300/[0.04] p-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-sm font-medium text-amber-50">{request.title}</p>
+                            <span className="rounded-full bg-amber-300/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-100">{request.status}</span>
+                          </div>
+                          <p className="mt-1 line-clamp-3 text-xs text-amber-100/60">{request.description ?? request.kind}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : selectedMicroPanel === "evidence" ? (
+                    <div className="grid gap-2 lg:grid-cols-2">
+                      {microRegistry.evidencePacks.length === 0 ? (
+                        <p className="text-sm text-slate-400">No evidence packs registered.</p>
+                      ) : microRegistry.evidencePacks.map((pack) => {
+                        const experiment = microRegistry.experiments.find((entry) => entry.id === pack.experimentId);
+                        return (
+                          <div key={pack.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                            <p className="text-sm font-semibold text-white">{pack.title}</p>
+                            <p className="mt-1 text-xs text-slate-400">{experiment?.identifier ?? "No experiment"} · {pack.status}</p>
+                            <p className="mt-1 break-all font-mono text-[11px] text-cyan-100/70">{pack.artifactUri}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="grid gap-2 lg:grid-cols-2">
+                      {microRegistry.promotionRequests.length === 0 ? (
+                        <p className="text-sm text-slate-400">No promotion requests registered.</p>
+                      ) : microRegistry.promotionRequests.map((request) => {
+                        const experiment = microRegistry.experiments.find((entry) => entry.id === request.experimentId);
+                        return (
+                          <div key={request.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-sm font-semibold text-white">{request.target}</p>
+                              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">{request.status}</span>
+                            </div>
+                            <p className="mt-1 text-xs text-slate-400">{experiment?.identifier ?? "No experiment"}</p>
+                            <p className="mt-1 line-clamp-3 text-xs text-slate-500">{request.rationale}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : null}
 
               <div className="grid gap-4 p-4 xl:grid-cols-[1.5fr_1fr]">
                 <div className="space-y-3">
