@@ -366,7 +366,7 @@ async function authorizeWithBrowser(
 
   try {
     console.error(`Open this URL to approve cloud sync:\n${authorizeUrl.toString()}`);
-    if (!openUrl(authorizeUrl.toString())) {
+    if (!(await openUrl(authorizeUrl.toString()))) {
       throw new Error("Could not open a browser.");
     }
     const code = await callback.waitForCode(state);
@@ -410,7 +410,7 @@ async function authorizeWithDeviceCode(
   console.error(pc.bold("Cloud device authorization required"));
   console.error(`Open: ${response.verificationUri}`);
   console.error(`Code: ${response.userCode}`);
-  if (opts.openBrowser) openUrl(response.verificationUri);
+  if (opts.openBrowser) await openUrl(response.verificationUri);
 
   const expiresAt = resolveDeviceCodeExpiresAt(response.expiresAt);
   const intervalMs = Math.max(500, (response.intervalSeconds ?? 5) * 1000);

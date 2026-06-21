@@ -197,6 +197,89 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(remoteWorkspaceDir, "src", "main.ts"), "utf8")).resolves.toBe("x\n");
   });
 
+  it("emits throttled, labeled upload and restore progress with direction and percentages", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-progress-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localAssetsDir = path.join(rootDir, "local-assets");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(localAssetsDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace\n", "utf8");
+    await writeFile(path.join(localAssetsDir, "skill.md"), "skill\n", "utf8");
+
+    // Drive byte progress in 100 fine (1%) increments so the throttle has many
+    // chances to emit; the reporter must collapse them to ~one line per 10% step.
+    const driveProgress = async (
+      total: number,
+      onProgress: ((done: number, total: number | null) => void | Promise<void>) | undefined,
+    ) => {
+      if (!onProgress) return;
+      for (let i = 1; i <= 100; i++) {
+        await onProgress(Math.floor((total * i) / 100), total);
+      }
+    };
+
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes, options) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        const buffer = Buffer.from(bytes);
+        await writeFile(remotePath, buffer);
+        await driveProgress(buffer.byteLength, options?.onProgress);
+      },
+      readFile: async (remotePath, options) => {
+        const buffer = await readFile(remotePath);
+        await driveProgress(buffer.byteLength, options?.onProgress);
+        return buffer;
+      },
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+
+    const lines: string[] = [];
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "skills", localDir: localAssetsDir }],
+      onProgress: (line) => {
+        lines.push(line);
+      },
+    });
+
+    const uploadWorkspaceLines = lines.filter((line) => line.includes("Syncing workspace to sandbox"));
+    const uploadAssetLines = lines.filter((line) => line.includes("Syncing skills to sandbox"));
+    expect(uploadWorkspaceLines.length).toBeGreaterThan(0);
+    expect(uploadAssetLines.length).toBeGreaterThan(0);
+    // 100 reported increments must be throttled to at most ~one line per 10% step.
+    expect(uploadWorkspaceLines.length).toBeLessThanOrEqual(11);
+    // Reaches 100% and shows the MB breakdown.
+    expect(uploadWorkspaceLines.some((line) => line.includes("100%"))).toBe(true);
+    expect(uploadWorkspaceLines.every((line) => /\(\d+\.\d\/\d+\.\d MB\)/.test(line))).toBe(true);
+
+    await prepared.restoreWorkspace();
+    const restoreLines = lines.filter((line) => line.includes("Restoring workspace from sandbox"));
+    expect(restoreLines.length).toBeGreaterThan(0);
+    expect(restoreLines.length).toBeLessThanOrEqual(11);
+    expect(restoreLines.some((line) => line.includes("100%"))).toBe(true);
+  });
+
   it("creates a valid empty workspace tarball when the local workspace is empty", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-empty-"));
     cleanupDirs.push(rootDir);

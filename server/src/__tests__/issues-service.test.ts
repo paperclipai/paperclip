@@ -36,10 +36,20 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
-import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
+import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, type IssueWorkMode } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
 
 describe("issue list limit helpers", () => {
   it("clamps untrusted issue-list limits to the server maximum", () => {
@@ -548,6 +558,244 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
+  });
+
+  it("treats assigneeAgentId='null' as an explicit unassigned filter", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const assignedIssueId = randomUUID();
+    const unassignedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: assignedIssueId,
+        companyId,
+        title: "Assigned issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: unassignedIssueId,
+        companyId,
+        title: "Unassigned issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+      },
+    ]);
+
+    const result = await svc.list(companyId, { assigneeAgentId: "null" });
+    expect(result.map((issue) => issue.id)).toEqual([unassignedIssueId]);
+  });
+
+  it("keeps UUID assignee filtering behavior unchanged", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const assignedIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "Assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: assignedIssueId,
+        companyId,
+        title: "Assigned issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        title: "Other issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: otherAgentId,
+      },
+    ]);
+
+    const result = await svc.list(companyId, { assigneeAgentId });
+    expect(result.map((issue) => issue.id)).toEqual([assignedIssueId]);
+  });
+
+  it("rejects malformed assigneeAgentId filter values", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Any issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(
+      svc.list(companyId, { assigneeAgentId: "not-a-uuid" }),
+    ).rejects.toThrow(/assigneeAgentId/i);
+  });
+
+  it("counts only unassigned issues for assigneeAgentId='null'", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const assignedIssueId = randomUUID();
+    const unassignedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: assignedIssueId,
+        companyId,
+        title: "Assigned issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: unassignedIssueId,
+        companyId,
+        title: "Unassigned issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+      },
+    ]);
+
+    await expect(svc.count(companyId, { assigneeAgentId: "null" })).resolves.toBe(1);
+  });
+
+  it("counts UUID-assigned issues with assigneeAgentId", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const assignedIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: assignedIssueId,
+        companyId,
+        title: "Assigned issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        title: "Other issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await expect(svc.count(companyId, { assigneeAgentId })).resolves.toBe(1);
+  });
+
+  it("rejects malformed assigneeAgentId filter values in count", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(
+      svc.count(companyId, { assigneeAgentId: "not-a-uuid" }),
+    ).rejects.toThrow(/assigneeAgentId/i);
   });
 
   it("applies result limits to issue search", async () => {
@@ -1227,6 +1475,51 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ]);
 
     await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, ["todo", "in_progress"])).resolves.toBe(1);
+  });
+
+  it("accepts array-form status filters in list and count", async () => {
+    const companyId = randomUUID();
+    const todoIssueId = randomUUID();
+    const inProgressIssueId = randomUUID();
+    const doneIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: todoIssueId,
+        companyId,
+        title: "Todo issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: inProgressIssueId,
+        companyId,
+        title: "In-progress issue",
+        status: "in_progress",
+        priority: "medium",
+      },
+      {
+        id: doneIssueId,
+        companyId,
+        title: "Done issue",
+        status: "done",
+        priority: "medium",
+      },
+    ]);
+
+    const resultIds = (await svc.list(companyId, { status: ["todo", "in_progress"] }))
+      .map((issue) => issue.id);
+
+    expect(resultIds).toEqual(expect.arrayContaining([todoIssueId, inProgressIssueId]));
+    expect(resultIds).not.toContain(doneIssueId);
+    await expect(svc.count(companyId, { status: ["todo", "in_progress"] })).resolves.toBe(2);
   });
 
   it("hides archived inbox issues until new external activity arrives", async () => {
@@ -1859,6 +2152,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(projects);
     await db.delete(goals);
     await db.delete(agents);
+    await db.delete(environments);
     await db.delete(instanceSettings);
     await db.delete(companies);
   });
@@ -1943,7 +2237,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
-  it("captures the assignee default environment when neither issue nor project specifies one", async () => {
+  it("does not stamp the assignee default environment onto new issues", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -2013,11 +2307,10 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(issue.executionWorkspaceSettings).toEqual({
       mode: "shared_workspace",
-      environmentId: assigneeEnvironmentId,
     });
   });
 
-  it("does not promote the assignee default environment when the project policy already specifies one", async () => {
+  it("ignores legacy project environment selection when creating new issues", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -2095,14 +2388,10 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    // Project policy's environmentId must win over the assignee's default;
-    // executionWorkspaceSettings should not bake in an environmentId in this case
-    // so resolveExecutionWorkspaceEnvironmentId can fall through to the project
-    // policy's value at run time.
     expect(issue.executionWorkspaceSettings).toEqual({ mode: "shared_workspace" });
   });
 
-  it("captures the new assignee's default environment on reassignment", async () => {
+  it("does not rewrite execution workspace settings on reassignment", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -2194,8 +2483,8 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    expect(created.executionWorkspaceSettings).toMatchObject({
-      environmentId: firstEnvironmentId,
+    expect(created.executionWorkspaceSettings).toEqual({
+      mode: "shared_workspace",
     });
 
     const reassigned = await svc.update(created.id, {
@@ -2203,12 +2492,12 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
 
     expect(reassigned).not.toBeNull();
-    expect(reassigned!.executionWorkspaceSettings).toMatchObject({
-      environmentId: secondEnvironmentId,
+    expect(reassigned!.executionWorkspaceSettings).toEqual({
+      mode: "shared_workspace",
     });
   });
 
-  it("preserves an operator-set environmentId across reassignment", async () => {
+  it("strips legacy environmentId values from execution workspace settings updates", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -2267,24 +2556,21 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    // Operator explicitly overrides the environmentId in a separate update.
     const overridden = await svc.update(created.id, {
       executionWorkspaceSettings: {
         mode: "shared_workspace",
         environmentId: operatorEnvironmentId,
       },
     });
-    expect(overridden!.executionWorkspaceSettings).toMatchObject({
-      environmentId: operatorEnvironmentId,
+    expect(overridden!.executionWorkspaceSettings).toEqual({
+      mode: "shared_workspace",
     });
 
-    // A subsequent reassignment-only update must NOT overwrite the operator's
-    // explicit choice with the new assignee's default.
     const reassigned = await svc.update(created.id, {
       assigneeAgentId: secondAgentId,
     });
-    expect(reassigned!.executionWorkspaceSettings).toMatchObject({
-      environmentId: operatorEnvironmentId,
+    expect(reassigned!.executionWorkspaceSettings).toEqual({
+      mode: "shared_workspace",
     });
   });
 
@@ -3646,7 +3932,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(workspace?.metadata).toEqual({
       config: {
-        environmentId: "env-new",
+        environmentId: null,
         provisionCommand: "bash ./scripts/provision-new.sh",
         teardownCommand: "bash ./scripts/teardown-new.sh",
         cleanupCommand: null,
@@ -4034,6 +4320,179 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       executionRunId: successorRunId,
     });
   });
+
+  it("checkout refuses to promote a 'done' issue when 'done' is not in expectedStatuses, even with a lingering executionRunId pointer", async () => {
+    // Regression for PR #2482 checkout-adoption review finding: the original
+    // patch's stale-executionRunId adoption SQL set `status: 'in_progress'`
+    // unconditionally, bypassing the caller's expectedStatuses guard. With the
+    // guard restored, attempting to take over a 'done' issue with
+    // expectedStatuses=['todo'] must fail and leave the row untouched.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const failedRunId = randomUUID();
+    const successorRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: failedRunId,
+        companyId,
+        agentId,
+        status: "failed",
+        invocationSource: "manual",
+        finishedAt: new Date("2026-06-10T10:05:00.000Z"),
+      },
+      {
+        id: successorRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-06-10T10:07:00.000Z"),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale lock on done issue",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
+      completedAt: new Date("2026-06-10T10:01:00.000Z"),
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["todo"], successorRunId))
+      .rejects.toMatchObject({ status: 409 });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "done",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+    });
+  });
+
+  it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
+    // Regression for PR #2482 checkout-adoption review finding: any adoption
+    // helper that re-locks an existing in_progress issue (e.g. when the prior
+    // checkout/execution run is terminal) must not strip the row's
+    // assigneeUserId. We exercise this via the adoptStaleCheckoutRun path,
+    // which fires when checkoutRunId points at a terminal run while
+    // executionRunId still points at a different, non-terminal run.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const userId = randomUUID();
+    const issueId = randomUUID();
+    const failedCheckoutRunId = randomUUID();
+    const queuedExecutionRunId = randomUUID();
+    const successorRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: failedCheckoutRunId,
+        companyId,
+        agentId,
+        status: "failed",
+        invocationSource: "manual",
+        finishedAt: new Date("2026-06-10T10:05:00.000Z"),
+      },
+      {
+        id: queuedExecutionRunId,
+        companyId,
+        agentId,
+        status: "queued",
+        invocationSource: "manual",
+      },
+      {
+        id: successorRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-06-10T10:07:00.000Z"),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale checkout lock with user co-assignee",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: userId,
+      checkoutRunId: failedCheckoutRunId,
+      executionRunId: queuedExecutionRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
+    });
+
+    const result = await svc.checkout(issueId, agentId, ["todo", "in_progress"], successorRunId);
+    expect(result).toBeTruthy();
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      assigneeUserId: userId,
+      checkoutRunId: successorRunId,
+      executionRunId: successorRunId,
+    });
+  });
 });
 
 describeEmbeddedPostgres("accepted plan decomposition", () => {
@@ -4112,7 +4571,7 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     assigneeAgentId?: string;
     sourceIssueId?: string;
     issueTitle?: string;
-    workMode?: "planning" | "standard";
+    workMode?: IssueWorkMode;
   }) {
     const companyId = args?.companyId ?? randomUUID();
     const goalId = args?.goalId ?? randomUUID();
@@ -4733,4 +5192,230 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(record).not.toHaveProperty("requestedChildren");
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
   });
+});
+
+describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adoption", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-owner-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedOwnershipIssue(params: {
+    checkoutStatus: "running" | "failed" | "timed_out";
+    actorRunStatus?: "running" | "failed" | "timed_out" | "succeeded";
+    assigneeMatchesActor?: boolean;
+  }) {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const actorAgentId = params.assigneeMatchesActor === false ? randomUUID() : assigneeAgentId;
+    const staleRunId = randomUUID();
+    const actorRunId = randomUUID();
+    const issueId = randomUUID();
+    const actorRunStatus = params.actorRunStatus ?? "running";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const agentRows = [
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "Assignee",
+        role: "engineer" as const,
+        status: "active" as const,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ];
+    if (actorAgentId !== assigneeAgentId) {
+      agentRows.push({
+        id: actorAgentId,
+        companyId,
+        name: "Actor",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+    await db.insert(agents).values(agentRows);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId: assigneeAgentId,
+        status: params.checkoutStatus,
+        invocationSource: "manual",
+        finishedAt: params.checkoutStatus === "running" ? null : new Date(),
+      },
+      {
+        id: actorRunId,
+        companyId,
+        agentId: actorAgentId,
+        status: actorRunStatus,
+        invocationSource: "manual",
+        startedAt: actorRunStatus === "running" ? new Date() : null,
+        finishedAt: actorRunStatus === "running" ? null : new Date(),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout owner recovery",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId,
+      checkoutRunId: staleRunId,
+      executionRunId: staleRunId,
+      executionLockedAt: new Date(),
+      executionAgentNameKey: "assignee",
+    });
+
+    return { issueId, assigneeAgentId, actorAgentId, staleRunId, actorRunId };
+  }
+
+  it("lets the current assignee adopt a stale terminal checkout owner", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });
+
+    const ownership = await svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
+
+    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
+    expect(ownership.executionRunId).toBe(seeded.actorRunId);
+    expect(ownership.adoptedFromRunId).toBeNull();
+  });
+
+  it("treats timed_out checkout owners as stale and recoverable", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "timed_out" });
+
+    const ownership = await svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
+
+    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
+    expect(ownership.adoptedFromRunId).toBeNull();
+  });
+
+  it("does not allow non-assignees to adopt stale checkout ownership", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed", assigneeMatchesActor: false });
+
+    await expect(
+      svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("keeps live checkout owners protected with a 409 conflict", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "running" });
+
+    await expect(
+      svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("does not let terminal actor runs adopt stale checkout ownership", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed", actorRunStatus: "succeeded" });
+
+    await expect(
+      svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
+  it("adopts unowned checkout after a concurrent stale-checkout clear wins the lock race", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: seeded.actorRunId,
+        executionLockedAt: new Date(),
+      })
+      .where(eq(issues.id, seeded.issueId));
+
+    const rowLocked = deferred<void>();
+    const clearCanCommit = deferred<void>();
+
+    const concurrentClear = db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${seeded.issueId} for update`,
+      );
+      rowLocked.resolve();
+      await clearCanCommit.promise;
+      await tx
+        .update(issues)
+        .set({
+          checkoutRunId: null,
+          executionRunId: seeded.actorRunId,
+          executionLockedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, seeded.issueId));
+    });
+
+    await rowLocked.promise;
+
+    const ownershipPromise = svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    clearCanCommit.resolve();
+    await concurrentClear;
+
+    const ownership = await ownershipPromise;
+    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
+    expect(ownership.executionRunId).toBe(seeded.actorRunId);
+    expect(ownership.adoptedFromRunId).toBeNull();
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      checkoutRunId: seeded.actorRunId,
+      executionRunId: seeded.actorRunId,
+    });
+  });
+
 });

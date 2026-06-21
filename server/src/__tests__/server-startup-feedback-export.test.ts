@@ -168,6 +168,16 @@ vi.mock("../services/index.js", () => ({
     })),
   })),
   reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
+  reconcileCodexLocalManagedHomesOnStartup: vi.fn(async () => ({
+    scanned: 0,
+    seeded: 0,
+    alreadySeeded: 0,
+    externalOverride: 0,
+    noManagedHome: 0,
+    sourceAuthMissing: 0,
+    failed: 0,
+    seededAgentIds: [],
+  })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
@@ -345,6 +355,21 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     expect(started.apiUrl).toBe("http://127.0.0.1:3210");
     expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
+  });
+
+  it("keeps loopback as the runtime API URL when allowed hostnames are present", async () => {
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      allowedHostnames: ["192.168.1.50"],
+    }));
+
+    const started = await startServer();
+
+    expect(started.apiUrl).toBe("http://127.0.0.1:3210");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3210");
+    expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
+    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual(
+      expect.arrayContaining(["http://127.0.0.1:3210", "http://192.168.1.50:3210"]),
+    );
   });
 
   it("rewrites explicit-port auth public URLs when detect-port selects a new port", async () => {

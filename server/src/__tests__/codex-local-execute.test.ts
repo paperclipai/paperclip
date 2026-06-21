@@ -58,6 +58,12 @@ type LogEntry = {
   chunk: string;
 };
 
+async function seedSharedCodexAuth(homeRoot: string): Promise<void> {
+  const sharedCodexHome = path.join(homeRoot, ".codex");
+  await fs.mkdir(sharedCodexHome, { recursive: true });
+  await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
+}
+
 function createLocalSandboxRunner() {
   let counter = 0;
   return {
@@ -205,6 +211,7 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
+    await seedSharedCodexAuth(root);
 
     let commandNotes: string[] = [];
     try {
@@ -265,6 +272,7 @@ describe("codex execute", () => {
     const previousPath = process.env.PATH;
     process.env.HOME = root;
     process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    await seedSharedCodexAuth(root);
 
     let loggedCommand: string | null = null;
     let loggedEnv: Record<string, string> = {};
@@ -332,6 +340,7 @@ describe("codex execute", () => {
 
     process.env.HOME = root;
     process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    await seedSharedCodexAuth(root);
 
     try {
       const result = await execute({
@@ -399,6 +408,7 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
+    await seedSharedCodexAuth(root);
 
     try {
       const result = await execute({
@@ -509,6 +519,7 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
+    await seedSharedCodexAuth(root);
 
     try {
       const result = await execute({
@@ -559,6 +570,7 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
+    await seedSharedCodexAuth(root);
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 3, 22, 22, 29, 0));
 
@@ -619,6 +631,7 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
+    await seedSharedCodexAuth(root);
 
     let commandNotes: string[] = [];
     try {
@@ -695,6 +708,7 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
+    await seedSharedCodexAuth(root);
 
     try {
       const result = await execute({
@@ -849,6 +863,7 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
+    await seedSharedCodexAuth(root);
 
     try {
       const result = await execute({
@@ -947,6 +962,7 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
+    await seedSharedCodexAuth(root);
 
     let invocationPrompt = "";
     let invocationNotes: string[] = [];

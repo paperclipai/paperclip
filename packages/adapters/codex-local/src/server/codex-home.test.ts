@@ -2,7 +2,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensureSymlink, prepareManagedCodexHome } from "./codex-home.js";
+import {
+  codexHomeHasUsableAuth,
+  ensureSymlink,
+  isManagedCodexHomePath,
+  prepareManagedCodexHome,
+  reconcileManagedCodexHome,
+  seedManagedCodexHome,
+} from "./codex-home.js";
 
 async function withTempHomes<T>(
   fn: (input: { root: string; sourceHome: string; paperclipHome: string; targetHome: string }) => Promise<T>,
@@ -309,5 +316,306 @@ describe("codex managed home", () => {
 
       await expect(fs.lstat(path.join(targetHome, "auth.json"))).rejects.toThrow();
     });
+  });
+});
+
+describe("isManagedCodexHomePath", () => {
+  const env = {
+    PAPERCLIP_HOME: "/srv/paperclip",
+    PAPERCLIP_INSTANCE_ID: "default",
+  } satisfies NodeJS.ProcessEnv;
+  const companyRoot = path.resolve(
+    "/srv/paperclip/instances/default/companies/company-1",
+  );
+
+  it("treats the per-agent managed home as managed", () => {
+    expect(
+      isManagedCodexHomePath(
+        env,
+        "company-1",
+        path.join(companyRoot, "agents", "agent-7", "codex-home"),
+      ),
+    ).toBe(true);
+  });
+
+  it("treats the shared company home as managed", () => {
+    expect(
+      isManagedCodexHomePath(env, "company-1", path.join(companyRoot, "codex-home")),
+    ).toBe(true);
+  });
+
+  it("treats a path outside the company tree as an external override", () => {
+    expect(isManagedCodexHomePath(env, "company-1", "/home/dev/.codex")).toBe(false);
+    expect(
+      isManagedCodexHomePath(
+        env,
+        "company-1",
+        path.resolve("/srv/paperclip/instances/default/companies/company-2/codex-home"),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false without a companyId", () => {
+    expect(isManagedCodexHomePath(env, undefined, path.join(companyRoot, "codex-home"))).toBe(
+      false,
+    );
+  });
+});
+
+describe("codexHomeHasUsableAuth", () => {
+  it("is true for credential-bearing auth.json and false when missing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-"));
+    try {
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+      await fs.writeFile(path.join(root, "auth.json"), "{}", "utf8");
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+      await fs.writeFile(path.join(root, "auth.json"), '{"foo":"bar"}', "utf8");
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+      await fs.writeFile(path.join(root, "auth.json"), '{"token":"shared"}', "utf8");
+      expect(await codexHomeHasUsableAuth(root)).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("is false for a dangling auth.json symlink", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-dangling-"));
+    try {
+      await fs.symlink(path.join(root, "missing-source.json"), path.join(root, "auth.json"));
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("seedManagedCodexHome", () => {
+  it("symlinks auth.json from the shared source into an explicit per-agent home", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const agentHome = path.join(
+        root,
+        "instances",
+        "default",
+        "companies",
+        "company-1",
+        "agents",
+        "agent-7",
+        "codex-home",
+      );
+      const sharedAuth = path.join(sharedCodexHome, "auth.json");
+      const agentAuth = path.join(agentHome, "auth.json");
+
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(sharedAuth, '{"token":"shared"}', "utf8");
+
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      expect((await fs.lstat(agentAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(agentAuth)).toBe(await fs.realpath(sharedAuth));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writes an API-key auth.json into the home when an apiKey is supplied", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-apikey-"));
+    try {
+      const agentHome = path.join(root, "agent-home");
+      const emptyShared = path.join(root, "empty-shared");
+      await fs.mkdir(emptyShared, { recursive: true });
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: emptyShared }, async () => {}, {
+        apiKey: "sk-test-123",
+      });
+
+      const written = JSON.parse(await fs.readFile(path.join(agentHome, "auth.json"), "utf8"));
+      expect(written).toEqual({ OPENAI_API_KEY: "sk-test-123" });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// Startup backfill for already-isolated managed homes.
+describe("reconcileManagedCodexHome", () => {
+  async function makeFixture() {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-reconcile-"));
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const agentHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-7",
+      "codex-home",
+    );
+    const sharedAuth = path.join(sharedCodexHome, "auth.json");
+    const agentAuth = path.join(agentHome, "auth.json");
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.writeFile(sharedAuth, '{"token":"shared"}', "utf8");
+    const env = {
+      CODEX_HOME: sharedCodexHome,
+      PAPERCLIP_HOME: paperclipHome,
+      PAPERCLIP_INSTANCE_ID: "default",
+    } satisfies NodeJS.ProcessEnv;
+    return { root, sharedCodexHome, sharedAuth, agentHome, agentAuth, env };
+  }
+
+  it("seeds a previously-stranded managed home and is a no-op on re-run", async () => {
+    const fx = await makeFixture();
+    try {
+      // The isolation guard created the per-agent home with no auth.json.
+      expect(await codexHomeHasUsableAuth(fx.agentHome)).toBe(false);
+
+      const first = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        env: fx.env,
+      });
+      expect(first.status).toBe("seeded");
+      expect(first.home).toBe(fx.agentHome);
+      expect((await fs.lstat(fx.agentAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(fx.agentAuth)).toBe(await fs.realpath(fx.sharedAuth));
+
+      const second = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        env: fx.env,
+      });
+      expect(second.status).toBe("already_seeded");
+      expect((await fs.lstat(fx.agentAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(fx.agentAuth)).toBe(await fs.realpath(fx.sharedAuth));
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports source_auth_missing when shared auth is unavailable", async () => {
+    const fx = await makeFixture();
+    try {
+      await fs.rm(fx.sharedAuth, { force: true });
+
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        env: fx.env,
+      });
+
+      expect(result.status).toBe("source_auth_missing");
+      await expect(fs.lstat(fx.agentAuth)).rejects.toThrow();
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a genuine external override untouched", async () => {
+    const fx = await makeFixture();
+    try {
+      const external = path.join(fx.root, "user-codex");
+      await fs.mkdir(external, { recursive: true });
+
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: external,
+        env: fx.env,
+      });
+      expect(result.status).toBe("external_override");
+      expect(await codexHomeHasUsableAuth(external)).toBe(false);
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports no_managed_home when no CODEX_HOME is configured", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: null,
+        env: fx.env,
+      });
+      expect(result).toEqual({ status: "no_managed_home", home: null });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves an existing API-key auth.json when the key is secret-bound", async () => {
+    const fx = await makeFixture();
+    try {
+      // A prior execute-time run resolved the secret and wrote a regular-file
+      // auth.json containing the key.
+      await fs.mkdir(fx.agentHome, { recursive: true });
+      await fs.writeFile(
+        fx.agentAuth,
+        JSON.stringify({ OPENAI_API_KEY: "sk-secret-resolved" }),
+        { mode: 0o600 },
+      );
+
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        apiKeySecretBound: true,
+        env: fx.env,
+      });
+
+      expect(result.status).toBe("already_seeded");
+      expect((await fs.lstat(fx.agentAuth)).isSymbolicLink()).toBe(false);
+      expect(JSON.parse(await fs.readFile(fx.agentAuth, "utf8"))).toEqual({
+        OPENAI_API_KEY: "sk-secret-resolved",
+      });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds the shared symlink for a secret-bound key when no auth exists yet", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        apiKeySecretBound: true,
+        env: fx.env,
+      });
+
+      expect(result.status).toBe("seeded");
+      expect((await fs.lstat(fx.agentAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(fx.agentAuth)).toBe(await fs.realpath(fx.sharedAuth));
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("writes an API-key auth.json into a managed home when an apiKey is supplied", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        apiKey: "sk-reconcile-1",
+        env: fx.env,
+      });
+      expect(result.status).toBe("seeded");
+      const written = JSON.parse(await fs.readFile(fx.agentAuth, "utf8"));
+      expect(written).toEqual({ OPENAI_API_KEY: "sk-reconcile-1" });
+
+      const second = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        apiKey: "sk-reconcile-1",
+        env: fx.env,
+      });
+      expect(second.status).toBe("already_seeded");
+      expect(JSON.parse(await fs.readFile(fx.agentAuth, "utf8"))).toEqual({
+        OPENAI_API_KEY: "sk-reconcile-1",
+      });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
   });
 });

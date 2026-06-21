@@ -25,6 +25,17 @@ vi.mock("@/components/AsciiArtAnimation", () => ({
   AsciiArtAnimation: () => null,
 }));
 
+// The auth page renders a ThemeToggle, which reads ThemeContext. The provider
+// lives in main.tsx (above the router), so mock the hook here the same way
+// SidebarAccountMenu.test.tsx does.
+vi.mock("../context/ThemeContext", () => ({
+  useTheme: () => ({
+    theme: "dark",
+    setTheme: vi.fn(),
+    toggleTheme: vi.fn(),
+  }),
+}));
+
 // The router's navigate wrapper reads the active company prefix from context.
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({

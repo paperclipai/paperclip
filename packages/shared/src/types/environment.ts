@@ -5,7 +5,7 @@ import type {
   EnvironmentLeaseStatus,
   EnvironmentStatus,
 } from "../constants.js";
-import type { EnvSecretRefBinding } from "./secrets.js";
+import type { AgentEnvConfig, EnvSecretRefBinding } from "./secrets.js";
 
 export interface LocalEnvironmentConfig {
   [key: string]: unknown;
@@ -56,12 +56,12 @@ export interface EnvironmentProbeResult {
 
 export interface Environment {
   id: string;
-  companyId: string;
   name: string;
   description: string | null;
   driver: EnvironmentDriver;
   status: EnvironmentStatus;
   config: Record<string, unknown>;
+  envVars: AgentEnvConfig;
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
