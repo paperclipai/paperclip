@@ -118,7 +118,6 @@ export async function prepareRemoteManagedRuntime(input: {
       remoteDir: workspaceRemoteDir,
       baselineSnapshot,
       restoreGitHistory: preparedWorkspace.gitBacked,
-      gitBaseSha: preparedWorkspace.gitBaseSha,
       onProgress: input.onProgress,
     });
     throw error;
@@ -137,7 +136,6 @@ export async function prepareRemoteManagedRuntime(input: {
         remoteDir: workspaceRemoteDir,
         baselineSnapshot,
         restoreGitHistory: preparedWorkspace.gitBacked,
-        gitBaseSha: preparedWorkspace.gitBaseSha,
         onProgress,
       });
     },
