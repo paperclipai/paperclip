@@ -617,6 +617,13 @@
       "when": 1782033988786,
       "tag": "0087_naive_sphinx",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1782041160147,
+      "tag": "0088_spooky_purple_man",
+      "breakpoints": true
     }
   ]
 }

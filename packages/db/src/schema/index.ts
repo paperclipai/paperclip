@@ -77,3 +77,4 @@ export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
 export { companyModelPolicies } from "./company_model_policies.js";
+export { recoveryWorkflowLinks } from "./recovery_workflow_links.js";
