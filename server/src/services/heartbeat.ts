@@ -169,7 +169,7 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import { resolveModelPolicy } from "./model-policy.js";
-import { getCompanyModelPolicy } from "./model-policy-config.js";
+import { companyModelPolicyService } from "./company-model-policies.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -2415,6 +2415,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
+  const companyModelPolicies = companyModelPolicyService(db);
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
@@ -7199,7 +7200,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
     }
     const modelPolicyDecision = resolveModelPolicy(
-      getCompanyModelPolicy(agent.companyId),
+      await companyModelPolicies.getCompanyPolicy(agent.companyId),
       {
         agentRole: agent.role as AgentRole,
         wakeReason: readNonEmptyString(context.wakeReason) ?? undefined,
