@@ -7024,27 +7024,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function hasActionableTimerWork(agent: typeof agents.$inferSelect) {
-    const candidateRows = await db
-      .select({ id: issues.id })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, agent.companyId),
-          eq(issues.assigneeAgentId, agent.id),
-          isNull(issues.assigneeUserId),
-          isNull(issues.hiddenAt),
-          inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
-        ),
-      )
-      .orderBy(asc(issues.updatedAt))
-      .limit(50);
-    if (candidateRows.length === 0) return false;
+    const batchSize = 50;
+    for (let offset = 0; ; offset += batchSize) {
+      const candidateRows = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, agent.companyId),
+            eq(issues.assigneeAgentId, agent.id),
+            isNull(issues.assigneeUserId),
+            isNull(issues.hiddenAt),
+            inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
+          ),
+        )
+        .orderBy(asc(issues.updatedAt), asc(issues.id))
+        .limit(batchSize)
+        .offset(offset);
+      if (candidateRows.length === 0) return false;
 
-    const readinessByIssueId = await issuesSvc.listDependencyReadiness(
-      agent.companyId,
-      candidateRows.map((row) => row.id),
-    );
-    return candidateRows.some((row) => readinessByIssueId.get(row.id)?.isDependencyReady ?? true);
+      const readinessByIssueId = await issuesSvc.listDependencyReadiness(
+        agent.companyId,
+        candidateRows.map((row) => row.id),
+      );
+      if (candidateRows.some((row) => readinessByIssueId.get(row.id)?.isDependencyReady ?? true)) {
+        return true;
+      }
+      if (candidateRows.length < batchSize) return false;
+    }
   }
 
   async function markTimerHeartbeatChecked(agentId: string, source: WakeupOptions["source"]) {

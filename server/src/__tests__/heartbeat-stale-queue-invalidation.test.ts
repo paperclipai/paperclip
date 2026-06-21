@@ -457,6 +457,70 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(runRows).toHaveLength(0);
   });
 
+  it("allows generic timer wakes when ready work appears after blocked dependency batches", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const baseTime = new Date("2026-06-21T00:00:00.000Z");
+    const issueRows: Array<typeof issues.$inferInsert> = [];
+    const relationRows: Array<typeof issueRelations.$inferInsert> = [];
+
+    for (let index = 0; index < 50; index += 1) {
+      const blockerId = randomUUID();
+      const blockedIssueId = randomUUID();
+      issueRows.push(
+        {
+          id: blockerId,
+          companyId,
+          title: `Blocking issue ${index}`,
+          status: "todo",
+          priority: "high",
+          updatedAt: new Date(baseTime.getTime() + index),
+        },
+        {
+          id: blockedIssueId,
+          companyId,
+          title: `Blocked assigned work ${index}`,
+          status: "todo",
+          priority: "high",
+          assigneeAgentId: agentId,
+          updatedAt: new Date(baseTime.getTime() + index),
+        },
+      );
+      relationRows.push({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      });
+    }
+
+    issueRows.push({
+      id: randomUUID(),
+      companyId,
+      title: "Ready assigned work after blocked sample",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      updatedAt: new Date(baseTime.getTime() + 10_000),
+    });
+    await db.insert(issues).values(issueRows);
+    await db.insert(issueRelations).values(relationRows);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).not.toBeNull();
+    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
   it("skips generic timer wakes by default when the agent has no assigned issue work", async () => {
     const { agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
