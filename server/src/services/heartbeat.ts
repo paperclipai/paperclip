@@ -7024,8 +7024,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
         ),
       )
-      .orderBy(asc(issues.updatedAt))
-      .limit(50);
+      .orderBy(asc(issues.updatedAt));
     if (candidateRows.length === 0) return false;
 
     const readinessByIssueId = await issuesSvc.listDependencyReadiness(
@@ -10740,7 +10739,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       !readNonEmptyString(enrichedContextSnapshot.taskKey);
     if (policy.skipTimerWhenNoActionableWork && genericTimerWake && !(await hasActionableTimerWork(agent))) {
       await writeSkippedHeartbeatRequest("heartbeat.timer.no_actionable_work", {
-        reason: "No assigned todo or in_progress issue requires this agent before timer adapter invocation.",
+        reason: "No assigned todo or in_progress issue is dependency-ready for this agent before timer adapter invocation.",
       });
       await markTimerHeartbeatChecked(agentId, source);
       return null;

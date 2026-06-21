@@ -325,7 +325,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
     expect(wakeup?.payload).toMatchObject({
       heartbeatSkip: {
-        reason: expect.stringContaining("No assigned todo or in_progress issue"),
+        reason: expect.stringContaining("No assigned todo or in_progress issue is dependency-ready"),
       },
     });
     expect(runRows).toHaveLength(0);
@@ -451,10 +451,70 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
     expect(wakeup?.payload).toMatchObject({
       heartbeatSkip: {
-        reason: expect.stringContaining("No assigned todo or in_progress issue"),
+        reason: expect.stringContaining("No assigned todo or in_progress issue is dependency-ready"),
       },
     });
     expect(runRows).toHaveLength(0);
+  });
+
+  it("allows generic timer wakes when only newer assigned work is dependency-ready", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const blockerId = randomUUID();
+    const blockedIssueIds = Array.from({ length: 50 }, () => randomUUID());
+    const readyIssueId = randomUUID();
+    const oldUpdatedAt = new Date("2026-01-01T00:00:00.000Z");
+    const readyUpdatedAt = new Date("2026-01-02T00:00:00.000Z");
+
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocking issue",
+        status: "todo",
+        priority: "high",
+      },
+      ...blockedIssueIds.map((issueId, index) => ({
+        id: issueId,
+        companyId,
+        title: `Blocked assigned work ${index + 1}`,
+        status: "todo" as const,
+        priority: "high" as const,
+        assigneeAgentId: agentId,
+        updatedAt: new Date(oldUpdatedAt.getTime() + index),
+      })),
+      {
+        id: readyIssueId,
+        companyId,
+        title: "Ready assigned work",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+        updatedAt: readyUpdatedAt,
+      },
+    ]);
+    await db.insert(issueRelations).values(
+      blockedIssueIds.map((blockedIssueId) => ({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      })),
+    );
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).not.toBeNull();
+    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 
   it("runs generic timer wakes by default for proactive agents without assigned issue work", async () => {
