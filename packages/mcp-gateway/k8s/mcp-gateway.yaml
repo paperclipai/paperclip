@@ -36,7 +36,9 @@ data:
       "k8s-rw":    "http://kubernetes-mcp-server-ns-rw.paperclip.svc.cluster.local:8080/mcp",
       "k8s-ro":    "http://kubernetes-mcp-server-readonly.paperclip.svc.cluster.local:8080/mcp",
       "prom":      "http://prometheus-mcp-server.paperclip.svc.cluster.local:8080/mcp",
-      "webflow":   "http://webflow-mcp-server.paperclip.svc.cluster.local:8000/mcp"
+      "webflow":   "http://webflow-mcp-server.paperclip.svc.cluster.local:8000/mcp",
+      "google-docs": "http://google-docs-mcp-server.paperclip.svc.cluster.local:8080/mcp",
+      "proxmox":   "http://proxmox-mcp-server.paperclip.svc.cluster.local:8000/mcp"
     }
 ---
 apiVersion: apps/v1
