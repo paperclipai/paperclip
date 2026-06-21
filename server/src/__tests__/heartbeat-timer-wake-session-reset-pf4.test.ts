@@ -34,6 +34,17 @@ describe("PF-4 shouldResetTaskSessionForWake", () => {
     ).toBe(false);
   });
 
+  it("preserves the session when a heartbeat_timer wake only carries taskId", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        source: "scheduler",
+        reason: "interval_elapsed",
+        wakeReason: "heartbeat_timer",
+        taskId: "issue-1",
+      }),
+    ).toBe(false);
+  });
+
   it("still resets for the existing reset reasons", () => {
     for (const wakeReason of [
       "issue_assigned",
@@ -79,6 +90,14 @@ describe("PF-4 describeSessionResetReason", () => {
     const reason = describeSessionResetReason({
       wakeReason: "heartbeat_timer",
       issueId: "issue-1",
+    });
+    expect(reason).toBeNull();
+  });
+
+  it("does not report a reset reason for taskId-only heartbeat_timer wakes", () => {
+    const reason = describeSessionResetReason({
+      wakeReason: "heartbeat_timer",
+      taskId: "issue-1",
     });
     expect(reason).toBeNull();
   });

@@ -15,6 +15,7 @@ import {
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveIssueIdFromContext,
   resolveLedgerIssueIdFromContext,
   resolveNextSessionState,
   resolveWorkspaceAfterLowTrustPreflight,
@@ -826,6 +827,15 @@ describe("shouldResetTaskSessionForWake", () => {
     ).toBe(false);
   });
 
+  it("preserves session context on taskId-only issue-scoped heartbeat timer wakes", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "heartbeat_timer",
+        taskId: "issue-1",
+      }),
+    ).toBe(false);
+  });
+
   it("preserves session context on manual on-demand invokes by default", () => {
     expect(
       shouldResetTaskSessionForWake({
@@ -1046,17 +1056,21 @@ describe("normalizeSessionParams", () => {
   });
 });
 
-describe("resolveLedgerIssueIdFromContext", () => {
+describe("resolveIssueIdFromContext", () => {
   it("uses issueId when present", () => {
-    expect(resolveLedgerIssueIdFromContext({ issueId: "issue-1", taskId: "task-1" })).toBe("issue-1");
+    expect(resolveIssueIdFromContext({ issueId: "issue-1", taskId: "task-1" })).toBe("issue-1");
   });
 
   it("falls back to taskId for issue-scoped run contexts", () => {
-    expect(resolveLedgerIssueIdFromContext({ taskId: "issue-1" })).toBe("issue-1");
+    expect(resolveIssueIdFromContext({ taskId: "issue-1" })).toBe("issue-1");
   });
 
   it("returns null when no issue-like context is present", () => {
-    expect(resolveLedgerIssueIdFromContext({ wakeReason: "heartbeat_timer" })).toBeNull();
+    expect(resolveIssueIdFromContext({ wakeReason: "heartbeat_timer" })).toBeNull();
+  });
+
+  it("keeps the legacy ledger helper behavior aligned", () => {
+    expect(resolveLedgerIssueIdFromContext({ taskId: "issue-1" })).toBe("issue-1");
   });
 });
 

@@ -1841,10 +1841,16 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   return Math.max(0, Math.round(costUsd * 100));
 }
 
-export function resolveLedgerIssueIdFromContext(
+export function resolveIssueIdFromContext(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   return readNonEmptyString(contextSnapshot?.issueId) ?? readNonEmptyString(contextSnapshot?.taskId);
+}
+
+export function resolveLedgerIssueIdFromContext(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  return resolveIssueIdFromContext(contextSnapshot);
 }
 
 async function resolveLedgerScopeForRun(
@@ -2642,7 +2648,7 @@ export async function buildPaperclipWakePayload(input: {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
-  const issueId = readNonEmptyString(input.contextSnapshot.issueId);
+  const issueId = resolveIssueIdFromContext(input.contextSnapshot);
   const continuationSummary = input.continuationSummary ?? null;
   const issueSummary =
     input.issueSummary ??
@@ -4457,7 +4463,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     previousSessionParams: Record<string, unknown> | null,
     opts?: { useProjectWorkspace?: boolean | null },
   ): Promise<ResolvedWorkspaceForRun> {
-    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const issueId = resolveIssueIdFromContext(context);
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
     const issueProjectRef = issueId
@@ -4860,7 +4866,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         error: run.error ?? null,
         errorCode: run.errorCode ?? null,
         issueId: typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
-          ? (run.contextSnapshot as Record<string, unknown>).issueId ?? null
+          ? resolveIssueIdFromContext(run.contextSnapshot as Record<string, unknown>)
           : null,
         startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
         finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
@@ -4910,7 +4916,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (livenessState !== "plan_only" && livenessState !== "empty_response") return;
 
     const context = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(context.issueId);
+    const issueId = resolveIssueIdFromContext(context);
     if (!issueId) return;
 
     const [issue, agent] = await Promise.all([
@@ -5092,7 +5098,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function handleSuccessfulRunHandoff(run: typeof heartbeatRuns.$inferSelect, agent: typeof agents.$inferSelect) {
     if (run.status !== "succeeded") return;
     const context = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const issueId = resolveIssueIdFromContext(context);
     if (!issueId) return;
 
     const issue = await db
@@ -5467,7 +5473,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueId = resolveIssueIdFromContext(contextSnapshot);
     if (!issueId) return null;
     try {
       return await refreshIssueContinuationSummary({
@@ -5659,7 +5665,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueId = resolveIssueIdFromContext(contextSnapshot);
     if (!issueId) {
       if (run.issueCommentStatus !== "not_applicable") {
         await patchRunIssueCommentStatus(run.id, {
@@ -5762,7 +5768,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueId = resolveIssueIdFromContext(contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({
@@ -5892,7 +5898,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const { run, agent, contextSnapshot } = input;
     const retryReason =
       input.retryReason ?? readNonEmptyString(contextSnapshot.retryReason) ?? run.scheduledRetryReason ?? null;
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueId = resolveIssueIdFromContext(contextSnapshot);
     const projectId = readNonEmptyString(contextSnapshot.projectId);
 
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
@@ -6298,7 +6304,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
         const contextSnapshot = parseObject(run.contextSnapshot);
-        const issueId = readNonEmptyString(contextSnapshot.issueId);
+        const issueId = resolveIssueIdFromContext(contextSnapshot);
         await appendRunEvent(run, await nextRunEventSeq(run.id), {
           eventType: "lifecycle",
           stream: "system",
@@ -6332,7 +6338,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : baseSchedule;
 
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueId = resolveIssueIdFromContext(contextSnapshot);
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
       const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
       if (!gate.allowed) {
@@ -7123,7 +7129,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
-      issueId: readNonEmptyString(context.issueId),
+      issueId: resolveIssueIdFromContext(context),
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
@@ -7141,7 +7147,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
-    const issueId = readNonEmptyString(context.issueId);
+    const issueId = resolveIssueIdFromContext(context);
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
@@ -7630,7 +7636,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     resultJson: Record<string, unknown> | null | undefined,
   ): Promise<RunLivenessClassificationInput> {
     const context = parseObject(run.contextSnapshot);
-    const contextIssueId = readNonEmptyString(context.issueId);
+    const contextIssueId = resolveIssueIdFromContext(context);
     const continuationAttempt = asNumber(context.continuationAttempt, run.continuationAttempt ?? 0);
 
     const issue = contextIssueId
@@ -7954,7 +7960,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
-    return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    return resolveIssueIdFromContext(context);
   }
 
   function issueIdFromWakePayload(payload: unknown) {
@@ -8169,7 +8175,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
-    const issueId = readNonEmptyString(context.issueId);
+    const issueId = resolveIssueIdFromContext(context);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
