@@ -56,7 +56,10 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+# opencode-ai is pinned: the Workers AI provider-config schema (provider.cloudflare in
+# opencode.json) was verified against 1.17.8 — see docs/spikes/workers-ai-opencode-verification.md.
+# Bump only after re-verifying provider injection in packages/adapters/opencode-local.
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai@1.17.8 \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
