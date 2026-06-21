@@ -248,6 +248,7 @@ export const queryKeys = {
      */
     fileResourceAvailability: (issueId: string, refKeys: readonly string[]) =>
       ["issues", "file-resources", issueId, "availability", refKeys] as const,
+    awaitingHumanInteractions: (companyId: string) => ["issues", companyId, "awaiting-human-interactions"] as const,
   },
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>

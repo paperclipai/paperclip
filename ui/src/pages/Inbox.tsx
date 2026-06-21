@@ -124,7 +124,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
-import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type { Approval, HeartbeatRun, Issue, IssueThreadInteraction, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -189,6 +189,7 @@ const INBOX_HOT_PATH_STALE_MS = 30_000;
 export { InboxIssueMetaLeading, InboxIssueTrailingColumns } from "../components/IssueColumns";
 export { IssueGroupHeader as InboxGroupHeader } from "../components/IssueGroupHeader";
 type SectionKey =
+  | "waiting_on_you"
   | "work_items"
   | "alerts";
 
@@ -224,6 +225,23 @@ function runFailureMessage(run: HeartbeatRun): string {
 
 function approvalStatusLabel(status: Approval["status"]): string {
   return status.replaceAll("_", " ");
+}
+
+function interactionKindLabel(kind: IssueThreadInteraction["kind"]): string {
+  switch (kind) {
+    case "request_confirmation":
+      return "Confirmation requested";
+    case "ask_user_questions":
+      return "Questions for you";
+    case "request_checkbox_confirmation":
+      return "Checkbox confirmation";
+    case "suggest_tasks":
+      return "Task suggestions";
+    default: {
+      const _exhaustive: never = kind;
+      return _exhaustive;
+    }
+  }
 }
 
 function readIssueIdFromRun(run: HeartbeatRun): string | null {
@@ -577,6 +595,129 @@ function ApprovalInboxRow({
           </Button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function AwaitingHumanInboxRow({
+  interaction,
+  issue,
+  onDismiss,
+  onNavigate,
+  isNavigating,
+  unreadState = null,
+  onMarkRead,
+  onArchive,
+  archiveDisabled,
+  selected = false,
+  className,
+}: {
+  interaction: IssueThreadInteraction;
+  issue: { id: string; identifier: string | null; title: string; status: string };
+  onDismiss: () => void;
+  onNavigate: () => void;
+  isNavigating: boolean;
+  unreadState?: NonIssueUnreadState;
+  onMarkRead?: () => void;
+  onArchive?: () => void;
+  archiveDisabled?: boolean;
+  selected?: boolean;
+  className?: string;
+}) {
+  const kindLabel = interactionKindLabel(interaction.kind);
+  const showUnreadSlot = unreadState !== null;
+  const showUnreadDot = unreadState === "visible" || unreadState === "fading";
+
+  return (
+    <div className={cn(
+      "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      className,
+    )}>
+      <div className="flex items-start gap-2 sm:items-center">
+        {showUnreadSlot ? (
+          <span className="hidden sm:inline-flex h-4 w-4 shrink-0 items-center justify-center self-center">
+            {showUnreadDot ? (
+              <button
+                type="button"
+                onClick={onMarkRead}
+                className={cn(
+                  "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
+                  "hover:bg-blue-500/20",
+                )}
+                aria-label="Mark as read"
+              >
+                <span className={cn(
+                  "block h-2 w-2 rounded-full transition-opacity duration-300",
+                  "bg-blue-600 dark:bg-blue-400",
+                  unreadState === "fading" ? "opacity-0" : "opacity-100",
+                )} />
+              </button>
+            ) : onArchive ? (
+              <button
+                type="button"
+                onClick={onArchive}
+                disabled={archiveDisabled}
+                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+                aria-label="Dismiss from inbox"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : (
+              <span className="inline-flex h-4 w-4" aria-hidden="true" />
+            )}
+          </span>
+        ) : null}
+        <button
+          type="button"
+          onClick={onNavigate}
+          disabled={isNavigating}
+          className={cn(
+            "flex min-w-0 flex-1 items-start gap-2 no-underline text-inherit transition-colors text-left cursor-pointer disabled:cursor-default",
+            selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+          )}
+        >
+          {!showUnreadSlot && <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />}
+          <span className="hidden h-3.5 w-3.5 shrink-0 sm:inline-flex" aria-hidden="true" />
+          <span className="mt-0.5 shrink-0 rounded-md bg-blue-500/20 p-1.5 sm:mt-0">
+            <Check className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="line-clamp-2 text-sm font-medium sm:truncate sm:line-clamp-none">
+              <span className="font-mono text-muted-foreground mr-1.5">
+                {issue.identifier ?? issue.id.slice(0, 8)}
+              </span>
+              {issue.title}
+            </span>
+            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">{kindLabel}</span>
+              {interaction.summary && <span className="truncate max-w-[300px]">{interaction.summary}</span>}
+              <span>{timeAgo(interaction.createdAt)}</span>
+            </span>
+          </span>
+        </button>
+        {!showUnreadSlot && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="hidden shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 sm:block"
+            aria-label="Dismiss"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+      {!showUnreadSlot && (
+        <div className="mt-3 flex gap-2 sm:hidden">
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            aria-label="Dismiss"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -948,6 +1089,13 @@ export function Inbox() {
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
+
+  const { data: awaitingHumanInteractionsData = [] } = useQuery({
+    queryKey: queryKeys.issues.awaitingHumanInteractions(selectedCompanyId!),
+    queryFn: () => issuesApi.listAwaitingHumanInteractions(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
@@ -1230,6 +1378,15 @@ export function Inbox() {
     if (tab === "all" && !showFailedRunsCategory) return [];
     return failedRuns;
   }, [failedRuns, tab, showFailedRunsCategory]);
+
+  const awaitingHumanInteractionsForTab = useMemo(() => {
+    if (tab === "mine") {
+      return awaitingHumanInteractionsData.filter(
+        (item) => !isInboxEntityDismissed(dismissedAtByKey, `interaction:${item.interaction.id}`, item.interaction.createdAt),
+      );
+    }
+    return [];
+  }, [awaitingHumanInteractionsData, tab, dismissedAtByKey]);
 
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
@@ -2254,8 +2411,18 @@ export function Inbox() {
     showOnUnread: false,
     showOnAll: hasAlerts,
   });
+  const hasAwaitingHuman = awaitingHumanInteractionsForTab.length > 0;
+  const showAwaitingHumanSection = shouldShowInboxSection({
+    tab,
+    hasItems: hasAwaitingHuman,
+    showOnMine: hasAwaitingHuman,
+    showOnRecent: false,
+    showOnUnread: false,
+    showOnAll: false,
+  });
 
   const visibleSections = [
+    showAwaitingHumanSection ? "waiting_on_you" : null,
     showAlertsSection ? "alerts" : null,
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
@@ -3106,6 +3273,48 @@ export function Inbox() {
                   return elements;
                 });
               })()}
+            </div>
+          </div>
+        </>
+      )}
+
+      {showAwaitingHumanSection && (
+        <>
+          {showSeparatorBefore("waiting_on_you") && <Separator />}
+          <div>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Waiting on you
+            </h3>
+            <div className="divide-y divide-border border border-border">
+              {awaitingHumanInteractionsForTab.map(({ interaction, issue }) => {
+                const interactionKey = `interaction:${interaction.id}`;
+                const isArchiving = archivingNonIssueIds.has(interactionKey);
+                return (
+                  <AwaitingHumanInboxRow
+                    key={interactionKey}
+                    interaction={interaction}
+                    issue={issue}
+                    onDismiss={() => handleArchiveNonIssue(interactionKey)}
+                    onNavigate={() => {
+                      const pathId = issue.identifier ?? issue.id;
+                      const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue as Partial<Issue> as Issue));
+                      rememberIssueDetailLocationState(pathId, detailState);
+                      void prefetchIssueDetail(queryClient, pathId, { issue: issue as Partial<Issue> as Issue });
+                      navigate(createIssueDetailPath(pathId), { state: detailState });
+                    }}
+                    isNavigating={false}
+                    unreadState={nonIssueUnreadState(interactionKey)}
+                    onMarkRead={() => handleMarkNonIssueRead(interactionKey)}
+                    onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(interactionKey) : undefined}
+                    archiveDisabled={isArchiving}
+                    className={
+                      isArchiving
+                        ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                        : "transition-all duration-200 ease-out"
+                    }
+                  />
+                );
+              })}
             </div>
           </div>
         </>
