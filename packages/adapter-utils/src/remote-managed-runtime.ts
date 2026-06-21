@@ -1,4 +1,5 @@
 import path from "node:path";
+import { GIT_ARCHIVE_EXCLUDES } from "./git-workspace-sync.js";
 import {
   type SshRemoteExecutionSpec,
   prepareWorkspaceForSshExecution,
@@ -90,7 +91,7 @@ export async function prepareRemoteManagedRuntime(input: {
     remoteDir: workspaceRemoteDir,
     onProgress: input.onProgress,
   });
-  const restoreExclude = preparedWorkspace.gitBacked ? [".git", ".paperclip-runtime"] : [".paperclip-runtime"];
+  const restoreExclude = preparedWorkspace.gitBacked ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"] : [".paperclip-runtime"];
   const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
     exclude: restoreExclude,
   });
@@ -117,6 +118,7 @@ export async function prepareRemoteManagedRuntime(input: {
       remoteDir: workspaceRemoteDir,
       baselineSnapshot,
       restoreGitHistory: preparedWorkspace.gitBacked,
+      gitBaseSha: preparedWorkspace.gitBaseSha,
       onProgress: input.onProgress,
     });
     throw error;
@@ -135,6 +137,7 @@ export async function prepareRemoteManagedRuntime(input: {
         remoteDir: workspaceRemoteDir,
         baselineSnapshot,
         restoreGitHistory: preparedWorkspace.gitBacked,
+        gitBaseSha: preparedWorkspace.gitBaseSha,
         onProgress,
       });
     },

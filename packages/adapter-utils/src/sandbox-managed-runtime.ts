@@ -3,8 +3,24 @@ import { constants as fsConstants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import {
+  buildRemoteGitDeltaBundleScript,
+  createImportedGitRef,
+  createRemoteGitExportRef,
+  deleteLocalGitRef,
+  fetchGitBundleIntoLocalRef,
+  GIT_ARCHIVE_EXCLUDES,
+  integrateImportedGitHead,
+  readGitWorkspaceSnapshot,
+  withShallowGitWorkspaceClone,
+} from "./git-workspace-sync.js";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
-import { createRuntimeProgressReporter, type RuntimeProgressSink } from "./runtime-progress.js";
+import {
+  createRuntimeProgressReporter,
+  type RuntimeProgressDirection,
+  type RuntimeProgressPhase,
+  type RuntimeProgressSink,
+} from "./runtime-progress.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -275,15 +291,37 @@ function tarExcludeFlags(exclude: string[] | undefined): string {
   return ["._*", ...(exclude ?? [])].map((entry) => `--exclude ${shellQuote(entry)}`).join(" ");
 }
 
+function mergeExcludes(...groups: Array<string[] | undefined>): string[] {
+  return [...new Set(groups.flatMap((group) => group ?? []))];
+}
+
+function preserveFindArgs(entries: string[]): string {
+  return entries.map((entry) => `! -name ${shellQuote(entry)}`).join(" ");
+}
+
+async function removeDeletedPathsInSandbox(input: {
+  client: SandboxManagedRuntimeClient;
+  spec: SandboxRemoteExecutionSpec;
+  remoteDir: string;
+  deletedPaths: string[];
+}): Promise<void> {
+  if (input.deletedPaths.length === 0) return;
+  const quotedPaths = input.deletedPaths.map((entry) => shellQuote(entry)).join(" ");
+  await input.client.run(
+    `sh -c ${shellQuote(`cd ${shellQuote(input.remoteDir)} && rm -rf -- ${quotedPaths}`)}`,
+    { timeoutMs: input.spec.timeoutMs },
+  );
+}
+
 // Bridge a single byte-level transfer to the throttled progress reporter. The
 // transport reports decoded bytes via `options.onProgress`; the reporter turns
 // them into a throttled, fully-formatted log line. `finish()` emits the terminal
 // completion line (idempotent) once the transfer returns.
 function makeTransferProgress(
   sink: RuntimeProgressSink | undefined,
-  phase: "Syncing" | "Restoring",
-  direction: "to" | "from",
-  label: string,
+  phase: RuntimeProgressPhase,
+  direction: RuntimeProgressDirection,
+  label?: string,
 ): { options: SandboxTransferProgressOptions | undefined; finish: () => Promise<void> } {
   if (!sink) return { options: undefined, finish: async () => {} };
   const reporter = createRuntimeProgressReporter({
@@ -320,16 +358,58 @@ export async function prepareSandboxManagedRuntime(input: {
 }): Promise<PreparedSandboxManagedRuntime> {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const gitSnapshot = await readGitWorkspaceSnapshot(input.workspaceLocalDir);
+  const workspaceArchiveExclude = mergeExcludes(gitSnapshot ? [...GIT_ARCHIVE_EXCLUDES] : undefined, input.workspaceExclude);
+  const restoreExclude = mergeExcludes(
+    gitSnapshot ? [...GIT_ARCHIVE_EXCLUDES] : undefined,
+    [".paperclip-runtime"],
+    input.preserveAbsentOnRestore,
+    input.workspaceExclude,
+  );
   const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
-    exclude: [...new Set([".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? []), ...(input.workspaceExclude ?? [])])],
+    exclude: restoreExclude,
   });
 
   await withTempDir("paperclip-sandbox-sync-", async (tempDir) => {
+    const preservedNames = new Set([
+      ".paperclip-runtime",
+      ...(gitSnapshot ? [".git"] : []),
+      ...(input.preserveAbsentOnRestore ?? []),
+    ]);
+    if (gitSnapshot) {
+      await withShallowGitWorkspaceClone({
+        localDir: input.workspaceLocalDir,
+        snapshot: gitSnapshot,
+      }, async (cloneDir) => {
+        const gitTarPath = path.join(tempDir, "git-workspace.tar");
+        await createTarballFromDirectory({
+          localDir: cloneDir,
+          archivePath: gitTarPath,
+          exclude: [".paperclip-runtime"],
+        });
+        const gitTarBytes = await fs.readFile(gitTarPath);
+        const remoteGitTar = path.posix.join(runtimeRootDir, "git-workspace-upload.tar");
+        await input.client.makeDir(runtimeRootDir);
+        const gitUpload = makeTransferProgress(input.onProgress, "Syncing", "to", "git history");
+        await input.client.writeFile(remoteGitTar, toArrayBuffer(gitTarBytes), gitUpload.options);
+        await gitUpload.finish();
+        await input.client.run(
+          `sh -c ${shellQuote(
+            `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
+              `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${preserveFindArgs([".paperclip-runtime"])} -exec rm -rf -- {} + && ` +
+              `tar -xf ${shellQuote(remoteGitTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
+              `rm -f ${shellQuote(remoteGitTar)}`,
+          )}`,
+          { timeoutMs: input.spec.timeoutMs },
+        );
+      });
+    }
+
     const workspaceTarPath = path.join(tempDir, "workspace.tar");
     await createTarballFromDirectory({
       localDir: input.workspaceLocalDir,
       archivePath: workspaceTarPath,
-      exclude: input.workspaceExclude,
+      exclude: workspaceArchiveExclude,
     });
     const workspaceTarBytes = await fs.readFile(workspaceTarPath);
     const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-upload.tar");
@@ -341,8 +421,7 @@ export async function prepareSandboxManagedRuntime(input: {
       workspaceUpload.options,
     );
     await workspaceUpload.finish();
-    const preservedNames = new Set([".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? [])]);
-    const findPreserveArgs = [...preservedNames].map((entry) => `! -name ${shellQuote(entry)}`).join(" ");
+    const findPreserveArgs = preserveFindArgs([...preservedNames]);
     await input.client.run(
       `sh -c ${shellQuote(
         `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
@@ -352,6 +431,14 @@ export async function prepareSandboxManagedRuntime(input: {
       )}`,
       { timeoutMs: input.spec.timeoutMs },
     );
+    if (gitSnapshot) {
+      await removeDeletedPathsInSandbox({
+        client: input.client,
+        spec: input.spec,
+        remoteDir: workspaceRemoteDir,
+        deletedPaths: gitSnapshot.deletedPaths,
+      });
+    }
 
     for (const asset of input.assets ?? []) {
       const assetTarPath = path.join(tempDir, `${asset.key}.tar`);
@@ -392,31 +479,76 @@ export async function prepareSandboxManagedRuntime(input: {
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
       const restoreSink = onProgress ?? input.onProgress;
       await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
-        const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
-        await input.client.run(
-          `sh -c ${shellQuote(
-            `mkdir -p ${shellQuote(runtimeRootDir)} && ` +
-              `tar -cf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} ` +
-              `${tarExcludeFlags(input.workspaceExclude)} .`,
-          )}`,
-          { timeoutMs: input.spec.timeoutMs },
-        );
-        const workspaceRestore = makeTransferProgress(restoreSink, "Restoring", "from", "workspace");
-        const archiveBytes = await input.client.readFile(remoteWorkspaceTar, workspaceRestore.options);
-        await workspaceRestore.finish();
-        await input.client.remove(remoteWorkspaceTar).catch(() => undefined);
-        const localArchivePath = path.join(tempDir, "workspace.tar");
-        const extractedDir = path.join(tempDir, "workspace");
-        await fs.writeFile(localArchivePath, toBuffer(archiveBytes));
-        await extractTarballToDirectory({
-          archivePath: localArchivePath,
-          localDir: extractedDir,
-        });
-        await mergeDirectoryWithBaseline({
-          baseline: baselineSnapshot,
-          sourceDir: extractedDir,
-          targetDir: input.workspaceLocalDir,
-        });
+        let importedRef: string | null = null;
+        let importedHead: string | null = null;
+        try {
+          if (gitSnapshot) {
+            importedRef = createImportedGitRef("sandbox");
+            const remoteGitBundle = path.posix.join(runtimeRootDir, "git-delta.bundle");
+            const exportRef = createRemoteGitExportRef("sandbox");
+            await input.client.run(
+              `sh -c ${shellQuote(buildRemoteGitDeltaBundleScript({
+                remoteDir: workspaceRemoteDir,
+                baseSha: gitSnapshot.headCommit,
+                exportRef,
+                bundlePath: remoteGitBundle,
+              }))}`,
+              { timeoutMs: input.spec.timeoutMs },
+            );
+            const gitExport = makeTransferProgress(restoreSink, "Exporting git history", "from");
+            const bundleBytes = await input.client.readFile(remoteGitBundle, gitExport.options);
+            await gitExport.finish();
+            await input.client.remove(remoteGitBundle).catch(() => undefined);
+            const bundlePath = path.join(tempDir, "git-delta.bundle");
+            await fs.writeFile(bundlePath, toBuffer(bundleBytes));
+            importedHead = await fetchGitBundleIntoLocalRef({
+              localDir: input.workspaceLocalDir,
+              bundlePath,
+              exportRef,
+              importedRef,
+              baseSha: gitSnapshot.headCommit,
+            });
+          }
+
+          const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
+          await input.client.run(
+            `sh -c ${shellQuote(
+              `mkdir -p ${shellQuote(runtimeRootDir)} && ` +
+                `tar -cf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} ` +
+                `${tarExcludeFlags(restoreExclude)} .`,
+            )}`,
+            { timeoutMs: input.spec.timeoutMs },
+          );
+          const workspaceRestore = makeTransferProgress(restoreSink, "Restoring", "from", "workspace");
+          const archiveBytes = await input.client.readFile(remoteWorkspaceTar, workspaceRestore.options);
+          await workspaceRestore.finish();
+          await input.client.remove(remoteWorkspaceTar).catch(() => undefined);
+          const localArchivePath = path.join(tempDir, "workspace.tar");
+          const extractedDir = path.join(tempDir, "workspace");
+          await fs.writeFile(localArchivePath, toBuffer(archiveBytes));
+          await extractTarballToDirectory({
+            archivePath: localArchivePath,
+            localDir: extractedDir,
+          });
+          const gitHeadToIntegrate = importedHead;
+          await mergeDirectoryWithBaseline({
+            baseline: baselineSnapshot,
+            sourceDir: extractedDir,
+            targetDir: input.workspaceLocalDir,
+            beforeApply: gitHeadToIntegrate
+              ? async () => {
+                await integrateImportedGitHead({
+                  localDir: input.workspaceLocalDir,
+                  importedHead: gitHeadToIntegrate,
+                });
+              }
+              : undefined,
+          });
+        } finally {
+          if (importedRef) {
+            await deleteLocalGitRef({ localDir: input.workspaceLocalDir, ref: importedRef });
+          }
+        }
       });
     },
   };
