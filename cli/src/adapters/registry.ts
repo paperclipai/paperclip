@@ -7,6 +7,7 @@ import { printCursorCloudEvent } from "@paperclipai/adapter-cursor-cloud/cli";
 import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
 import { printGrokStreamEvent } from "@paperclipai/adapter-grok-local/cli";
 import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
+import { printOllamaStreamEvent } from "@paperclipai/adapter-ollama-local/cli";
 import { printPiStreamEvent } from "@paperclipai/adapter-pi-local/cli";
 import { printOpenClawGatewayStreamEvent } from "@paperclipai/adapter-openclaw-gateway/cli";
 import { processCLIAdapter } from "./process/index.js";
@@ -62,6 +63,11 @@ const openclawGatewayCLIAdapter: CLIAdapterModule = {
   formatStdoutEvent: printOpenClawGatewayStreamEvent,
 };
 
+const ollamaLocalCLIAdapter: CLIAdapterModule = {
+  type: "ollama_local",
+  formatStdoutEvent: printOllamaStreamEvent,
+};
+
 const adaptersByType = new Map<string, CLIAdapterModule>(
   [
     acpxLocalCLIAdapter,
@@ -73,6 +79,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
     cursorCloudCLIAdapter,
     geminiLocalCLIAdapter,
     grokLocalCLIAdapter,
+    ollamaLocalCLIAdapter,
     openclawGatewayCLIAdapter,
     processCLIAdapter,
     httpCLIAdapter,

@@ -25,7 +25,7 @@ export interface OllamaExecutionResult {
   exitCode?: number;
 }
 
-export async function executeOllama(
+export async function execute(
   config: OllamaConfig,
   prompt: string,
   options?: { timeoutSec?: number; graceSec?: number }

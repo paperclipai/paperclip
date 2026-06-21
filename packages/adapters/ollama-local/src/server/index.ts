@@ -1,4 +1,7 @@
-export { executeOllama, testOllamaConnection, type OllamaConfig, type OllamaExecutionResult } from "./execute.js";
+export { execute } from "./execute.js";
+export { testEnvironment } from "./test.js";
+export { listOllamaSkills, syncOllamaSkills } from "./skills.js";
+export { getConfigSchema } from "./config-schema.js";
 export { 
   listOllamaModels, 
   pullOllamaModel, 

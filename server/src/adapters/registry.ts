@@ -128,6 +128,19 @@ import {
   modelProfiles as piModelProfiles,
 } from "@paperclipai/adapter-pi-local";
 import {
+  execute as ollamaExecute,
+  listOllamaSkills,
+  syncOllamaSkills,
+  testEnvironment as ollamaTestEnvironment,
+  sessionCodec as ollamaSessionCodec,
+  getConfigSchema as getOllamaConfigSchema,
+} from "@paperclipai/adapter-ollama-local/server";
+import {
+  agentConfigurationDoc as ollamaAgentConfigurationDoc,
+  models as ollamaModels,
+  modelProfiles as ollamaModelProfiles,
+} from "@paperclipai/adapter-ollama-local";
+import {
   execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
   sessionCodec as hermesSessionCodec,
