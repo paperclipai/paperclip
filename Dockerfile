@@ -170,7 +170,7 @@ ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98
 # the 120s scheduler timeout and report as bogus "pod scheduling failed";
 # scheduled pods get a bounded 10m startup window instead. Local adapter
 # verification: execute.test.ts (101 tests) and typecheck passed.
-ARG OPENCODE_K8S_REF=ce9b7b8c8ab6b2d5cc8715da7543c89da65a2323
+ARG OPENCODE_K8S_REF=ce9b7b8fd7fe09311f054552bbdedd400311735c
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
