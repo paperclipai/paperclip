@@ -56,12 +56,23 @@ export function buildOllamaLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.cwd) ac.cwd = v.cwd;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   ac.model = v.model || DEFAULT_OLLAMA_MODEL;
-  ac.host = v.host || DEFAULT_OLLAMA_HOST;
-  if (v.numCtx) ac.numCtx = Number(v.numCtx);
-  if (v.temperature) ac.temperature = Number(v.temperature);
-  if (v.topP) ac.topP = Number(v.topP);
+  
+  // Get adapter-specific schema values
+  const schemaValues = v.adapterSchemaValues as Record<string, unknown> | undefined;
+  if (schemaValues) {
+    if (typeof schemaValues.host === "string") ac.host = schemaValues.host;
+    else ac.host = DEFAULT_OLLAMA_HOST;
+    
+    if (typeof schemaValues.numCtx === "number") ac.numCtx = schemaValues.numCtx;
+    if (typeof schemaValues.temperature === "number") ac.temperature = schemaValues.temperature;
+    if (typeof schemaValues.topP === "number") ac.topP = schemaValues.topP;
+    if (typeof schemaValues.graceSec === "number") ac.graceSec = schemaValues.graceSec;
+  } else {
+    ac.host = DEFAULT_OLLAMA_HOST;
+  }
+  
   ac.timeoutSec = Number(v.timeoutSec) || 300;
-  ac.graceSec = Number(v.graceSec) || 10;
+  ac.graceSec = Number(schemaValues?.graceSec) || 10;
   
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);

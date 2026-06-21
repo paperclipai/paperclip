@@ -194,12 +194,16 @@ export function parseOllamaStdoutLine(line: string, ts: string): TranscriptEntry
     }
     
     entries.push({
-      kind: "usage",
+      kind: "result",
       ts,
+      text: resultText || "",
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       cachedTokens: usage.cachedTokens,
-      ...(isError ? { error: "Execution failed" } : {}),
+      costUsd: 0,
+      subtype: "complete",
+      isError,
+      errors: [],
     });
     
     return entries;
