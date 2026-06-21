@@ -50,3 +50,14 @@ describe("resolveSessionKey", () => {
     ).toBe("agent:meridian:paperclip");
   });
 });
+
+import { PROTOCOL_VERSION } from "./execute.js";
+
+describe("PROTOCOL_VERSION (gateway protocol negotiation)", () => {
+  // OpenClaw 2026.6.x gateways require protocol v4 (`expected=4 probeMin=4`).
+  // The adapter must negotiate >=4 or the WebSocket connect is rejected with
+  // `[ws] protocol mismatch` (code 1002). See issue #8440.
+  it("negotiates gateway protocol v4 or higher (OpenClaw 2026.6.x compatibility)", () => {
+    expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(4);
+  });
+});
