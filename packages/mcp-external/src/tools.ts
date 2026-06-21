@@ -38,6 +38,17 @@ function errorResult(message: string, status?: number) {
  * resolution) are re-thrown; the MCP SDK converts them to an isError tool
  * result carrying the error message (not a separate protocol-error channel).
  */
+/** Format a Paperclip API error into the canonical tool-error payload, or null
+ * if it isn't an API error (those propagate; the MCP SDK turns them isError). */
+function formatApiError(error: unknown): { content: Array<{ type: "text"; text: string }> } | null {
+  if (error instanceof PaperclipApiError) {
+    if (error.status === 409) return errorResult(CONFLICT_MESSAGE, 409);
+    const bodyText = typeof error.body === "string" ? error.body : JSON.stringify(error.body ?? "");
+    return errorResult(`HTTP ${error.status} from Paperclip API: ${bodyText.slice(0, 400)}`, error.status);
+  }
+  return null;
+}
+
 async function runTool(
   fn: () => Promise<unknown>,
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
@@ -45,13 +56,60 @@ async function runTool(
     const data = await fn();
     return textResult(data ?? { ok: true });
   } catch (error) {
-    if (error instanceof PaperclipApiError) {
-      if (error.status === 409) return errorResult(CONFLICT_MESSAGE, 409);
-      const bodyText = typeof error.body === "string" ? error.body : JSON.stringify(error.body ?? "");
-      return errorResult(`HTTP ${error.status} from Paperclip API: ${bodyText.slice(0, 400)}`, error.status);
-    }
+    const formatted = formatApiError(error);
+    if (formatted) return formatted;
     throw error;
   }
+}
+
+/** Default CAS guard for a user-driven checkout — the statuses an issue may be
+ * in to be (re)claimed. Mirrors the UI + openclaw-gateway user-surface set. */
+const CHECKOUT_EXPECTED_STATUSES = ["todo", "backlog", "blocked", "in_review"] as const;
+
+interface CheckoutIssue {
+  assigneeAgentId?: string | null;
+  companyId?: string | null;
+}
+
+/**
+ * Resolve which agent a user-bearer checkout should claim the issue as (option
+ * b — the external surface is a USER bearer with no agent identity, so the
+ * backend's required `agentId` cannot be the caller). Prefer the issue's current
+ * assignee (re-checkout; the backend skips its assign-permission check when
+ * agentId === assignee). If unassigned, fall back to the company's sole agent.
+ * Zero or multiple agents on an unassigned issue is genuinely ambiguous on a
+ * user surface with no agent parameter → return an actionable error instead of
+ * arbitrarily picking a fleet agent.
+ */
+async function resolveCheckoutAgentId(
+  client: PaperclipApiClient,
+  issue: CheckoutIssue,
+): Promise<{ agentId: string } | { error: string }> {
+  if (issue.assigneeAgentId) return { agentId: issue.assigneeAgentId };
+  const companyId = issue.companyId?.trim();
+  if (!companyId) {
+    return {
+      error:
+        "Cannot check out: the issue is unassigned and has no resolvable company. Assign an agent first (update_issue), then check out.",
+    };
+  }
+  const agents = (await client.requestJson(
+    "GET",
+    `/companies/${encodeURIComponent(companyId)}/agents`,
+    { companyId },
+  )) as Array<{ id?: string }>;
+  const ids = (agents ?? [])
+    .map((a) => a?.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  if (ids.length === 1) return { agentId: ids[0] };
+  if (ids.length === 0) {
+    return { error: "Cannot check out: the issue is unassigned and its company has no agents to check out as." };
+  }
+  return {
+    error:
+      `Cannot check out: the issue is unassigned and its company has ${ids.length} agents, so no single agent ` +
+      "can be chosen automatically. Assign one with update_issue (assignee_agent_id), then check out.",
+  };
 }
 
 function clampLimit(limit: unknown, max: number): number {
@@ -229,21 +287,39 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         });
       },
     },
-    // NOTE: faithfully mirrors the Python external server, which sends a bodyless
-    // POST /issues/<id>/checkout. The current backend's checkoutIssueSchema requires
-    // agentId + expectedStatuses, so this 400s against current master — a pre-existing
-    // bug in the Python external surface (an external USER bearer has no agent identity:
-    // GET /agents/me -> 401). Fixing it needs an external-checkout design decision
-    // (which agent does a user check out as?), tracked as a cutover follow-up — not a
-    // wave-1 port change. release_issue mirrors the same bodyless shape.
+    // The external surface is a USER bearer, which has no agent identity, but the
+    // backend's checkoutIssueSchema requires { agentId, expectedStatuses }. A bare
+    // bodyless POST (what the Python external server sent) 400s. Resolve the agent
+    // server-side (cutover decision: option b) — see resolveCheckoutAgentId.
     {
       name: "checkout_issue",
       description:
-        "Atomically assign an issue to the current agent and mark it in_progress. 409 = owned by another agent; do NOT retry.",
+        "Assign an issue to an agent and mark it in_progress. The agent is resolved server-side: the issue's current assignee, else the company's sole agent. 409 = owned by another agent; do NOT retry.",
       schema: z.object({ issue_id: z.string().describe("Issue UUID or identifier to check out.") }),
-      execute: async (args) =>
-        runTool(() => client.requestJson("POST", `/issues/${encodeURIComponent(String(args.issue_id))}/checkout`)),
+      execute: async (args) => {
+        const issueId = String(args.issue_id);
+        try {
+          const issue = (await client.requestJson(
+            "GET",
+            `/issues/${encodeURIComponent(issueId)}`,
+          )) as CheckoutIssue;
+          const resolved = await resolveCheckoutAgentId(client, issue);
+          if ("error" in resolved) return errorResult(resolved.error, 422);
+          const result = await client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/checkout`, {
+            body: { agentId: resolved.agentId, expectedStatuses: [...CHECKOUT_EXPECTED_STATUSES] },
+            companyId: issue.companyId ?? null,
+          });
+          return textResult(result ?? { ok: true });
+        } catch (error) {
+          const formatted = formatApiError(error);
+          if (formatted) return formatted;
+          throw error;
+        }
+      },
     },
+    // release_issue stays a bodyless POST: the backend /issues/:id/release route
+    // has no request schema and short-circuits its agent guard for non-agent
+    // (user) actors, so a user bearer can release without an agentId.
     {
       name: "release_issue",
       description: "Release an issue: unassign it and revert it to its previous state. Inverse of checkout_issue.",

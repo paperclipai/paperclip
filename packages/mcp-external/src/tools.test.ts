@@ -21,6 +21,19 @@ function tool(client: any, name: string) {
   return createToolDefinitions(client).find((t) => t.name === name)!;
 }
 
+// Mock client that routes requestJson by (method, path regex) — needed for
+// multi-call tools like checkout_issue (GET issue → maybe GET agents → POST).
+function routingClient(handlers: Array<{ method: string; path: RegExp; reply: unknown }>) {
+  return {
+    requestJson: vi.fn(async (method: string, path: string) => {
+      const h = handlers.find((x) => x.method === method && x.path.test(path));
+      if (!h) throw new Error(`routingClient: unexpected request ${method} ${path}`);
+      return h.reply;
+    }),
+    resolveCompany: vi.fn(async (i: { override?: string | null } = {}) => i.override?.trim() || "co-default"),
+  } as any;
+}
+
 describe("get_agent tool", () => {
   it("is registered as snake_case get_agent", () => {
     const tools = createToolDefinitions(clientReturning({}));
@@ -302,15 +315,77 @@ describe("update_issue", () => {
   });
 });
 
-describe("issue lifecycle", () => {
-  it("checkout_issue POSTs /issues/<id>/checkout", async () => {
-    const client = okClient(null);
+// option (b): checkout_issue resolves the agent server-side (the external
+// surface is a USER bearer with no agent identity). Rule: re-checkout the
+// issue's current assignee; if unassigned, use the sole company agent; otherwise
+// return an actionable isError (no arbitrary fleet pick). release_issue is left
+// bodyless — its backend route has no schema and accepts a user actor.
+const CHECKOUT_STATUSES = ["todo", "backlog", "blocked", "in_review"];
+describe("checkout_issue (server-side agent resolution, option b)", () => {
+  it("checks out as the issue's current assignee with default expectedStatuses", async () => {
+    const client = routingClient([
+      { method: "GET", path: /^\/issues\/PEN-1$/, reply: { id: "i1", assigneeAgentId: "agent-1", companyId: "co-1" } },
+      { method: "POST", path: /^\/issues\/PEN-1\/checkout$/, reply: { ok: true } },
+    ]);
     const res = await tool(client, "checkout_issue").execute({ issue_id: "PEN-1" }, {} as any);
-    expect(client.requestJson).toHaveBeenCalledWith("POST", "/issues/PEN-1/checkout");
+    expect(client.requestJson).toHaveBeenCalledWith("GET", "/issues/PEN-1");
+    expect(client.requestJson).toHaveBeenCalledWith("POST", "/issues/PEN-1/checkout", {
+      body: { agentId: "agent-1", expectedStatuses: CHECKOUT_STATUSES },
+      companyId: "co-1",
+    });
     expect(JSON.parse(res.content[0].text)).toEqual({ ok: true });
-    expect(client.resolveCompany).not.toHaveBeenCalled();
   });
 
+  it("uses the sole company agent when the issue is unassigned", async () => {
+    const client = routingClient([
+      { method: "GET", path: /^\/issues\/PEN-2$/, reply: { id: "i2", assigneeAgentId: null, companyId: "co-1" } },
+      { method: "GET", path: /^\/companies\/co-1\/agents$/, reply: [{ id: "only-agent" }] },
+      { method: "POST", path: /^\/issues\/PEN-2\/checkout$/, reply: { ok: true } },
+    ]);
+    await tool(client, "checkout_issue").execute({ issue_id: "PEN-2" }, {} as any);
+    expect(client.requestJson).toHaveBeenCalledWith("POST", "/issues/PEN-2/checkout", {
+      body: { agentId: "only-agent", expectedStatuses: CHECKOUT_STATUSES },
+      companyId: "co-1",
+    });
+  });
+
+  it("returns an isError (no checkout POST) when unassigned and the company has multiple agents", async () => {
+    const client = routingClient([
+      { method: "GET", path: /^\/issues\/PEN-3$/, reply: { id: "i3", assigneeAgentId: null, companyId: "co-1" } },
+      { method: "GET", path: /^\/companies\/co-1\/agents$/, reply: [{ id: "a" }, { id: "b" }] },
+    ]);
+    const res = await tool(client, "checkout_issue").execute({ issue_id: "PEN-3" }, {} as any);
+    const payload = JSON.parse(res.content[0].text);
+    expect(payload.isError).toBe(true);
+    expect(payload.message).toMatch(/assign/i);
+    const posted = client.requestJson.mock.calls.some(
+      (c: unknown[]) => c[0] === "POST" && String(c[1]).endsWith("/checkout"),
+    );
+    expect(posted).toBe(false);
+  });
+
+  it("returns an isError when unassigned and the company has no agents", async () => {
+    const client = routingClient([
+      { method: "GET", path: /^\/issues\/PEN-4$/, reply: { id: "i4", assigneeAgentId: null, companyId: "co-1" } },
+      { method: "GET", path: /^\/companies\/co-1\/agents$/, reply: [] },
+    ]);
+    const res = await tool(client, "checkout_issue").execute({ issue_id: "PEN-4" }, {} as any);
+    expect(JSON.parse(res.content[0].text).isError).toBe(true);
+  });
+
+  it("surfaces an upstream API error from the issue lookup in the canonical shape", async () => {
+    const client = {
+      requestJson: vi.fn(async () => {
+        throw new PaperclipApiError({ status: 404, method: "GET", path: "/issues/PEN-X", body: "Not found", message: "Not found" });
+      }),
+      resolveCompany: vi.fn(),
+    } as any;
+    const res = await tool(client, "checkout_issue").execute({ issue_id: "PEN-X" }, {} as any);
+    expect(JSON.parse(res.content[0].text)).toMatchObject({ isError: true, status: 404 });
+  });
+});
+
+describe("issue lifecycle", () => {
   it("release_issue POSTs /issues/<id>/release", async () => {
     const client = okClient(null);
     const res = await tool(client, "release_issue").execute({ issue_id: "PEN-1" }, {} as any);
