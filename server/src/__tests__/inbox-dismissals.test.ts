@@ -267,6 +267,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
       approvals: 1,
       failedRuns: 1,
       joinRequests: 0,
+      awaitingHuman: 0,
     });
   });
 });
