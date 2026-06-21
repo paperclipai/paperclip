@@ -103,6 +103,34 @@ describe("multi-tenant streamable-HTTP", () => {
   }, 15000);
 });
 
+describe("session recovery (streamable-HTTP spec)", () => {
+  it("returns 404 (not 400) for an unknown/expired session id so clients re-initialize", async () => {
+    // A non-initialize request carrying a session id the server doesn't know
+    // (e.g. after a pod restart / rollout) MUST get 404 per the spec, so the
+    // MCP client starts a fresh session. Returning 400 wedges pre-existing
+    // clients (this is what FastMCP/the Python server does — 404).
+    const res = await fetch(mcpUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        "mcp-session-id": "does-not-exist",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    expect(res.status).toBe(404);
+  }, 15000);
+
+  it("still 400s a non-initialize request that carries no session id at all", async () => {
+    const res = await fetch(mcpUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    expect(res.status).toBe(400);
+  }, 15000);
+});
+
 describe("company-scoped tool wiring (list_issues)", () => {
   it("scopes by company + forwards bearer + query per tenant", async () => {
     const a = JSON.parse(await callToolAs("Bearer pcp_AAAA", "list_issues", { limit: 7 }));

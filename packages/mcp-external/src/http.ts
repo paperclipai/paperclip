@@ -45,7 +45,18 @@ export function createHttpServer(config: PaperclipExternalConfig = readConfigFro
       const body = req.method === "POST" ? await readBody(req) : undefined;
 
       if (!transport) {
-        if (req.method !== "POST" || !isInitializeRequest(body)) {
+        const isInit = req.method === "POST" && isInitializeRequest(body);
+        if (!isInit) {
+          // A request carrying a session id we don't recognize (e.g. after a
+          // pod restart / rollout dropped the in-memory session) MUST get 404,
+          // per the streamable-HTTP spec, so the MCP client starts a fresh
+          // session by re-initializing. FastMCP (the Python server) does this;
+          // returning 400 here wedged every pre-existing client across a flip.
+          if (sessionId) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found; reinitialize." }, id: null }));
+            return;
+          }
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "No valid session; send initialize first." }, id: null }));
           return;
