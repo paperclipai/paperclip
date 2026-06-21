@@ -20,6 +20,10 @@ export {
   fetchWithTimeout,
   claudeConfigDir,
 } from "./quota.js";
+export {
+  claudeCommandSupportsEffortFlag,
+  resetClaudeCliCapabilitiesCacheForTests,
+} from "./cli-capabilities.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {

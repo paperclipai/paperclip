@@ -62,6 +62,7 @@ import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -685,7 +686,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
-  const buildClaudeArgs = (
+  // Probe --effort support in sandbox environments where older Claude CLI
+  // versions may not recognize the flag. Cache the result so re-execution
+  // doesn't re-probe.
+  let effectiveEffort: string | null = effort;
+  if (effort && executionTargetIsSandbox) {
+    const supportsEffort = await claudeCommandSupportsEffortFlag(
+      command,
+      executionTarget,
+      cwd,
+      effectiveEnv,
+      timeoutSec,
+      onLog,
+    );
+    if (supportsEffort !== true) {
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: Claude CLI in this environment does not support --effort; stripping the flag.\n`,
+      );
+      effectiveEffort = null;
+    }
+  }
+
+  const buildClaudeArgs = async (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
   ) => {
@@ -702,7 +725,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(model))) {
       args.push("--model", model);
     }
-    if (effort) args.push("--effort", effort);
+    if (effectiveEffort) args.push("--effort", effectiveEffort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
     // On resumed sessions the instructions are already in the session cache;
     // re-injecting them via --append-system-prompt-file wastes 5-10K tokens
@@ -733,7 +756,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
-    const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
+    const args = await buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
     const commandNotes: string[] = [];
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
