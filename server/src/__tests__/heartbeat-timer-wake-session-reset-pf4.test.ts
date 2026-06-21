@@ -4,23 +4,21 @@ import {
   shouldResetTaskSessionForWake,
 } from "../services/heartbeat.ts";
 
-// PF-4: generic timer-driven wakes ("heartbeat_timer") are exploratory and
-// do not carry continuation state. Reusing the prior task session for repeated
-// generic timer wakes accumulates low-value context and pushes the session
-// toward the 64k compaction threshold (observed in CEO run 292a5fd1). The
-// shouldResetTaskSessionForWake / describeSessionResetReason pair must agree
-// that generic timer wakes start fresh, while issue/task-scoped timer wakes
-// preserve recurring work cache continuity.
+// PF-4 originally forced generic timer-driven wakes ("heartbeat_timer") to
+// start fresh to avoid context growth. Fresh-session telemetry reversed that
+// tradeoff after OpenAI/codex runs showed repeated fresh sessions dominating
+// token use: timer wakes should keep their synthetic task session warm unless
+// an explicit fresh-session request or configured rotation threshold says otherwise.
 
 describe("PF-4 shouldResetTaskSessionForWake", () => {
-  it("resets the session when wakeReason is heartbeat_timer", () => {
+  it("preserves the session when wakeReason is heartbeat_timer", () => {
     expect(
       shouldResetTaskSessionForWake({
         source: "scheduler",
         reason: "interval_elapsed",
         wakeReason: "heartbeat_timer",
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("preserves the session when a heartbeat_timer wake is scoped to an issue task", () => {
@@ -45,7 +43,7 @@ describe("PF-4 shouldResetTaskSessionForWake", () => {
     ).toBe(false);
   });
 
-  it("still resets for the existing reset reasons", () => {
+  it("still resets for assignment and execution wakes without task context", () => {
     for (const wakeReason of [
       "issue_assigned",
       "execution_review_requested",
@@ -53,6 +51,17 @@ describe("PF-4 shouldResetTaskSessionForWake", () => {
       "execution_changes_requested",
     ] as const) {
       expect(shouldResetTaskSessionForWake({ wakeReason })).toBe(true);
+    }
+  });
+
+  it("preserves assignment and execution wake sessions when issue-scoped", () => {
+    for (const wakeReason of [
+      "issue_assigned",
+      "execution_review_requested",
+      "execution_approval_requested",
+      "execution_changes_requested",
+    ] as const) {
+      expect(shouldResetTaskSessionForWake({ wakeReason, issueId: "issue-1" })).toBe(false);
     }
   });
 
@@ -79,11 +88,11 @@ describe("PF-4 shouldResetTaskSessionForWake", () => {
 });
 
 describe("PF-4 describeSessionResetReason", () => {
-  it("describes heartbeat_timer wakes explicitly so run logs explain the reset", () => {
+  it("does not report a reset reason for heartbeat_timer wakes", () => {
     const reason = describeSessionResetReason({
       wakeReason: "heartbeat_timer",
     });
-    expect(reason).toBe("wake reason is heartbeat_timer (timer-driven wake starts fresh)");
+    expect(reason).toBeNull();
   });
 
   it("does not report a reset reason for issue-scoped heartbeat_timer wakes", () => {
@@ -102,7 +111,7 @@ describe("PF-4 describeSessionResetReason", () => {
     expect(reason).toBeNull();
   });
 
-  it("returns the existing reasons for the existing reset triggers", () => {
+  it("returns the existing reasons for reset triggers without task context", () => {
     expect(describeSessionResetReason({ wakeReason: "issue_assigned" })).toBe(
       "wake reason is issue_assigned",
     );
@@ -115,6 +124,17 @@ describe("PF-4 describeSessionResetReason", () => {
     expect(describeSessionResetReason({ wakeReason: "execution_changes_requested" })).toBe(
       "wake reason is execution_changes_requested",
     );
+  });
+
+  it("does not report reset reasons for issue-scoped assignment and execution wakes", () => {
+    for (const wakeReason of [
+      "issue_assigned",
+      "execution_review_requested",
+      "execution_approval_requested",
+      "execution_changes_requested",
+    ] as const) {
+      expect(describeSessionResetReason({ wakeReason, issueId: "issue-1" })).toBeNull();
+    }
   });
 
   it("returns the forceFreshSession message when explicitly requested", () => {
@@ -140,6 +160,7 @@ describe("PF-4 describeSessionResetReason", () => {
       { wakeReason: "execution_changes_requested" },
       { forceFreshSession: true },
       { wakeReason: "heartbeat_timer", taskId: "issue-1" },
+      { wakeReason: "issue_assigned", taskId: "issue-1" },
       { wakeReason: "issue_commented" },
       { wakeReason: "transient_failure_retry" },
       { wakeReason: "unknown_reason" },

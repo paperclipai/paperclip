@@ -2139,11 +2139,9 @@ function deriveTaskKey(
 /**
  * Extended task key derivation that falls back to a stable synthetic key
  * for timer/heartbeat wakes. The synthetic key keeps the
- * `agentTaskSessions` row addressable across heartbeats so the row can be
- * cleared and re-keyed deterministically. Since PF-4 (#4838), generic
- * `heartbeat_timer` wakes go through `shouldResetTaskSessionForWake` and
- * start a fresh session; issue/task-scoped timer wakes keep their explicit
- * task key so recurring issue work can reuse its task session.
+ * `agentTaskSessions` row addressable across heartbeats so generic timer
+ * wakes can reuse adapter-native prompt caches instead of starting every
+ * interval from a fresh session.
  *
  * The synthetic key is only used when:
  * - No explicit task/issue key exists in the context
@@ -2157,7 +2155,8 @@ export function deriveTaskKeyWithHeartbeatFallback(
   if (explicit) return explicit;
 
   const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
-  if (wakeSource === "timer") return HEARTBEAT_TASK_KEY;
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  if (wakeSource === "timer" || wakeReason === "heartbeat_timer") return HEARTBEAT_TASK_KEY;
 
   return null;
 }
@@ -2169,19 +2168,16 @@ export function shouldResetTaskSessionForWake(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   const hasExplicitTaskContext = Boolean(deriveTaskKey(contextSnapshot, null));
-  if (wakeReason === "heartbeat_timer") {
-    // Generic timer wakes are exploratory, but timer wakes that already carry
-    // issue/task context are continuations of scoped work and should keep the
-    // task session cache warm.
-    return !hasExplicitTaskContext;
-  }
   if (
     wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested"
   ) {
-    return true;
+    // The first run for a task still starts fresh because no task session row
+    // exists yet. Repeated assignment/review wakes for the same issue should
+    // not discard a valid saved session solely because of the wake reason.
+    return !hasExplicitTaskContext;
   }
   return false;
 }
@@ -2281,14 +2277,12 @@ export function describeSessionResetReason(
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
-  if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
-  if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
-  if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
-  // PF-4: paired with shouldResetTaskSessionForWake — keep the reason wording
-  // explicit so run logs make session reuse/reset behavior legible.
-  if (wakeReason === "heartbeat_timer" && !deriveTaskKey(contextSnapshot, null)) {
-    return "wake reason is heartbeat_timer (timer-driven wake starts fresh)";
+  const hasExplicitTaskContext = Boolean(deriveTaskKey(contextSnapshot, null));
+  if (!hasExplicitTaskContext) {
+    if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+    if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
+    if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
+    if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
   }
   return null;
 }
