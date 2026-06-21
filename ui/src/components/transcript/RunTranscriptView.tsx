@@ -20,6 +20,8 @@ const RAW_VIRTUALIZATION_THRESHOLD = 300;
 const RAW_OVERSCAN_ROWS = 40;
 const RAW_ESTIMATED_ROW_HEIGHT = 36;
 const RAW_INITIAL_ROWS = 180;
+const CODEX_RMCP_INVALID_GRANT_NOISE_RE =
+  /^ERROR\s+rmcp::transport::worker:\s+worker quit with fatal:\s+Transport channel closed,\s+when Auth\(TokenRefreshFailed\("Server returned error response:\s+invalid_grant:\s+Invalid refresh token"\)\)$/i;
 
 interface RunTranscriptViewProps {
   entries: TranscriptEntry[];
@@ -319,8 +321,18 @@ function parseSystemActivity(text: string): { activityId?: string; name: string;
 }
 
 function shouldHideNiceModeStderr(text: string): boolean {
-  const normalized = compactWhitespace(text).toLowerCase();
-  return normalized.startsWith("[paperclip] skipping saved session resume");
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return true;
+  return lines.every((line) => {
+    const normalized = compactWhitespace(line).toLowerCase();
+    return (
+      normalized.startsWith("[paperclip] skipping saved session resume") ||
+      CODEX_RMCP_INVALID_GRANT_NOISE_RE.test(line)
+    );
+  });
 }
 
 function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {

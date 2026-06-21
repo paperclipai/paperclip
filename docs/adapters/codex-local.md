@@ -79,3 +79,15 @@ The environment test checks:
 - Working directory is absolute and available (auto-created if missing and permitted)
 - Authentication signal (`OPENAI_API_KEY` presence)
 - A live hello probe (`codex exec --json -` with prompt `Respond with hello.`) to verify the CLI can actually run
+
+## Known stderr Noise
+
+Successful `codex_local` runs may emit this exact rmcp transport line on stderr:
+
+```text
+ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(TokenRefreshFailed("Server returned error response: invalid_grant: Invalid refresh token"))
+```
+
+This is known-benign ambient MCP transport noise when the run otherwise continues and reaches a normal terminal state. Paperclip keeps the raw stderr in run logs, but operator-facing liveness and transcript summaries treat only this exact line as noise so it is not misattributed as a venture credential, Railway, or platform auth outage.
+
+Do not generalize this rule to other auth, token, `invalid_grant`, or refresh-token failures. Any nearby but non-identical auth/token failure remains actionable and should still be escalated through normal diagnostics.

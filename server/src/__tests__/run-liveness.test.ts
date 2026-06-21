@@ -38,6 +38,27 @@ describe("run liveness classifier", () => {
     expect(classification.actionability).toBe("unknown");
   });
 
+  it("ignores chronic codex rmcp invalid_grant stderr as ambient noise", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      stderrExcerpt:
+        'ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(TokenRefreshFailed("Server returned error response: invalid_grant: Invalid refresh token"))',
+    });
+
+    expect(classification.livenessState).toBe("empty_response");
+    expect(classification.actionability).toBe("unknown");
+  });
+
+  it("still escalates unrelated token/auth stderr", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      stderrExcerpt: "Fatal: cannot proceed because primary agent auth needs a valid access token.",
+    });
+
+    expect(classification.livenessState).toBe("blocked");
+    expect(classification.actionability).toBe("blocked_external");
+  });
+
   it("treats issue comments, documents, products, and actions as progress", () => {
     const latestEvidenceAt = new Date("2026-04-18T12:00:00Z");
     const classification = classifyRunLiveness({
