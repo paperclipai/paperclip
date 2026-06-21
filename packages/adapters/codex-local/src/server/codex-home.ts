@@ -7,6 +7,7 @@ import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-uti
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
+const AUTH_CREDENTIAL_KEYS = /(?:openai[_-]?key|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|session|auth)/i;
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -14,6 +15,28 @@ function nonEmpty(value: string | undefined): string | null {
 
 export async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
+}
+
+function hasUsableAuthPayload(authPayload: unknown): boolean {
+  if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
+    return false;
+  }
+
+  for (const [key, value] of Object.entries(authPayload as Record<string, unknown>)) {
+    if (!AUTH_CREDENTIAL_KEYS.test(key)) continue;
+    if (key.toLowerCase() === "token_type") continue;
+    if (typeof value === "string" && value.trim().length > 0) return true;
+  }
+
+  return false;
+}
+
+function readApiKeyFromAuthPayload(authPayload: unknown): string | null {
+  if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
+    return null;
+  }
+  const raw = (authPayload as Record<string, unknown>).OPENAI_API_KEY;
+  return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
 }
 
 export function resolveSharedCodexHomeDir(
@@ -39,6 +62,59 @@ export function resolveManagedCodexHomeDir(
   return companyId
     ? path.resolve(instanceRoot, "companies", companyId, "codex-home")
     : path.resolve(instanceRoot, "codex-home");
+}
+
+/**
+ * True when `homePath` lives under the Paperclip-managed company tree
+ * (`<instanceRoot>/companies/<companyId>/...`). This covers both the shared
+ * company `codex-home` and the per-agent `agents/<agentId>/codex-home` set by
+ * the server-side isolation guard. A path outside that tree is a genuine
+ * external/user-supplied override that Paperclip must not seed or overwrite.
+ */
+export function isManagedCodexHomePath(
+  env: NodeJS.ProcessEnv,
+  companyId: string | undefined,
+  homePath: string,
+): boolean {
+  if (!companyId) return false;
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  const companyRoot = path.resolve(instanceRoot, "companies", companyId);
+  const resolved = path.resolve(homePath);
+  return resolved === companyRoot || resolved.startsWith(companyRoot + path.sep);
+}
+
+/**
+ * True when the Codex home has a usable `auth.json`. Uses `fs.access` (follows
+ * symlinks), so a dangling auth symlink whose source has been removed counts as
+ * no usable credentials.
+ */
+export async function codexHomeHasUsableAuth(home: string): Promise<boolean> {
+  const authPath = path.join(home, "auth.json");
+  if (!(await pathExists(authPath))) return false;
+  try {
+    const raw = await fs.readFile(authPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return hasUsableAuthPayload(parsed);
+  } catch {
+    return false;
+  }
+}
+
+async function codexHomeHasMatchingApiKeyAuth(home: string, apiKey: string): Promise<boolean> {
+  const authPath = path.join(home, "auth.json");
+  const existing = await fs.lstat(authPath).catch(() => null);
+  if (!existing || existing.isSymbolicLink()) return false;
+  try {
+    const raw = await fs.readFile(authPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return readApiKeyFromAuthPayload(parsed) === apiKey.trim();
+  } catch {
+    return false;
+  }
 }
 
 async function ensureParentDir(target: string): Promise<void> {
@@ -116,13 +192,20 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
 }
 
-export async function prepareManagedCodexHome(
+/**
+ * Seeds auth/config into an explicit Paperclip-managed `targetHome`. Symlinks
+ * `auth.json` from the shared source home (so ChatGPT-subscription credentials
+ * stay live and single-use refresh tokens are not copied), copies the static
+ * shared config files, and — when an API key is supplied — writes an API-key
+ * `auth.json` instead. Used both for the default company home and for the
+ * per-agent home set by the server isolation guard.
+ */
+export async function seedManagedCodexHome(
+  targetHome: string,
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
-  companyId?: string,
   options: { apiKey?: string | null } = {},
-): Promise<string> {
-  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+): Promise<void> {
   const apiKey = nonEmpty(options.apiKey ?? undefined);
 
   const sourceHome = resolveSharedCodexHomeDir(env);
@@ -168,6 +251,98 @@ export async function prepareManagedCodexHome(
       `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
     );
   }
+}
 
+export async function prepareManagedCodexHome(
+  env: NodeJS.ProcessEnv,
+  onLog: AdapterExecutionContext["onLog"],
+  companyId?: string,
+  options: { apiKey?: string | null } = {},
+): Promise<string> {
+  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+  await seedManagedCodexHome(targetHome, env, onLog, options);
   return targetHome;
+}
+
+export type ReconcileManagedCodexHomeStatus =
+  | "no_managed_home"
+  | "external_override"
+  | "already_seeded"
+  | "source_auth_missing"
+  | "seeded";
+
+export interface ReconcileManagedCodexHomeInput {
+  companyId: string | undefined;
+  configuredCodexHome: string | null | undefined;
+  apiKey?: string | null;
+  /**
+   * Set when the agent's persisted `OPENAI_API_KEY` is a secret binding that
+   * could not be resolved in this context (e.g. startup reconciliation, which
+   * never resolves secrets). When true and the home already has usable auth,
+   * reconciliation preserves that auth instead of downgrading it to the shared
+   * subscription symlink.
+   */
+  apiKeySecretBound?: boolean;
+  env?: NodeJS.ProcessEnv;
+  onLog?: AdapterExecutionContext["onLog"];
+}
+
+export interface ReconcileManagedCodexHomeResult {
+  status: ReconcileManagedCodexHomeStatus;
+  home: string | null;
+}
+
+const noopOnLog: AdapterExecutionContext["onLog"] = async () => {};
+
+/**
+ * Idempotently reconciles a persisted `codex_local` agent home. Phase 1 seeds
+ * managed homes at execute time; this is the backfill for agents that already
+ * carry a persisted (but unseeded) per-agent `CODEX_HOME` and have not run
+ * since the seeding fix landed. Shares the managed-home detection
+ * (`isManagedCodexHomePath`) and seeding (`seedManagedCodexHome`) logic so a
+ * genuine external/user override is never touched. Safe to re-run: when a valid
+ * `auth.json` is already present (and no API-key rewrite is requested) it is a
+ * no-op and reports `already_seeded`.
+ */
+export async function reconcileManagedCodexHome(
+  input: ReconcileManagedCodexHomeInput,
+): Promise<ReconcileManagedCodexHomeResult> {
+  const env = input.env ?? process.env;
+  const configured = nonEmpty(input.configuredCodexHome ?? undefined);
+  if (!configured) return { status: "no_managed_home", home: null };
+
+  const resolved = path.resolve(configured);
+  if (!isManagedCodexHomePath(env, input.companyId, resolved)) {
+    return { status: "external_override", home: resolved };
+  }
+
+  const apiKey = nonEmpty(input.apiKey ?? undefined);
+  const hadUsableAuth = await codexHomeHasUsableAuth(resolved);
+
+  // A secret-bound OPENAI_API_KEY cannot be resolved here, so we cannot rewrite
+  // it into auth.json. If the home already has usable auth — typically an
+  // API-key auth.json written at execute time when the secret WAS resolved —
+  // preserve it. Re-seeding without the key would delete that file and restore
+  // the shared subscription symlink, silently changing the agent's credentials
+  // on every boot while the persisted config still says "use the secret key".
+  if (input.apiKeySecretBound && hadUsableAuth) {
+    return { status: "already_seeded", home: resolved };
+  }
+
+  if (apiKey && await codexHomeHasMatchingApiKeyAuth(resolved, apiKey)) {
+    return { status: "already_seeded", home: resolved };
+  }
+
+  await seedManagedCodexHome(resolved, env, input.onLog ?? noopOnLog, { apiKey });
+
+  if (!apiKey && !(await codexHomeHasUsableAuth(resolved))) {
+    return { status: "source_auth_missing", home: resolved };
+  }
+
+  // Without an API key, seeding only changes disk state when auth was missing.
+  // With an API key, the matching-file short-circuit above filters out the
+  // already-seeded case before this write path.
+  const status: ReconcileManagedCodexHomeStatus =
+    !apiKey && hadUsableAuth ? "already_seeded" : "seeded";
+  return { status, home: resolved };
 }

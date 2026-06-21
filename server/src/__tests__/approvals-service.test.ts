@@ -135,3 +135,35 @@ describe("approvalService resolution idempotency", () => {
     );
   });
 });
+
+describe("approvalService.findOpenHireApprovalForAgent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the open hire approval the company/type/status/agentId filter yields", async () => {
+    const match = {
+      ...createApproval("pending"),
+      id: "approval-match",
+      payload: { agentId: "agent-1" },
+    };
+    // The company, type, open-status and payload->>'agentId' predicates run in
+    // SQL, so the DB hands back only the matching row.
+    const dbStub = createDbStub([[match]], []);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.findOpenHireApprovalForAgent("company-1", "agent-1");
+
+    expect(result?.id).toBe("approval-match");
+    expect(dbStub.selectWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns null when no open approval matches the agent", async () => {
+    const dbStub = createDbStub([[]], []);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.findOpenHireApprovalForAgent("company-1", "agent-1");
+
+    expect(result).toBeNull();
+  });
+});

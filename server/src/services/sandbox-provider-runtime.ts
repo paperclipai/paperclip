@@ -18,6 +18,8 @@ export interface AcquireSandboxLeaseInput {
   environmentId: string;
   heartbeatRunId: string;
   issueId: string | null;
+  agentId?: string | null;
+  executionWorkspaceId?: string | null;
 }
 
 export interface ResumeSandboxLeaseInput {
@@ -137,7 +139,7 @@ class FakeSandboxProvider implements SandboxProvider {
   async acquireLease(input: AcquireSandboxLeaseInput): Promise<SandboxLeaseHandle> {
     assertProviderConfig<FakeSandboxEnvironmentConfig>(this.provider, input.config);
     const providerLeaseId = input.config.reuseLease
-      ? `sandbox://fake/${input.environmentId}`
+      ? `sandbox://fake/${input.environmentId}/${input.executionWorkspaceId ?? "workspace"}/${input.agentId ?? "agent"}`
       : `sandbox://fake/${input.heartbeatRunId}/${randomUUID()}`;
 
     return {
@@ -329,6 +331,8 @@ export async function acquireSandboxProviderLease(input: {
   environmentId: string;
   heartbeatRunId: string;
   issueId: string | null;
+  agentId?: string | null;
+  executionWorkspaceId?: string | null;
   reusableProviderLeaseId?: string | null;
 }): Promise<SandboxLeaseHandle> {
   const provider = requireSandboxProvider(input.config.provider);
@@ -347,6 +351,8 @@ export async function acquireSandboxProviderLease(input: {
     environmentId: input.environmentId,
     heartbeatRunId: input.heartbeatRunId,
     issueId: input.issueId,
+    agentId: input.agentId,
+    executionWorkspaceId: input.executionWorkspaceId,
   });
 }
 

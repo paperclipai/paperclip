@@ -628,6 +628,123 @@ export async function inspectExecutionWorkspaceBaseDrift(input: {
   return { warnings, currentBaseRefSha, branchBaseRefSha };
 }
 
+async function localBranchExists(repoRoot: string, branch: string): Promise<boolean> {
+  return runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repoRoot)
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function remoteExists(repoRoot: string, remote: string): Promise<boolean> {
+  return runGit(["remote", "get-url", remote], repoRoot)
+    .then(() => true)
+    .catch(() => false);
+}
+
+// Resolve the authoritative base ref for a fresh worktree. A configured local
+// branch is mapped to its `origin/<branch>` counterpart so unpushed local
+// divergence never leaks into the task branch; remote-tracking refs, SHAs, and
+// tags are used verbatim, and an unset/`HEAD` base falls back to the detected
+// default branch (which already prefers `origin/master`).
+async function resolveAuthoritativeBaseRef(
+  repoRoot: string,
+  configuredBaseRef: string | null,
+): Promise<{ baseRef: string; warnings: string[]; refreshed: boolean }> {
+  const warnings: string[] = [];
+  const detectOrHead = async () => (await detectDefaultBranch(repoRoot)) ?? "HEAD";
+
+  const configured = configuredBaseRef?.trim();
+  if (!configured || configured === "HEAD") {
+    return { baseRef: await detectOrHead(), warnings, refreshed: false };
+  }
+
+  if (parseRemoteTrackingRef(configured)) {
+    return { baseRef: configured, warnings, refreshed: false };
+  }
+
+  if (await localBranchExists(repoRoot, configured)) {
+    const remoteCandidate = `origin/${configured}`;
+    // Refresh here and keep the warnings; the caller skips its own refresh of
+    // the returned ref (see `refreshed`) so we never fetch the same ref twice.
+    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate));
+    if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
+      return { baseRef: remoteCandidate, warnings, refreshed: true };
+    }
+    if (await remoteExists(repoRoot, "origin")) {
+      warnings.push(
+        `Configured base ref "${configured}" is a local branch with no matching origin/${configured}; basing the execution workspace on the local ref, which may include unpushed commits.`,
+      );
+    }
+    return { baseRef: configured, warnings, refreshed: false };
+  }
+
+  return { baseRef: configured, warnings, refreshed: false };
+}
+
+// Auto-refresh a reused worktree to the latest base only when it is provably
+// unstarted: no task commits past the base and a clean tree (including untracked
+// files). This pulls an idle worktree forward to the freshest `origin/master`
+// after a long planning phase without ever destroying in-progress work. Only
+// remote-tracking bases are eligible; local-only bases keep warn-only drift.
+async function refreshUnstartedWorktreeToBase(input: {
+  repoRoot: string;
+  worktreePath: string;
+  branchName: string | null;
+  baseRef: string;
+  currentBaseRefSha: string;
+  recorder?: WorkspaceOperationRecorder | null;
+}): Promise<{ refreshed: boolean; baseRefSha: string | null }> {
+  if (!parseRemoteTrackingRef(input.baseRef)) {
+    return { refreshed: false, baseRefSha: null };
+  }
+
+  const headSha = await runGit(["rev-parse", "HEAD"], input.worktreePath).catch(() => null);
+  if (!headSha) {
+    return { refreshed: false, baseRefSha: null };
+  }
+  if (headSha === input.currentBaseRefSha) {
+    return { refreshed: false, baseRefSha: input.currentBaseRefSha };
+  }
+
+  const commitsPastBaseRaw = await runGit(
+    ["rev-list", "--count", `${input.currentBaseRefSha}..HEAD`],
+    input.worktreePath,
+  ).catch(() => null);
+  const commitsPastBase = commitsPastBaseRaw === null ? null : Number.parseInt(commitsPastBaseRaw, 10);
+  if (commitsPastBase === null || !Number.isFinite(commitsPastBase) || commitsPastBase > 0) {
+    return { refreshed: false, baseRefSha: null };
+  }
+
+  // Force `--untracked-files=all` so untracked files are counted regardless of a
+  // local `status.showUntrackedFiles=no`; otherwise the clean-tree guard could
+  // pass and the `reset --hard` below would destroy untracked work.
+  const status = await runGit(
+    ["status", "--porcelain", "--untracked-files=all"],
+    input.worktreePath,
+  ).catch(() => null);
+  if (status === null || status.trim().length > 0) {
+    return { refreshed: false, baseRefSha: null };
+  }
+
+  await recordGitOperation(input.recorder, {
+    phase: "worktree_prepare",
+    args: ["reset", "--hard", input.currentBaseRefSha],
+    cwd: input.worktreePath,
+    metadata: {
+      repoRoot: input.repoRoot,
+      worktreePath: input.worktreePath,
+      branchName: input.branchName,
+      baseRef: input.baseRef,
+      previousHeadSha: headSha,
+      baseRefSha: input.currentBaseRefSha,
+      refreshedUnstartedWorktree: true,
+    },
+    successMessage: `Refreshed unstarted git worktree at ${input.worktreePath} to ${input.baseRef} (${formatShortSha(input.currentBaseRefSha)})\n`,
+    failureLabel: `git reset --hard ${input.currentBaseRefSha}`,
+  });
+
+  return { refreshed: true, baseRefSha: input.currentBaseRefSha };
+}
+
 
 type GitWorktreeListEntry = {
   worktree: string;
@@ -1133,15 +1250,30 @@ export async function realizeExecutionWorkspace(input: {
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
-  const baseRef = configuredBaseRef
-    ?? await detectDefaultBranch(repoRoot)
-    ?? "HEAD";
-  const baseRefreshWarnings = await refreshRemoteTrackingBaseRef(repoRoot, baseRef);
+  const {
+    baseRef,
+    warnings: baseRefResolutionWarnings,
+    refreshed: baseRefAlreadyRefreshed,
+  } = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef);
+  const baseRefreshWarnings = [
+    ...baseRefResolutionWarnings,
+    ...(baseRefAlreadyRefreshed ? [] : await refreshRemoteTrackingBaseRef(repoRoot, baseRef)),
+  ];
   const currentBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
 
   await fs.mkdir(worktreeParentDir, { recursive: true });
 
   async function reuseExistingWorktree(reusablePath: string) {
+    const refresh = currentBaseRefSha
+      ? await refreshUnstartedWorktreeToBase({
+          repoRoot,
+          worktreePath: reusablePath,
+          branchName,
+          baseRef,
+          currentBaseRefSha,
+          recorder: input.recorder ?? null,
+        })
+      : { refreshed: false, baseRefSha: null };
     const baseDrift = await inspectExecutionWorkspaceBaseDrift({
       repoRoot,
       worktreePath: reusablePath,
@@ -1184,13 +1316,14 @@ export async function realizeExecutionWorkspace(input: {
     });
     return {
       ...input.base,
+      repoRef: baseRef,
       strategy: "git_worktree" as const,
       cwd: reusablePath,
       branchName,
       worktreePath: reusablePath,
       warnings: [...baseRefreshWarnings, ...baseDrift.warnings],
       created: false,
-      baseRefSha: baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha,
+      baseRefSha: refresh.baseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha,
     };
   }
 
@@ -1284,6 +1417,7 @@ export async function realizeExecutionWorkspace(input: {
 
   return {
     ...input.base,
+    repoRef: baseRef,
     strategy: "git_worktree",
     cwd: worktreePath,
     branchName,
@@ -1342,15 +1476,32 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
   if (await directoryExists(cwd)) {
+    const reuseBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
+    const reuseWorktreePath = realized.worktreePath ?? cwd;
+    const baseRefreshWarnings = reuseBaseRef
+      ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef)
+      : [];
+    const currentBaseRefSha = reuseBaseRef ? await resolveBaseRefSha(repoRoot, reuseBaseRef) : null;
+    const refresh = reuseBaseRef && currentBaseRefSha
+      ? await refreshUnstartedWorktreeToBase({
+          repoRoot,
+          worktreePath: reuseWorktreePath,
+          branchName: realized.branchName,
+          baseRef: reuseBaseRef,
+          currentBaseRefSha,
+          recorder: input.recorder ?? null,
+        })
+      : { refreshed: false, baseRefSha: null };
     const baseDrift = await inspectExecutionWorkspaceBaseDrift({
       repoRoot,
-      worktreePath: realized.worktreePath ?? cwd,
+      worktreePath: reuseWorktreePath,
       branchName: realized.branchName,
-      baseRef: input.workspace.baseRef ?? input.base.repoRef ?? null,
+      baseRef: reuseBaseRef,
       recordedBaseRefSha,
+      skipRefresh: true,
     });
-    realized.warnings = baseDrift.warnings;
-    realized.baseRefSha = recordedBaseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha;
+    realized.warnings = [...baseRefreshWarnings, ...baseDrift.warnings];
+    realized.baseRefSha = refresh.baseRefSha ?? recordedBaseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha;
     if (provisionCommand) {
       await provisionExecutionWorktree({
         strategy: {

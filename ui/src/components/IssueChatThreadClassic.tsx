@@ -36,6 +36,7 @@ import {
   type ChangeEvent,
   type DragEvent as ReactDragEvent,
   type ErrorInfo,
+  type KeyboardEvent as ReactKeyboardEvent,
   type Ref,
   type ReactNode,
 } from "react";
@@ -107,6 +108,7 @@ import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { IssueThreadInteractionCardClassic } from "./IssueThreadInteractionCardClassic";
 import { AgentIcon } from "./AgentIconPicker";
+import { RunStatusBadge } from "./interrupt-handoff/InterruptHandoffViews";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import {
   captureComposerViewportSnapshot,
@@ -145,6 +147,7 @@ import {
   summarizeToolResult,
 } from "../lib/transcriptPresentation";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { nextWorkMode, titleForPendingWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
@@ -791,36 +794,6 @@ export function resolveIssueChatHumanAuthor(args: {
     authorName: resolvedAuthorName,
     avatarUrl: profile?.image ?? null,
   };
-}
-
-function formatRunStatusLabel(status: string) {
-  switch (status) {
-    case "timed_out":
-      return "timed out";
-    default:
-      return status.replace(/_/g, " ");
-  }
-}
-
-function runStatusClass(status: string) {
-  switch (status) {
-    case "succeeded":
-      return "text-green-700 dark:text-green-300";
-    case "failed":
-    case "error":
-      return "text-red-700 dark:text-red-300";
-    case "timed_out":
-      return "text-orange-700 dark:text-orange-300";
-    case "running":
-      return "text-cyan-700 dark:text-cyan-300";
-    case "queued":
-    case "pending":
-      return "text-amber-700 dark:text-amber-300";
-    case "cancelled":
-      return "text-muted-foreground";
-    default:
-      return "text-foreground";
-  }
 }
 
 function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
@@ -2717,9 +2690,10 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
               >
                 {runId.slice(0, 8)}
               </Link>
-              <span className={cn("font-medium", runStatusClass(runStatus))}>
-                {formatRunStatusLabel(runStatus)}
-              </span>
+              <RunStatusBadge
+                status={runStatus}
+                operatorInterrupted={custom.runOperatorInterrupted === true}
+              />
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
                 className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -3608,7 +3582,15 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     );
   }
 
-  const isPlanning = pendingWorkMode === "planning";
+  const workModeOptions = workModeMetaList(false);
+  const pendingWorkModeMeta = workModeMetaFor(pendingWorkMode, false);
+  const PendingWorkModeIcon = pendingWorkModeMeta.icon;
+
+  function handleComposerKeyDown(evt: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!(evt.metaKey || evt.ctrlKey) || evt.code !== "Period") return;
+    evt.preventDefault();
+    setPendingWorkMode((current) => nextWorkMode(current, false));
+  }
 
   return (
     <div
@@ -3617,9 +3599,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       data-pending-work-mode={pendingWorkMode}
       className={cn(
         "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
-        isPlanning && "border-amber-500/60 bg-amber-50/60 supports-[backdrop-filter]:bg-amber-50/40 dark:border-amber-500/50 dark:bg-amber-500/[0.07] dark:supports-[backdrop-filter]:bg-amber-500/[0.07]",
+        pendingWorkModeMeta.classes.container,
         isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
       )}
+      onKeyDownCapture={handleComposerKeyDown}
       onDragEnterCapture={handleFileDragEnter}
       onDragOverCapture={handleFileDragOver}
       onDragLeaveCapture={handleFileDragLeave}
@@ -3732,52 +3715,60 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           {canToggleWorkMode ? (
             <Popover open={workModeMenuOpen} onOpenChange={setWorkModeMenuOpen}>
               <PopoverTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  data-testid="issue-chat-composer-work-mode-menu"
-                  title="More composer options"
-                >
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-44 p-1" align="start">
                 <button
                   type="button"
-                  data-testid="issue-chat-composer-work-mode-menu-toggle"
+                  data-testid="issue-chat-composer-work-mode-toggle"
                   data-pending-work-mode={pendingWorkMode}
+                  aria-haspopup="menu"
+                  aria-expanded={workModeMenuOpen}
+                  aria-pressed={pendingWorkMode !== "standard"}
+                  aria-keyshortcuts="Meta+Period Control+Period"
+                  title={titleForPendingWorkMode(pendingWorkMode, false)}
                   className={cn(
-                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
-                    isPlanning ? "text-amber-700 dark:text-amber-300" : "text-foreground",
+                    "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
+                    pendingWorkModeMeta.classes.chip,
                   )}
-                  onClick={() => {
-                    setPendingWorkMode((prev) => (prev === "planning" ? "standard" : "planning"));
-                    setWorkModeMenuOpen(false);
-                  }}
                 >
-                  {isPlanning ? (
-                    <Hammer className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                  ) : (
-                    <ClipboardList className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden />
-                  )}
-                  <span>{isPlanning ? "Switch to standard" : "Switch to planning"}</span>
+                  <PendingWorkModeIcon className="h-3.5 w-3.5" aria-hidden />
+                  <span>{pendingWorkModeMeta.label}</span>
+                  <ChevronDown className="h-3 w-3 opacity-60" aria-hidden />
                 </button>
+              </PopoverTrigger>
+              <PopoverContent
+                className="w-44 p-1"
+                align="start"
+                data-testid="issue-chat-composer-work-mode-menu"
+              >
+                {workModeOptions.map((option) => {
+                  const Icon = option.icon;
+                  const active = option.value === pendingWorkMode;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      data-testid={`issue-chat-composer-work-mode-menu-${option.value}`}
+                      data-pending-work-mode={pendingWorkMode}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                        active && "bg-accent",
+                        option.classes.menuItem,
+                      )}
+                      onClick={() => {
+                        setPendingWorkMode(option.value);
+                        setWorkModeMenuOpen(false);
+                      }}
+                    >
+                      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <span>{option.label}</span>
+                      {active ? <Check className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+                    </button>
+                  );
+                })}
+                <div className="mt-1 border-t px-2 py-1.5 text-[10px] text-muted-foreground">
+                  Cmd/Ctrl+. cycles modes
+                </div>
               </PopoverContent>
             </Popover>
-          ) : null}
-          {canToggleWorkMode && isPlanning ? (
-            <button
-              type="button"
-              data-testid="issue-chat-composer-work-mode-toggle"
-              data-pending-work-mode={pendingWorkMode}
-              aria-pressed
-              title="Planning mode is on for this submission. Click to switch to Standard."
-              onClick={() => setPendingWorkMode("standard")}
-              className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/60 bg-amber-500/15 px-2 py-1 text-xs text-amber-800 transition-colors hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
-            >
-              <ClipboardList className="h-3.5 w-3.5" aria-hidden />
-              <span>Planning</span>
-            </button>
           ) : null}
         </div>
 

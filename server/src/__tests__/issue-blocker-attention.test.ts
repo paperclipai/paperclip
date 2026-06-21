@@ -255,6 +255,49 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("ignores cancelled direct children when counting unresolved blocker attention", async () => {
+    const { companyId, agentId } = await createCompany("PBD");
+    const parentId = await insertIssue({ companyId, identifier: "PBD-1", title: "Parent", status: "blocked" });
+    const activeBlockerOneId = await insertIssue({
+      companyId,
+      identifier: "PBD-2",
+      title: "Running dependency one",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    const activeBlockerTwoId = await insertIssue({
+      companyId,
+      identifier: "PBD-3",
+      title: "Running dependency two",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await insertIssue({
+      companyId,
+      identifier: "PBD-4",
+      title: "Cancelled child",
+      status: "cancelled",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: activeBlockerOneId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: activeBlockerTwoId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: activeBlockerOneId });
+    await activeRun({ companyId, agentId, issueId: activeBlockerTwoId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 2,
+      coveredBlockerCount: 2,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+    });
+    expect(parent?.blockerAttention?.sampleBlockerIdentifier).not.toBe("PBD-4");
+  });
+
   it("covers recursive blocker chains when the downstream leaf has active work", async () => {
     const { companyId, agentId } = await createCompany("PBR");
     const parentId = await insertIssue({ companyId, identifier: "PBR-1", title: "Parent", status: "blocked" });

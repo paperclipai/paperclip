@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectGeminiAuthRequired,
   isGeminiTransientNetworkError,
   isGeminiSessionUnrecoverableError,
   parseGeminiJsonl,
@@ -133,6 +134,17 @@ describe("parseGeminiJsonl", () => {
 
     const result = parseGeminiJsonl(stdout);
     expect(result.errorMessage).toBe("boom");
+  });
+
+  it("classifies non-interactive manual authorization failures as auth required", () => {
+    const result = detectGeminiAuthRequired({
+      parsed: null,
+      stdout: "",
+      stderr:
+        "Error authenticating: FatalAuthenticationError: Manual authorization is required but the current session is non-interactive.",
+    });
+
+    expect(result.requiresAuth).toBe(true);
   });
 });
 
