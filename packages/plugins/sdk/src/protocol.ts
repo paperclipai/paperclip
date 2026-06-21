@@ -478,6 +478,8 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
   runId: string;
   workspaceMode?: string;
   requestedCwd?: string;
+  agentId?: string;
+  executionWorkspaceId?: string | null;
   /**
    * The harness/adapter type for THIS run (the agent's adapter), so a single
    * environment can serve mixed harnesses. When omitted, the driver falls back to
@@ -834,7 +836,13 @@ export interface WorkerToHostMethods {
 
   // Metrics
   "metrics.write": [
-    params: { name: string; value: number; tags?: Record<string, string> },
+    params: {
+      name: string;
+      value: number;
+      tags?: Record<string, string>;
+      /** Owning tenant for `plugin_logs.company_id` (cascade-delete scope). `null`/omitted = instance-scope. */
+      companyId?: string | null;
+    },
     result: void,
   ];
 
@@ -846,7 +854,13 @@ export interface WorkerToHostMethods {
 
   // Logger
   "log": [
-    params: { level: "info" | "warn" | "error" | "debug"; message: string; meta?: Record<string, unknown> },
+    params: {
+      level: "info" | "warn" | "error" | "debug";
+      message: string;
+      meta?: Record<string, unknown>;
+      /** Owning tenant for `plugin_logs.company_id` (cascade-delete scope). `null`/omitted = instance-scope. */
+      companyId?: string | null;
+    },
     result: void,
   ];
 

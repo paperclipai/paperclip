@@ -2,6 +2,7 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   issueGraphLivenessAutoRecoveryRequestSchema,
+  patchInstanceSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type DataRecoveryItemType,
@@ -9,6 +10,8 @@ import {
 import { forbidden, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { dataRecoveryService, heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
+import { environmentService } from "../services/environments.js";
+import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
 function assertCanManageInstanceSettings(req: Request) {
@@ -33,8 +36,51 @@ function parseDataRecoveryItemType(value: string | undefined): DataRecoveryItemT
 export function instanceSettingsRoutes(db: Db) {
   const router = Router();
   const svc = instanceSettingsService(db);
+  const environments = environmentService(db);
   const heartbeat = heartbeatService(db);
   const recovery = dataRecoveryService(db);
+
+  router.get("/instance/settings", async (req, res) => {
+    assertBoardOrgAccess(req);
+    res.json(await svc.get());
+  });
+
+  router.patch(
+    "/instance/settings",
+    validate(patchInstanceSettingsSchema),
+    async (req, res) => {
+      assertCanManageInstanceSettings(req);
+      if (Object.prototype.hasOwnProperty.call(req.body, "defaultEnvironmentId")) {
+        await assertEnvironmentSelectionForCompany(
+          environments,
+          "instance",
+          typeof req.body.defaultEnvironmentId === "string" ? req.body.defaultEnvironmentId : null,
+        );
+      }
+      const updated = await svc.update(req.body);
+      const actor = getActorInfo(req);
+      const companyIds = await svc.listCompanyIds();
+      await Promise.all(
+        companyIds.map((companyId) =>
+          logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "instance.settings.updated",
+            entityType: "instance_settings",
+            entityId: updated.id,
+            details: {
+              defaultEnvironmentId: updated.defaultEnvironmentId,
+              changedKeys: Object.keys(req.body).sort(),
+            },
+          }),
+        ),
+      );
+      res.json(updated);
+    },
+  );
 
   router.get("/instance/settings/general", async (req, res) => {
     // General settings (e.g. keyboardShortcuts) are readable by any
@@ -75,7 +121,8 @@ export function instanceSettingsRoutes(db: Db) {
 
   router.get("/instance/settings/experimental", async (req, res) => {
     // Experimental settings are readable by any authenticated org member
-    // or instance admin. Only PATCH requires instance-admin.
+    // or instance admin. Updating them remains instance-admin only because
+    // this payload includes instance-wide operational controls.
     assertBoardOrgAccess(req);
     res.json(await svc.getExperimental());
   });

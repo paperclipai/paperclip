@@ -26,6 +26,7 @@ import {
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
   upsertIssueFeedbackVoteSchema,
+  upsertIssueWatchdogSchema,
   // Project
   createProjectSchema,
   updateProjectSchema,
@@ -109,6 +110,7 @@ import {
   // Instance settings
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
   updateResourceMembershipSchema,
@@ -1382,6 +1384,36 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/issues/{id}/watchdog",
+  tags: ["issues"],
+  summary: "Get active issue watchdog",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/issues/{id}/watchdog",
+  tags: ["issues"],
+  summary: "Create or update an issue watchdog",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(upsertIssueWatchdogSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/issues/{id}/watchdog",
+  tags: ["issues"],
+  summary: "Disable an issue watchdog",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/issues/{id}/work-products",
   tags: ["issues"],
   summary: "List issue work products",
@@ -2426,6 +2458,23 @@ registry.registerPath({
 });
 
 // ─── Instance settings ────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/settings",
+  tags: ["instance"],
+  summary: "Get instance settings",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/instance/settings",
+  tags: ["instance"],
+  summary: "Update instance settings",
+  request: { body: jsonBody(patchInstanceSettingsSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
 
 registry.registerPath({
   method: "get",

@@ -113,12 +113,6 @@ export function CompanySettingsSidebar() {
         </div>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
-          <SidebarNavItem
-            to="/company/settings/environments"
-            label="Environments"
-            icon={MonitorCog}
-            end
-          />
           {showCloudUpstream ? (
             <SidebarNavItem
               to="/company/settings/cloud-upstream"
@@ -162,6 +156,12 @@ export function CompanySettingsSidebar() {
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/general`}
             label="General"
             icon={SlidersHorizontal}
+            end
+          />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
+            label="Environments"
+            icon={MonitorCog}
             end
           />
           <SidebarNavItem

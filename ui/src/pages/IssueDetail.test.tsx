@@ -1637,6 +1637,85 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Plan mode");
   });
 
+  it("passes ask work mode to the issue chat thread and renders the ask badge", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({ workMode: "ask" }));
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      issueWorkMode: "ask",
+    });
+    expect(container.textContent).toContain("Ask mode");
+  });
+
+  it("falls back to execCommand when copying the task from an insecure context", async () => {
+    const clipboardWrite = vi.fn(async () => {
+      throw new Error("Clipboard API blocked");
+    });
+    const execCommand = vi.fn(() => true);
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, "execCommand");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      identifier: "PAP-1",
+      title: "Copy me",
+      description: "Task body",
+    }));
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+
+      const copyButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.getAttribute("title") === "Copy task as markdown");
+      expect(copyButton).toBeTruthy();
+
+      await act(async () => {
+        copyButton!.click();
+        await Promise.resolve();
+      });
+
+      expect(clipboardWrite).toHaveBeenCalledWith("# PAP-1: Copy me\n\nTask body");
+      expect(execCommand).toHaveBeenCalledWith("copy");
+      expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+        title: "Copied to clipboard",
+        tone: "success",
+      }));
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, "clipboard", originalClipboard);
+      } else {
+        // @ts-expect-error test cleanup for optional browser API
+        delete navigator.clipboard;
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, "execCommand", originalExecCommand);
+      } else {
+        // @ts-expect-error test cleanup for optional browser API
+        delete document.execCommand;
+      }
+    }
+  });
+
   // PAP-140 flag-off parity: with the Conference Room Chat flag off, the task
   // thread surfaces must render master's behavior (classic fork, master copy,
   // master mention set).
@@ -1771,11 +1850,11 @@ describe("IssueDetail", () => {
     expect(typeof lastChatThreadProps?.onWorkModeChange).toBe("function");
 
     await act(async () => {
-      lastChatThreadProps?.onWorkModeChange?.("planning");
+      lastChatThreadProps?.onWorkModeChange?.("ask");
     });
     await flushReact();
 
-    expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { workMode: "planning" });
+    expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { workMode: "ask" });
     expect(localStorage.getItem("paperclip:issue-comment-draft:issue-1")).toBe("Draft follow-up message");
     expect(container.textContent).toContain("planning-notes.txt");
     localStorage.removeItem("paperclip:issue-comment-draft:issue-1");

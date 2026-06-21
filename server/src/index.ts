@@ -1,4 +1,9 @@
 /// <reference path="./types/express.d.ts" />
+// Kicks off the OTel bootstrap as early as possible (no-op unless
+// OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
+// instrumentationReady before opening DB connections or constructing the
+// HTTP server, so trace coverage does not depend on incidental timing.
+import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -36,6 +41,7 @@ import {
   heartbeatService,
   instanceSettingsService,
   reconcileCloudUpstreamRunsOnStartup,
+  reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -95,6 +101,9 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  // Tracing must be active (or have failed and logged) before the first DB
+  // connection or the HTTP server exists — see instrumentation.ts.
+  await instrumentationReady;
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
@@ -720,7 +729,29 @@ export async function startServer(): Promise<StartedServer> {
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
-  
+
+  // Backfill auth.json into any already-isolated codex_local managed home that
+  // was created by the #8272 isolation guard before the Phase 1 seeding fix.
+  // Idempotent; the Phase 1 execute-time seeding covers new strandings.
+  void reconcileCodexLocalManagedHomesOnStartup(db)
+    .then((result) => {
+      if (result.seeded > 0 || result.failed > 0) {
+        logger.warn(
+          { seeded: result.seeded, failed: result.failed, scanned: result.scanned },
+          "reconciled codex_local managed homes (backfilled missing auth)",
+        );
+      }
+      if (result.sourceAuthMissing > 0) {
+        logger.warn(
+          { sourceAuthMissing: result.sourceAuthMissing, scanned: result.scanned },
+          "could not backfill codex_local managed homes because shared Codex auth is missing",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
+    });
+
   // Force the instance onto the Kubernetes sandbox provider when configured via
   // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
   // queued runs so the policy + managed k8s environments are in place. A bad
@@ -794,6 +825,14 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
 
+      const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
+      if (taskWatchdogsReconciled.triggered > 0) {
+        logger.warn(
+          { ...taskWatchdogsReconciled },
+          "startup task-watchdog reconciliation triggered watchdog work",
+        );
+      }
+
       const scanned = await heartbeat.scanSilentActiveRuns();
       if (scanned.created > 0 || scanned.escalated > 0) {
         logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
@@ -861,6 +900,12 @@ export async function startServer(): Promise<StartedServer> {
           const reconciled = await heartbeat.reconcileIssueGraphLiveness();
           if (reconciled.escalationsCreated > 0) {
             logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
+          }
+        })
+        .then(async () => {
+          const reconciled = await heartbeat.reconcileTaskWatchdogs();
+          if (reconciled.triggered > 0) {
+            logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
           }
         })
         .then(async () => {
@@ -1003,6 +1048,10 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
         }
       }
+
+      // Flush buffered OTel spans before the process goes away; without this
+      // await the exporter's final batch is dropped on exit.
+      await shutdownInstrumentation();
 
       process.exit(0);
     };

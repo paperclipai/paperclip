@@ -161,13 +161,13 @@ describe("PluginSettings", () => {
     vi.clearAllMocks();
   });
 
-  it("routes environment-provider plugins to company environments when they have no instance config", async () => {
+  it("routes environment-provider plugins to instance environments when they have no instance config", async () => {
     const root = await renderSettings(container);
 
-    expect(container.textContent).toContain("Configure this plugin from Company Environments.");
-    expect(container.textContent).toContain("company-scoped instead of instance-global");
-    const link = container.querySelector('a[href="/company/settings/environments"]');
-    expect(link?.textContent).toContain("Open Company Environments");
+    expect(container.textContent).toContain("Configure this plugin from Instance Settings → Environments.");
+    expect(container.textContent).toContain("secret bindings still resolve through the selected company context");
+    const link = container.querySelector('a[href="/company/settings/instance/environments"]');
+    expect(link?.textContent).toContain("Open Environments");
 
     await act(async () => {
       root.unmount();

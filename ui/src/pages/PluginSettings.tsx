@@ -254,14 +254,14 @@ export function PluginSettings() {
                 />
               ) : environmentDrivers.length > 0 ? (
                 <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm">
-                  <p className="font-medium text-foreground">Configure this plugin from Company Environments.</p>
+                  <p className="font-medium text-foreground">Configure this plugin from Instance Settings → Environments.</p>
                   <p className="mt-1 text-muted-foreground">
-                    {driverLabel || "This plugin"} registers environment runtime settings there so credentials stay
-                    company-scoped instead of instance-global.
+                    {driverLabel || "This plugin"} registers environment runtime settings there so the execution target
+                    stays instance-scoped while secret bindings still resolve through the selected company context.
                   </p>
                   <div className="mt-3">
-                    <Link to="/company/settings/environments">
-                      <Button variant="outline" size="sm">Open Company Environments</Button>
+                    <Link to="/company/settings/instance/environments">
+                      <Button variant="outline" size="sm">Open Environments</Button>
                     </Link>
                   </div>
                 </div>
