@@ -41,6 +41,8 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { internalRecoveryRoutes } from "./routes/internal-recovery.js";
+import { heartbeatService } from "./services/heartbeat.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -142,6 +144,8 @@ export async function createApp(
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    /** config.heartbeatSchedulerIntervalMs — used by the internal recovery API */
+    heartbeatSchedulerIntervalMs?: number;
   },
 ) {
   const app = express();
@@ -187,6 +191,20 @@ export async function createApp(
 
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+
+  // Internal recovery API for the Cloudflare Workflow orchestrator.
+  // Mounted on the TOP-LEVEL app (not the /api sub-router) so the effective
+  // path is /internal/recovery/:actionId. Guarded by x-internal-secret.
+  // enqueueWakeup is obtained the same way agents.ts does: heartbeat.wakeup.
+  const internalRecoveryHeartbeat = heartbeatService(db, {
+    pluginWorkerManager: workerManager,
+  });
+  app.use(
+    internalRecoveryRoutes(db, {
+      enqueueWakeup: internalRecoveryHeartbeat.wakeup,
+      heartbeatIntervalMs: opts.heartbeatSchedulerIntervalMs ?? 30_000,
+    }),
+  );
 
   // Mount API routes
   const api = Router();
