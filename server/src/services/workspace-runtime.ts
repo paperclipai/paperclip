@@ -374,7 +374,8 @@ function renderWorkspaceTemplate(template: string, input: {
   repoRef: string | null;
 }) {
   const issueIdentifier = input.issue?.identifier ?? input.issue?.id ?? "issue";
-  const slug = sanitizeSlugPart(input.issue?.title, sanitizeSlugPart(issueIdentifier, "issue"));
+  const titleForSlug = (input.issue?.title ?? "").replace(/\b[A-Z]{2,}-\d+\b/g, "").trim() || null;
+  const slug = sanitizeSlugPart(titleForSlug, sanitizeSlugPart(issueIdentifier, "issue"));
   return renderTemplate(template, {
     issue: {
       id: input.issue?.id ?? "",
