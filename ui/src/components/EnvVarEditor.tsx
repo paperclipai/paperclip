@@ -416,6 +416,28 @@ export function EnvVarEditor({
           </p>
         );
       })()}
+      {(() => {
+        const reservedKeys = rows
+          .filter((r) => r.key.trim().startsWith("PAPERCLIP_") && r.key.trim() !== "")
+          .map((r) => r.key.trim());
+        if (reservedKeys.length === 0) return null;
+        return (
+          <p className="text-[11px] text-amber-700 dark:text-amber-400 inline-flex items-start gap-1">
+            <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
+            <span>
+              The following env vars use reserved{" "}
+              <span className="font-mono">PAPERCLIP_*</span> keys and will be ignored at runtime:{" "}
+              {reservedKeys.map((k, idx) => (
+                <span key={idx} className="font-mono">
+                  {k}
+                  {idx < reservedKeys.length - 1 ? ", " : ""}
+                </span>
+              ))}
+              . Remove or rename them.
+            </span>
+          </p>
+        );
+      })()}
       <p className="text-[11px] text-muted-foreground/60">
         Set KEY to the env var name the process expects, for example GH_TOKEN. Choose Secret to resolve a stored
         value at run start. PAPERCLIP_* variables are injected automatically.
