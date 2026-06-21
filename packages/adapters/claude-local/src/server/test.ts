@@ -19,8 +19,8 @@ import {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
-import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -42,11 +42,6 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
-}
-
-function commandLooksLike(command: string, expected: string): boolean {
-  const base = path.basename(command).toLowerCase();
-  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string): string | null {
@@ -181,7 +176,7 @@ export async function testEnvironment(
   const canRunProbe =
     checks.every((check) => check.code !== "claude_cwd_invalid" && check.code !== "claude_command_unresolvable");
   if (canRunProbe) {
-    if (!commandLooksLike(command, "claude")) {
+    if (!claudeCommandLooksLike(command, "claude")) {
       checks.push({
         code: "claude_hello_probe_skipped_custom_command",
         level: "info",
@@ -201,6 +196,29 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })();
 
+      let effectiveEffort = effort;
+      if (targetIsSandbox && effort) {
+        const supportsEffort = await claudeCommandSupportsEffortFlag({
+          runId,
+          command,
+          target,
+          cwd,
+          env,
+          timeoutSec: 45,
+          graceSec: 5,
+        });
+        if (supportsEffort === false) {
+          effectiveEffort = "";
+          checks.push({
+            code: "claude_effort_flag_unsupported",
+            level: "warn",
+            message:
+              "Claude CLI in the sandbox does not advertise --effort; the probe omitted the configured reasoning effort.",
+            hint: "Upgrade the sandbox CLI/template to a newer Claude Code release to restore reasoning-effort control.",
+          });
+        }
+      }
+
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
       args.push(...buildClaudeProbePermissionArgs({ dangerouslySkipPermissions, targetIsSandbox }));
       if (chrome) args.push("--chrome");
@@ -208,7 +226,7 @@ export async function testEnvironment(
       if (model && (!hasBedrock || isBedrockModelId(model))) {
         args.push("--model", model);
       }
-      if (effort) args.push("--effort", effort);
+      if (effectiveEffort) args.push("--effort", effectiveEffort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);
 

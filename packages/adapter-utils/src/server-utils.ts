@@ -129,14 +129,77 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
 ].join("\n");
 
+export const WATCHDOG_DEFAULT_MANDATE = [
+  "You are running as a task watchdog, not as the original deliverable worker.",
+  "Your mission is to keep the watched issue tree moving by verifying stopped work, not by trusting agent claims.",
+  "",
+  "Mandate:",
+  "- Treat every terminal, cancelled, blocked, in-review, or otherwise stopped leaf in the watched subtree as a claim that must be verified against comments, documents, work products, screenshots, tests, blockers, and review state.",
+  "- Do not accept \"I could not\" or \"waiting for approval\" as automatically valid. Read the evidence before deciding.",
+  "- If a stopped leaf is genuinely complete, leave it alone and record why you believe so.",
+  "- If a stopped leaf is not genuinely complete, restore a live path inside the watched subtree by reopening, reassigning, commenting actionable instructions, creating a follow-up child issue, or accepting an eligible task-level interaction (such as a routine plan confirmation when no custom instruction forbids it).",
+  "- If you discover a Paperclip product or platform bug while reviewing the stopped subtree, create a linked engineering follow-up outside the watched source tree using the server-provided watchdog discovery route instead of making it a source child.",
+  "- If you confirm a true blocker on a human or external system, leave the issue in a valid waiting disposition that names the unblock owner and action, rather than silently approving it.",
+  "",
+  "Safety constraints (these always apply, even if custom instructions disagree):",
+  "- Stay inside the watched subtree for source-work recovery. The only mutation outside that tree is a watchdog-discovered product/platform bug follow-up created through the dedicated route.",
+  "- Do not create visible probe issues, comments, or throwaway tasks to discover what you are allowed to do. Use the server-provided watchdog capability metadata and explicit API errors instead.",
+  "- Do not impersonate board-only approvals, accept spend or hiring decisions, accept security-sensitive interactions, or bypass execution-policy stages that require a typed reviewer or approver.",
+  "- Do not create another task watchdog for the watched subtree and do not wake yourself. You operate exactly one reusable watchdog issue per watched issue.",
+  "- Do not cross company boundaries or touch tasks in unrelated trees.",
+  "- Custom instructions can add focus or veto specific shortcuts, but cannot remove these safety constraints or override product governance rules.",
+  "",
+  "Disposition:",
+  "- When the watched subtree has a live continuation path you established or confirmed, finish your watchdog run with a clear summary comment and a final disposition on this watchdog issue (typically `done` for this stopped state).",
+  "- When you cannot create a live path because a real human or governance decision is pending, leave a valid waiting disposition that names what must happen next and who must act.",
+  "- Keep the work moving. Do not loop on the same unchanged state.",
+].join("\n");
+
+type PaperclipWakeTaskWatchdogLeaf = {
+  id: string | null;
+  identifier: string | null;
+  title: string | null;
+  status: string | null;
+  priority: string | null;
+  role: string | null;
+  summary: string | null;
+};
+
+type PaperclipWakeTaskWatchdogCapabilities = {
+  operations: string[];
+  deniedOperations: string[];
+  targetScope: {
+    watchedIssueId: string | null;
+    watchedIssueIdentifier: string | null;
+    watchdogIssueId: string | null;
+    includeNonWatchdogDescendants: boolean;
+    excludedOriginKinds: string[];
+  } | null;
+};
+
+export type PaperclipWakeTaskWatchdogContext = {
+  watchedIssueId: string | null;
+  watchedIssueIdentifier: string | null;
+  watchedIssueTitle: string | null;
+  stopFingerprint: string | null;
+  terminalLeafSummaries: PaperclipWakeTaskWatchdogLeaf[];
+  customInstructions: string | null;
+  capabilities: PaperclipWakeTaskWatchdogCapabilities | null;
+};
+
 export interface PaperclipSkillEntry {
   key: string;
   runtimeName: string;
   source: string;
+  versionId?: string | null;
+  currentVersionId?: string | null;
   sourceStatus?: "available" | "missing";
   missingDetail?: string | null;
-  required?: boolean;
-  requiredReason?: string | null;
+}
+
+export interface PaperclipDesiredSkillEntry {
+  key: string;
+  versionId: string | null;
 }
 
 export interface InstalledSkillTarget {
@@ -193,17 +256,10 @@ function skillLocationLabel(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function buildManagedSkillOrigin(entry: { required?: boolean }): Pick<
+function buildManagedSkillOrigin(): Pick<
   AdapterSkillEntry,
   "origin" | "originLabel" | "readOnly"
 > {
-  if (entry.required) {
-    return {
-      origin: "paperclip_required",
-      originLabel: "Required by Paperclip",
-      readOnly: false,
-    };
-  }
   return {
     origin: "company_managed",
     originLabel: "Managed by Paperclip",
@@ -429,6 +485,7 @@ type PaperclipWakePayload = {
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
+  taskWatchdog: PaperclipWakeTaskWatchdogContext | null;
   interactionKind: string | null;
   interactionStatus: string | null;
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
@@ -554,6 +611,102 @@ function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWake
   };
 }
 
+const MAX_WATCHDOG_INSTRUCTIONS_CHARS = 4_000;
+const MAX_WATCHDOG_LEAF_SUMMARIES = 25;
+const MAX_WATCHDOG_CAPABILITY_ITEMS = 50;
+
+function normalizePaperclipWakeTaskWatchdogLeaf(value: unknown): PaperclipWakeTaskWatchdogLeaf | null {
+  const leaf = parseObject(value);
+  const id = asString(leaf.id, "").trim() || null;
+  const identifier = asString(leaf.identifier, "").trim() || null;
+  const title = asString(leaf.title, "").trim() || null;
+  const status = asString(leaf.status, "").trim() || null;
+  const priority = asString(leaf.priority, "").trim() || null;
+  const role = asString(leaf.role, "").trim() || null;
+  const summary = asString(leaf.summary, "").trim() || null;
+  if (!id && !identifier && !title && !status && !summary) return null;
+  return { id, identifier, title, status, priority, role, summary };
+}
+
+function normalizeStringList(value: unknown, maxItems: number) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    .map((entry) => entry.trim())
+    .slice(0, maxItems);
+}
+
+function normalizePaperclipWakeTaskWatchdogCapabilities(value: unknown): PaperclipWakeTaskWatchdogCapabilities | null {
+  const capabilities = parseObject(value);
+  const operations = normalizeStringList(capabilities.operations, MAX_WATCHDOG_CAPABILITY_ITEMS);
+  const deniedOperations = normalizeStringList(capabilities.deniedOperations, MAX_WATCHDOG_CAPABILITY_ITEMS);
+  const targetScopeRaw = parseObject(capabilities.targetScope);
+  const targetScope = {
+    watchedIssueId: asString(targetScopeRaw.watchedIssueId, "").trim() || null,
+    watchedIssueIdentifier: asString(targetScopeRaw.watchedIssueIdentifier, "").trim() || null,
+    watchdogIssueId: asString(targetScopeRaw.watchdogIssueId, "").trim() || null,
+    includeNonWatchdogDescendants: asBoolean(targetScopeRaw.includeNonWatchdogDescendants, false),
+    excludedOriginKinds: normalizeStringList(targetScopeRaw.excludedOriginKinds, MAX_WATCHDOG_CAPABILITY_ITEMS),
+  };
+  const hasTargetScope = Boolean(
+    targetScope.watchedIssueId ||
+      targetScope.watchedIssueIdentifier ||
+      targetScope.watchdogIssueId ||
+      targetScope.includeNonWatchdogDescendants ||
+      targetScope.excludedOriginKinds.length > 0,
+  );
+  if (operations.length === 0 && deniedOperations.length === 0 && !hasTargetScope) return null;
+  return {
+    operations,
+    deniedOperations,
+    targetScope: hasTargetScope ? targetScope : null,
+  };
+}
+
+function normalizePaperclipWakeTaskWatchdog(value: unknown): PaperclipWakeTaskWatchdogContext | null {
+  const watchdog = parseObject(value);
+  const watchedIssueId = asString(watchdog.watchedIssueId, "").trim() || null;
+  const watchedIssueIdentifier = asString(watchdog.watchedIssueIdentifier, "").trim() || null;
+  const watchedIssueTitle = asString(watchdog.watchedIssueTitle, "").trim() || null;
+  const stopFingerprint = asString(watchdog.stopFingerprint, "").trim() || null;
+  const customInstructionsRaw = asString(watchdog.customInstructions, "");
+  const customInstructionsTrimmed = customInstructionsRaw.trim();
+  const customInstructions = customInstructionsTrimmed
+    ? customInstructionsTrimmed.length > MAX_WATCHDOG_INSTRUCTIONS_CHARS
+      ? customInstructionsTrimmed.slice(0, MAX_WATCHDOG_INSTRUCTIONS_CHARS)
+      : customInstructionsTrimmed
+    : null;
+  const terminalLeafSummaries = Array.isArray(watchdog.terminalLeafSummaries)
+    ? watchdog.terminalLeafSummaries
+        .slice(0, MAX_WATCHDOG_LEAF_SUMMARIES)
+        .map((entry) => normalizePaperclipWakeTaskWatchdogLeaf(entry))
+        .filter((entry): entry is PaperclipWakeTaskWatchdogLeaf => Boolean(entry))
+    : [];
+  const capabilities = normalizePaperclipWakeTaskWatchdogCapabilities(watchdog.capabilities);
+
+  if (
+    !watchedIssueId &&
+    !watchedIssueIdentifier &&
+    !watchedIssueTitle &&
+    !stopFingerprint &&
+    !customInstructions &&
+    terminalLeafSummaries.length === 0 &&
+    !capabilities
+  ) {
+    return null;
+  }
+
+  return {
+    watchedIssueId,
+    watchedIssueIdentifier,
+    watchedIssueTitle,
+    stopFingerprint,
+    terminalLeafSummaries,
+    customInstructions,
+    capabilities,
+  };
+}
+
 function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExecutionStage | null {
   const stage = parseObject(value);
   const wakeRoleRaw = asString(stage.wakeRole, "").trim().toLowerCase();
@@ -607,6 +760,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
   const continuationSummary = normalizePaperclipWakeContinuationSummary(payload.continuationSummary);
   const livenessContinuation = normalizePaperclipWakeLivenessContinuation(payload.livenessContinuation);
+  const taskWatchdog = normalizePaperclipWakeTaskWatchdog(payload.taskWatchdog);
   const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
     ? payload.childIssueSummaries
         .map((entry) => normalizePaperclipWakeChildIssueSummary(entry))
@@ -624,7 +778,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !taskWatchdog && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -640,6 +794,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     executionStage,
     continuationSummary,
     livenessContinuation,
+    taskWatchdog,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
     childIssueSummaries,
@@ -728,7 +883,7 @@ export function renderPaperclipWakePrompt(
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
   }
-  if (normalized.issue?.workMode === "planning") {
+  if (normalized.issue?.workMode === "planning" && !normalized.taskWatchdog) {
     const hasWakeComments = normalized.comments.length > 0;
     const acceptedPlanContinuation =
       !hasWakeComments &&
@@ -808,6 +963,70 @@ export function renderPaperclipWakePrompt(
         "",
       );
     }
+  }
+
+  if (normalized.taskWatchdog) {
+    const watchdog = normalized.taskWatchdog;
+    const watchedLabel =
+      watchdog.watchedIssueIdentifier ?? watchdog.watchedIssueId ?? "unknown";
+    lines.push(
+      "",
+      "## Task Watchdog Mandate",
+      "",
+      `Watched issue: ${watchedLabel}${watchdog.watchedIssueTitle ? ` ${watchdog.watchedIssueTitle}` : ""}`,
+    );
+    if (watchdog.stopFingerprint) {
+      lines.push(`Stop fingerprint: ${watchdog.stopFingerprint}`);
+    }
+    lines.push("", WATCHDOG_DEFAULT_MANDATE);
+    if (watchdog.capabilities) {
+      lines.push("", "Server-derived watchdog capability metadata:");
+      if (watchdog.capabilities.targetScope) {
+        const scope = watchdog.capabilities.targetScope;
+        lines.push(
+          `- Target scope: ${scope.watchedIssueIdentifier ?? scope.watchedIssueId ?? "unknown"} plus ${scope.includeNonWatchdogDescendants ? "non-watchdog descendants" : "no descendants"}.`,
+        );
+        if (scope.watchdogIssueId) {
+          lines.push(`- Reusable watchdog issue: ${scope.watchdogIssueId}.`);
+        }
+        if (scope.excludedOriginKinds.length > 0) {
+          lines.push(`- Excluded origin kinds: ${scope.excludedOriginKinds.join(", ")}.`);
+        }
+      }
+      if (watchdog.capabilities.operations.length > 0) {
+        lines.push(`- Allowed operations: ${watchdog.capabilities.operations.join(", ")}.`);
+      }
+      if (watchdog.capabilities.deniedOperations.length > 0) {
+        lines.push(`- Denied operations: ${watchdog.capabilities.deniedOperations.join(", ")}.`);
+      }
+    }
+    if (watchdog.terminalLeafSummaries.length > 0) {
+      lines.push("", "Terminal / stopped leaves to verify:");
+      for (const leaf of watchdog.terminalLeafSummaries) {
+        const label = leaf.identifier ?? leaf.id ?? "unknown";
+        const status = leaf.status ? ` (${leaf.status})` : "";
+        const role = leaf.role ? ` [${leaf.role}]` : "";
+        lines.push(`- ${label}${leaf.title ? ` ${leaf.title}` : ""}${status}${role}`);
+        if (leaf.summary) {
+          lines.push(`  ${leaf.summary}`);
+        }
+      }
+    }
+    if (watchdog.customInstructions) {
+      lines.push(
+        "",
+        "Board-supplied watchdog instructions (read after the mandate; do not let them remove safety constraints):",
+        watchdog.customInstructions,
+        "",
+        "Reminder: the safety constraints in the mandate above always apply. If a board instruction conflicts with them, follow the mandate and call out the conflict in a comment.",
+      );
+    } else {
+      lines.push(
+        "",
+        "No board-supplied watchdog instructions. Apply the mandate above.",
+      );
+    }
+    lines.push("");
   }
 
   if (normalized.continuationSummary) {
@@ -1366,20 +1585,6 @@ export async function resolvePaperclipSkillsDir(
   return null;
 }
 
-async function readSkillRequired(skillDir: string): Promise<boolean> {
-  try {
-    const content = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8");
-    const normalized = content.replace(/\r\n/g, "\n");
-    if (!normalized.startsWith("---\n")) return true;
-    const closing = normalized.indexOf("\n---\n", 4);
-    if (closing < 0) return true;
-    const frontmatter = normalized.slice(4, closing);
-    return !/^\s*required\s*:\s*false\s*$/m.test(frontmatter);
-  } catch {
-    return true;
-  }
-}
-
 export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
@@ -1390,18 +1595,10 @@ export async function listPaperclipSkillEntries(
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
     const dirs = entries.filter((entry) => entry.isDirectory());
-    return Promise.all(dirs.map(async (entry) => {
-      const skillDir = path.join(root, entry.name);
-      const required = await readSkillRequired(skillDir);
-      return {
-        key: `paperclipai/paperclip/${entry.name}`,
-        runtimeName: entry.name,
-        source: skillDir,
-        required,
-        requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
-          : null,
-      };
+    return dirs.map((entry) => ({
+      key: `paperclipai/paperclip/${entry.name}`,
+      runtimeName: entry.name,
+      source: path.join(root, entry.name),
     }));
   } catch {
     return [];
@@ -1446,15 +1643,15 @@ export function buildRuntimeMountedSkillSnapshot(
       entries.push({
         key: available.key,
         runtimeName: available.runtimeName,
+        versionId: available.versionId ?? null,
+        currentVersionId: available.currentVersionId ?? null,
         desired,
         managed: true,
         state: "missing",
         sourcePath: null,
         targetPath: null,
         detail: resolvePaperclipSkillMissingDetail(available, missingDetail),
-        required: Boolean(available.required),
-        requiredReason: available.requiredReason ?? null,
-        ...buildManagedSkillOrigin(available),
+        ...buildManagedSkillOrigin(),
       });
       continue;
     }
@@ -1463,6 +1660,8 @@ export function buildRuntimeMountedSkillSnapshot(
     entries.push({
       key: available.key,
       runtimeName: available.runtimeName,
+      versionId: available.versionId ?? null,
+      currentVersionId: available.currentVersionId ?? null,
       desired,
       managed: true,
       state: configured ? "configured" : "available",
@@ -1477,9 +1676,7 @@ export function buildRuntimeMountedSkillSnapshot(
               available,
             )
         : null,
-      required: Boolean(available.required),
-      requiredReason: available.requiredReason ?? null,
-      ...buildManagedSkillOrigin(available),
+      ...buildManagedSkillOrigin(),
     });
   }
 
@@ -1528,6 +1725,10 @@ export function buildRuntimeMountedSkillSnapshot(
     supported,
     mode,
     desiredSkills,
+    desiredSkillEntries: desiredSkills.map((key) => ({
+      key,
+      versionId: availableByKey.get(key)?.versionId ?? null,
+    })),
     entries,
     warnings,
   };
@@ -1560,6 +1761,8 @@ export function buildPersistentSkillSnapshot(
       entries.push({
         key: available.key,
         runtimeName: available.runtimeName,
+        versionId: available.versionId ?? null,
+        currentVersionId: available.currentVersionId ?? null,
         desired,
         managed: true,
         state: "missing",
@@ -1569,9 +1772,7 @@ export function buildPersistentSkillSnapshot(
           available,
           missingDetail,
         ),
-        required: Boolean(available.required),
-        requiredReason: available.requiredReason ?? null,
-        ...buildManagedSkillOrigin(available),
+        ...buildManagedSkillOrigin(),
       });
       continue;
     }
@@ -1595,15 +1796,15 @@ export function buildPersistentSkillSnapshot(
     entries.push({
       key: available.key,
       runtimeName: available.runtimeName,
+      versionId: available.versionId ?? null,
+      currentVersionId: available.currentVersionId ?? null,
       desired,
       managed,
       state,
       sourcePath: available.source,
       targetPath: path.join(skillsHome, available.runtimeName),
       detail,
-      required: Boolean(available.required),
-      requiredReason: available.requiredReason ?? null,
-      ...buildManagedSkillOrigin(available),
+      ...buildManagedSkillOrigin(),
     });
   }
 
@@ -1650,6 +1851,10 @@ export function buildPersistentSkillSnapshot(
     supported: true,
     mode: "persistent",
     desiredSkills,
+    desiredSkillEntries: desiredSkills.map((key) => ({
+      key,
+      versionId: availableByKey.get(key)?.versionId ?? null,
+    })),
     entries,
     warnings,
   };
@@ -1668,15 +1873,18 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
       key,
       runtimeName,
       source,
+      versionId:
+        typeof entry.versionId === "string" && entry.versionId.trim().length > 0
+          ? entry.versionId.trim()
+          : null,
+      currentVersionId:
+        typeof entry.currentVersionId === "string" && entry.currentVersionId.trim().length > 0
+          ? entry.currentVersionId.trim()
+          : null,
       sourceStatus: entry.sourceStatus === "missing" ? "missing" : "available",
       missingDetail:
         typeof entry.missingDetail === "string" && entry.missingDetail.trim().length > 0
           ? entry.missingDetail.trim()
-          : null,
-      required: asBoolean(entry.required, false),
-      requiredReason:
-        typeof entry.requiredReason === "string" && entry.requiredReason.trim().length > 0
-          ? entry.requiredReason.trim()
           : null,
     });
   }
@@ -1714,22 +1922,41 @@ export async function readPaperclipSkillMarkdown(
 export function readPaperclipSkillSyncPreference(config: Record<string, unknown>): {
   explicit: boolean;
   desiredSkills: string[];
+  desiredSkillEntries: PaperclipDesiredSkillEntry[];
 } {
   const raw = config.paperclipSkillSync;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { explicit: false, desiredSkills: [] };
+    return { explicit: false, desiredSkills: [], desiredSkillEntries: [] };
   }
   const syncConfig = raw as Record<string, unknown>;
   const desiredValues = syncConfig.desiredSkills;
   const desired = Array.isArray(desiredValues)
-    ? desiredValues
-        .filter((value): value is string => typeof value === "string")
-        .map((value) => value.trim())
-        .filter(Boolean)
+    ? desiredValues.flatMap((value): PaperclipDesiredSkillEntry[] => {
+        if (typeof value === "string") {
+          const key = value.trim();
+          return key ? [{ key, versionId: null }] : [];
+        }
+        if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+          const record = value as Record<string, unknown>;
+          const key = typeof record.key === "string" ? record.key.trim() : "";
+          if (!key) return [];
+          const versionId = typeof record.versionId === "string" && record.versionId.trim()
+            ? record.versionId.trim()
+            : null;
+          return [{ key, versionId }];
+        }
+        return [];
+      })
     : [];
+  const byKey = new Map<string, PaperclipDesiredSkillEntry>();
+  for (const entry of desired) {
+    if (!byKey.has(entry.key)) byKey.set(entry.key, entry);
+  }
+  const desiredSkillEntries = Array.from(byKey.values());
   return {
     explicit: Object.prototype.hasOwnProperty.call(raw, "desiredSkills"),
-    desiredSkills: Array.from(new Set(desired)),
+    desiredSkills: desiredSkillEntries.map((entry) => entry.key),
+    desiredSkillEntries,
   };
 }
 
@@ -1758,24 +1985,19 @@ function canonicalizeDesiredPaperclipSkillReference(
 
 export function resolvePaperclipDesiredSkillNames(
   config: Record<string, unknown>,
-  availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean }>,
+  availableEntries: Array<{ key: string; runtimeName?: string | null }>,
 ): string[] {
   const preference = readPaperclipSkillSyncPreference(config);
-  const requiredSkills = availableEntries
-    .filter((entry) => entry.required)
-    .map((entry) => entry.key);
-  if (!preference.explicit) {
-    return Array.from(new Set(requiredSkills));
-  }
+  if (!preference.explicit) return [];
   const desiredSkills = preference.desiredSkills
     .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
     .filter(Boolean);
-  return Array.from(new Set([...requiredSkills, ...desiredSkills]));
+  return Array.from(new Set(desiredSkills));
 }
 
 export function writePaperclipSkillSyncPreference(
   config: Record<string, unknown>,
-  desiredSkills: string[],
+  desiredSkills: Array<string | PaperclipDesiredSkillEntry>,
 ): Record<string, unknown> {
   const next = { ...config };
   const raw = next.paperclipSkillSync;
@@ -1783,13 +2005,23 @@ export function writePaperclipSkillSyncPreference(
     typeof raw === "object" && raw !== null && !Array.isArray(raw)
       ? { ...(raw as Record<string, unknown>) }
       : {};
-  current.desiredSkills = Array.from(
-    new Set(
-      desiredSkills
-        .map((value) => value.trim())
-        .filter(Boolean),
-    ),
-  );
+  const entries = desiredSkills.flatMap((value): PaperclipDesiredSkillEntry[] => {
+    if (typeof value === "string") {
+      const key = value.trim();
+      return key ? [{ key, versionId: null }] : [];
+    }
+    const key = value.key.trim();
+    if (!key) return [];
+    return [{ key, versionId: value.versionId ?? null }];
+  });
+  const byKey = new Map<string, PaperclipDesiredSkillEntry>();
+  for (const entry of entries) {
+    if (!byKey.has(entry.key)) byKey.set(entry.key, entry);
+  }
+  const normalized = Array.from(byKey.values());
+  current.desiredSkills = normalized.some((entry) => entry.versionId)
+    ? normalized
+    : normalized.map((entry) => entry.key);
   next.paperclipSkillSync = current;
   return next;
 }

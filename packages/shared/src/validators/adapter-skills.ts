@@ -11,7 +11,6 @@ export const agentSkillStateSchema = z.enum([
 
 export const agentSkillOriginSchema = z.enum([
   "company_managed",
-  "paperclip_required",
   "user_installed",
   "external_unknown",
 ]);
@@ -22,13 +21,23 @@ export const agentSkillSyncModeSchema = z.enum([
   "ephemeral",
 ]);
 
+export const agentDesiredSkillEntrySchema = z.object({
+  key: z.string().min(1),
+  versionId: z.string().uuid().nullable(),
+});
+
+export const agentDesiredSkillSelectionSchema = z.union([
+  z.string().min(1),
+  agentDesiredSkillEntrySchema,
+]);
+
 export const agentSkillEntrySchema = z.object({
   key: z.string().min(1),
   runtimeName: z.string().min(1).nullable(),
+  versionId: z.string().uuid().nullable().optional(),
+  currentVersionId: z.string().uuid().nullable().optional(),
   desired: z.boolean(),
   managed: z.boolean(),
-  required: z.boolean().optional(),
-  requiredReason: z.string().nullable().optional(),
   state: agentSkillStateSchema,
   origin: agentSkillOriginSchema.optional(),
   originLabel: z.string().nullable().optional(),
@@ -44,12 +53,13 @@ export const agentSkillSnapshotSchema = z.object({
   supported: z.boolean(),
   mode: agentSkillSyncModeSchema,
   desiredSkills: z.array(z.string().min(1)),
+  desiredSkillEntries: z.array(agentDesiredSkillEntrySchema).optional(),
   entries: z.array(agentSkillEntrySchema),
   warnings: z.array(z.string()),
 });
 
 export const agentSkillSyncSchema = z.object({
-  desiredSkills: z.array(z.string().min(1)),
+  desiredSkills: z.array(agentDesiredSkillSelectionSchema),
 });
 
 export type AgentSkillSync = z.infer<typeof agentSkillSyncSchema>;

@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   companies,
+  companyMemberships,
   createDb,
   issueComments,
   issueReferenceMentions,
@@ -46,6 +47,7 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     await db.delete(issueReferenceMentions);
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -70,6 +72,14 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
       status: "todo",
       priority: "medium",
     });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "board-user-1",
+      status: "active",
+      membershipRole: "owner",
+      updatedAt: new Date(),
+    });
     return { companyId, issueId };
   }
 
@@ -83,7 +93,9 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
         companyIds: [companyId],
         memberships: [{ companyId, membershipRole: "owner", status: "active" }],
         source: "cloud_tenant",
-        isInstanceAdmin: true,
+        // cloud_tenant actors are never instance admins — reads flow through
+        // the active company membership seeded in seedIssue().
+        isInstanceAdmin: false,
       };
       next();
     });

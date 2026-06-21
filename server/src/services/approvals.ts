@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -91,6 +91,21 @@ export function approvalService(db: Db) {
         .from(approvals)
         .where(eq(approvals.id, id))
         .then((rows) => rows[0] ?? null),
+
+    findOpenHireApprovalForAgent: async (companyId: string, agentId: string) => {
+      const rows = await db
+        .select()
+        .from(approvals)
+        .where(
+          and(
+            eq(approvals.companyId, companyId),
+            eq(approvals.type, "hire_agent"),
+            inArray(approvals.status, resolvableStatuses),
+            sql`${approvals.payload} ->> 'agentId' = ${agentId}`,
+          ),
+        );
+      return rows[0] ?? null;
+    },
 
     create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
       db

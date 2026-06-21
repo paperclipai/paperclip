@@ -1,24 +1,19 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
-import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
 import {
-  acceptedManyRequestCheckboxConfirmationInteraction,
-  boundedRequestCheckboxConfirmationInteraction,
   pendingAskUserQuestionsInteraction,
   commentExpiredRequestConfirmationInteraction,
   disabledDeclineReasonRequestConfirmationInteraction,
   failedRequestConfirmationInteraction,
-  manyOptionsRequestCheckboxConfirmationInteraction,
-  pendingRequestCheckboxConfirmationInteraction,
   pendingRequestConfirmationInteraction,
   pendingSuggestedTasksInteraction,
-  staleTargetRequestCheckboxConfirmationInteraction,
   staleTargetRequestConfirmationInteraction,
   rejectedSuggestedTasksInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
@@ -33,10 +28,6 @@ vi.mock("@/lib/router", () => ({
     <a href={to} className={className}>{children}</a>
   ),
 }));
-
-function act(callback: () => void) {
-  flushSync(callback);
-}
 
 function renderCard(
   props: Partial<ComponentProps<typeof IssueThreadInteractionCard>> = {},
@@ -348,184 +339,97 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
-  it("exposes pending checkbox options with select-all and clear controls", () => {
-    const host = renderCard({
-      interaction: pendingRequestCheckboxConfirmationInteraction,
-      onAcceptInteraction: vi.fn(),
-    });
-
-    const checkboxes = [...host.querySelectorAll('[role="checkbox"]')];
-    expect(checkboxes).toHaveLength(
-      pendingRequestCheckboxConfirmationInteraction.payload.options.length,
+  it("renders a plan confirmation as a distinct state-coloured plan card", () => {
+    const pending = renderCard({ interaction: pendingRequestConfirmationInteraction });
+    const pendingShell = pending.firstElementChild as HTMLElement;
+    expect(pendingShell.className).toContain("border-violet-500/80");
+    expect(pendingShell.className).not.toContain("border-l-");
+    expect(pending.textContent).toContain("Plan");
+    expect(pending.textContent).toContain("In review");
+    // Approve is a neutral CTA (foreground/background), not the blue primary.
+    const approve = Array.from(pending.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve plan"),
     );
-    expect(checkboxes[0]?.getAttribute("aria-checked")).toBe("false");
-    expect(host.textContent).toContain("0 of 4 options selected");
+    expect(approve?.className).toContain("bg-foreground");
+    expect(approve?.className).not.toContain("bg-primary");
 
-    const selectAll = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent === "Select all",
-    );
-    act(() => {
-      selectAll?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(host.textContent).toContain("All 4 options selected");
+    act(() => root?.unmount());
+    pending.remove();
+    root = null;
 
-    const clear = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent === "Clear selection",
-    );
-    act(() => {
-      clear?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    const accepted = renderCard({
+      interaction: { ...pendingRequestConfirmationInteraction, status: "accepted" },
     });
-    expect(host.textContent).toContain("0 of 4 options selected");
+    expect((accepted.firstElementChild as HTMLElement).className).toContain("border-green-500/80");
+    expect(accepted.textContent).toContain("Approved");
+
+    act(() => root?.unmount());
+    accepted.remove();
+    root = null;
+
+    const rejected = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        status: "rejected",
+        result: { version: 1, outcome: "rejected", reason: "Tighten the spacing" },
+      },
+    });
+    expect((rejected.firstElementChild as HTMLElement).className).toContain("border-red-500/80");
+    expect(rejected.textContent).toContain("Changes requested");
   });
 
-  it("submits selected option ids on accept", async () => {
-    const onAcceptInteraction = vi.fn(async () => undefined);
-    const host = renderCard({
-      interaction: pendingRequestCheckboxConfirmationInteraction,
-      onAcceptInteraction,
-    });
-
-    const checkboxes = [...host.querySelectorAll('[role="checkbox"]')];
-    await act(async () => {
-      (checkboxes[0] as HTMLButtonElement).click();
-      (checkboxes[2] as HTMLButtonElement).click();
-    });
-
-    const confirmButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Delete selected"),
-    );
-    await act(async () => {
-      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(onAcceptInteraction).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "request_checkbox_confirmation" }),
-      undefined,
-      ["draft-march-report", "draft-scratch-notes"],
-    );
-  });
-
-  it("blocks accept until the minimum selection is met", async () => {
-    const onAcceptInteraction = vi.fn(async () => undefined);
+  it("attaches screenshots to a plan request-changes reason as markdown images", async () => {
+    const onRejectInteraction = vi.fn(async () => undefined);
+    const onUploadImage = vi.fn(async () => "https://cdn.example/shot.png");
     const host = renderCard({
       interaction: {
-        ...boundedRequestCheckboxConfirmationInteraction,
+        ...pendingRequestConfirmationInteraction,
         payload: {
-          ...boundedRequestCheckboxConfirmationInteraction.payload,
-          defaultSelectedOptionIds: [],
+          ...pendingRequestConfirmationInteraction.payload,
+          rejectRequiresReason: false,
         },
       },
-      onAcceptInteraction,
+      onRejectInteraction,
+      onUploadImage,
     });
 
-    const confirmButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Confirm regions"),
+    const declineButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Request revisions"),
     );
     await act(async () => {
-      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      declineButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(onAcceptInteraction).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("Select at least 2 options.");
-  });
-
-  it("disables remaining checkboxes once the max selection is reached", () => {
-    const host = renderCard({
-      interaction: boundedRequestCheckboxConfirmationInteraction,
-      onAcceptInteraction: vi.fn(),
-    });
-
-    // Defaults select us-west + us-east; bumping to the 3-item max should lock the rest.
-    const checkboxes = [...host.querySelectorAll('[role="checkbox"]')] as HTMLButtonElement[];
-    const unchecked = checkboxes.filter((box) => box.getAttribute("aria-checked") === "false");
-    act(() => {
-      unchecked[0]?.click();
-    });
-
-    const stillUnchecked = ([...host.querySelectorAll('[role="checkbox"]')] as HTMLButtonElement[])
-      .filter((box) => box.getAttribute("aria-checked") === "false");
-    expect(stillUnchecked.length).toBeGreaterThan(0);
-    expect(stillUnchecked.every((box) => box.hasAttribute("disabled"))).toBe(true);
-
-    const selectAllButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Select all"),
+    const attachButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Attach screenshots"),
     );
-    expect(selectAllButton?.hasAttribute("disabled")).toBe(true);
-  });
+    expect(attachButton).toBeTruthy();
 
-  it("summarizes large accepted selections by count and bounds the chips", () => {
-    const host = renderCard({
-      interaction: acceptedManyRequestCheckboxConfirmationInteraction,
+    const fileInput = host.querySelector('input[type="file"]') as HTMLInputElement | null;
+    expect(fileInput).toBeTruthy();
+    const file = new File(["x"], "bug.png", { type: "image/png" });
+    Object.defineProperty(fileInput!, "files", { value: [file], configurable: true });
+    Object.defineProperty(fileInput!, "value", {
+      value: "C:/fake/bug.png",
+      writable: true,
+      configurable: true,
     });
 
-    expect(host.textContent).toContain("Confirmed 42 of 100 options");
-    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(0);
-    // 42 selected, but only the first 8 labels render inline, then a "+N more" chip.
-    expect(host.textContent).toContain("+34 more");
-  });
+    await act(async () => {
+      fileInput!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onUploadImage).toHaveBeenCalledTimes(1);
 
-  it("expands the hidden accepted selections when the +N more chip is clicked", () => {
-    const host = renderCard({
-      interaction: acceptedManyRequestCheckboxConfirmationInteraction,
+    const saveButton = Array.from(host.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Request revisions"),
+    ).at(-1);
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const countSelectedChips = () =>
-      Array.from(host.querySelectorAll("*")).filter(
-        (node) => node.children.length === 0 && node.textContent?.trim().startsWith("Selected:"),
-      ).length;
-
-    expect(countSelectedChips()).toBe(8);
-
-    const moreButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("+34 more"),
+    expect(onRejectInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "request_confirmation" }),
+      "![bug.png](https://cdn.example/shot.png)",
     );
-    expect(moreButton).toBeTruthy();
-    moreButton?.focus();
-    expect(document.activeElement).toBe(moreButton);
-
-    act(() => {
-      moreButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(host.textContent).not.toContain("+34 more");
-    expect(countSelectedChips()).toBe(42);
-    expect(document.activeElement).toBe(moreButton);
-
-    const showLessButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Show less"),
-    );
-    expect(showLessButton).toBeTruthy();
-    expect(showLessButton).toBe(moreButton);
-
-    act(() => {
-      showLessButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(countSelectedChips()).toBe(8);
-    expect(host.textContent).toContain("+34 more");
-    expect(document.activeElement).toBe(moreButton);
-  });
-
-  it("stays compact and scrollable with around 100 options", () => {
-    const host = renderCard({
-      interaction: manyOptionsRequestCheckboxConfirmationInteraction,
-      onAcceptInteraction: vi.fn(),
-    });
-
-    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(100);
-    const scrollRegion = host.querySelector('[aria-label="Selectable options"]');
-    expect(scrollRegion?.className).toContain("max-h-80");
-    expect(scrollRegion?.className).toContain("overflow-y-auto");
-  });
-
-  it("renders stale-target expiry for checkbox confirmations", () => {
-    const host = renderCard({
-      interaction: staleTargetRequestCheckboxConfirmationInteraction,
-    });
-
-    expect(host.textContent).toContain("Expired by target change");
-    expect(host.textContent).toContain("Plan v3");
-    expect(host.textContent).toContain("Plan v4");
-    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(0);
   });
 });

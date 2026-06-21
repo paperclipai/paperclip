@@ -56,7 +56,7 @@ describe("sandbox provider runtime", () => {
       issueId: "issue-1",
     });
 
-    expect(lease.providerLeaseId).toBe("sandbox://fake/env-1");
+    expect(lease.providerLeaseId).toBe("sandbox://fake/env-1/workspace/agent");
     expect(lease.metadata).toEqual(expect.objectContaining({
       provider: "fake",
       image: "ubuntu:24.04",

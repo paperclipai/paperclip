@@ -255,6 +255,49 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("ignores cancelled direct children when counting unresolved blocker attention", async () => {
+    const { companyId, agentId } = await createCompany("PBD");
+    const parentId = await insertIssue({ companyId, identifier: "PBD-1", title: "Parent", status: "blocked" });
+    const activeBlockerOneId = await insertIssue({
+      companyId,
+      identifier: "PBD-2",
+      title: "Running dependency one",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    const activeBlockerTwoId = await insertIssue({
+      companyId,
+      identifier: "PBD-3",
+      title: "Running dependency two",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await insertIssue({
+      companyId,
+      identifier: "PBD-4",
+      title: "Cancelled child",
+      status: "cancelled",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: activeBlockerOneId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: activeBlockerTwoId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: activeBlockerOneId });
+    await activeRun({ companyId, agentId, issueId: activeBlockerTwoId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 2,
+      coveredBlockerCount: 2,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+    });
+    expect(parent?.blockerAttention?.sampleBlockerIdentifier).not.toBe("PBD-4");
+  });
+
   it("covers recursive blocker chains when the downstream leaf has active work", async () => {
     const { companyId, agentId } = await createCompany("PBR");
     const parentId = await insertIssue({ companyId, identifier: "PBR-1", title: "Parent", status: "blocked" });
@@ -693,5 +736,89 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       owner: { type: "agent", agentId },
       action: { label: "Choose disposition" },
     });
+  });
+
+  it("applies assigneeAgentId='null' as an IS NULL filter on the blocked-inbox path", async () => {
+    const { companyId, agentId } = await createCompany("BAN");
+    const unassignedParentId = await insertIssue({
+      companyId,
+      identifier: "BAN-1",
+      title: "Unassigned blocked parent",
+      status: "blocked",
+    });
+    const unassignedLeafId = await insertIssue({
+      companyId,
+      identifier: "BAN-2",
+      title: "Unassigned leaf",
+      status: "todo",
+    });
+    await block({ companyId, blockerIssueId: unassignedLeafId, blockedIssueId: unassignedParentId });
+
+    const assignedParentId = await insertIssue({
+      companyId,
+      identifier: "BAN-3",
+      title: "Assigned blocked parent",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+    const assignedLeafId = await insertIssue({
+      companyId,
+      identifier: "BAN-4",
+      title: "Unassigned leaf for assigned parent",
+      status: "todo",
+    });
+    await block({ companyId, blockerIssueId: assignedLeafId, blockedIssueId: assignedParentId });
+
+    const rows = await svc.list(companyId, { attention: "blocked", assigneeAgentId: "null" });
+    expect(rows.map((row) => row.id)).toEqual([unassignedParentId]);
+
+    await expect(svc.count(companyId, { attention: "blocked", assigneeAgentId: "null" })).resolves.toBe(1);
+  });
+
+  it("applies a UUID assigneeAgentId filter on the blocked-inbox path", async () => {
+    const { companyId, agentId } = await createCompany("BAU");
+    const unassignedParentId = await insertIssue({
+      companyId,
+      identifier: "BAU-1",
+      title: "Unassigned blocked parent",
+      status: "blocked",
+    });
+    const unassignedLeafId = await insertIssue({
+      companyId,
+      identifier: "BAU-2",
+      title: "Unassigned leaf",
+      status: "todo",
+    });
+    await block({ companyId, blockerIssueId: unassignedLeafId, blockedIssueId: unassignedParentId });
+
+    const assignedParentId = await insertIssue({
+      companyId,
+      identifier: "BAU-3",
+      title: "Assigned blocked parent",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+    const assignedLeafId = await insertIssue({
+      companyId,
+      identifier: "BAU-4",
+      title: "Unassigned leaf for assigned parent",
+      status: "todo",
+    });
+    await block({ companyId, blockerIssueId: assignedLeafId, blockedIssueId: assignedParentId });
+
+    const rows = await svc.list(companyId, { attention: "blocked", assigneeAgentId: agentId });
+    expect(rows.map((row) => row.id)).toEqual([assignedParentId]);
+
+    await expect(svc.count(companyId, { attention: "blocked", assigneeAgentId: agentId })).resolves.toBe(1);
+  });
+
+  it("rejects malformed assigneeAgentId filter values on the blocked-inbox path", async () => {
+    const { companyId } = await createCompany("BAM");
+    await expect(
+      svc.list(companyId, { attention: "blocked", assigneeAgentId: "not-a-uuid" }),
+    ).rejects.toThrow(/assigneeAgentId/i);
+    await expect(
+      svc.count(companyId, { attention: "blocked", assigneeAgentId: "not-a-uuid" }),
+    ).rejects.toThrow(/assigneeAgentId/i);
   });
 });
