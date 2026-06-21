@@ -27,9 +27,13 @@ vi.mock("../services/workflows-runtime.js", () => ({
   collectWorkflowRuntimeArtifacts: vi.fn(),
 }));
 
-vi.mock("@paperclipai/adapter-google-adk/server", () => ({
-  invokeGoogleAdk: vi.fn(),
-}));
+vi.mock("@paperclipai/adapter-google-adk/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-google-adk/server")>();
+  return {
+    ...actual,
+    invokeGoogleAdk: vi.fn(),
+  };
+});
 
 vi.mock("../workflow-run-jwt.js", () => ({
   createWorkflowRunJwt: vi.fn(() => "workflow-token"),
