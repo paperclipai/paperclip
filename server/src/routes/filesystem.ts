@@ -47,7 +47,9 @@ async function listFilesystemRoots() {
   if (process.platform === "win32") {
     return listWindowsRoots();
   }
-  return uniquePaths(["/", os.homedir()]);
+  // Restrict Unix roots to the user's home directory. Including "/" made
+  // isPathWithinRoot permit any absolute path, defeating containment.
+  return uniquePaths([os.homedir()]);
 }
 
 function normalizeRequestedPath(requestedPath: string) {
@@ -183,6 +185,13 @@ export function filesystemRoutes(opts: { deploymentMode: DeploymentMode }) {
     const resolvedPath = await resolveExistingPath(requestedPath);
     if (isDeniedPath(resolvedPath)) {
       throw forbidden("Path is not allowed");
+    }
+    // Re-validate the symlink-resolved path against the allowed roots. Without
+    // this, a symlink inside an allowed root whose target escapes the root
+    // (e.g. ~/escape -> /var/secrets) would pass the pre-resolution root check
+    // and expose out-of-root contents.
+    if (!roots.some((rootPath) => isPathWithinRoot(resolvedPath, rootPath))) {
+      throw forbidden("Resolved path is outside the allowed filesystem roots");
     }
 
     const stats = await fs.stat(resolvedPath);
