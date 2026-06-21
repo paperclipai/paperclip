@@ -58,3 +58,6 @@ tests/release-smoke/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+
+# Recovery-workflow go-live secrets (local only)
+.env.recovery-workflow.local
