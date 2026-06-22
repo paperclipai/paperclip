@@ -59,6 +59,7 @@ export {
   crossCompanyAgentGrantService,
   isAllowedCrossCompanyAgentSourceCompany,
   listAllowedCrossCompanyAgentSourceCompanyIds,
+  TWX_CROSS_COMPANY_SOURCE_COMPANY_ID,
 } from "./cross-company-agent-grants.js";
 export {
   backfillPrincipalAccessCompatibility,

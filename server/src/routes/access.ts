@@ -2427,6 +2427,7 @@ export function accessRoutes(
 ) {
   const router = Router();
   const access = accessService(db);
+  const crossCompanyGrants = crossCompanyAgentGrantService(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
   const routeInviteResolutionNetwork = opts.inviteResolutionNetwork

@@ -801,6 +801,7 @@ export function managementService(db: Db) {
     if (!companySummary) return null;
     const includeApprovals = options.includeApprovals ?? true;
 
+
     const projectIssueCounts = await db
       .select({
         projectId: issues.projectId,

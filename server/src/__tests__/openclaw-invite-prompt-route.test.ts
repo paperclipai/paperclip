@@ -42,6 +42,7 @@ vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   boardAuthService: () => mockBoardAuthService,
+  crossCompanyAgentGrantService: () => ({}),
   deduplicateAgentName: vi.fn(),
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),

@@ -23,7 +23,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { CROSS_COMPANY_AGENT_SOURCE_COMPANY_IDS_ENV_VAR } from "../services/cross-company-agent-grants.js";
+import { CROSS_COMPANY_AGENT_SOURCE_COMPANY_IDS_ENV_VAR, TWX_CROSS_COMPANY_SOURCE_COMPANY_ID } from "../services/cross-company-agent-grants.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

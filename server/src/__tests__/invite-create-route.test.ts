@@ -20,6 +20,7 @@ function registerModuleMocks() {
       assertCurrentBoardKey: vi.fn(),
       revokeBoardApiKey: vi.fn(),
     }),
+    crossCompanyAgentGrantService: () => ({}),
     deduplicateAgentName: vi.fn(),
     logActivity: (...args: unknown[]) => logActivityMock(...args),
     notifyHireApproved: vi.fn(),

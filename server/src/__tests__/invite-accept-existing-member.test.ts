@@ -24,6 +24,7 @@ vi.mock("../services/index.js", () => ({
     assertCurrentBoardKey: vi.fn(),
     revokeBoardApiKey: vi.fn(),
   }),
+  crossCompanyAgentGrantService: () => ({}),
   deduplicateAgentName: vi.fn(),
   logActivity: logActivityMock,
   notifyHireApproved: vi.fn(),

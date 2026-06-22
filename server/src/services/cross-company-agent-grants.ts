@@ -15,6 +15,8 @@ import { badRequest, notFound } from "../errors.js";
 export const CROSS_COMPANY_AGENT_SOURCE_COMPANY_IDS_ENV_VAR =
   "PAPERCLIP_CROSS_COMPANY_AGENT_SOURCE_COMPANY_IDS";
 
+export const TWX_CROSS_COMPANY_SOURCE_COMPANY_ID = "2db649fb-c269-41bc-a8da-0747c21ba2eb";
+
 export function listAllowedCrossCompanyAgentSourceCompanyIds() {
   return (process.env[CROSS_COMPANY_AGENT_SOURCE_COMPANY_IDS_ENV_VAR] ?? "")
     .split(",")
