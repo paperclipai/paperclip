@@ -24,7 +24,11 @@ import { parseCodexJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
-import { prepareManagedCodexHome } from "./codex-home.js";
+import {
+  isManagedCodexHomePath,
+  prepareManagedCodexHome,
+  seedCodexProbeHomeFromHostLogin,
+} from "./codex-home.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -239,6 +243,25 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
     });
   } else if (!targetIsRemote) {
+    const configuredCodexHome = isNonEmpty(env.CODEX_HOME) ? path.resolve(env.CODEX_HOME) : null;
+    const configuredHomeIsManaged =
+      configuredCodexHome != null && isManagedCodexHomePath(process.env, ctx.companyId, configuredCodexHome);
+    if (configuredHomeIsManaged) {
+      const seedResult = await seedCodexProbeHomeFromHostLogin(
+        configuredCodexHome,
+        process.env,
+        async () => {},
+      );
+      if (seedResult.copiedAuth) {
+        checks.push({
+          code: "codex_probe_auth_seeded_from_host_login",
+          level: "info",
+          message: "Seeded Codex probe authentication from the host login.",
+          detail: `Copied auth.json from ${path.join(seedResult.sourceHome, "auth.json")} into ${path.join(configuredCodexHome, "auth.json")}.`,
+        });
+      }
+    }
+
     // Local-only auth file check. On remote targets, the probe will surface
     // any missing-auth errors directly from the remote `codex` invocation.
     const codexHome = isNonEmpty(env.CODEX_HOME) ? env.CODEX_HOME : undefined;

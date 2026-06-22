@@ -6,6 +6,7 @@ import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-uti
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
+const COPIED_PROBE_LOGIN_FILES = ["auth.json", "config.toml"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const AUTH_CREDENTIAL_KEYS = /(?:openai[_-]?key|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|session|auth)/i;
 
@@ -177,6 +178,55 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   if (existing) return;
   await ensureParentDir(target);
   await fs.copyFile(source, target);
+}
+
+export interface SeedCodexProbeHomeResult {
+  sourceHome: string;
+  copiedAuth: boolean;
+}
+
+/**
+ * Seeds a managed CODEX_HOME used by the environment probe from the host login
+ * without symlinking auth. The probe may refresh tokens while proving auth
+ * works, so it gets an isolated copy and leaves the host login file untouched.
+ */
+export async function seedCodexProbeHomeFromHostLogin(
+  targetHome: string,
+  env: NodeJS.ProcessEnv,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<SeedCodexProbeHomeResult> {
+  const sourceHome = resolveSharedCodexHomeDir(env);
+  const seedFromShared = path.resolve(sourceHome) !== path.resolve(targetHome);
+  let copiedAuth = false;
+
+  await fs.mkdir(targetHome, { recursive: true });
+
+  if (seedFromShared) {
+    for (const name of COPIED_PROBE_LOGIN_FILES) {
+      const target = path.join(targetHome, name);
+      const existing = await fs.lstat(target).catch(() => null);
+      if (existing) continue;
+
+      const source = path.join(sourceHome, name);
+      if (!(await pathExists(source))) continue;
+
+      await ensureParentDir(target);
+      await fs.copyFile(source, target);
+      if (name === "auth.json") {
+        await fs.chmod(target, 0o600).catch(() => undefined);
+        copiedAuth = true;
+      }
+    }
+
+    if (copiedAuth) {
+      await onLog(
+        "stdout",
+        `[paperclip] Seeded Codex probe home "${targetHome}" from host login "${sourceHome}" (copied auth.json).\n`,
+      );
+    }
+  }
+
+  return { sourceHome, copiedAuth };
 }
 
 /**
