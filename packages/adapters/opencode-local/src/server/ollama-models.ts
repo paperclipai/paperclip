@@ -18,7 +18,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const DEFAULT_OLLAMA_URL = "http://192.168.54.238:11434";
+const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 
 export interface OllamaConfigDrift {

@@ -67,7 +67,7 @@ describe("resolveOllamaUrl", () => {
 
   it("falls back to the default when neither argument nor env is set", () => {
     delete process.env.PAPERCLIP_OLLAMA_URL;
-    expect(resolveOllamaUrl(undefined)).toBe("http://192.168.54.238:11434");
+    expect(resolveOllamaUrl(undefined)).toBe("http://127.0.0.1:11434");
   });
 });
 
@@ -154,9 +154,9 @@ describe("stripJsonc", () => {
   });
 
   it("never corrupts characters inside string literals", () => {
-    const input = '{"url":"http://192.168.54.238:11434/v1","weird":"a,}"}';
+    const input = '{"url":"http://127.0.0.1:11434/v1","weird":"a,}"}';
     const parsed = JSON.parse(stripJsonc(input)) as { url: string; weird: string };
-    expect(parsed.url).toBe("http://192.168.54.238:11434/v1");
+    expect(parsed.url).toBe("http://127.0.0.1:11434/v1");
     expect(parsed.weird).toBe("a,}");
   });
 });
@@ -167,7 +167,7 @@ describe("applyOllamaModels", () => {
       provider: {
         dev: {
           npm: "@ai-sdk/openai-compatible",
-          options: { baseURL: "http://192.168.54.238:11434/v1", timeout: 60000 },
+          options: { baseURL: "http://127.0.0.1:11434/v1", timeout: 60000 },
           models: { "old:1b": { name: "old:1b" }, "keep:7b": { name: "Custom Label" } },
         },
         other: { key: "value" },
@@ -189,7 +189,7 @@ describe("applyOllamaModels", () => {
     expect((dev.models as Record<string, { name: string }>)["keep:7b"].name).toBe("Custom Label");
     expect((dev.models as Record<string, { name: string }>)["new:9b"].name).toBe("new:9b");
     // untouched siblings
-    expect(dev.options).toEqual({ baseURL: "http://192.168.54.238:11434/v1", timeout: 60000 });
+    expect(dev.options).toEqual({ baseURL: "http://127.0.0.1:11434/v1", timeout: 60000 });
     expect((config.provider as Record<string, unknown>).other).toEqual({ key: "value" });
   });
 
@@ -221,7 +221,7 @@ describe("syncOllamaModels", () => {
       provider: {
         dev: {
           npm: "@ai-sdk/openai-compatible",
-          options: { baseURL: "http://192.168.54.238:11434/v1" },
+          options: { baseURL: "http://127.0.0.1:11434/v1" },
           models: { "old:1b": { name: "old:1b" } },
         },
         other: { key: "value" },
@@ -250,7 +250,7 @@ describe("syncOllamaModels", () => {
       provider: { dev: { options: { baseURL: string }; models: Record<string, unknown> }; other: unknown };
     };
     expect(Object.keys(written.provider.dev.models)).toEqual(["gemma4:31b", "qwen3.6:35b"]);
-    expect(written.provider.dev.options.baseURL).toBe("http://192.168.54.238:11434/v1");
+    expect(written.provider.dev.options.baseURL).toBe("http://127.0.0.1:11434/v1");
     expect(written.provider.other).toEqual({ key: "value" });
   });
 
@@ -273,7 +273,7 @@ describe("syncOllamaModels", () => {
   // local dev provider
   "provider": {
     "dev": {
-      "options": { "baseURL": "http://192.168.54.238:11434/v1" },
+      "options": { "baseURL": "http://127.0.0.1:11434/v1" },
       "models": {
         "old:1b": { "name": "old:1b" },
       },
@@ -290,7 +290,7 @@ describe("syncOllamaModels", () => {
     const written = JSON.parse(fs.readFileSync(file, "utf8")) as {
       provider: { dev: { options: { baseURL: string }; models: Record<string, unknown> } };
     };
-    expect(written.provider.dev.options.baseURL).toBe("http://192.168.54.238:11434/v1");
+    expect(written.provider.dev.options.baseURL).toBe("http://127.0.0.1:11434/v1");
     expect(Object.keys(written.provider.dev.models)).toEqual(["fresh:8b"]);
   });
 
