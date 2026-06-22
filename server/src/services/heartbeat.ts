@@ -56,6 +56,7 @@ import {
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
+import { dispatchRunStatusPush } from "./push-triggers.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -4913,6 +4914,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+      // Fire-and-forget Web Push for failure-ish (and opt-in succeeded) runs
+      // (TON-2315). `setRunStatus` is the single choke point for run status
+      // transitions, mirroring how `logActivity` fans out activity pushes.
+      void dispatchRunStatusPush(db, updated);
     }
 
     return updated;

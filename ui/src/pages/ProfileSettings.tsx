@@ -1,9 +1,18 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
+import { Bell, BellOff, Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
 import { assetsApi } from "@/api/assets";
+import {
+  currentPermission,
+  disablePushNotifications,
+  enablePushNotifications,
+  getExistingSubscriptionEndpoint,
+  isPushSupported,
+  isSecureContextAvailable,
+  isStandaloneDisplayMode,
+} from "@/lib/web-push";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -16,6 +25,119 @@ function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length >= 2) return `${parts[0]?.[0] ?? ""}${parts[parts.length - 1]?.[0] ?? ""}`.toUpperCase();
   return name.slice(0, 2).toUpperCase();
+}
+
+function NotificationsCard() {
+  const [supported] = useState(() => isPushSupported());
+  const [secureContext] = useState(() => isSecureContextAvailable());
+  const [permission, setPermission] = useState<NotificationPermission>(() => currentPermission());
+  const [subscribed, setSubscribed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const standalone = isStandaloneDisplayMode();
+
+  const refresh = useCallback(async () => {
+    if (!isPushSupported()) return;
+    setPermission(currentPermission());
+    const endpoint = await getExistingSubscriptionEndpoint().catch(() => null);
+    setSubscribed(Boolean(endpoint));
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  async function handleEnable() {
+    setBusy(true);
+    setError(null);
+    try {
+      await enablePushNotifications();
+      await refresh();
+      setSubscribed(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to enable notifications.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDisable() {
+    setBusy(true);
+    setError(null);
+    try {
+      await disablePushNotifications();
+      await refresh();
+      setSubscribed(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disable notifications.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="space-y-4 rounded-[28px] border border-border/70 bg-card p-6 shadow-sm">
+      <div className="flex items-center gap-2">
+        <Bell className="h-5 w-5 text-muted-foreground" />
+        <h2 className="text-base font-semibold">Push notifications</h2>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        Get system notifications on this device for approvals, comments, mentions, assignments, and
+        escalations — even when the app isn&apos;t open.
+      </p>
+
+      {!secureContext ? (
+        <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+          Push notifications require a secure connection (HTTPS). This instance is currently served over
+          plain HTTP, so notifications can&apos;t be enabled here yet. Once the control plane is served over
+          HTTPS, reload this page and enable notifications.
+        </p>
+      ) : !supported ? (
+        <p className="rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          This browser doesn&apos;t support push notifications.
+        </p>
+      ) : (
+        <>
+          {!standalone ? (
+            <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+              On iPhone/iPad, add Paperclip to your Home Screen and open it from there first — iOS only
+              delivers push notifications to installed (standalone) web apps.
+            </p>
+          ) : null}
+
+          {permission === "denied" ? (
+            <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              Notifications are blocked in your browser settings. Re-enable them for this site, then try
+              again.
+            </p>
+          ) : null}
+
+          {error ? (
+            <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {error}
+            </p>
+          ) : null}
+
+          <div className="flex items-center gap-3">
+            {subscribed ? (
+              <Button type="button" variant="outline" onClick={handleDisable} disabled={busy}>
+                {busy ? <LoaderCircle className="size-4 animate-spin" /> : <BellOff className="size-4" />}
+                Turn off notifications
+              </Button>
+            ) : (
+              <Button type="button" onClick={handleEnable} disabled={busy || permission === "denied"}>
+                {busy ? <LoaderCircle className="size-4 animate-spin" /> : <Bell className="size-4" />}
+                Enable notifications
+              </Button>
+            )}
+            <span className="text-xs text-muted-foreground">
+              {subscribed ? "Enabled on this device." : "Not enabled on this device."}
+            </span>
+          </div>
+        </>
+      )}
+    </section>
+  );
 }
 
 export function ProfileSettings() {
@@ -269,6 +391,8 @@ export function ProfileSettings() {
           </div>
         </form>
       </section>
+
+      <NotificationsCard />
     </div>
   );
 }
