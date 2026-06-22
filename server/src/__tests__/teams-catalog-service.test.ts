@@ -347,8 +347,8 @@ describe("teamsCatalogService", () => {
 
       const [importInput] = mockCompanyPortabilityService.importBundle.mock.calls.at(-1)!;
       const overrides = importInput.adapterOverrides as Record<string, { adapterType: string; adapterConfig?: { model?: string } }>;
-      // CTO has model: sonnet → claude-sonnet-4-6
-      expect(overrides["cto"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" } });
+      // CTO has model: opus → claude-opus-4-8
+      expect(overrides["cto"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-opus-4-8" } });
       // architect has model: opus → claude-opus-4-8
       expect(overrides["architect"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-opus-4-8" } });
       // code-reviewer has model: sonnet → claude-sonnet-4-6
@@ -414,7 +414,7 @@ describe("teamsCatalogService", () => {
       const [previewArg] = mockCompanyPortabilityService.previewImport.mock.calls.at(-1)!;
       const overrides = previewArg.adapterOverrides as Record<string, { adapterType: string; adapterConfig?: { model?: string } }>;
       // Preview must reflect what install writes: claude_local default + catalog model tiers.
-      expect(overrides["cto"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" } });
+      expect(overrides["cto"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-opus-4-8" } });
       expect(overrides["architect"]).toEqual({ adapterType: "claude_local", adapterConfig: { model: "claude-opus-4-8" } });
     });
 

@@ -37,6 +37,7 @@ function createAgent(id: string, name: string, icon: string, urlKey: string): Ag
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     lastHeartbeatAt: null,
+    notes: null,
     metadata: null,
     createdAt: now,
     updatedAt: now,

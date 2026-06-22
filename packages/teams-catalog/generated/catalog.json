@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-06-14T21:03:32.581Z",
+  "generatedAt": "2026-06-22T07:37:37.245Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -263,7 +263,7 @@
         "software-development"
       ],
       "counts": {
-        "agents": 6,
+        "agents": 7,
         "projects": 0,
         "tasks": 0,
         "routines": 0,
@@ -277,6 +277,7 @@
       "agentSlugs": [
         "architect",
         "code-reviewer",
+        "completeness-critic",
         "cto",
         "implementor-1",
         "implementor-2",
@@ -290,6 +291,7 @@
           "agentSlugs": [
             "architect",
             "code-reviewer",
+            "completeness-critic",
             "implementor-1",
             "implementor-2",
             "wiring-expert"
@@ -313,6 +315,7 @@
           "ref": "debugging-and-error-recovery",
           "agentSlugs": [
             "code-reviewer",
+            "completeness-critic",
             "implementor-1",
             "implementor-2",
             "wiring-expert"
@@ -372,38 +375,44 @@
         {
           "path": "agents/architect/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 2717,
-          "sha256": "5090f3cc8760ea7d57b837f57792a5f23f34295ea1181afde824864ef571d076"
+          "sizeBytes": 5779,
+          "sha256": "d348635d50b46ef63a016e3240d8ee31fefcb99cd9b413e67aad488231c8ee2d"
         },
         {
           "path": "agents/code-reviewer/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 2447,
-          "sha256": "08cfa804066300037f44705ce33085640e6438e148cf7d532b56828b25c99b4a"
+          "sizeBytes": 4007,
+          "sha256": "ad495b341cb9edf5a68ccd517226867ec5639d12c84d86a9a599353a4d9c298f"
+        },
+        {
+          "path": "agents/completeness-critic/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 5847,
+          "sha256": "5bd134ec3a07a839261725fcee8fc7c8fadd62d91ac7c4dc8d91b8bb1187cedf"
         },
         {
           "path": "agents/cto/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 3282,
-          "sha256": "7d84b6f79c47303212d9f6636bb641b17ca41dfeea3d3fa71b5d14008741c375"
+          "sizeBytes": 5674,
+          "sha256": "69033c7dfb0b909895e75fe6af62af6e15efb64f02b4541c1f2e11d3834ca36b"
         },
         {
           "path": "agents/implementor-1/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 4040,
-          "sha256": "a177283ec936046d211559be9a4c4bdde8cd467dda3ef0745bf27b2c446d11c6"
+          "sizeBytes": 4954,
+          "sha256": "36aa717dab24f9030b76c518915cdae42a36ba8c50bcf4dbe532843e5b1b75eb"
         },
         {
           "path": "agents/implementor-2/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 4165,
-          "sha256": "e2291d785af62607c13f3064e10cde227ff365dd636baf30679f976bc906af6e"
+          "sizeBytes": 5079,
+          "sha256": "c33147b0b9fa0c574126e765d966716227f858cb7a9168cf890b6581c65dc932"
         },
         {
           "path": "agents/wiring-expert/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 3640,
-          "sha256": "f743af511db28ecb1cb6aff2265abc1730d9d92fc78dd3bc56d032288fff8ca4"
+          "sizeBytes": 5131,
+          "sha256": "2b28c9c205c5e566625d6edced985d674dac8ccbf9f05ed42c33da69fd34eb73"
         },
         {
           "path": "skills/code-review/SKILL.md",
@@ -450,7 +459,7 @@
       ],
       "trustLevel": "markdown_only",
       "compatibility": "compatible",
-      "contentHash": "sha256:837c9934661104fd43bbadccc0d6704e8f8a8e5a469a0f931cf811a3218bc32f"
+      "contentHash": "sha256:8e3cc6fee5f2935ad4d4ab4fd25b8c822691f306b5f9f56c4b5ed4838a3cb82a"
     },
     {
       "id": "paperclipai:bundled:software-development:product-engineering",

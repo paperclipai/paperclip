@@ -544,6 +544,7 @@ function buildAcpxAgent({
     pausedAt: null,
     permissions: { canCreateAgents: false },
     lastHeartbeatAt: null,
+    notes: null,
     metadata: null,
     createdAt: new Date("2026-04-30T12:00:00.000Z"),
     updatedAt: new Date("2026-04-30T12:00:00.000Z"),

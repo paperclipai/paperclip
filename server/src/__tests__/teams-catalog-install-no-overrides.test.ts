@@ -151,13 +151,14 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
       .select({ id: agents.id, name: agents.name, reportsTo: agents.reportsTo })
       .from(agents)
       .where(eq(agents.companyId, companyId));
-    expect(rows.length).toBe(6);
+    expect(rows.length).toBe(7);
 
     const byName = new Map(rows.map((row) => [row.name, row]));
     expect([...byName.keys()].sort()).toEqual([
       "Architect",
       "CTO",
       "Code Reviewer",
+      "Completeness Critic",
       "Implementor 1",
       "Implementor 2",
       "Wiring Expert",
@@ -166,7 +167,7 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
     // CTO is the org root; every gate/impl agent reports to the CTO.
     const ctoId = byName.get("CTO")!.id;
     expect(byName.get("CTO")!.reportsTo).toBeNull();
-    for (const name of ["Architect", "Code Reviewer", "Wiring Expert", "Implementor 1", "Implementor 2"]) {
+    for (const name of ["Architect", "Code Reviewer", "Completeness Critic", "Wiring Expert", "Implementor 1", "Implementor 2"]) {
       expect(byName.get(name)!.reportsTo, `${name} should report to the CTO`).toBe(ctoId);
     }
   });
