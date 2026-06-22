@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, costEvents, createDb, heartbeatRuns } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,6 +47,7 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -54,6 +55,22 @@ describeEmbeddedPostgres("dashboard service", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("reports zero month spend when a company has no cost events", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.costs.monthSpendCents).toBe(0);
+    expect(summary.costs.monthUtilizationPercent).toBe(0);
   });
 
   it("aggregates the full 14-day run activity window without recent-run truncation", async () => {
