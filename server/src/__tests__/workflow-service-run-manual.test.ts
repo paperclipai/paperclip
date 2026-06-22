@@ -58,17 +58,23 @@ const mockPrepareInstrumentedWorkflowRuntime = vi.hoisted(() => vi.fn(async (inp
 })));
 const mockCollectWorkflowRuntimeArtifacts = vi.hoisted(() => vi.fn(async () => []));
 const mockCloseResolvedHandoff = vi.hoisted(() => vi.fn(async () => null));
+const mockCloseTerminalRunHandoffs = vi.hoisted(() => vi.fn(async () => []));
 const mockWorkflowHandoffBridgeService = vi.hoisted(() => vi.fn(() => ({
   closeResolvedHandoff: mockCloseResolvedHandoff,
+  closeTerminalRunHandoffs: mockCloseTerminalRunHandoffs,
 })));
 
 vi.mock("../storage/index.js", () => ({
   getStorageService: mockGetStorageService,
 }));
 
-vi.mock("@paperclipai/adapter-google-adk/server", () => ({
-  invokeGoogleAdk: mockInvokeGoogleAdk,
-}));
+vi.mock("@paperclipai/adapter-google-adk/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-google-adk/server")>();
+  return {
+    ...actual,
+    invokeGoogleAdk: mockInvokeGoogleAdk,
+  };
+});
 
 vi.mock("../services/workflows-runtime.js", () => ({
   analyzeWorkflowProject: mockAnalyzeWorkflowProject,
@@ -429,5 +435,78 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
     expect(run?.status).toBe("running");
     const [phase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, runId));
     expect(phase?.status).toBe("running");
+  });
+
+  it("cancels an active workflow run and closes pending handoffs", async () => {
+    const companyId = randomUUID();
+    const workflowId = randomUUID();
+    const runId = randomUUID();
+    const handoffId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(workflows).values({
+      id: workflowId,
+      companyId,
+      title: "Brief generator",
+      status: "active",
+      runnerType: "google_adk",
+      runnerConfig: { agentPath: "/tmp/agent.py" },
+      pipelineDefinition: { entrypoint: "agent.py", generatedAt: new Date(0).toISOString(), phases: [] },
+      pipelineSourceHash: null,
+    });
+    await db.insert(workflowRuns).values({
+      id: runId,
+      companyId,
+      workflowId,
+      status: "awaiting_human",
+      inputMarkdown: "generate",
+    });
+    await db.insert(workflowRunPhases).values({
+      companyId,
+      workflowRunId: runId,
+      phaseKey: "phase-1",
+      label: "Phase 1",
+      kind: "phase",
+      ordinal: 0,
+      status: "awaiting_human",
+    });
+    await db.insert(workflowHandoffs).values({
+      id: handoffId,
+      companyId,
+      workflowRunId: runId,
+      phaseKey: "phase-1",
+      kind: "approval",
+      status: "pending",
+      promptMarkdown: "Approve?",
+    });
+
+    const cancelled = await workflowService(db).cancelRun(runId, { userId: "board-user" });
+
+    expect(cancelled?.status).toBe("cancelled");
+    expect(cancelled?.error).toBe("Workflow run was cancelled by the board.");
+    expect(mockCloseTerminalRunHandoffs).toHaveBeenCalledWith(runId, "cancelled");
+
+    const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId));
+    expect(run?.status).toBe("cancelled");
+    expect(run?.finishedAt).toBeInstanceOf(Date);
+    expect(run?.contextSnapshot).toMatchObject({
+      resultJson: {
+        stopReason: "cancelled",
+        cancelledByUserId: "board-user",
+      },
+    });
+
+    const [phase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, runId));
+    expect(phase?.status).toBe("cancelled");
+    expect(phase?.finishedAt).toBeInstanceOf(Date);
+
+    const [handoff] = await db.select().from(workflowHandoffs).where(eq(workflowHandoffs.id, handoffId));
+    expect(handoff?.status).toBe("cancelled");
+    expect(handoff?.decidedByUserId).toBe("board-user");
   });
 });

@@ -934,10 +934,58 @@ export function workflowHandoffBridgeService(db: Db) {
     return getBridgeForHandoff(workflowHandoffId);
   }
 
+  async function closeTerminalRunHandoffs(
+    workflowRunId: string,
+    outcome: TerminalBridgeCloseOutcome,
+  ) {
+    const bridges = await db
+      .select()
+      .from(workflowHandoffBridges)
+      .where(and(
+        eq(workflowHandoffBridges.workflowRunId, workflowRunId),
+        inArray(workflowHandoffBridges.status, ["pending_delivery", "waiting_for_human"]),
+      ))
+      .orderBy(asc(workflowHandoffBridges.createdAt));
+    if (bridges.length === 0) return [];
+
+    const config = await settings.resolveClickUpRuntimeConfig(bridges[0]!.companyId);
+    const overrides = {
+      personalToken: config.personalToken,
+      workspaceId: config.workspaceId,
+      channelId: config.channelId,
+      attachmentTaskId: config.attachmentTaskId,
+    };
+
+    const results = await Promise.allSettled(
+      bridges.map(async (bridge) => {
+        await closeBridgeRow(db, bridge, outcome, overrides);
+        return getBridgeForHandoff(bridge.workflowHandoffId);
+      }),
+    );
+
+    const closed: Array<Awaited<ReturnType<typeof getBridgeForHandoff>>> = [];
+    for (const [index, result] of results.entries()) {
+      if (result.status === "fulfilled") {
+        closed.push(result.value);
+        continue;
+      }
+      const bridge = bridges[index];
+      logger.warn({
+        err: result.reason,
+        bridgeId: bridge?.id ?? null,
+        companyId: bridge?.companyId ?? null,
+        workflowRunId,
+      }, "workflow handoff bridge: failed to close terminal bridge during batch cleanup");
+    }
+
+    return closed;
+  }
+
   return {
     openForHandoff,
     pollActiveBridges,
     closeResolvedHandoff,
+    closeTerminalRunHandoffs,
     getActiveBridge,
     getBridgeForHandoff,
   };

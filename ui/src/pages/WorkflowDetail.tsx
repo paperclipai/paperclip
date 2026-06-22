@@ -1143,6 +1143,21 @@ export function WorkflowDetail() {
     },
   });
 
+  const cancelRunMutation = useMutation({
+    mutationFn: async (runId: string) => workflowsApi.cancelRun(runId),
+    onSuccess: async () => {
+      await refreshAll();
+      pushToast({ title: "Workflow run cancelled" });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to cancel workflow run",
+        body: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    },
+  });
+
   const approveMutation = useMutation({
     mutationFn: (handoffId: string) =>
       workflowsApi.approveHandoff(handoffId, {
@@ -1271,6 +1286,8 @@ export function WorkflowDetail() {
           workflow={workflow}
           runDetail={runDetail}
           phases={pipelinePhases}
+          onCancelRun={(runId) => cancelRunMutation.mutate(runId)}
+          cancellingRunId={cancelRunMutation.variables ?? null}
           handoffResponses={handoffResponses}
           setHandoffResponses={setHandoffResponses}
           onApprove={(handoffId) => approveMutation.mutate(handoffId)}
@@ -1504,6 +1521,8 @@ function PipelineCard({
   workflow,
   runDetail,
   phases,
+  onCancelRun,
+  cancellingRunId,
   handoffResponses,
   setHandoffResponses,
   onApprove,
@@ -1514,6 +1533,8 @@ function PipelineCard({
   workflow: WorkflowDetailType;
   runDetail: WorkflowRunDetail | null;
   phases: WorkflowPhase[];
+  onCancelRun: (runId: string) => void;
+  cancellingRunId: string | null;
   handoffResponses: Record<string, string>;
   setHandoffResponses: Dispatch<SetStateAction<Record<string, string>>>;
   onApprove: (handoffId: string) => void;
@@ -1534,17 +1555,51 @@ function PipelineCard({
     () => buildWorkflowGraph(phases, handoffsByPhase, runDetail),
     [handoffsByPhase, phases, runDetail],
   );
+  const canCancelRun = Boolean(
+    runDetail && ["queued", "running", "awaiting_human"].includes(runDetail.status),
+  );
+  const cancelIsPending = cancellingRunId === runDetail?.id;
+  const pipelineSummary = runDetail
+    ? `Active run ${runDetail.status.replaceAll("_", " ")}`
+    : `${workflow.pipelineDefinition.phases.length} inferred phases`;
 
   return (
     <Card className={workflowPanelClassName}>
       <CardHeader>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle className="text-sm font-semibold">Pipeline</CardTitle>
-          <div className="text-xs text-muted-foreground">
-            {runDetail
-              ? `Active run ${runDetail.status.replaceAll("_", " ")}`
-              : `${workflow.pipelineDefinition.phases.length} inferred phases`}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <CardTitle className="text-sm font-semibold">Pipeline</CardTitle>
+            <div className="text-xs text-muted-foreground">
+              {pipelineSummary}
+            </div>
           </div>
+          {canCancelRun && runDetail ? (
+            <div className="flex flex-col items-stretch gap-1.5 sm:items-end">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                disabled={cancelIsPending}
+                onClick={() => {
+                  if (!window.confirm("Cancel this workflow run? Pending human handoffs will be closed.")) {
+                    return;
+                  }
+                  onCancelRun(runDetail.id);
+                }}
+              >
+                {cancelIsPending ? (
+                  <LoaderCircle className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <X className="mr-1.5 h-4 w-4" />
+                )}
+                Cancel run
+              </Button>
+              <div className="text-right text-[11px] text-muted-foreground">
+                Stops execution and closes pending handoffs.
+              </div>
+            </div>
+          ) : null}
         </div>
       </CardHeader>
       <CardContent>

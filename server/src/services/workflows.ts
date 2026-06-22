@@ -33,6 +33,7 @@ import { getStorageService } from "../storage/index.js";
 import { type StorageService } from "../storage/types.js";
 import { createWorkflowRunJwt, verifyWorkflowRunJwt } from "../workflow-run-jwt.js";
 import { invokeGoogleAdk } from "@paperclipai/adapter-google-adk/server";
+import { runningProcesses } from "../adapters/index.js";
 import {
   analyzeWorkflowProject,
   collectWorkflowRuntimeArtifacts,
@@ -237,6 +238,7 @@ const WORKFLOW_RUN_CONSOLE_ENTRY_LIMIT = 600;
 const WORKFLOW_RUN_EXCERPT_CHAR_LIMIT = 16_000;
 const WORKFLOW_ADK_TIMEOUT_SEC = 24 * 60 * 60;
 const WORKFLOW_INTERRUPTED_ERROR = "Workflow process was interrupted before completion.";
+const WORKFLOW_CANCELLED_ERROR = "Workflow run was cancelled by the board.";
 
 function appendWorkflowRunExcerpt(existing: string, chunk: string) {
   const next = `${existing}${chunk}`;
@@ -251,6 +253,25 @@ function normalizeWorkflowConsoleChunk(stream: "stdout" | "stderr" | "system", c
     stream,
     chunk: normalized,
   };
+}
+
+function signalWorkflowProcess(runId: string) {
+  const running = runningProcesses.get(runId);
+  if (!running) return false;
+  if (process.platform !== "win32" && running.processGroupId && running.processGroupId > 0) {
+    try {
+      process.kill(-running.processGroupId, "SIGTERM");
+      return true;
+    } catch {
+      // Fall through to child.kill below.
+    }
+  }
+  try {
+    running.child.kill("SIGTERM");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function createWorkflowSummaryDeliverable(db: Db, input: {
@@ -352,6 +373,7 @@ export function workflowService(db: Db) {
   ) {
     const runRow = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
     if (!runRow) return;
+    if (["succeeded", "failed", "cancelled"].includes(runRow.status)) return;
     const workflowRow = preparedRun
       ? null
       : await db.select().from(workflows).where(eq(workflows.id, runRow.workflowId)).then((rows) => rows[0] ?? null);
@@ -809,6 +831,81 @@ export function workflowService(db: Db) {
       if (!runRow) return null;
       if (runRow.companyId !== claims.company_id || runRow.workflowId !== claims.workflow_id) return null;
       return runRow;
+    },
+
+    cancelRun: async (runId: string, actor: { userId: string | null }) => {
+      const existing = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+      if (["succeeded", "failed", "cancelled"].includes(existing.status)) {
+        return toWorkflowRun(existing);
+      }
+
+      signalWorkflowProcess(runId);
+
+      const now = new Date();
+      const updated = await db.transaction(async (tx) => {
+        const run = await tx.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
+        if (!run) return null;
+        if (["succeeded", "failed", "cancelled"].includes(run.status)) {
+          return run;
+        }
+
+        const contextSnapshot = (run.contextSnapshot as Record<string, unknown> | null) ?? {};
+        const resultJson = contextSnapshot.resultJson && typeof contextSnapshot.resultJson === "object"
+          ? contextSnapshot.resultJson as Record<string, unknown>
+          : {};
+        const nextContextSnapshot = {
+          ...contextSnapshot,
+          resultJson: {
+            ...resultJson,
+            stopReason: "cancelled",
+            cancelledByUserId: actor.userId ?? "board",
+            cancelledAt: now.toISOString(),
+          },
+        };
+
+        const nextRun = await tx.update(workflowRuns).set({
+          status: "cancelled",
+          error: WORKFLOW_CANCELLED_ERROR,
+          finishedAt: now,
+          updatedAt: now,
+          contextSnapshot: nextContextSnapshot,
+        }).where(and(
+          eq(workflowRuns.id, runId),
+          notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"]),
+        )).returning().then((rows) => rows[0] ?? run);
+
+        await tx.update(workflowRunPhases).set({
+          status: "cancelled",
+          startedAt: sql`COALESCE(${workflowRunPhases.startedAt}, ${now.toISOString()}::timestamptz)`,
+          finishedAt: now,
+          updatedAt: now,
+        }).where(and(
+          eq(workflowRunPhases.workflowRunId, runId),
+          notInArray(workflowRunPhases.status, ["succeeded", "failed", "cancelled"]),
+        ));
+
+        await tx.update(workflowHandoffs).set({
+          status: "cancelled",
+          responseMarkdown: null,
+          decidedByUserId: actor.userId ?? "board",
+          decidedAt: now,
+          updatedAt: now,
+        }).where(and(
+          eq(workflowHandoffs.workflowRunId, runId),
+          eq(workflowHandoffs.status, "pending"),
+        ));
+
+        return nextRun;
+      });
+
+      try {
+        await workflowHandoffBridgeService(db).closeTerminalRunHandoffs(runId, "cancelled");
+      } catch (error) {
+        logger.warn({ err: error, runId }, "workflow handoff bridge: failed to close bridges for cancelled run");
+      }
+
+      return updated ? toWorkflowRun(updated) : null;
     },
 
     applyPhaseEvent: async (runId: string, event: WorkflowPhaseEvent) => {

@@ -41,6 +41,13 @@ function eventTypeForActivityAction(action: string): PluginEventType | null {
   return ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")] ?? null;
 }
 
+function isMissingHeartbeatRunError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const err = error as { code?: string; constraint?: string; constraint_name?: string };
+  const constraint = err.constraint ?? err.constraint_name;
+  return err.code === "23503" && constraint === "activity_log_run_id_heartbeat_runs_id_fk";
+}
+
 export function publishPluginDomainEvent(event: PluginEvent): void {
   if (!_pluginEventBus) return;
   void _pluginEventBus.emit(event).then(({ errors }) => {
@@ -70,7 +77,8 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
-  await db.insert(activityLog).values({
+
+  const activityLogValues = {
     companyId: input.companyId,
     actorType: input.actorType,
     actorId: input.actorId,
@@ -78,9 +86,31 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
     details: redactedDetails,
-  });
+  };
+  const requestedRunId = input.runId?.trim() || null;
+  let persistedRunId = requestedRunId;
+
+  const insertActivityLog = async (runId: string | null) => {
+    await db.insert(activityLog).values({
+      ...activityLogValues,
+      runId,
+    });
+  };
+
+  try {
+    await insertActivityLog(persistedRunId);
+  } catch (error) {
+    if (persistedRunId === null || !isMissingHeartbeatRunError(error)) {
+      throw error;
+    }
+    logger.warn(
+      { err: error, runId: persistedRunId, action: input.action, entityType: input.entityType, entityId: input.entityId },
+      "activity log run id missing from heartbeat_runs; recording entry without run linkage",
+    );
+    persistedRunId = null;
+    await insertActivityLog(persistedRunId);
+  }
 
   publishLiveEvent({
     companyId: input.companyId,
@@ -92,7 +122,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityType: input.entityType,
       entityId: input.entityId,
       agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
+      runId: persistedRunId,
       details: redactedDetails,
     },
   });
@@ -111,7 +141,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       payload: {
         ...redactedDetails,
         agentId: input.agentId ?? null,
-        runId: input.runId ?? null,
+        runId: persistedRunId,
       },
     };
     publishPluginDomainEvent(event);
