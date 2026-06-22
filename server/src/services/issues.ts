@@ -19,6 +19,7 @@ import {
   issueAttachments,
   issueInboxArchives,
   issueLabels,
+  issueWatchdogs,
   issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
@@ -44,6 +45,7 @@ import type {
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
+  IssueWatchdogSummary,
   LowTrustBoundary,
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
@@ -76,6 +78,10 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import {
+  summarizeIssueWatchdog,
+  upsertIssueWatchdogForIssue,
+} from "./task-watchdogs.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -302,7 +308,11 @@ type IssueScheduledRetryRow = {
   error?: string | null;
   errorCode?: string | null;
 };
-type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
+type IssueWithLabels = IssueRow & {
+  labels: IssueLabelRow[];
+  labelIds: string[];
+  watchdog?: IssueWatchdogSummary | null;
+};
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
 type IssueUserCommentStats = {
   issueId: string;
@@ -354,6 +364,8 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  watchdog?: { agentId: string; instructions?: string | null } | null;
+  watchdogActorRunId?: string | null;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -1143,15 +1155,47 @@ async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<s
 
 async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWithLabels[]> {
   if (rows.length === 0) return [];
-  const labelsByIssueId = await labelMapForIssues(dbOrTx, rows.map((row) => row.id));
+  const issueIds = rows.map((row) => row.id);
+  const [labelsByIssueId, watchdogByIssueId] = await Promise.all([
+    labelMapForIssues(dbOrTx, issueIds),
+    watchdogMapForIssues(dbOrTx, rows),
+  ]);
   return rows.map((row) => {
     const issueLabels = labelsByIssueId.get(row.id) ?? [];
     return {
       ...row,
       labels: issueLabels,
       labelIds: issueLabels.map((label) => label.id),
+      watchdog: watchdogByIssueId.get(row.id) ?? null,
     };
   });
+}
+
+async function watchdogMapForIssues(dbOrTx: any, rows: IssueRow[]): Promise<Map<string, IssueWatchdogSummary>> {
+  const map = new Map<string, IssueWatchdogSummary>();
+  if (rows.length === 0) return map;
+  const byCompany = new Map<string, string[]>();
+  for (const row of rows) {
+    const ids = byCompany.get(row.companyId) ?? [];
+    ids.push(row.id);
+    byCompany.set(row.companyId, ids);
+  }
+  for (const [companyId, issueIds] of byCompany.entries()) {
+    for (const issueIdChunk of chunkList([...new Set(issueIds)], ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      const watchdogRows = await dbOrTx
+        .select()
+        .from(issueWatchdogs)
+        .where(and(
+          eq(issueWatchdogs.companyId, companyId),
+          inArray(issueWatchdogs.issueId, issueIdChunk),
+          eq(issueWatchdogs.status, "active"),
+        ));
+      for (const row of watchdogRows) {
+        map.set(row.issueId, summarizeIssueWatchdog(row));
+      }
+    }
+  }
+  return map;
 }
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
@@ -1160,6 +1204,7 @@ const BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execut
 const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
 const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND = "harness_liveness_escalation";
+const BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES = ["done", "cancelled"];
 const PRODUCTIVITY_REVIEW_ORIGIN_KIND = "issue_productivity_review";
 const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"];
 const PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS = [
@@ -1592,7 +1637,7 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
-            ne(issues.status, "done"),
+            notInArray(issues.status, BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES),
           ),
         );
       const [explicitBlockerRows, childRows] = await Promise.all([
@@ -4857,6 +4902,8 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        watchdog,
+        watchdogActorRunId,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -4929,9 +4976,8 @@ export function issueService(db: Db) {
           issueData.projectId = workspace.projectId;
         }
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
-        // Cache the project policy lookup for this insert. Both the
-        // default-settings block and the assignee-environment-promotion block
-        // need the same row; without caching they'd issue two round-trips.
+        // Cache the project policy lookup for this insert so the default
+        // workspace-settings block does not re-query the project row.
         let projectPolicyCached: ReturnType<typeof parseProjectExecutionWorkspacePolicy> | null = null;
         let projectPolicyLoaded = false;
         const loadProjectPolicyOnce = async () => {
@@ -4959,37 +5005,6 @@ export function issueService(db: Db) {
                 isolatedWorkspacesEnabled,
               ),
             ) as Record<string, unknown> | null;
-        }
-        if (data.assigneeAgentId && isolatedWorkspacesEnabled) {
-          const currentWorkspaceSettings = executionWorkspaceSettings == null
-            ? {}
-            : parseObject(executionWorkspaceSettings);
-          const issueHasEnvironmentSelection =
-            Object.prototype.hasOwnProperty.call(currentWorkspaceSettings, "environmentId");
-          // Don't promote the assignee agent's defaultEnvironmentId if either
-          // the issue or the project policy already specifies an environment.
-          // resolveExecutionWorkspaceEnvironmentId treats issue settings as
-          // higher priority than project policy, so promoting the agent's
-          // default to issue settings would invert the documented priority
-          // (project policy must win over agent default when explicitly set).
-          let projectHasEnvironmentSelection = false;
-          if (!issueHasEnvironmentSelection && issueData.projectId) {
-            const projectPolicy = await loadProjectPolicyOnce();
-            projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
-          }
-          if (!issueHasEnvironmentSelection && !projectHasEnvironmentSelection) {
-            const assigneeAgent = await tx
-              .select({ defaultEnvironmentId: agents.defaultEnvironmentId })
-              .from(agents)
-              .where(and(eq(agents.id, data.assigneeAgentId), eq(agents.companyId, companyId)))
-              .then((rows) => rows[0] ?? null);
-            if (typeof assigneeAgent?.defaultEnvironmentId === "string" && assigneeAgent.defaultEnvironmentId.length > 0) {
-              executionWorkspaceSettings = {
-                ...currentWorkspaceSettings,
-                environmentId: assigneeAgent.defaultEnvironmentId,
-              };
-            }
-          }
         }
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
@@ -5073,6 +5088,17 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (watchdog) {
+          await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
+            agentId: watchdog.agentId,
+            instructions: watchdog.instructions,
+            actor: {
+              agentId: issueData.createdByAgentId ?? null,
+              userId: issueData.createdByUserId ?? null,
+              runId: watchdogActorRunId ?? null,
+            },
+          });
+        }
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
@@ -5179,6 +5205,11 @@ export function issueService(db: Db) {
         issueData.executionWorkspaceSettings !== undefined
           ? parseIssueExecutionWorkspaceSettings(issueData.executionWorkspaceSettings)
           : parseIssueExecutionWorkspaceSettings(existing.executionWorkspaceSettings);
+      if (issueData.executionWorkspaceSettings !== undefined) {
+        patch.executionWorkspaceSettings = nextExecutionWorkspaceSettings
+          ? { ...nextExecutionWorkspaceSettings }
+          : null;
+      }
       let validatedProjectWorkspace: { projectId: string } | null = null;
       let validatedExecutionWorkspace: { projectId: string } | null = null;
       if (!nextProjectId && nextProjectWorkspaceId) {
@@ -5237,93 +5268,6 @@ export function issueService(db: Db) {
             issueData.projectId !== undefined ? issueData.projectId : existing.projectId,
           ),
         ]);
-
-        // Mirror the create() path: when the assignee changes to a non-null
-        // agent, default the issue's executionWorkspaceSettings.environmentId
-        // to the new agent's defaultEnvironmentId. Skip when:
-        //   - this update explicitly sets executionWorkspaceSettings.environmentId
-        //     (caller is making a deliberate override; respect it), OR
-        //   - the project policy already specifies an environmentId (project
-        //     policy must win over agent default per the documented priority
-        //     order in resolveExecutionWorkspaceEnvironmentId), OR
-        //   - the issue already has an environmentId that was *not* the prior
-        //     assignee's default (i.e., the operator set it explicitly in an
-        //     earlier update; preserve their choice). When the existing
-        //     environmentId matches the prior assignee's default, treat it as
-        //     auto-promoted and refresh it to the new assignee's default.
-        const assigneeChanged =
-          issueData.assigneeAgentId !== undefined &&
-          issueData.assigneeAgentId !== null &&
-          issueData.assigneeAgentId !== existing.assigneeAgentId;
-        const explicitEnvInThisUpdate =
-          issueData.executionWorkspaceSettings !== undefined &&
-          Object.prototype.hasOwnProperty.call(
-            parseObject(issueData.executionWorkspaceSettings),
-            "environmentId",
-          );
-        if (assigneeChanged && isolatedWorkspacesEnabled && !explicitEnvInThisUpdate) {
-          let projectHasEnvironmentSelection = false;
-          if (nextProjectId) {
-            const projectRow = await tx
-              .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-              .from(projects)
-              .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)))
-              .then((rows: Array<{ executionWorkspacePolicy: unknown }>) => rows[0] ?? null);
-            const projectPolicy = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
-            projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
-          }
-          if (!projectHasEnvironmentSelection) {
-            const baseSettings = nextExecutionWorkspaceSettings == null
-              ? {}
-              : parseObject(nextExecutionWorkspaceSettings);
-            const existingEnvId = typeof baseSettings.environmentId === "string"
-              ? baseSettings.environmentId
-              : null;
-
-            // Look up both the prior assignee (to detect auto-promoted env)
-            // and the new assignee in a single query.
-            type AgentRow = { id: string; defaultEnvironmentId: string | null };
-            const agentRows: AgentRow[] = await tx
-              .select({ id: agents.id, defaultEnvironmentId: agents.defaultEnvironmentId })
-              .from(agents)
-              .where(
-                and(
-                  eq(agents.companyId, existing.companyId),
-                  inArray(
-                    agents.id,
-                    [issueData.assigneeAgentId!, existing.assigneeAgentId].filter(
-                      (value): value is string => typeof value === "string",
-                    ),
-                  ),
-                ),
-              );
-
-            const newAssignee = agentRows.find((row: AgentRow) => row.id === issueData.assigneeAgentId);
-            const previousAssignee = existing.assigneeAgentId
-              ? agentRows.find((row: AgentRow) => row.id === existing.assigneeAgentId)
-              : null;
-
-            const newDefaultEnvId =
-              typeof newAssignee?.defaultEnvironmentId === "string" && newAssignee.defaultEnvironmentId.length > 0
-                ? newAssignee.defaultEnvironmentId
-                : null;
-            const previousDefaultEnvId =
-              typeof previousAssignee?.defaultEnvironmentId === "string" && previousAssignee.defaultEnvironmentId.length > 0
-                ? previousAssignee.defaultEnvironmentId
-                : null;
-
-            const existingEnvWasAutoPromoted =
-              existingEnvId === null ||
-              (previousDefaultEnvId !== null && existingEnvId === previousDefaultEnvId);
-
-            if (newDefaultEnvId && existingEnvWasAutoPromoted) {
-              patch.executionWorkspaceSettings = {
-                ...baseSettings,
-                environmentId: newDefaultEnvId,
-              };
-            }
-          }
-        }
 
         patch.goalId = resolveNextIssueGoalId({
           currentProjectId: existing.projectId,

@@ -6,6 +6,7 @@ import {
   companyMemberships,
   createDb,
   instanceUserRoles,
+  issueComments,
   issues,
   principalPermissionGrants,
   projects,
@@ -124,6 +125,7 @@ describeEmbeddedPostgres("authorization service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueComments);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(instanceUserRoles);
@@ -616,6 +618,260 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({
       allowed: false,
       reason: "deny_unsupported_action",
+    });
+  });
+
+  it("allows mentioned agents to read and comment on assigned issues without granting issue mutation", async () => {
+    const company = await createCompany(db, "MentionCommentAuth");
+    const allowedProject = await createProject(db, company.id, "MentionAllowed");
+    const targetProject = await createProject(db, company.id, "MentionTarget");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const mentionedAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Mention-scoped comment target",
+      projectId: targetProject.id,
+      assigneeAgentId: ownerAgent.id,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent", agentId: mentionedAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    } as const;
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    const deletedMention = await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      body: `[@Mentioned Agent](agent://${mentionedAgent.id}) this deleted comment should not count`,
+      deletedAt: new Date(),
+    }).returning().then((rows) => rows[0]!);
+    expect(deletedMention.id).toBeTruthy();
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      body: `[@Mentioned Agent](agent://${mentionedAgent.id}) please respond here`,
+      authorAgentId: ownerAgent.id,
+    });
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:read",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_mention_grant",
+    });
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_mention_grant",
+    });
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
+
+  it("allows a mentioned non-assignee to comment when the mention author is the issue assignee", async () => {
+    const company = await createCompany(db, "MentionCommentAssigneeGrant");
+    const allowedProject = await createProject(db, company.id, "MentionAssigneeAllowed");
+    const targetProject = await createProject(db, company.id, "MentionAssigneeTarget");
+    const assigneeAgent = await createAgent(db, company.id, { role: "coach" });
+    const mentionedAgent = await createAgent(db, company.id, {
+      role: "qa",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Assignee-authored mention reply target",
+      projectId: targetProject.id,
+      assigneeAgentId: assigneeAgent.id,
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      authorAgentId: assigneeAgent.id,
+      authorType: "agent",
+      body: `[@QA](agent://${mentionedAgent.id}) please reply on this issue.`,
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: { type: "agent", agentId: mentionedAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        assigneeAgentId: assigneeAgent.id,
+        status: issue.status,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_mention_grant",
+    });
+  });
+
+  it("does not grant mention-scoped issue access from self-authored or unauthorized-author comments", async () => {
+    const company = await createCompany(db, "MentionCommentDenied");
+    const allowedProject = await createProject(db, company.id, "MentionDeniedAllowed");
+    const targetProject = await createProject(db, company.id, "MentionDeniedTarget");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const mentionedAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const unrelatedAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Mention-scoped comment denial target",
+      projectId: targetProject.id,
+      assigneeAgentId: ownerAgent.id,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent", agentId: mentionedAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    } as const;
+
+    await db.insert(issueComments).values([
+      {
+        companyId: company.id,
+        issueId: issue.id,
+        body: `Self mention [@Mentioned Agent](agent://${mentionedAgent.id})`,
+        authorAgentId: mentionedAgent.id,
+      },
+      {
+        companyId: company.id,
+        issueId: issue.id,
+        body: `Unauthorized mention [@Mentioned Agent](agent://${mentionedAgent.id})`,
+        authorAgentId: unrelatedAgent.id,
+      },
+    ]);
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:read",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
+
+  it("allows active board-user comments to create mention-scoped issue grants", async () => {
+    const company = await createCompany(db, "MentionCommentBoardGrant");
+    const allowedProject = await createProject(db, company.id, "MentionBoardAllowed");
+    const targetProject = await createProject(db, company.id, "MentionBoardTarget");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const mentionedAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Mention-scoped board grant target",
+      projectId: targetProject.id,
+      assigneeAgentId: ownerAgent.id,
+    });
+    const boardUserId = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: boardUserId,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      body: `Board mention [@Mentioned Agent](agent://${mentionedAgent.id})`,
+      authorUserId: boardUserId,
+    });
+
+    const actor = { type: "agent", agentId: mentionedAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    } as const;
+
+    await expect(authorizationService(db).decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_mention_grant",
     });
   });
 

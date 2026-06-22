@@ -13,6 +13,15 @@ describe("registerClientAuthCommands", () => {
     expect(login).toBeDefined();
     expect(login?.options.filter((option) => option.long === "--company-id")).toHaveLength(1);
   });
+
+  it("registers the --no-browser flag on login", () => {
+    const program = new Command();
+    const auth = program.command("auth");
+    registerClientAuthCommands(auth);
+
+    const login = auth.commands.find((command) => command.name() === "login");
+    expect(login?.options.some((option) => option.long === "--no-browser")).toBe(true);
+  });
 });
 
 describe("client auth API commands", () => {

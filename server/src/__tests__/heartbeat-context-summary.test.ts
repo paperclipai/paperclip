@@ -72,6 +72,24 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(acceptedConfirmation).not.toContain("- Work mode: \"planning\"");
   });
 
+  it("adds answer-only guidance for ask-mode issues", () => {
+    const assignment = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-ask",
+        identifier: "PAP-416",
+        title: "Explain the tradeoff",
+        workMode: "ask",
+        description: null,
+      },
+    });
+
+    expect(assignment).toContain("- Work mode: \"ask\"");
+    expect(assignment).toContain("Ask mode directive:");
+    expect(assignment).toContain("Answer the question directly in the issue thread.");
+    expect(assignment).toContain("Do not write implementation code");
+    expect(assignment).toContain("do not produce an implementation plan");
+  });
+
   it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
     const commentWake = buildPaperclipTaskMarkdown({
       issue: {
