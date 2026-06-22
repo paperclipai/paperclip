@@ -81,8 +81,14 @@ export function sidebarBadgeService(db: Db) {
 
       // Pending agent->human asks (confirmations, questions, task suggestions) that pause an
       // issue in In Review. Without this they generate no inbox signal and strand silently.
+      // Counted per issue (not per interaction) so an issue with several pending asks reads as
+      // one item — matching the grouped "Waiting on you" row in the Inbox.
       const awaitingHuman = await db
-        .select({ id: issueThreadInteractions.id, updatedAt: issueThreadInteractions.updatedAt })
+        .select({
+          id: issueThreadInteractions.id,
+          issueId: issueThreadInteractions.issueId,
+          updatedAt: issueThreadInteractions.updatedAt,
+        })
         .from(issueThreadInteractions)
         .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
         .where(
@@ -94,11 +100,14 @@ export function sidebarBadgeService(db: Db) {
             notInArray(issues.status, TERMINAL_ISSUE_STATUSES),
           ),
         )
-        .then((rows) =>
-          rows.filter(
-            (row) => !isDismissed(extra?.dismissals ?? new Map(), `interaction:${row.id}`, row.updatedAt),
-          ).length
-        );
+        .then((rows) => {
+          const issueIds = new Set<string>();
+          for (const row of rows) {
+            if (isDismissed(extra?.dismissals ?? new Map(), `interaction:${row.id}`, row.updatedAt)) continue;
+            issueIds.add(row.issueId);
+          }
+          return issueIds.size;
+        });
 
       return {
         inbox: actionableApprovals + failedRuns + joinRequests + unreadTouchedIssues + awaitingHuman,
