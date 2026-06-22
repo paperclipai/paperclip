@@ -157,6 +157,7 @@ export function healthRoutes(
       res.json({
         status: "ok",
         deploymentMode: opts.deploymentMode,
+        deploymentExposure: opts.deploymentExposure,
         bootstrapStatus,
         bootstrapInviteActive,
         ...(devServer ? { devServer } : {}),

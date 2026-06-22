@@ -22,6 +22,8 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/mcp-server/package.json packages/mcp-server/
+COPY packages/skills-catalog/package.json packages/skills-catalog/
+COPY packages/teams-catalog/package.json packages/teams-catalog/
 COPY packages/adapters/acpx-local/package.json packages/adapters/acpx-local/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
@@ -59,7 +61,7 @@ COPY --chown=node:node --from=build /app /app
 # opencode-ai is pinned: the Workers AI provider-config schema (provider.cloudflare in
 # opencode.json) was verified against 1.17.8 — see docs/spikes/workers-ai-opencode-verification.md.
 # Bump only after re-verifying provider injection in packages/adapters/opencode-local.
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai@1.17.8 \
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai@1.17.8 @google/gemini-cli@latest \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
@@ -81,9 +83,9 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-  OPENCODE_ALLOW_ALL_MODELS=true
+  OPENCODE_ALLOW_ALL_MODELS=true \
+  GEMINI_SANDBOX=false
 
-VOLUME ["/paperclip"]
 EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]

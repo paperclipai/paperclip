@@ -3,6 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { applyPendingMigrations, ensurePostgresDatabase } from "./client.js";
+import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -48,6 +49,7 @@ function getReservedTestPorts(): Set<number> {
 
 async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   const mod = await import("embedded-postgres");
+  await prepareEmbeddedPostgresNativeRuntime();
   return mod.default as EmbeddedPostgresCtor;
 }
 

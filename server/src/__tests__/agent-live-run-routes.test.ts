@@ -51,7 +51,16 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => ({}),
-    accessService: () => ({}),
+    accessService: () => ({
+      canUser: vi.fn(async () => true),
+      decide: vi.fn(async (input: { action?: string }) => ({
+        allowed: true,
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test grant.",
+      })),
+      hasPermission: vi.fn(async () => true),
+    }),
     approvalService: () => ({}),
     companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
     budgetService: () => ({}),

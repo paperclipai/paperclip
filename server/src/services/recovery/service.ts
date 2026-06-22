@@ -18,6 +18,7 @@ import {
   heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
+  issueAttachments,
   issueComments,
   issueApprovals,
   issueRecoveryActions,
@@ -37,7 +38,8 @@ import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
-import { issueService } from "../issues.js";
+import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
+import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
@@ -82,6 +84,18 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 
+// GGU-809: when a stranded `in_progress` issue would otherwise hit the
+// `isRepeatedProductiveContinuationRecovery` escalation path, exempt the
+// escalation if the assignee posted a comment or attachment within this window.
+// Batch workflows (e.g. Image Spec multi-frame generation) make real progress
+// every heartbeat and would otherwise trigger a recovery issue after just two
+// productive heartbeats. Floor the override at 60s to keep the exemption from
+// being effectively disabled by misconfiguration.
+export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
+  60_000,
+  Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
+);
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -104,7 +118,11 @@ type LatestIssueRun = Pick<
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
-type StrandedRecoveryCause = "stranded_assigned_issue" | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
+type StrandedRecoveryCause =
+  | "stranded_assigned_issue"
+  | "workspace_validation_failed"
+  | "configuration_incomplete"
+  | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
@@ -159,6 +177,60 @@ function didAutomaticRecoveryFail(
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     );
+}
+
+const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
+  "adapter_failed",
+  "codex_transient_upstream",
+  "claude_transient_upstream",
+  "timeout",
+]);
+
+const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
+  "agent_not_invokable",
+  "agent_not_found",
+  "budget_blocked",
+  "budget_exhausted",
+  "issue_paused",
+  "issue_dependencies_blocked",
+]);
+
+// A continuation cancelled with this code is a *deliberate wait* (the latest run
+// reported it was parked for review/approval), not a lost execution path. When the
+// issue has a real waiting target we convert it into a normal dependency wait rather
+// than escalating it as stranded.
+const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on_review";
+
+const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
+const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
+const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+
+type ContinuationRetryClassification = {
+  kind: "transient_infra" | "non_retryable" | "default";
+  maxAttempts: number;
+  baseBackoffMs: number;
+  errorCode: string | null;
+};
+
+export function classifyContinuationFailure(latestRun: LatestIssueRun): ContinuationRetryClassification {
+  const errorCode = readNonEmptyString(latestRun?.errorCode);
+  if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
+  }
+  if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    return {
+      kind: "transient_infra",
+      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
+      baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      errorCode,
+    };
+  }
+  return {
+    kind: "default",
+    maxAttempts: CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS,
+    baseBackoffMs: 0,
+    errorCode,
+  };
 }
 
 function successfulRunHandoffRecoveryEvidence(latestRun: LatestIssueRun): SuccessfulRunHandoffRecoveryEvidence | null {
@@ -276,10 +348,6 @@ function unwrapDatabaseConflictError(error: unknown) {
     constraint_name?: string;
     message?: string;
   };
-}
-
-function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
-  return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
 }
 
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
@@ -417,6 +485,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
     return db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
   }
 
+  async function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
+    return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
+  }
+
   async function getLatestIssueRun(companyId: string, issueId: string): Promise<LatestIssueRun> {
     return db
       .select({
@@ -438,6 +510,54 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function summarizeRecentContinuationRetries(
+    companyId: string,
+    issueId: string,
+    errorCodeToMatch: string | null,
+  ) {
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(10);
+
+    let consecutive = 0;
+    let latestFinishedAt: Date | null = null;
+    for (const row of rows) {
+      const ctx = parseObject(row.contextSnapshot);
+      const retryReason = readNonEmptyString(ctx.retryReason);
+      if (retryReason !== "issue_continuation_needed") break;
+      if (
+        !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+          row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+        )
+      ) {
+        break;
+      }
+
+      const rowErrorCode = readNonEmptyString(row.errorCode);
+      if (errorCodeToMatch !== rowErrorCode) {
+        break;
+      }
+
+      consecutive += 1;
+      if (latestFinishedAt === null) latestFinishedAt = row.finishedAt ?? null;
+    }
+    return { consecutive, latestFinishedAt };
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
@@ -471,6 +591,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
     return Boolean(run || deferredWake);
   }
 
+  async function hasPendingWakeInteraction(companyId: string, issueId: string) {
+    return db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.status, "pending"),
+          inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
     return db
       .select({ id: agentWakeupRequests.id })
@@ -484,6 +620,47 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  // GGU-809: visible-progress signal for stranded-recovery escalation guard.
+  // Returns true if the assignee posted a comment, OR any attachment was added
+  // to the issue, within `windowMs`. Used to suppress false-positive recovery
+  // issues for batch workflows that genuinely advance every heartbeat.
+  async function hasRecentVisibleProgress(
+    companyId: string,
+    issueId: string,
+    assigneeAgentId: string,
+    windowMs: number,
+  ) {
+    const since = new Date(Date.now() - windowMs);
+    const [comment, attachment] = await Promise.all([
+      db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            eq(issueComments.issueId, issueId),
+            eq(issueComments.authorAgentId, assigneeAgentId),
+            gt(issueComments.createdAt, since),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: issueAttachments.id })
+        .from(issueAttachments)
+        .where(
+          and(
+            eq(issueAttachments.companyId, companyId),
+            eq(issueAttachments.issueId, issueId),
+            gt(issueAttachments.createdAt, since),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+    return Boolean(comment || attachment);
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -600,7 +777,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         continue;
       }
       const creatorAgent = await getAgent(creatorAgentId);
-      if (!creatorAgent || creatorAgent.companyId !== candidate.companyId || !isAgentInvokable(creatorAgent)) {
+      if (!creatorAgent || creatorAgent.companyId !== candidate.companyId || !(await isAgentInvokable(creatorAgent))) {
         skipped += 1;
         continue;
       }
@@ -744,6 +921,51 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       )
       .limit(1);
     return row ?? null;
+  }
+
+  // Returns a `done` stale-run evaluation issue for this run if one exists.
+  // Used to detect when a reviewer closed an alert directly on the board without going through
+  // the watchdog decision API — which would not leave a dismissed_false_positive decision record.
+  //
+  // Scoped to `done` only (not `cancelled`): cancellation is used by other system code paths
+  // and does not imply a reviewer's "false positive" verdict. `done` is the explicit
+  // board-close path used by reviewers acknowledging the alert. A cancelled evaluation is
+  // allowed to re-fire on the next scan; if a reviewer wants permanent suppression they
+  // should mark the alert done or record a watchdog decision.
+  async function findClosedStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ id: issues.id, identifier: issues.identifier, status: issues.status })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          eq(issues.status, "done"),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  // Returns true when a reviewer has already dismissed this run's silence as a false positive.
+  // Used to prevent re-filing after a deliberate close — while still allowing legitimate
+  // re-arm after a "continue" decision's snooze window expires.
+  async function hasDismissedFalsePositiveDecision(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ id: heartbeatRunWatchdogDecisions.id })
+      .from(heartbeatRunWatchdogDecisions)
+      .where(
+        and(
+          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+          eq(heartbeatRunWatchdogDecisions.runId, runId),
+          eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive"),
+        ),
+      )
+      .limit(1);
+    return row != null;
   }
 
   async function buildRunOutputSilence(
@@ -1152,7 +1374,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         issueId: input.sourceIssue?.id ?? null,
         projectId: input.sourceIssue?.projectId ?? null,
       });
-      if (isAgentInvokable(candidate) && !budgetBlock) return candidate.id;
+      if ((await isAgentInvokable(candidate)) && !budgetBlock) return candidate.id;
     }
 
     return null;
@@ -1310,26 +1532,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       );
   }
 
-  async function ensureSourceIssueBlockedByStaleEvaluation(input: {
+  async function ensureSourceIssueCommentedForStaleEvaluation(input: {
     sourceIssue: typeof issues.$inferSelect | null;
     evaluationIssue: { id: string; identifier: string | null };
     run: typeof heartbeatRuns.$inferSelect;
   }) {
     if (!input.sourceIssue || ["done", "cancelled"].includes(input.sourceIssue.status)) return false;
-    const blockerIds = await existingBlockerIssueIds(input.sourceIssue.companyId, input.sourceIssue.id);
-    if (blockerIds.includes(input.evaluationIssue.id)) return false;
-    const nextBlockerIds = [...blockerIds, input.evaluationIssue.id];
-    await issuesSvc.update(input.sourceIssue.id, {
-      ...(input.sourceIssue.status === "blocked" ? {} : { status: "blocked" }),
-      blockedByIssueIds: nextBlockerIds,
-    });
+    // Idempotency guard: if we've already emitted the escalation comment for this
+    // (sourceIssue, evaluationIssue) pair, skip. Without this, every subsequent scan
+    // cycle while the evaluation issue is still open re-fires the comment and spams
+    // the source-issue thread. The activity log row written below is the persistence
+    // record we check against — a single row per pair is enough to suppress repeats
+    // even after process restarts.
+    const [priorEscalation] = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, input.sourceIssue.companyId),
+          eq(activityLog.action, "heartbeat.output_stale_escalated"),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, input.sourceIssue.id),
+          sql`${activityLog.details} ->> 'evaluationIssueId' = ${input.evaluationIssue.id}`,
+        ),
+      )
+      .limit(1);
+    if (priorEscalation) return false;
+    // Evaluation issues are observability-only — do NOT add them to blockedByIssueIds.
+    // They are already parented under the source issue. Adding them as hard blockers
+    // creates a self-amplifying loop: block → silence → new alert → block again.
     await issuesSvc.addComment(input.sourceIssue.id, [
       "Paperclip detected critical output silence on this issue's active run.",
       "",
       `- Evaluation issue: ${input.evaluationIssue.identifier ?? input.evaluationIssue.id}`,
       `- Run: \`${input.run.id}\``,
       "",
-      "This blocks the source issue on the explicit review task without cancelling the active process.",
+      "Review the evaluation issue above. The active run has not been cancelled.",
     ].join("\n"), { runId: input.run.id });
     await logActivity(db, {
       companyId: input.sourceIssue.companyId,
@@ -1343,7 +1581,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       details: {
         source: "recovery.scan_silent_active_runs",
         evaluationIssueId: input.evaluationIssue.id,
-        blockerIssueIds: nextBlockerIds,
       },
     });
     return true;
@@ -1397,6 +1634,65 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         });
       }
     }
+
+    // Idle output is expected when the source issue is blocked — skip ticket creation entirely.
+    if (sourceIssue?.status === "blocked") return { kind: "skipped" as const };
+
+    // Dedup: if a reviewer has dismissed this run's silence as a false positive, don't re-file.
+    // A "continue" decision with a snooze window is allowed to re-arm normally — only an
+    // explicit dismissed_false_positive blocks all further alerts for this run.
+    if (await hasDismissedFalsePositiveDecision(input.run.companyId, input.run.id)) {
+      return { kind: "skipped" as const };
+    }
+
+    // Dedup: if a prior evaluation issue for this run was closed `done` on the board
+    // without going through the watchdog decision API, no dismissed_false_positive record exists
+    // and the watchdog would re-fire every cycle. Auto-record the suppression now so future
+    // cycles skip immediately via hasDismissedFalsePositiveDecision.
+    //
+    // Exception: if any watchdog decision exists (snooze/continue), a human explicitly opted
+    // in to the watchdog lifecycle — honour that and allow re-arm as designed.
+    //
+    // Concurrency: the check-then-insert runs inside a transaction with a per-(company,run)
+    // advisory lock so two overlapping scans cannot both observe `hasAnyDecision = false`
+    // and both insert a dismissed_false_positive row. The table has no unique constraint
+    // on (companyId, runId, decision), so the advisory lock is the serialization point.
+    const closedEvaluation = await findClosedStaleRunEvaluation(input.run.companyId, input.run.id);
+    if (closedEvaluation) {
+      const autoDismissed = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${`watchdog_dismiss:${input.run.companyId}:${input.run.id}`}, 0))`,
+        );
+        const hasAnyDecision = await tx
+          .select({ id: heartbeatRunWatchdogDecisions.id })
+          .from(heartbeatRunWatchdogDecisions)
+          .where(
+            and(
+              eq(heartbeatRunWatchdogDecisions.companyId, input.run.companyId),
+              eq(heartbeatRunWatchdogDecisions.runId, input.run.id),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows.length > 0);
+        if (hasAnyDecision) return false;
+        await tx.insert(heartbeatRunWatchdogDecisions).values({
+          companyId: input.run.companyId,
+          runId: input.run.id,
+          evaluationIssueId: closedEvaluation.id,
+          decision: "dismissed_false_positive",
+          snoozedUntil: null,
+          reason: `Auto-recorded: evaluation issue ${closedEvaluation.identifier} was closed as ${closedEvaluation.status} on the board without a watchdog decision.`,
+          createdByAgentId: null,
+          createdByUserId: null,
+          createdByRunId: null,
+        });
+        return true;
+      });
+      if (autoDismissed) {
+        return { kind: "skipped" as const };
+      }
+    }
+
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
       run: input.run,
@@ -1418,7 +1714,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
           `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
           `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
         ].join("\n"), { runId: input.run.id });
-        await ensureSourceIssueBlockedByStaleEvaluation({
+        await ensureSourceIssueCommentedForStaleEvaluation({
           sourceIssue,
           evaluationIssue: existing,
           run: input.run,
@@ -1426,7 +1722,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         return { kind: "escalated" as const, evaluationIssueId: existing.id };
       }
       if (level === "critical") {
-        await ensureSourceIssueBlockedByStaleEvaluation({
+        await ensureSourceIssueCommentedForStaleEvaluation({
           sourceIssue,
           evaluationIssue: existing,
           run: input.run,
@@ -1488,7 +1784,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       },
     });
     if (level === "critical") {
-      await ensureSourceIssueBlockedByStaleEvaluation({
+      await ensureSourceIssueCommentedForStaleEvaluation({
         sourceIssue,
         evaluationIssue: evaluation,
         run: input.run,
@@ -1775,7 +2071,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         issueId: issue.id,
         projectId: issue.projectId,
       });
-      if (isAgentInvokable(candidate) && !budgetBlock) return candidate.id;
+      if ((await isAgentInvokable(candidate)) && !budgetBlock) return candidate.id;
     }
 
     return null;
@@ -1942,6 +2238,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
   function strandedRecoveryActionKind(cause: StrandedRecoveryCause) {
     return cause === SUCCESSFUL_RUN_MISSING_STATE_REASON
       ? "missing_disposition" as const
+      : cause === "workspace_validation_failed"
+        ? "workspace_validation" as const
+      : cause === "configuration_incomplete"
+        ? "configuration_validation" as const
       : "stranded_assigned_issue" as const;
   }
 
@@ -2015,8 +2315,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       }),
       nextAction: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
         ? "Choose and record a valid issue disposition without copying transcript content."
+        : recoveryCause === "workspace_validation_failed"
+          ? "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution."
+        : recoveryCause === "configuration_incomplete"
+          ? "Bind the missing secret(s) named in the run failure to the agent/project/routine env before resuming adapter execution."
         : "Restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution.",
-      wakePolicy: ownerAgentId
+      wakePolicy: recoveryCause === "workspace_validation_failed" || recoveryCause === "configuration_incomplete"
+        ? {
+          type: "manual_repair_required",
+          reason: recoveryCause,
+          ownerAgentId,
+        }
+        : ownerAgentId
         ? {
           type: "wake_owner",
           reason: "source_scoped_recovery_action",
@@ -2040,6 +2350,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
   }) {
+    if (input.recoveryCause === "workspace_validation_failed") return;
+    if (input.recoveryCause === "configuration_incomplete") return;
     if (!input.action.ownerAgentId) return;
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
@@ -2155,9 +2467,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function existingUnresolvedBlockerIssueIds(companyId: string, issueId: string) {
+  async function existingUnresolvedBlockerIssues(companyId: string, issueId: string) {
     return db
-      .select({ blockerIssueId: issueRelations.issueId })
+      .select({ id: issueRelations.issueId, identifier: issues.identifier })
       .from(issueRelations)
       .innerJoin(
         issues,
@@ -2173,8 +2485,60 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
           eq(issueRelations.type, "blocks"),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
-      )
-      .then((rows) => rows.map((row) => row.blockerIssueId));
+      );
+  }
+
+  async function existingUnresolvedBlockerIssueIds(companyId: string, issueId: string) {
+    return existingUnresolvedBlockerIssues(companyId, issueId).then((rows) => rows.map((row) => row.id));
+  }
+
+  async function resolveContinuationWaitingOnReview(issue: typeof issues.$inferSelect) {
+    const existingBlockers = await existingUnresolvedBlockerIssues(issue.companyId, issue.id);
+    const openChildren = await db
+      .select({ id: issues.id, identifier: issues.identifier })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, issue.companyId),
+          eq(issues.parentId, issue.id),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      );
+    const blockedByIssueIds = [...new Set([...existingBlockers.map((row) => row.id), ...openChildren.map((row) => row.id)])];
+    if (blockedByIssueIds.length === 0) return null;
+
+    const updated = await issuesSvc.update(issue.id, { status: "blocked", blockedByIssueIds });
+    if (!updated) return null;
+
+    const waitingOn = formatIssueLinksForComment([...openChildren, ...existingBlockers]);
+    await issuesSvc.addComment(
+      issue.id,
+      `This task is waiting on ${waitingOn} to finish. ` +
+        "It will continue automatically when that work is done — there's nothing you need to do. " +
+        "(It was paused because the latest run reported it was waiting for review/approval; " +
+        "Paperclip turned that into a normal dependency wait instead of flagging it as stuck.)",
+      {},
+      { authorType: "system" },
+    );
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        status: "blocked",
+        previousStatus: issue.status,
+        source: "recovery.reconcile_continuation_waiting_on_review",
+        blockedByIssueIds,
+      },
+    });
+    return updated;
   }
 
   async function escalateStrandedAssignedIssue(input: {
@@ -2243,7 +2607,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
       ].join("\n");
 
-    if (recoveryAction.attemptCount === 1) {
+    const shouldPostEscalationComment =
+      recoveryAction.attemptCount === 1 ||
+      input.recoveryCause === "workspace_validation_failed" ||
+      input.recoveryCause === "configuration_incomplete";
+    if (shouldPostEscalationComment) {
       const escalationCommentMarker = `Recovery action: \`${recoveryAction.id}\``;
 
       const hasEscalationComment = await db
@@ -2294,6 +2662,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         previousStatus: input.previousStatus,
         source: input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "recovery.reconcile_successful_run_handoff_missing_state"
+          : input.recoveryCause === "workspace_validation_failed"
+            ? "recovery.reconcile_workspace_validation_failed"
+          : input.recoveryCause === "configuration_incomplete"
+            ? "recovery.reconcile_configuration_incomplete"
           : "recovery.reconcile_stranded_assigned_issue",
         recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
         latestRunId: input.latestRun?.id ?? null,
@@ -2361,6 +2733,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
       escalated: 0,
+      waitingOnReviewResolved: 0,
+      recentProgressExempted: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -2381,12 +2755,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       }
 
       const agent = await getAgent(agentId);
-      if (!agent || agent.companyId !== issue.companyId || !isAgentInvokable(agent)) {
+      if (!agent || agent.companyId !== issue.companyId || !(await isAgentInvokable(agent))) {
         result.skipped += 1;
         continue;
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
       }
@@ -2517,21 +2896,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         }
 
         if (isRepeatedProductiveContinuationRecovery(successfulRun)) {
-          const updated = await escalateStrandedAssignedIssue({
-            issue,
-            previousStatus: "in_progress",
-            latestRun: successfulRun,
-            comment:
-              "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
-              "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
-          });
-          if (updated) {
-            result.escalated += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
+          // GGU-809: skip escalation if the assignee has shown visible progress
+          // (comment or attachment) within the exemption window. Falling
+          // through here lets the normal continuation-retry path enqueue the
+          // next wake, which is the correct behaviour for batch workflows.
+          const exempted = await hasRecentVisibleProgress(
+            issue.companyId,
+            issue.id,
+            agentId,
+            STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
+          );
+          if (!exempted) {
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "in_progress",
+              latestRun: successfulRun,
+              comment:
+                "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
+                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
           }
-          continue;
+          result.recentProgressExempted += 1;
         }
 
         if (await isInvocationBudgetBlocked(issue, agentId)) {
@@ -2555,24 +2947,78 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         }
         continue;
       }
-      if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
-        const failureSummary = summarizeRunFailureForIssueComment(latestRun);
-        const updated = await escalateStrandedAssignedIssue({
-          issue,
-          previousStatus: "in_progress",
-          latestRun,
-          comment:
-            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-            `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
-            "Moving it to `blocked` so it is visible for intervention.",
-        });
-        if (updated) {
-          result.escalated += 1;
-          result.issueIds.push(issue.id);
-        } else {
-          result.skipped += 1;
+      if (isUnsuccessfulTerminalIssueRun(latestRun)) {
+        const classification = classifyContinuationFailure(latestRun);
+
+        if (classification.errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
+          const resolved = await resolveContinuationWaitingOnReview(issue);
+          if (resolved) {
+            result.waitingOnReviewResolved += 1;
+            result.issueIds.push(issue.id);
+            continue;
+          }
         }
-        continue;
+
+        if (classification.kind === "non_retryable") {
+          const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun,
+            comment:
+              "Paperclip detected a non-retryable failure on this issue's continuation run " +
+              `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
+              `so it is visible for intervention.${failureSummary ?? ""}`,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+          const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
+            issue.companyId,
+            issue.id,
+            classification.errorCode,
+          );
+          if (consecutive >= classification.maxAttempts) {
+            const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+            const attemptCopy = consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;
+            const causeCopy = classification.errorCode
+              ? ` Latest cause: \`${classification.errorCode}\`.`
+              : "";
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "in_progress",
+              latestRun,
+              comment:
+                "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+                `execution disappeared, but it still has no live execution path${attemptCopy}.${causeCopy}${failureSummary ?? ""} ` +
+                "Moving it to `blocked` so it is visible for intervention.",
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+
+          if (classification.baseBackoffMs > 0 && latestFinishedAt) {
+            const elapsed = Date.now() - latestFinishedAt.getTime();
+            const requiredDelay = classification.baseBackoffMs *
+              Math.pow(2, Math.max(0, consecutive - 1));
+            if (elapsed < requiredDelay) {
+              result.skipped += 1;
+              continue;
+            }
+          }
+        }
       }
 
       if (await isInvocationBudgetBlocked(issue, agentId)) {
@@ -3258,7 +3704,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
     let escalation: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       escalation = await issuesSvc.create(issue.companyId, {
-        title: `Unblock liveness incident for ${recoveryIssue.identifier ?? recoveryIssue.title}`,
+        title: `Unblock liveness incident for ${issue.identifier ?? issue.id}`,
         description: buildLivenessEscalationDescription(input.finding),
         status: "todo",
         priority: "high",
@@ -3453,6 +3899,115 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+  // Backstop sweeper: clears stale lock columns on issues whose checkoutRunId
+  // or executionRunId points at a heartbeat_runs row that is either missing or
+  // in a terminal status. Provides self-heal for stale locks that fell outside
+  // releaseIssueExecutionAndPromote / clearCheckoutRunIfTerminal / adoption.
+  // Idempotent and safe: clears at most one row's worth of lock columns per
+  // candidate, and only when the referenced run row is unambiguously terminal.
+  async function sweepStaleIssueLocks() {
+    const result = {
+      cleared: 0,
+      issueIds: [] as string[],
+    };
+
+    const candidates = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(
+        sql`(${issues.checkoutRunId} is not null or ${issues.executionRunId} is not null)`,
+      );
+
+    const referencedRunIds = [
+      ...new Set(
+        candidates
+          .flatMap((issue) => [issue.checkoutRunId, issue.executionRunId])
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    const runRows =
+      referencedRunIds.length > 0
+        ? await db
+            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(inArray(heartbeatRuns.id, referencedRunIds))
+        : [];
+    const runStatusById = new Map<string, string>();
+    for (const row of runRows) runStatusById.set(row.id, row.status);
+
+    const isCleanable = (runId: string | null) => {
+      if (!runId) return true;
+      const status = runStatusById.get(runId);
+      if (!status) return true; // missing run row → no real claim
+      return TERMINAL_HEARTBEAT_RUN_STATUSES.has(status);
+    };
+
+    for (const issue of candidates) {
+      if (!isCleanable(issue.checkoutRunId) || !isCleanable(issue.executionRunId)) {
+        continue;
+      }
+
+      const updated = await db
+        .update(issues)
+        .set({
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issues.id, issue.id),
+            issue.checkoutRunId
+              ? eq(issues.checkoutRunId, issue.checkoutRunId)
+              : isNull(issues.checkoutRunId),
+            issue.executionRunId
+              ? eq(issues.executionRunId, issue.executionRunId)
+              : isNull(issues.executionRunId),
+          ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+
+      if (!updated) continue;
+
+      result.cleared += 1;
+      result.issueIds.push(updated.id);
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.stale_lock_cleared",
+        entityType: "issue",
+        entityId: updated.id,
+        details: {
+          source: "recovery.sweep_stale_issue_locks",
+          clearedCheckoutRunId: issue.checkoutRunId,
+          clearedExecutionRunId: issue.executionRunId,
+          referencedRunStatuses: Object.fromEntries(runStatusById),
+        },
+      });
+    }
+
+    if (result.cleared > 0) {
+      logger.warn(
+        { cleared: result.cleared, issueIds: result.issueIds },
+        "swept stale issue lock columns",
+      );
+    }
+
+    return result;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -3460,6 +4015,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,

@@ -17,6 +17,7 @@ const mockDocumentsService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
@@ -88,6 +89,7 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/documents.js", () => ({
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentsService,
   }));
 
@@ -113,6 +115,7 @@ function registerModuleMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentsService,
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({}),
@@ -206,6 +209,12 @@ describe("issue document revision routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:read",
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
       companyId,

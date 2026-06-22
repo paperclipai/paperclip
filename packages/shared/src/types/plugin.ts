@@ -38,8 +38,24 @@ import type { Routine, RoutineTrigger, RoutineVariable } from "./routine.js";
 /**
  * A JSON Schema object used for plugin config schemas and tool parameter schemas.
  * Plugins provide these as plain JSON Schema compatible objects.
+ *
+ * The Paperclip extension keywords below are recognised by the Paperclip UI
+ * but are otherwise ignored by standard JSON Schema validators.
  */
-export type JsonSchema = Record<string, unknown>;
+export type JsonSchema = {
+  /**
+   * When true, the Paperclip config UI hides this property behind an
+   * "Advanced options" disclosure. Defaults to false (always visible).
+   */
+  "x-paperclip-advanced"?: boolean;
+  /**
+   * Optional sub-section heading used to group advanced properties inside
+   * the disclosure (e.g. "SSH access", "VM resources"). Ignored when
+   * `x-paperclip-advanced` is not true.
+   */
+  "x-paperclip-group"?: string;
+  [key: string]: unknown;
+};
 
 export type {
   PluginDatabaseCoreReadTable,
@@ -346,8 +362,11 @@ export interface PluginUiSlotDeclaration {
    */
   entityTypes?: PluginUiSlotEntityType[];
   /**
-   * Optional company-scoped route segment for page and routeSidebar slots.
+   * Optional company-scoped route segment for page, routeSidebar, and
+   * companySettingsPage slots.
    * Example: `kitchensink` becomes `/:companyPrefix/kitchensink`.
+   * For companySettingsPage, `permissions` becomes
+   * `/:companyPrefix/company/settings/permissions`.
    */
   routePath?: string;
   /**

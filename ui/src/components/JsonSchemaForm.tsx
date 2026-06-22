@@ -47,6 +47,7 @@ export interface JsonSchemaNode {
   description?: string;
   default?: unknown;
   enum?: unknown[];
+  examples?: unknown[];
   const?: unknown;
   format?: string;
 
@@ -75,6 +76,19 @@ export interface JsonSchemaNode {
   // Metadata
   readOnly?: boolean;
   writeOnly?: boolean;
+
+  // Paperclip extensions
+  /**
+   * When true, the field is hidden behind an "Advanced options" disclosure
+   * in the top-level `JsonSchemaForm`. Defaults to false (essential).
+   */
+  "x-paperclip-advanced"?: boolean;
+  /**
+   * Optional sub-section name used to group advanced fields under headings
+   * inside the disclosure (e.g. "SSH access", "VM resources"). Ignored when
+   * `x-paperclip-advanced` is not true.
+   */
+  "x-paperclip-group"?: string;
 
   // Allow extra keys
   [key: string]: unknown;
@@ -121,7 +135,14 @@ export function labelFromKey(key: string, schema: JsonSchemaNode): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Produce a sensible default value for a schema node. */
+/**
+ * Produce a sensible default value for a schema node.
+ *
+ * Optional scalar fields (string, number, integer, secret-ref) without an
+ * explicit `default` return `undefined` so they stay out of the submitted
+ * payload — otherwise an empty field would round-trip as `""` or `0` and
+ * trip server-side "X must be greater than 0 when provided" style validators.
+ */
 export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
   if (schema.default !== undefined) return schema.default;
 
@@ -129,26 +150,26 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
   switch (type) {
     case "string":
     case "secret-ref":
-      return "";
     case "number":
     case "integer":
-      return schema.minimum ?? 0;
+      return undefined;
     case "boolean":
       return false;
     case "enum":
-      return schema.enum?.[0] ?? "";
+      return undefined;
     case "array":
       return [];
     case "object": {
       if (!schema.properties) return {};
       const obj: Record<string, unknown> = {};
       for (const [key, propSchema] of Object.entries(schema.properties)) {
-        obj[key] = getDefaultForSchema(propSchema);
+        const def = getDefaultForSchema(propSchema);
+        if (def !== undefined) obj[key] = def;
       }
       return obj;
     }
     default:
-      return "";
+      return undefined;
   }
 }
 
@@ -419,6 +440,13 @@ const BooleanField = React.memo(({
 BooleanField.displayName = "BooleanField";
 
 /**
+ * Sentinel value for the "not configured" row of an optional enum select.
+ * Radix `Select` forbids an empty-string item value, so we map the unset state
+ * onto this sentinel and translate it back to `undefined` on change.
+ */
+const ENUM_UNSET_VALUE = "__paperclip_unset__";
+
+/**
  * Specialized field for enum (select) values.
  */
 const EnumField = React.memo(({
@@ -439,32 +467,63 @@ const EnumField = React.memo(({
   description?: string;
   error?: string;
   options: unknown[];
-}) => (
-  <FieldWrapper
-    label={label}
-    description={description}
-    required={isRequired}
-    error={error}
-    disabled={disabled}
-  >
-    <Select
-      value={String(value ?? "")}
-      onValueChange={onChange}
+}) => {
+  // Optional enums get a leading blank row so the user can express "not
+  // configured"; it is also the selected row when no value is set.
+  const showUnsetOption = !isRequired;
+  // When every option is numeric, coerce the selected string back to a number
+  // so the payload keeps the schema's integer/number type — a stringified "2"
+  // would otherwise fail server-side integer validation.
+  const numericOptions =
+    options.length > 0 && options.every((option) => typeof option === "number");
+
+  const isUnset = value === undefined || value === null || value === "";
+  const selectValue = isUnset
+    ? showUnsetOption
+      ? ENUM_UNSET_VALUE
+      : ""
+    : String(value);
+
+  const handleChange = (next: string) => {
+    if (next === ENUM_UNSET_VALUE) {
+      onChange(undefined);
+      return;
+    }
+    onChange(numericOptions ? Number(next) : next);
+  };
+
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
       disabled={disabled}
     >
-      <SelectTrigger className="w-full">
-        <SelectValue placeholder="Select an option" />
-      </SelectTrigger>
-      <SelectContent>
-        {options.map((option) => (
-          <SelectItem key={String(option)} value={String(option)}>
-            {String(option)}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  </FieldWrapper>
-));
+      <Select
+        value={selectValue}
+        onValueChange={handleChange}
+        disabled={disabled}
+      >
+        <SelectTrigger className="w-full">
+          <SelectValue placeholder="Select an option" />
+        </SelectTrigger>
+        <SelectContent>
+          {showUnsetOption && (
+            <SelectItem value={ENUM_UNSET_VALUE} textValue="None">
+              <span className="text-muted-foreground">None</span>
+            </SelectItem>
+          )}
+          {options.map((option) => (
+            <SelectItem key={String(option)} value={String(option)}>
+              {String(option)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </FieldWrapper>
+  );
+});
 
 EnumField.displayName = "EnumField";
 
@@ -669,6 +728,7 @@ SecretField.displayName = "SecretField";
  * Specialized field for numeric (number/integer) values.
  */
 const NumberField = React.memo(({
+  id,
   value,
   onChange,
   disabled,
@@ -678,7 +738,11 @@ const NumberField = React.memo(({
   error,
   defaultValue,
   type,
+  minimum,
+  maximum,
+  suggestions,
 }: {
+  id: string;
   value: unknown;
   onChange: (val: unknown) => void;
   disabled: boolean;
@@ -688,28 +752,47 @@ const NumberField = React.memo(({
   error?: string;
   defaultValue?: unknown;
   type: "number" | "integer";
-}) => (
-  <FieldWrapper
-    label={label}
-    description={description}
-    required={isRequired}
-    error={error}
-    disabled={disabled}
-  >
-    <Input
-      type="number"
-      step={type === "integer" ? "1" : "any"}
-      value={value !== undefined ? String(value) : ""}
-      onChange={(e) => {
-        const val = e.target.value;
-        onChange(val === "" ? undefined : Number(val));
-      }}
-      placeholder={String(defaultValue ?? "")}
+  minimum?: number;
+  maximum?: number;
+  suggestions?: unknown[];
+}) => {
+  const hasSuggestions = Array.isArray(suggestions) && suggestions.length > 0;
+  // Sanitize the path-based id so it is a valid CSS/HTML identifier (paths can contain "/").
+  const listId = hasSuggestions ? `${id.replace(/[^a-zA-Z0-9_-]/g, "-")}-suggestions` : undefined;
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
       disabled={disabled}
-      aria-invalid={!!error}
-    />
-  </FieldWrapper>
-));
+    >
+      <Input
+        type="number"
+        step={type === "integer" ? "1" : "any"}
+        min={minimum}
+        max={maximum}
+        list={listId}
+        value={value !== undefined ? String(value) : ""}
+        onChange={(e) => {
+          const val = e.target.value;
+          const trimmed = val.trim();
+          onChange(trimmed === "" ? undefined : Number(trimmed));
+        }}
+        placeholder={String(defaultValue ?? "")}
+        disabled={disabled}
+        aria-invalid={!!error}
+      />
+      {listId ? (
+        <datalist id={listId}>
+          {suggestions!.map((suggestion) => (
+            <option key={String(suggestion)} value={String(suggestion)} />
+          ))}
+        </datalist>
+      ) : null}
+    </FieldWrapper>
+  );
+});
 
 NumberField.displayName = "NumberField";
 
@@ -1024,6 +1107,7 @@ const FormField = React.memo(({
     case "integer":
       return (
         <NumberField
+          id={path}
           value={value}
           onChange={onChange}
           disabled={isReadOnly}
@@ -1033,6 +1117,9 @@ const FormField = React.memo(({
           error={error}
           defaultValue={propSchema.default}
           type={type as "number" | "integer"}
+          minimum={typeof propSchema.minimum === "number" ? propSchema.minimum : undefined}
+          maximum={typeof propSchema.maximum === "number" ? propSchema.maximum : undefined}
+          suggestions={Array.isArray(propSchema.examples) ? propSchema.examples : undefined}
         />
       );
 
@@ -1138,6 +1225,64 @@ export function JsonSchemaForm({
     [onChange, values],
   );
 
+  const { essentials, advancedGroups, advancedKeys } = useMemo(() => {
+    const essentials: Array<[string, JsonSchemaNode]> = [];
+    // Preserve original key order while bucketing into groups.
+    const groupOrder: string[] = [];
+    const groups = new Map<string, Array<[string, JsonSchemaNode]>>();
+    const advancedKeys = new Set<string>();
+    const DEFAULT_GROUP = "More options";
+
+    for (const entry of Object.entries(properties)) {
+      const [key, propSchema] = entry;
+      if (propSchema["x-paperclip-advanced"] === true) {
+        advancedKeys.add(key);
+        const rawGroup = propSchema["x-paperclip-group"];
+        const group = typeof rawGroup === "string" && rawGroup.length > 0
+          ? rawGroup
+          : DEFAULT_GROUP;
+        if (!groups.has(group)) {
+          groups.set(group, []);
+          groupOrder.push(group);
+        }
+        groups.get(group)!.push(entry);
+      } else {
+        essentials.push(entry);
+      }
+    }
+
+    return {
+      essentials,
+      advancedGroups: groupOrder.map((group) => ({
+        group,
+        fields: groups.get(group)!,
+      })),
+      advancedKeys,
+    };
+  }, [properties]);
+
+  const hasAdvanced = advancedGroups.length > 0;
+
+  const hasAdvancedError = useMemo(() => {
+    if (!hasAdvanced) return false;
+    for (const errorKey of Object.keys(errors)) {
+      // Top-level errors arrive as "/<key>" or "/<key>/<...>".
+      const stripped = errorKey.startsWith("/") ? errorKey.slice(1) : errorKey;
+      const topKey = stripped.split("/")[0];
+      if (advancedKeys.has(topKey)) return true;
+    }
+    return false;
+  }, [errors, advancedKeys, hasAdvanced]);
+
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+
+  // Force the disclosure open when a validation error lands on a hidden field
+  // so the user can see and fix it. Never auto-close — once open, the user
+  // controls collapse.
+  useEffect(() => {
+    if (hasAdvancedError) setIsAdvancedOpen(true);
+  }, [hasAdvancedError]);
+
   if (Object.keys(properties).length === 0) {
     return (
       <div
@@ -1151,30 +1296,65 @@ export function JsonSchemaForm({
     );
   }
 
+  const renderField = ([key, propSchema]: [string, JsonSchemaNode]) => {
+    const value = values[key];
+    const isRequired = requiredFields.has(key);
+    const error = errors[`/${key}`];
+    const label = labelFromKey(key, propSchema);
+    const path = `/${key}`;
+
+    return (
+      <FormField
+        key={key}
+        propSchema={propSchema}
+        value={value}
+        onChange={(val) => handleFieldChange(key, val)}
+        error={error}
+        disabled={disabled}
+        label={label}
+        isRequired={isRequired}
+        errors={errors}
+        path={path}
+      />
+    );
+  };
+
   return (
     <div className={cn("space-y-6", className)}>
-      {Object.entries(properties).map(([key, propSchema]) => {
-        const value = values[key];
-        const isRequired = requiredFields.has(key);
-        const error = errors[`/${key}`];
-        const label = labelFromKey(key, propSchema);
-        const path = `/${key}`;
+      {essentials.map(renderField)}
 
-        return (
-          <FormField
-            key={key}
-            propSchema={propSchema}
-            value={value}
-            onChange={(val) => handleFieldChange(key, val)}
-            error={error}
-            disabled={disabled}
-            label={label}
-            isRequired={isRequired}
-            errors={errors}
-            path={path}
-          />
-        );
-      })}
+      {hasAdvanced && (
+        <div className="space-y-3 rounded-lg border border-dashed">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+            onClick={() => setIsAdvancedOpen((open) => !open)}
+            aria-expanded={isAdvancedOpen}
+          >
+            <span className="text-sm font-medium">Advanced options</span>
+            {isAdvancedOpen ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+          </button>
+
+          {isAdvancedOpen && (
+            <div className="space-y-6 px-4 pb-4">
+              {advancedGroups.map(({ group, fields }) => (
+                <div key={group} className="space-y-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {group}
+                  </div>
+                  <div className="space-y-6">
+                    {fields.map(renderField)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,13 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documents, issueComments, issueDocuments, issueReferenceMentions, issues } from "@paperclipai/db";
+import {
+  documentAnnotationComments,
+  documents,
+  issueComments,
+  issueDocuments,
+  issueReferenceMentions,
+  issues,
+} from "@paperclipai/db";
 import type {
   IssueReferenceSource,
   IssueReferenceSourceKind,
@@ -214,11 +221,35 @@ export function issueReferenceService(db: Db) {
         companyId: issueComments.companyId,
         issueId: issueComments.issueId,
         body: issueComments.body,
+        deletedAt: issueComments.deletedAt,
       })
       .from(issueComments)
       .where(eq(issueComments.id, commentId))
-      .then((rows: Array<{ id: string; companyId: string; issueId: string; body: string }>) => rows[0] ?? null);
+      .then((rows: Array<{ id: string; companyId: string; issueId: string; body: string; deletedAt: Date | null }>) => rows[0] ?? null);
     if (!comment) throw notFound("Issue comment not found");
+
+    await replaceSourceMentions({
+      companyId: comment.companyId,
+      sourceIssueId: comment.issueId,
+      sourceKind: "comment",
+      sourceRecordId: comment.id,
+      documentKey: null,
+      text: comment.deletedAt ? null : comment.body,
+    }, dbOrTx);
+  }
+
+  async function syncAnnotationComment(commentId: string, dbOrTx: any = db) {
+    const comment = await dbOrTx
+      .select({
+        id: documentAnnotationComments.id,
+        companyId: documentAnnotationComments.companyId,
+        issueId: documentAnnotationComments.issueId,
+        body: documentAnnotationComments.body,
+      })
+      .from(documentAnnotationComments)
+      .where(eq(documentAnnotationComments.id, commentId))
+      .then((rows: Array<{ id: string; companyId: string; issueId: string; body: string }>) => rows[0] ?? null);
+    if (!comment) throw notFound("Document annotation comment not found");
 
     await replaceSourceMentions({
       companyId: comment.companyId,
@@ -265,6 +296,12 @@ export function issueReferenceService(db: Db) {
     await dbOrTx
       .delete(issueReferenceMentions)
       .where(and(eq(issueReferenceMentions.sourceKind, "document"), eq(issueReferenceMentions.sourceRecordId, documentId)));
+  }
+
+  async function deleteCommentSource(commentId: string, dbOrTx: any = db) {
+    await dbOrTx
+      .delete(issueReferenceMentions)
+      .where(and(eq(issueReferenceMentions.sourceKind, "comment"), eq(issueReferenceMentions.sourceRecordId, commentId)));
   }
 
   async function syncAllForIssue(issueId: string, dbOrTx: any = db) {
@@ -396,8 +433,10 @@ export function issueReferenceService(db: Db) {
   return {
     syncIssue,
     syncComment,
+    syncAnnotationComment,
     syncDocument,
     deleteDocumentSource,
+    deleteCommentSource,
     syncAllForIssue,
     syncAllForCompany,
     listIssueReferenceSummary,

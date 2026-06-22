@@ -7,10 +7,14 @@ import {
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
+import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
+import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
-});
+  trustPreset: trustPresetSchema.optional(),
+  authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+}).catchall(z.unknown());
 
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);
 
@@ -70,7 +74,7 @@ export const createAgentSchema = z.object({
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
   reportsTo: z.string().uuid().optional().nullable(),
   capabilities: z.string().optional().nullable(),
-  desiredSkills: z.array(z.string().min(1)).optional(),
+  desiredSkills: z.array(agentDesiredSkillSelectionSchema).optional(),
   adapterType: agentAdapterTypeSchema,
   adapterConfig: adapterConfigSchema.optional().default({}),
   instructionsBundle: createAgentInstructionsBundleSchema.optional(),
@@ -158,6 +162,8 @@ export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema
 export const updateAgentPermissionsSchema = z.object({
   canCreateAgents: z.boolean(),
   canAssignTasks: z.boolean(),
+  trustPreset: trustPresetSchema.optional(),
+  authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;

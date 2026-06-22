@@ -4,6 +4,7 @@ import {
   buildCompanyUserInlineOptions,
   buildCompanyUserLabelMap,
   buildCompanyUserProfileMap,
+  buildIssueMentionOptions,
   buildMarkdownMentionOptions,
 } from "./company-members";
 
@@ -79,6 +80,48 @@ describe("company-members helpers", () => {
       { id: "user:user-1", name: "Taylor", kind: "user", userId: "user-1" },
       { id: "agent:agent-1", name: "CodexCoder", kind: "agent", agentId: "agent-1", agentIcon: "code" },
       { id: "project:project-1", name: "Paperclip App", kind: "project", projectId: "project-1", projectColor: "#336699" },
+    ]);
+  });
+
+  it("builds issue mention options with identifier + title search text", () => {
+    const options = buildIssueMentionOptions([
+      { id: "issue-1", identifier: "PAP-102", title: "@task references" },
+      { id: "issue-2", identifier: "PAP-7", title: "" },
+    ]);
+
+    expect(options).toEqual([
+      {
+        id: "issue:issue-1",
+        name: "PAP-102 @task references",
+        kind: "issue",
+        issueId: "issue-1",
+        issueIdentifier: "PAP-102",
+      },
+      {
+        id: "issue:issue-2",
+        name: "PAP-7",
+        kind: "issue",
+        issueId: "issue-2",
+        issueIdentifier: "PAP-7",
+      },
+    ]);
+  });
+
+  it("appends issue mention options after agents and projects, preserving order", () => {
+    const options = buildMarkdownMentionOptions({
+      agents: [{ id: "agent-1", name: "CodexCoder", status: "active", icon: "code" }],
+      projects: [{ id: "project-1", name: "Paperclip App", color: "#336699" }],
+      issues: [
+        { id: "issue-2", identifier: "PAP-50", title: "Newer" },
+        { id: "issue-1", identifier: "PAP-3", title: "Older" },
+      ],
+    });
+
+    expect(options.map((option) => option.id)).toEqual([
+      "agent:agent-1",
+      "project:project-1",
+      "issue:issue-2",
+      "issue:issue-1",
     ]);
   });
 

@@ -42,7 +42,6 @@
     "cloudflare"
   ],
   "scripts": {
-    "postinstall": "node ../../../../scripts/link-plugin-dev-sdk.mjs",
     "prebuild": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "rm -rf dist && tsc",
     "clean": "rm -rf dist",
@@ -54,6 +53,6 @@
   "devDependencies": {
     "@types/node": "^24.6.0",
     "typescript": "^5.7.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.8"
   }
 }

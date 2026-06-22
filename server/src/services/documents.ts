@@ -57,6 +57,7 @@ function mapIssueDocumentRow(
     lockedAt: Date | null;
     lockedByAgentId: string | null;
     lockedByUserId: string | null;
+    sourceTrust: typeof documents.$inferSelect.sourceTrust;
     createdAt: Date;
     updatedAt: Date;
   },
@@ -79,6 +80,7 @@ function mapIssueDocumentRow(
     lockedAt: row.lockedAt,
     lockedByAgentId: row.lockedByAgentId,
     lockedByUserId: row.lockedByUserId,
+    sourceTrust: row.sourceTrust ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -101,6 +103,7 @@ const issueDocumentSelect = {
   lockedAt: documents.lockedAt,
   lockedByAgentId: documents.lockedByAgentId,
   lockedByUserId: documents.lockedByUserId,
+  sourceTrust: documents.sourceTrust,
   createdAt: documents.createdAt,
   updatedAt: documents.updatedAt,
 };
@@ -202,6 +205,7 @@ export function documentService(db: Db) {
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
       createdByRunId?: string | null;
+      sourceTrust?: typeof documents.$inferInsert.sourceTrust;
       lockedDocumentStrategy?: "conflict" | "create_new_document";
     }) => {
       const key = normalizeDocumentKey(input.key);
@@ -235,6 +239,7 @@ export function documentService(db: Db) {
               lockedAt: documents.lockedAt,
               lockedByAgentId: documents.lockedByAgentId,
               lockedByUserId: documents.lockedByUserId,
+              sourceTrust: documents.sourceTrust,
               createdAt: documents.createdAt,
               updatedAt: documents.updatedAt,
             })
@@ -268,6 +273,7 @@ export function documentService(db: Db) {
                     lockedAt: null,
                     lockedByAgentId: null,
                     lockedByUserId: null,
+                    sourceTrust: input.sourceTrust ?? null,
                     createdAt: now,
                     updatedAt: now,
                   })
@@ -327,6 +333,7 @@ export function documentService(db: Db) {
                     lockedAt: null,
                     lockedByAgentId: null,
                     lockedByUserId: null,
+                    sourceTrust: document.sourceTrust ?? null,
                     createdAt: document.createdAt,
                     updatedAt: document.updatedAt,
                   },
@@ -379,6 +386,7 @@ export function documentService(db: Db) {
                 latestRevisionNumber: nextRevisionNumber,
                 updatedByAgentId: input.createdByAgentId ?? null,
                 updatedByUserId: input.createdByUserId ?? null,
+                sourceTrust: input.sourceTrust ?? null,
                 updatedAt: now,
               })
               .where(eq(documents.id, existing.id));
@@ -402,6 +410,7 @@ export function documentService(db: Db) {
                 lockedAt: existing.lockedAt,
                 lockedByAgentId: existing.lockedByAgentId,
                 lockedByUserId: existing.lockedByUserId,
+                sourceTrust: input.sourceTrust ?? null,
                 updatedAt: now,
               },
             };
@@ -427,6 +436,7 @@ export function documentService(db: Db) {
               lockedAt: null,
               lockedByAgentId: null,
               lockedByUserId: null,
+              sourceTrust: input.sourceTrust ?? null,
               createdAt: now,
               updatedAt: now,
             })
@@ -482,6 +492,7 @@ export function documentService(db: Db) {
               lockedAt: document.lockedAt,
               lockedByAgentId: document.lockedByAgentId,
               lockedByUserId: document.lockedByUserId,
+              sourceTrust: document.sourceTrust ?? null,
               createdAt: document.createdAt,
               updatedAt: document.updatedAt,
             },

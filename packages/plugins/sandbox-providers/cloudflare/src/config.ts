@@ -1,7 +1,7 @@
 import type { CloudflareDriverConfig } from "./types.js";
 
 const DEFAULT_REQUESTED_CWD = "/workspace/paperclip";
-const DEFAULT_SLEEP_AFTER = "10m";
+const DEFAULT_SLEEP_AFTER = "1h";
 const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_BRIDGE_REQUEST_TIMEOUT_MS = 300_000;
 const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1"]);

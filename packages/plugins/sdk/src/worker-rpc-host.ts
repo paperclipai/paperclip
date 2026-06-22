@@ -35,6 +35,7 @@
  */
 
 import fs from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -42,6 +43,7 @@ import { fileURLToPath } from "node:url";
 import type {
   AskUserQuestionsInteraction,
   PaperclipPluginManifestV1,
+  RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "@paperclipai/shared";
@@ -66,6 +68,7 @@ import type {
 } from "./types.js";
 import type {
   JsonRpcId,
+  JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
   InitializeParams,
@@ -76,6 +79,8 @@ import type {
   RunJobParams,
   GetDataParams,
   PerformActionParams,
+  PluginPerformActionActorContext,
+  PluginPerformActionContext,
   ExecuteToolParams,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
@@ -85,6 +90,7 @@ import type {
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentProbeParams,
+  PluginInvocationContext,
   WorkerToHostMethodName,
   WorkerToHostMethods,
 } from "./protocol.js";
@@ -279,13 +285,17 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   let manifest: PaperclipPluginManifestV1 | null = null;
   let currentConfig: Record<string, unknown> = {};
   let databaseNamespace: string | null = null;
+  const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
 
   // Plugin handler registrations (populated during setup())
   const eventHandlers: EventRegistration[] = [];
   const jobHandlers = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launcherRegistrations = new Map<string, PluginLauncherRegistration>();
   const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
-  const actionHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
+  const actionHandlers = new Map<
+    string,
+    (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
+  >();
   const toolHandlers = new Map<string, {
     declaration: Pick<import("@paperclipai/shared").PluginToolDeclaration, "displayName" | "description" | "parametersSchema">;
     fn: (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>;
@@ -365,7 +375,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       });
 
       try {
-        const request = createRequest(method, params, id);
+        const activeInvocation = invocationContextStorage.getStore();
+        const request = {
+          ...createRequest(method, params, id),
+          ...(activeInvocation ? { paperclipInvocationId: activeInvocation.id } : {}),
+        };
         sendMessage(request);
       } catch (err) {
         settle(reject, err instanceof Error ? err : new Error(String(err)));
@@ -378,7 +392,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
    */
   function notifyHost(method: string, params: unknown): void {
     try {
-      sendMessage(createNotification(method, params));
+      const activeInvocation = invocationContextStorage.getStore();
+      sendMessage({
+        ...createNotification(method, params),
+        ...(activeInvocation ? { paperclipInvocationId: activeInvocation.id } : {}),
+      });
     } catch {
       // Swallow — the host may have closed stdin
     }
@@ -896,6 +914,23 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           }) as Promise<RequestConfirmationInteraction>;
         },
 
+        async requestCheckboxConfirmation(
+          issueId: string,
+          interaction,
+          companyId: string,
+          options?: { authorAgentId?: string },
+        ): Promise<RequestCheckboxConfirmationInteraction> {
+          return callHost("issues.createInteraction", {
+            issueId,
+            companyId,
+            interaction: {
+              ...interaction,
+              kind: "request_checkbox_confirmation",
+            },
+            authorAgentId: options?.authorAgentId,
+          }) as Promise<RequestCheckboxConfirmationInteraction>;
+        },
+
         documents: {
           async list(issueId: string, companyId: string) {
             return callHost("issues.documents.list", { issueId, companyId });
@@ -1086,6 +1121,85 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      access: {
+        members: {
+          async list(input) {
+            return callHost("access.members.list", {
+              companyId: input.companyId,
+              includeArchived: input.includeArchived,
+            });
+          },
+
+          async get(memberId: string, companyId: string) {
+            return callHost("access.members.get", { memberId, companyId });
+          },
+
+          async update(memberId: string, patch, companyId: string) {
+            return callHost("access.members.update", { memberId, patch, companyId });
+          },
+        },
+
+        invites: {
+          async list(input) {
+            return callHost("access.invites.list", {
+              companyId: input.companyId,
+              state: input.state,
+              limit: input.limit,
+              offset: input.offset,
+            });
+          },
+
+          async create(input) {
+            return callHost("access.invites.create", {
+              companyId: input.companyId,
+              allowedJoinTypes: input.allowedJoinTypes,
+              humanRole: input.humanRole,
+              defaultsPayload: input.defaultsPayload,
+              agentMessage: input.agentMessage,
+            });
+          },
+
+          async revoke(inviteId: string, companyId: string) {
+            return callHost("access.invites.revoke", { inviteId, companyId });
+          },
+        },
+      },
+
+      authorization: {
+        grants: {
+          async list(input) {
+            return callHost("authorization.grants.list", input);
+          },
+          async set(input) {
+            return callHost("authorization.grants.set", input);
+          },
+        },
+
+        policies: {
+          async summary(companyId: string) {
+            return callHost("authorization.policies.summary", { companyId });
+          },
+          async get(input) {
+            return callHost("authorization.policies.get", input);
+          },
+          async update(input) {
+            return callHost("authorization.policies.update", input);
+          },
+          async previewAssignment(input) {
+            return callHost("authorization.policies.previewAssignment", input);
+          },
+          async explainAssignment(input) {
+            return callHost("authorization.policies.explainAssignment", input);
+          },
+        },
+
+        audit: {
+          async search(input) {
+            return callHost("authorization.audit.search", input);
+          },
+        },
+      },
+
       data: {
         register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void {
           dataHandlers.set(key, handler);
@@ -1093,7 +1207,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       actions: {
-        register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void {
+        register(
+          key: string,
+          handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
+        ): void {
           actionHandlers.set(key, handler);
         },
       },
@@ -1175,7 +1292,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     const { id, method, params } = request;
 
     try {
-      const result = await dispatchMethod(method, params);
+      const invoke = () => dispatchMethod(method, params);
+      const result = request.paperclipInvocation
+        ? await invocationContextStorage.run(request.paperclipInvocation, invoke)
+        : await invoke();
       sendMessage(createSuccessResponse(id, result ?? null));
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -1413,11 +1533,36 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No data handler registered for key "${params.key}"`);
     }
-    return handler(
-      params.renderEnvironment === undefined
-        ? params.params
-        : { ...params.params, renderEnvironment: params.renderEnvironment },
-    );
+    return handler({
+      ...params.params,
+      ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
+      ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
+    });
+  }
+
+  function stringOrNull(value: unknown): string | null {
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  function actorTypeOrSystem(value: unknown): PluginPerformActionActorContext["type"] {
+    return value === "user" || value === "agent" || value === "system" ? value : "system";
+  }
+
+  function actionContextFromParams(params: PerformActionParams): PluginPerformActionContext {
+    const rawActor = params.actorContext && typeof params.actorContext === "object"
+      ? params.actorContext
+      : null;
+    const actor = Object.freeze({
+      type: actorTypeOrSystem(rawActor?.type),
+      userId: stringOrNull(rawActor?.userId),
+      agentId: stringOrNull(rawActor?.agentId),
+      runId: stringOrNull(rawActor?.runId),
+      companyId: stringOrNull(rawActor?.companyId),
+    });
+    return Object.freeze({
+      actor,
+      companyId: actor.companyId,
+    });
   }
 
   async function handlePerformAction(params: PerformActionParams): Promise<unknown> {
@@ -1426,9 +1571,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw new Error(`No action handler registered for key "${params.key}"`);
     }
     return handler(
-      params.renderEnvironment === undefined
-        ? params.params
-        : { ...params.params, renderEnvironment: params.renderEnvironment },
+      {
+        ...params.params,
+        ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
+        ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
+      },
+      actionContextFromParams(params),
     );
   }
 
@@ -1597,14 +1745,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       });
     } else if (isJsonRpcNotification(message)) {
       // Dispatch host→worker push notifications
-      const notif = message as { method: string; params?: unknown };
+      const notif = message as JsonRpcNotification & { method: string; params?: unknown };
+      const runNotification = (fn: () => void | Promise<void>) => {
+        if (notif.paperclipInvocation) {
+          return invocationContextStorage.run(notif.paperclipInvocation, fn);
+        }
+        return fn();
+      };
       if (notif.method === "agents.sessions.event" && notif.params) {
         const event = notif.params as AgentSessionEvent;
         const cb = sessionEventCallbacks.get(event.sessionId);
         if (cb) cb(event);
       } else if (notif.method === "onEvent" && notif.params) {
         // Plugin event bus notifications — dispatch to registered event handlers
-        handleOnEvent(notif.params as OnEventParams).catch((err) => {
+        Promise.resolve(runNotification(() => handleOnEvent(notif.params as OnEventParams))).catch((err) => {
           notifyHost("log", {
             level: "error",
             message: `Failed to handle event notification: ${err instanceof Error ? err.message : String(err)}`,

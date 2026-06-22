@@ -7,6 +7,7 @@ import {
   createDb,
   documentRevisions,
   documents,
+  executionWorkspaces,
   goals,
   heartbeatRuns,
   issueComments,
@@ -15,6 +16,9 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  projectWorkspaces,
+  projects,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -48,7 +52,11 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.delete(documents);
     await db.delete(issueRelations);
     await db.delete(heartbeatRuns);
+    await db.delete(workspaceOperations);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(goals);
     await db.delete(agents);
     await db.delete(instanceSettings);
@@ -445,8 +453,12 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, created.id, {
       answers: [
-        { questionId: "scope", optionIds: ["phase-1"] },
-        { questionId: "extras", optionIds: ["docs", "tests", "docs"] },
+        { questionId: "scope", optionIds: [], otherText: "Custom Phase 1" },
+        {
+          questionId: "extras",
+          optionIds: ["docs", "tests", "docs"],
+          otherText: "  Pair with release notes  ",
+        },
       ],
       summaryMarkdown: "Ship Phase 1 with tests and docs.",
     }, {
@@ -457,8 +469,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(answered.result).toEqual({
       version: 1,
       answers: [
-        { questionId: "scope", optionIds: ["phase-1"] },
-        { questionId: "extras", optionIds: ["docs", "tests"] },
+        { questionId: "scope", optionIds: [], otherText: "Custom Phase 1" },
+        { questionId: "extras", optionIds: ["docs", "tests"], otherText: "Pair with release notes" },
       ],
       summaryMarkdown: "Ship Phase 1 with tests and docs.",
     });
@@ -734,6 +746,164 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("A decline reason is required for this confirmation");
   });
 
+  it("accepts request_checkbox_confirmation interactions with selected option ids", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Checkbox confirmation accept");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Which files should be deleted?",
+        options: [
+          { id: "file-a", label: "a.txt" },
+          { id: "file-b", label: "b.txt" },
+          { id: "file-c", label: "c.txt" },
+        ],
+        defaultSelectedOptionIds: ["file-a"],
+        minSelected: 0,
+        maxSelected: 2,
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    expect(created).toMatchObject({
+      kind: "request_checkbox_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        supersedeOnUserComment: true,
+        allowDeclineReason: true,
+      },
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {
+      selectedOptionIds: ["file-c", "file-a"],
+    }, {
+      userId: "local-board",
+    });
+
+    expect(accepted.createdIssues).toEqual([]);
+    expect(accepted.interaction).toMatchObject({
+      kind: "request_checkbox_confirmation",
+      status: "accepted",
+      result: {
+        version: 1,
+        outcome: "accepted",
+        selectedOptionIds: ["file-a", "file-c"],
+      },
+      resolvedByUserId: "local-board",
+    });
+  });
+
+  it("enforces request_checkbox_confirmation selected option references and bounds", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Checkbox confirmation bounds");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Pick one or two options.",
+        options: [
+          { id: "one", label: "One" },
+          { id: "two", label: "Two" },
+          { id: "three", label: "Three" },
+        ],
+        defaultSelectedOptionIds: ["one"],
+        minSelected: 1,
+        maxSelected: 2,
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {
+      selectedOptionIds: [],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Select at least 1 checkbox confirmation option(s)");
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {
+      selectedOptionIds: ["missing"],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Unknown checkbox confirmation optionId: missing");
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {
+      selectedOptionIds: ["one", "two", "three"],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Select no more than 2 checkbox confirmation option(s)");
+  });
+
+  it("expires request_checkbox_confirmation interactions when a user comments after creation", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Checkbox confirmation supersede");
+    const commentId = randomUUID();
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Which files should be deleted?",
+        options: [{ id: "file-a", label: "a.txt" }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: commentId,
+      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({
+      id: created.id,
+      kind: "request_checkbox_confirmation",
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded_by_comment",
+        commentId,
+      },
+    });
+  });
+
   it("returns agent-authored request confirmations to the creating agent when a board user accepts", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
@@ -816,7 +986,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("expires request confirmations opted into user-comment supersede after creation", async () => {
+  it("expires request confirmations by default when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue();
     const commentId = randomUUID();
 
@@ -828,10 +998,15 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
-        supersedeOnUserComment: true,
       },
     }, {
       userId: "local-board",
+    });
+
+    expect(created).toMatchObject({
+      payload: {
+        supersedeOnUserComment: true,
+      },
     });
 
     const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
@@ -858,7 +1033,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("keeps request confirmations pending unless user-comment supersede is explicitly enabled", async () => {
+  it("keeps request confirmations pending when user-comment supersede is explicitly disabled", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Comment supersede opt-out");
 
     await interactionsSvc.create({
@@ -869,9 +1044,44 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
+        supersedeOnUserComment: false,
       },
     }, {
       userId: "local-board",
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(Date.now() + 1_000),
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired).toHaveLength(0);
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending");
+  });
+
+  it("keeps legacy request confirmations pending when comment supersede was not stored", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Legacy confirmation without comment supersede flag");
+
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: { kind: "none" },
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+      },
+      createdByUserId: "local-board",
     });
 
     const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
@@ -902,7 +1112,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
-        supersedeOnUserComment: true,
       },
     }, {
       userId: "local-board",
@@ -958,7 +1167,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
-        supersedeOnUserComment: true,
       },
     }, {
       userId: "local-board",
@@ -1133,6 +1341,264 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           revisionId,
         },
       },
+    });
+  });
+
+  describe("workspace_finalize accept gate", () => {
+    async function seedAcceptGateFixture() {
+      const companyId = randomUUID();
+      const projectId = randomUUID();
+      const projectWorkspaceId = randomUUID();
+      const executionWorkspaceId = randomUUID();
+      const issueId = randomUUID();
+      const goalId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Project",
+        status: "in_progress",
+      });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Workspace",
+        sourceType: "local_path",
+        visibility: "default",
+        isPrimary: true,
+      });
+      await db.insert(executionWorkspaces).values({
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "exec",
+        status: "active",
+        providerType: "git_worktree",
+      });
+      await db.insert(goals).values({
+        id: goalId,
+        companyId,
+        title: "Accept gate fixture",
+        level: "task",
+        status: "active",
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        projectId,
+        goalId,
+        title: "Issue with execution workspace",
+        status: "in_progress",
+        priority: "medium",
+        executionWorkspaceId,
+      });
+
+      const created = await interactionsSvc.create({
+        id: issueId,
+        companyId,
+      }, {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Mark this issue done?",
+        },
+      }, {
+        userId: "local-board",
+      });
+
+      return { companyId, projectId, executionWorkspaceId, issueId, goalId, interactionId: created.id };
+    }
+
+    it("refuses accept when the issue's latest workspace operation is not a successful workspace_finalize", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId } = await seedAcceptGateFixture();
+
+      // A run touched the workspace (prepare) but never recorded workspace_finalize.
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      });
+
+      await expect(
+        interactionsSvc.acceptInteraction(
+          { id: issueId, companyId, goalId, projectId: null },
+          interactionId,
+          {},
+          { userId: "local-board" },
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        details: { executionWorkspaceId },
+      });
+
+      const row = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0]);
+      expect(row?.status).toBe("pending");
+    });
+
+    it("refuses accept when the latest workspace operation is a failed workspace_finalize", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId } = await seedAcceptGateFixture();
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      });
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "workspace_finalize",
+        status: "failed",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      });
+
+      await expect(
+        interactionsSvc.acceptInteraction(
+          { id: issueId, companyId, goalId, projectId: null },
+          interactionId,
+          {},
+          { userId: "local-board" },
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        details: { executionWorkspaceId },
+      });
+
+      const row = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0]);
+      expect(row?.status).toBe("pending");
+    });
+
+    it("allows accept once a successful workspace_finalize lands as the latest operation", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId } = await seedAcceptGateFixture();
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "workspace_finalize",
+        status: "failed",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      });
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:10:00.000Z"),
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        {},
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: interactionId,
+        status: "accepted",
+      });
+    });
+
+    it("allows accept of suggest_tasks even when no successful workspace_finalize has landed", async () => {
+      // suggest_tasks acceptance only creates follow-up issues; it does not
+      // approve code state or move the source workspace forward, so the
+      // workspace_finalize gate (PAPA-440) must not apply here. Without this
+      // carve-out the board cannot triage suggested tasks on an issue whose
+      // latest workspace op is still worktree_prepare.
+      const { companyId, executionWorkspaceId, issueId, goalId } = await seedAcceptGateFixture();
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-28T22:00:00.000Z"),
+      });
+
+      const created = await interactionsSvc.create({
+        id: issueId,
+        companyId,
+      }, {
+        kind: "suggest_tasks",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          tasks: [
+            {
+              clientKey: "follow-up",
+              title: "Created from suggest_tasks accept under prepare-only workspace",
+            },
+          ],
+        },
+      }, {
+        userId: "local-board",
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        created.id,
+        {},
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: created.id,
+        kind: "suggest_tasks",
+        status: "accepted",
+      });
+    });
+
+    it("allows accept when the issue has no execution workspace attached", async () => {
+      const { companyId, issueId } = await seedConfirmationIssue("No execution workspace accept");
+
+      const created = await interactionsSvc.create({
+        id: issueId,
+        companyId,
+      }, {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Mark this issue done?",
+        },
+      }, {
+        userId: "local-board",
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId: null, projectId: null },
+        created.id,
+        {},
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: created.id,
+        status: "accepted",
+      });
     });
   });
 });

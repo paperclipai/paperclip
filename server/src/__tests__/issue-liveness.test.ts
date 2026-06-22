@@ -273,6 +273,36 @@ describe("issue graph liveness classifier", () => {
     expect(paused[0]?.state).toBe("blocked_by_uninvokable_assignee");
   });
 
+  it("detects blocker assignees under terminated org ancestors as uninvokable", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Invalid tree unblock work",
+          status: "todo",
+          assigneeAgentId: "qa-2",
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent(),
+        manager,
+        agent({ id: "qa-2", name: "QA 2", status: "active", reportsTo: "cto-2" }),
+        agent({ id: "cto-2", name: "CTO 2", status: "terminated", reportsTo: "ceo-2" }),
+        agent({ id: "ceo-2", name: "CEO 2", status: "terminated", reportsTo: null }),
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      state: "blocked_by_uninvokable_assignee",
+      reason: "PAP-1703 is blocked by PAP-1704, but its assignee is in an invalid org chain.",
+      recommendedOwnerAgentId: managerId,
+    });
+  });
+
   it("detects invalid in_review execution participant", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [

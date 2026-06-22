@@ -364,13 +364,16 @@ export interface PaperclipPluginManifestV1 {
         | "contextMenuItem"
         | "commentAnnotation"
         | "commentContextMenuItem"
-        | "settingsPage";
+        | "settingsPage"
+        | "companySettingsPage";
       id: string;
       displayName: string;
       /** Which export name in the UI bundle provides this component */
       exportName: string;
       /** For detailTab: which entity types this tab appears on */
       entityTypes?: Array<"project" | "issue" | "agent" | "goal" | "run">;
+      /** For page and companySettingsPage: single route segment */
+      routePath?: string;
     }>;
   };
 }
@@ -1128,6 +1131,27 @@ Plugins may add sidebar links to:
 - global plugin settings
 - company-context plugin pages
 
+### 19.5.1 Route Sidebars (`routeSidebar`)
+
+A `routeSidebar` slot supplies a contextual sidebar for a plugin page route
+(matched by `routePath`). It **coexists** with the main app sidebar rather than
+replacing it: while the route is active the host collapses the app `<Sidebar/>`
+to its 64px icon rail (still hover/peek-able) and renders the plugin's
+`routeSidebar` in a secondary pane, producing the layout
+`[ app rail ][ route sidebar ][ content ]`. The same model applies to the
+host's own company-settings sidebar.
+
+The host owns the collapse. Plugins must not mount `RequestCollapsedSidebar` or
+otherwise attempt to collapse the app sidebar from a `routeSidebar` — the host
+applies the collapse while the route is mounted and restores the previous state
+on navigation away. The collapse is a **hard invariant**: while a secondary
+sidebar is shown the app rail is forced collapsed and its expand/toggle
+affordance is hidden, *overriding* any user pin. Crucially, this force is
+ephemeral — it never mutates the user's persisted expanded/collapsed preference,
+so navigating back to a normal route restores exactly what the user chose.
+Precedence is therefore: secondary-sidebar force > explicit user pin >
+route-requested collapse (`RequestCollapsedSidebar`) > default expanded.
+
 ## 19.6 Shared Components In `@paperclipai/plugin-sdk/ui`
 
 The host SDK ships shared components that plugins can import to quickly build UIs that match the host's look and feel. These are convenience building blocks, not a requirement.
@@ -1205,6 +1229,8 @@ The auto-generated form supports:
 For plugins that need richer settings UX beyond what JSON Schema can express, the plugin may declare a `settingsPage` slot in `ui.slots`. When present, the host renders the plugin's own React component instead of the auto-generated form. The plugin component communicates with its worker through the standard bridge to read and write config.
 
 Both approaches coexist: a plugin can use the auto-generated form for simple config and add a custom settings page slot for advanced configuration or operational dashboards.
+
+For plugins that need a company-scoped settings surface, declare a `companySettingsPage` slot with a `routePath`. The host renders a sidebar item under Company Settings and mounts the component at `/:companyPrefix/company/settings/:routePath`. The page receives `companyId` and `companyPrefix` in its host context. Core settings routes such as `access`, `invites`, `environments`, and `secrets` are reserved and cannot be shadowed by plugin declarations.
 
 ## 20. Local Tooling
 
@@ -1454,6 +1480,14 @@ Each plugin may expose a company-context main page:
 - `/:companyPrefix/plugins/:pluginId`
 
 This page is where board users do most day-to-day work.
+
+## 24.4 Company Settings Plugin Page
+
+Each ready plugin may expose a company settings page:
+
+- `/:companyPrefix/company/settings/:routePath`
+
+The host adds a matching Company Settings sidebar item using the slot `displayName`. Plugin settings route segments are single-segment slugs and must not collide with core company settings pages.
 
 ## 25. Uninstall And Data Lifecycle
 

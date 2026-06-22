@@ -178,7 +178,7 @@ export function BlockedInboxView({
         <div className="space-y-1">
           <p className="text-sm font-medium text-foreground">No work is stopped.</p>
           <p className="text-xs text-muted-foreground">
-            Issues that need a decision, recovery, or external action will appear here.
+            Tasks that need a decision, recovery, or external action will appear here.
           </p>
         </div>
       </div>

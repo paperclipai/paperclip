@@ -7,6 +7,7 @@ import type { PaperclipConfig } from "../config/schema.js";
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_CWD = process.cwd();
+const ORIGINAL_PATH = process.env.PATH;
 
 function createExistingConfigFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-onboard-"));
@@ -171,8 +172,13 @@ describe("onboard", () => {
   it("keeps tailnet quickstart on loopback until tailscale is available", async () => {
     const configPath = createFreshConfigPath();
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    process.env.PATH = "";
 
-    await onboard({ config: configPath, yes: true, invokedByRun: true, bind: "tailnet" });
+    try {
+      await onboard({ config: configPath, yes: true, invokedByRun: true, bind: "tailnet" });
+    } finally {
+      process.env.PATH = ORIGINAL_PATH;
+    }
 
     const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as PaperclipConfig;
     expect(raw.server.deploymentMode).toBe("authenticated");

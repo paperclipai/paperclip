@@ -561,7 +561,7 @@ function IssueDialogOpener({
   return <NewIssueDialog />;
 }
 
-function AgentDialogOpener({ advanced }: { advanced?: boolean }) {
+function AgentDialogOpener({ variant = "recommendation" }: { variant?: "recommendation" | "advanced" | "invite" }) {
   const { openNewAgent } = useDialog();
 
   useOpenWhenCompanyReady(() => {
@@ -569,12 +569,12 @@ function AgentDialogOpener({ advanced }: { advanced?: boolean }) {
   });
 
   useEffect(() => {
-    if (!advanced) return undefined;
+    if (variant === "recommendation") return undefined;
     const timer = window.setTimeout(() => {
-      clickButtonByText("advanced configuration");
+      clickButtonByText(variant === "advanced" ? "Configure a runtime" : "Invite an external agent");
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [advanced]);
+  }, [variant]);
 
   return <NewAgentDialog />;
 }
@@ -963,7 +963,21 @@ export const NewAgentAdapterSelection: Story = {
       description="Advanced branch of the agent creation wizard showing registered adapter choices and recommended states."
       badges={["populated", "adapters", "advanced"]}
     >
-      <AgentDialogOpener advanced />
+      <AgentDialogOpener variant="advanced" />
+    </DialogStory>
+  ),
+};
+
+export const NewAgentExternalInvite: Story = {
+  name: "New Agent - External Invite",
+  render: () => (
+    <DialogStory
+      eyebrow="NewAgentDialog"
+      title="External agent invite"
+      description="Agent onboarding prompt generation inside the add-agent modal."
+      badges={["agent invite", "onboarding", "approval"]}
+    >
+      <AgentDialogOpener variant="invite" />
     </DialogStory>
   ),
 };
