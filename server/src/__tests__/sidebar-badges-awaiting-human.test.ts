@@ -79,12 +79,30 @@ describeEmbeddedPostgres("sidebarBadgeService awaitingHuman", () => {
     return id;
   }
 
-  it("counts pending human-directed interactions and folds them into the inbox total", async () => {
+  it("counts one per issue (not per interaction) and folds it into the inbox total", async () => {
     const { companyId, issueId } = await seedIssue();
+    // Two pending asks on the SAME issue collapse to a single waiting item.
     await addInteraction(companyId, issueId, { kind: "request_confirmation" });
     await addInteraction(companyId, issueId, { kind: "ask_user_questions" });
 
-    const badges = await svc.get(companyId);
+    let badges = await svc.get(companyId);
+    expect(badges.awaitingHuman).toBe(1);
+    expect(badges.inbox).toBe(1);
+
+    // A second issue (same company) with a pending ask adds a second item.
+    const secondGoalId = randomUUID();
+    const secondIssueId = randomUUID();
+    await db.insert(goals).values({ id: secondGoalId, companyId, title: "G2", level: "task", status: "active" });
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId,
+      goalId: secondGoalId,
+      title: "Second issue",
+      status: "in_review",
+      priority: "medium",
+    });
+    await addInteraction(companyId, secondIssueId, { kind: "request_confirmation" });
+    badges = await svc.get(companyId);
     expect(badges.awaitingHuman).toBe(2);
     expect(badges.inbox).toBe(2);
   });
