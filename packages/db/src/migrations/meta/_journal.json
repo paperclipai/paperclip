@@ -729,6 +729,13 @@
       "when": 1780535200000,
       "tag": "0103_agent_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1750636800000,
+      "tag": "0104_plan_estimate",
+      "breakpoints": true
     }
   ]
 }
