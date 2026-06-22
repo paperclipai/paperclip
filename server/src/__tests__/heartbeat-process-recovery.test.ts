@@ -976,6 +976,95 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("reaps a hung local run whose pid is alive but has made no progress past the threshold", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { agentId, runId, issueId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+    });
+
+    // Simulate a worker that is alive as a PID but has emitted no output for an hour
+    // (the DEV-680 "zombie" scenario: blocked in epoll_wait, doing no work).
+    const staleOutputAt = new Date(Date.now() - 60 * 60 * 1000);
+    await db
+      .update(heartbeatRuns)
+      .set({ lastOutputAt: staleOutputAt, processStartedAt: staleOutputAt })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+
+    // Watchdog enabled with a 1-minute no-progress threshold; staleness gate disabled so the
+    // only thing under test is the hung detection.
+    const result = await heartbeat.reapOrphanedRuns({
+      staleThresholdMs: 0,
+      hungRunThresholdMs: 60_000,
+    });
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const failedRun = await heartbeat.getRun(runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_hung");
+    expect(failedRun?.error).toContain("hung");
+    expect(failedRun?.livenessState).toBe("failed");
+
+    // Hung runs are not auto-retried (unlike process_lost): only the original run exists.
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+
+    // The issue's execution + checkout locks are released so another agent can adopt it
+    // without hitting a 409.
+    const releasedIssue = await waitForValue(async () =>
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row && row.checkoutRunId === null && row.executionRunId === null ? row : null;
+        }),
+    );
+    expect(releasedIssue?.checkoutRunId).toBeNull();
+    expect(releasedIssue?.executionRunId).toBeNull();
+
+    // The stuck worker process is terminated as part of reaping the hung run.
+    expect(await waitForPidExit(child.pid as number)).toBe(true);
+  });
+
+  it("does not reap an alive local run that is still making progress within the threshold", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+    });
+
+    // Fresh output: the run is actively producing progress, so the watchdog must leave it
+    // alone even though the no-progress threshold is configured.
+    await db
+      .update(heartbeatRuns)
+      .set({ lastOutputAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({
+      staleThresholdMs: 0,
+      hungRunThresholdMs: 60_000,
+    });
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
