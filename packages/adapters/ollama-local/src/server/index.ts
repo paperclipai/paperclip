@@ -4,6 +4,7 @@ export { listOllamaSkills, syncOllamaSkills } from "./skills.js";
 export { getConfigSchema } from "./config-schema.js";
 export { 
   listOllamaModels, 
+  listOllamaAdapterModels,
   pullOllamaModel, 
   deleteOllamaModel, 
   formatModelName,

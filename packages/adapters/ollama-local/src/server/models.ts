@@ -17,7 +17,7 @@ export interface OllamaModelsResponse {
 }
 
 export async function listOllamaModels(
-  host: string = "http://localhost:11434"
+  host: string = DEFAULT_OLLAMA_HOST
 ): Promise<{ success: boolean; models?: OllamaModel[]; error?: string }> {
   try {
     const response = await fetch(`${host}/api/tags`);
@@ -41,9 +41,33 @@ export async function listOllamaModels(
   }
 }
 
+/**
+ * Return the models installed in the Ollama instance reachable by Paperclip.
+ * An unavailable Ollama service returns an empty list so the server registry
+ * can fall back to the adapter's curated defaults.
+ */
+export async function listOllamaAdapterModels(): Promise<AdapterModel[]> {
+  const configuredHost = process.env.OLLAMA_HOST?.trim() || DEFAULT_OLLAMA_HOST;
+  const result = await listOllamaModels(configuredHost);
+  if (!result.success || !result.models) return [];
+
+  return result.models
+    .filter((model) => typeof model.name === "string" && model.name.trim().length > 0)
+    .map((model) => {
+      const id = model.name.trim();
+      const details = [model.details?.parameter_size, model.details?.quantization_level]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .join(", ");
+      return {
+        id,
+        label: details ? `${id} (${details})` : id,
+      };
+    });
+}
+
 export async function pullOllamaModel(
   modelName: string,
-  host: string = "http://localhost:11434"
+  host: string = DEFAULT_OLLAMA_HOST
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const response = await fetch(`${host}/api/pull`, {
@@ -72,7 +96,7 @@ export async function pullOllamaModel(
 
 export async function deleteOllamaModel(
   modelName: string,
-  host: string = "http://localhost:11434"
+  host: string = DEFAULT_OLLAMA_HOST
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const response = await fetch(`${host}/api/delete`, {
@@ -103,3 +127,5 @@ export function formatModelName(modelName: string): string {
   // Remove 'latest' suffix if present
   return modelName.replace(":latest", "");
 }
+import type { AdapterModel } from "@paperclipai/adapter-utils";
+import { DEFAULT_OLLAMA_HOST } from "../index.js";

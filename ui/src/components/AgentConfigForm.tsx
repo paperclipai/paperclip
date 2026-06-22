@@ -113,7 +113,11 @@ const emptyOverlay: AgentConfigOverlay = {
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
-  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "acpx_local";
+  return adapterType === "claude_local"
+    || adapterType === "codex_local"
+    || adapterType === "acpx_local"
+    || adapterType === "ollama_local"
+    || adapterType === "opencode_local";
 }
 
 function isOverlayDirty(o: AgentConfigOverlay): boolean {
@@ -624,7 +628,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, {
+        refresh: true,
+        environmentId: currentDefaultEnvironmentId || null,
+      });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");

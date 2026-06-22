@@ -227,6 +227,11 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
   }
 }
 
+export async function refreshOpenCodeModels(): Promise<AdapterModel[]> {
+  discoveryCache.clear();
+  return listOpenCodeModels();
+}
+
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
 }

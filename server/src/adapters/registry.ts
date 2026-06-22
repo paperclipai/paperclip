@@ -99,6 +99,7 @@ import {
   testEnvironment as openCodeTestEnvironment,
   sessionCodec as openCodeSessionCodec,
   listOpenCodeModels,
+  refreshOpenCodeModels,
 } from "@paperclipai/adapter-opencode-local/server";
 import {
   agentConfigurationDoc as openCodeAgentConfigurationDoc,
@@ -134,6 +135,7 @@ import {
   testEnvironment as ollamaTestEnvironment,
   sessionCodec as ollamaSessionCodec,
   getConfigSchema as getOllamaConfigSchema,
+  listOllamaAdapterModels,
 } from "@paperclipai/adapter-ollama-local/server";
 import {
   agentConfigurationDoc as ollamaAgentConfigurationDoc,
@@ -438,6 +440,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   modelProfiles: openCodeModelProfiles,
   sessionManagement: getAdapterSessionManagement("opencode_local") ?? undefined,
   listModels: listOpenCodeModels,
+  refreshModels: refreshOpenCodeModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
@@ -476,6 +479,8 @@ const ollamaLocalAdapter: ServerAdapterModule = {
   sessionManagement: getAdapterSessionManagement("ollama_local") ?? undefined,
   models: ollamaModels,
   modelProfiles: ollamaModelProfiles,
+  listModels: listOllamaAdapterModels,
+  refreshModels: listOllamaAdapterModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",

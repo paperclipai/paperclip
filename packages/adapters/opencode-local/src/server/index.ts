@@ -65,6 +65,7 @@ export { listOpenCodeSkills, syncOpenCodeSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {
   listOpenCodeModels,
+  refreshOpenCodeModels,
   discoverOpenCodeModels,
   ensureOpenCodeModelConfiguredAndAvailable,
   requireOpenCodeModelId,

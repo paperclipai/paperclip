@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   listOpenCodeModels,
+  refreshOpenCodeModels,
   requireOpenCodeModelId,
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
@@ -16,6 +17,11 @@ describe("openCode models", () => {
   it("returns an empty list when discovery command is unavailable", async () => {
     process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
     await expect(listOpenCodeModels()).resolves.toEqual([]);
+  });
+
+  it("refreshes safely when the discovery command is unavailable", async () => {
+    process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
+    await expect(refreshOpenCodeModels()).resolves.toEqual([]);
   });
 
   it("rejects when model is missing", async () => {
