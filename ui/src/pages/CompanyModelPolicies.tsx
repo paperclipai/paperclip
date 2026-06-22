@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AGENT_ROLES,
@@ -17,6 +17,7 @@ import {
   isDirty,
   moveRule,
   normalizeRules,
+  reconcileDraftOnSync,
   removeRule,
   setSignal,
   updateRule,
@@ -76,9 +77,18 @@ export function CompanyModelPolicies() {
   const loadedRules = policyQuery.data?.rules;
   const [draft, setDraft] = useState<ModelPolicyRule[]>([]);
 
-  // Sync the working copy from the server whenever fresh data arrives.
+  // Sync the working copy from the server, but never clobber unsaved edits:
+  // adopt server rules on first load or when the user hasn't diverged from the
+  // last synced server state; otherwise keep their in-progress draft.
+  const lastSyncedRef = useRef<ModelPolicyRule[] | null>(null);
   useEffect(() => {
-    if (loadedRules) setDraft(loadedRules);
+    if (!loadedRules) return;
+    // Capture the previously-synced snapshot BEFORE updating the ref: the
+    // setDraft updater runs lazily (next render), so reading the ref inside it
+    // would see the value we just wrote and never seed the draft on first load.
+    const prevSynced = lastSyncedRef.current;
+    lastSyncedRef.current = loadedRules;
+    setDraft((cur) => reconcileDraftOnSync(cur, prevSynced, loadedRules));
   }, [loadedRules]);
 
   useEffect(() => {

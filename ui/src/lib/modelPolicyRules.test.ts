@@ -7,6 +7,7 @@ import {
   isDirty,
   moveRule,
   normalizeRules,
+  reconcileDraftOnSync,
   removeRule,
   setSignal,
   updateRule,
@@ -82,5 +83,24 @@ describe("modelPolicyRules helpers", () => {
     ]);
     expect(Object.keys(normalized[0].when)).toEqual(["agentRole", "workMode"]);
     expect(normalized[0].when).not.toHaveProperty("issuePriority");
+  });
+
+  it("reconcileDraftOnSync adopts server rules on the first sync (lastSynced null)", () => {
+    const server = [r("deep", { issuePriority: ["high"] })];
+    expect(reconcileDraftOnSync([], null, server)).toEqual(server);
+  });
+
+  it("reconcileDraftOnSync adopts server rules when the draft has not diverged from the last sync", () => {
+    const lastSynced = [r("cheap")];
+    const draft = [r("cheap")]; // equals lastSynced -> not dirty
+    const server = [r("deep")];
+    expect(reconcileDraftOnSync(draft, lastSynced, server)).toEqual(server);
+  });
+
+  it("reconcileDraftOnSync keeps the user's draft when it has unsaved edits (diverged from last sync)", () => {
+    const lastSynced = [r("cheap")];
+    const draft = [r("bulk")]; // user edited -> dirty vs lastSynced
+    const server = [r("deep")];
+    expect(reconcileDraftOnSync(draft, lastSynced, server)).toBe(draft);
   });
 });

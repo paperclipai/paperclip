@@ -75,3 +75,17 @@ export function normalizeRules(rules: ModelPolicyRule[]): ModelPolicyRule[] {
 export function isDirty(a: ModelPolicyRule[], b: ModelPolicyRule[]): boolean {
   return JSON.stringify(normalizeRules(a)) !== JSON.stringify(normalizeRules(b));
 }
+
+/** Decide the working-copy draft when fresh server rules arrive.
+ * - first sync (lastSynced === null): adopt the server rules
+ * - draft has NOT diverged from the last synced server rules: adopt (stay in sync)
+ * - draft HAS unsaved edits (diverged): keep the user's draft (do not clobber)
+ */
+export function reconcileDraftOnSync(
+  currentDraft: ModelPolicyRule[],
+  lastSynced: ModelPolicyRule[] | null,
+  serverRules: ModelPolicyRule[],
+): ModelPolicyRule[] {
+  if (lastSynced === null) return serverRules;
+  return isDirty(currentDraft, lastSynced) ? currentDraft : serverRules;
+}
