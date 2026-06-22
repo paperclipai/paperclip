@@ -60,6 +60,7 @@ import {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   isUuidLike,
+  computeNextDueDate,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompanySearchQuery,
   type CompanySearchResponse,
@@ -4161,6 +4162,8 @@ export function issueRoutes(
         req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1",
       includeLiveDescendantSummary: includeLiveDescendantSummary === true,
       hasPlanDocument,
+      due:
+        req.query.due === "overdue" ? "overdue" : req.query.due === "upcoming" ? "upcoming" : undefined,
       q: req.query.q as string | undefined,
       limit,
       offset,
@@ -6954,6 +6957,7 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      dueAt: dueAtRaw,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -7101,6 +7105,9 @@ export function issueRoutes(
 
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
+    }
+    if (dueAtRaw !== undefined) {
+      updateFields.dueAt = dueAtRaw ? new Date(dueAtRaw) : null;
     }
     if (
       commentBody &&
@@ -7626,6 +7633,60 @@ export function issueRoutes(
             model,
           });
         }
+      }
+    }
+
+    // FUS-660: when a recurring issue is completed, spawn its next instance so
+    // cadence work (weekly/monthly reports, review asks) does not depend on memory.
+    if (
+      issue.status === "done" &&
+      existing.status !== "done" &&
+      existing.recurrence &&
+      existing.originKind !== "routine_execution"
+    ) {
+      try {
+        const nextDueAt = computeNextDueDate(existing.dueAt ?? null, existing.recurrence);
+        const spawned = await svc.create(issue.companyId, {
+          title: existing.title,
+          description: existing.description,
+          projectId: existing.projectId,
+          goalId: existing.goalId,
+          parentId: existing.parentId,
+          assigneeAgentId: existing.assigneeAgentId,
+          assigneeUserId: existing.assigneeUserId,
+          priority: existing.priority,
+          workMode: existing.workMode,
+          billingCode: existing.billingCode,
+          status: "todo",
+          dueAt: nextDueAt,
+          recurrence: existing.recurrence,
+          recurringTaskId: existing.recurringTaskId ?? existing.id,
+          createdByAgentId: actor.agentId,
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        });
+        await issueReferencesSvc.syncIssue(spawned.id);
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.recurrence_spawned",
+          entityType: "issue",
+          entityId: spawned.id,
+          details: {
+            identifier: spawned.identifier,
+            sourceIssueId: issue.id,
+            sourceIdentifier: issue.identifier,
+            dueAt: nextDueAt.toISOString(),
+            recurrence: existing.recurrence,
+          },
+        });
+      } catch (err) {
+        logger.error(
+          { err, issueId: issue.id },
+          "failed to spawn next recurring issue instance on completion",
+        );
       }
     }
 
