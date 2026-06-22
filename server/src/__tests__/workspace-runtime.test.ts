@@ -1965,6 +1965,45 @@ describe("realizeExecutionWorkspace", () => {
     expect(actualHead).toBe(expectedHead);
   }, 15_000);
 
+  it("does not reuse a missing persisted local filesystem workspace", async () => {
+    const baseCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-base-"));
+    const missingCwd = path.join(baseCwd, "missing-workspace");
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+      workspace: {
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        cwd: missingCwd,
+        providerRef: null,
+        projectId: "project-1",
+        projectWorkspaceId: null,
+        repoUrl: null,
+        baseRef: null,
+        branchName: null,
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-453",
+        title: "Missing local workspace",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(restored).toBeNull();
+  });
+
   it("reprovisions an existing persisted git worktree before manual control starts it", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
