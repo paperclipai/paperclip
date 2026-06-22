@@ -23,8 +23,22 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install dependencies
+      run: npm ci
+
     - name: Validate configuration
       run: npm run typecheck
+
+    - name: Run linting
+      run: npm run lint
+
+    - name: Run security audit
+      run: npm audit --audit-level=high
 
   build-and-test:
     needs: validate
@@ -42,13 +56,19 @@ jobs:
       run: npm ci
 
     - name: Run unit tests
-      run: npm test
+      run: npm test:unit
+
+    - name: Run integration tests
+      run: npm test:integration
 
     - name: Run AI model validation tests
-      run: npm test
+      run: npm test:model
 
     - name: Build Docker image
       run: docker build -t ghcr.io/${{ github.repository }}:${{ github.sha }} .
+
+    - name: Scan Docker image
+      run: docker scan --file Dockerfile --severity high
 
   deploy-staging:
     needs: build-and-test
@@ -69,8 +89,15 @@ jobs:
       run: docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
 
     - name: Deploy to Staging
-      run: echo "Deploying ghcr.io/${{ github.repository }}:${{ github.sha }} to staging"
-      # Placeholder for actual deployment commands to staging environment
+      run: |
+        echo "Deploying ghcr.io/${{ github.repository }}:${{ github.sha }} to staging"
+        kubectl apply -f k8s/staging/deployment.yaml --record
+        kubectl rollout status deployment/deployfast-ai-staging
+
+    - name: Verify staging deployment
+      run: |
+        kubectl get pods -n staging
+        curl -sSf http://staging.deployfast.ai/api/health
 
     - name: Run smoke tests
       run: npm test
@@ -98,13 +125,47 @@ jobs:
     - name: Push production image
       run: docker push ghcr.io/${{ github.repository }}:v${{ github.event.inputs.version }}
 
-    - name: Deploy to Production
-      run: echo "Deploying ghcr.io/${{ github.repository }}:v${{ github.event.inputs.version }} to production"
-      # Placeholder for actual deployment commands to production environment
+    - name: Deploy canary
+      run: |
+        echo "Deploying canary (10% traffic) for v${{ github.event.inputs.version }}"
+        kubectl apply -f k8s/production/canary.yaml --record
+        kubectl rollout status deployment/deployfast-ai-canary
+        sleep 60  # Wait for canary to stabilize
+
+    - name: Verify canary metrics
+      run: |
+        kubectl get pods -n production -l app=deployfast-ai-canary
+        curl -sSf http://canary.deployfast.ai/api/health
+        # Add metrics verification logic here
+
+    - name: Full production rollout
+      if: success()
+      run: |
+        echo "Rolling out v${{ github.event.inputs.version }} to 100% traffic"
+        kubectl apply -f k8s/production/deployment.yaml --record
+        kubectl rollout status deployment/deployfast-ai-production
+
+    - name: Rollback if needed
+      if: failure()
+      run: |
+        echo "Rolling back due to canary failure"
+        kubectl rollout undo deployment/deployfast-ai-production
+        kubectl rollout status deployment/deployfast-ai-production
+        exit 1
 
     - name: Run production validation
-      run: npm test
+      run: npm test:production
+
+    - name: Setup monitoring
+      run: |
+        kubectl apply -f k8s/production/monitoring.yaml
+        # Verify metrics are being collected
+        curl -sSf http://metrics.deployfast.ai/api/health
 
     - name: Notify team
-      run: echo "Deployment to production completed successfully"
-      # Placeholder for actual notification command (Slack/email/etc)
+      run: |
+        echo "Deployment to production completed successfully"
+        # Actual notification command (Slack/email/etc)
+        curl -X POST -H 'Content-type: application/json' \
+          --data '{"text":"DeployFast AI v${{ github.event.inputs.version }} deployed to production"}' \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
