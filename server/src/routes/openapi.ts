@@ -770,6 +770,40 @@ registry.registerPath({
   responses: { 200: r.ok() },
 });
 
+// ─── Push notifications (Web Push / TON-2312) ─────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/push/vapid-public-key",
+  tags: ["push"],
+  summary: "Get the VAPID public key for Web Push subscription",
+  responses: { 200: r.ok(z.object({ publicKey: z.string() })) },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/push/subscribe",
+  tags: ["push"],
+  summary: "Register a Web Push subscription for the current user",
+  request: {
+    body: jsonBody(z.object({
+      endpoint: z.string(),
+      keys: z.object({ p256dh: z.string(), auth: z.string() }),
+      userAgent: z.string().optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/push/unsubscribe",
+  tags: ["push"],
+  summary: "Remove a Web Push subscription for the current user",
+  request: { body: jsonBody(z.object({ endpoint: z.string() })) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
 // ─── Companies ───────────────────────────────────────────────────────────────
 
 registry.registerPath({

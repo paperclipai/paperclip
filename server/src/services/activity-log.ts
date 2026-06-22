@@ -9,6 +9,7 @@ import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { dispatchActivityPush } from "./push-triggers.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
@@ -96,6 +97,10 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       details: redactedDetails,
     },
   });
+
+  // Fan out a Web Push notification for board-directed events (TON-2312).
+  // Fire-and-forget: dispatch never throws and must not block the mutation.
+  void dispatchActivityPush(db, input);
 
   const pluginEventType = eventTypeForActivityAction(input.action);
   if (pluginEventType) {
