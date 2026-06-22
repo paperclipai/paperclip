@@ -67,6 +67,32 @@ export interface ActivePlanMeter {
 
 export type LiveMeterResponse = BudgetOverview & { activePlans: ActivePlanMeter[] };
 
+export interface SupervisionNote {
+  id: string;
+  companyId: string;
+  planIssueId: string;
+  authorAgentId: string | null;
+  authorUserId: string | null;
+  kind: "observation" | "overrun" | "action";
+  targetAgentId: string | null;
+  targetIssueId: string | null;
+  severity: "info" | "warning" | "critical";
+  body: string;
+  healthSnapshot: Record<string, unknown> | null;
+  actionTaken: string | null;
+  createdAt: string;
+}
+
+export interface AddSupervisionNoteInput {
+  kind: "observation" | "overrun" | "action";
+  severity?: "info" | "warning" | "critical";
+  body: string;
+  targetAgentId?: string | null;
+  targetIssueId?: string | null;
+  healthSnapshot?: Record<string, unknown> | null;
+  actionTaken?: string | null;
+}
+
 export const plansApi = {
   create: (input: CreatePlanInput) =>
     api.post<{ issue: Issue; planDetails: PlanDetails }>(`/plans`, input),
@@ -95,4 +121,11 @@ export const plansApi = {
   // pauses return 409 (raise the budget cap to resume).
   reactivateCompany: (companyId: string) =>
     api.post<{ reactivated: true; alreadyActive?: boolean }>(`/companies/${companyId}/reactivate`, {}),
+
+  supervisionNotes: (issueId: string) =>
+    api.get<{ notes: SupervisionNote[] }>(`/plans/${issueId}/supervision-notes`),
+  addSupervisionNote: (issueId: string, body: AddSupervisionNoteInput) =>
+    api.post<{ note: SupervisionNote }>(`/plans/${issueId}/supervision-notes`, body),
+  monitorNow: (issueId: string) =>
+    api.post<{ woken: boolean }>(`/plans/${issueId}/supervision/monitor`, {}),
 };

@@ -856,6 +856,14 @@ function handleLiveEvent(
     return;
   }
 
+  if (event.type === "plan.supervision.note") {
+    const planIssueId = readString(payload.planIssueId);
+    if (planIssueId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.hive.planSupervision(planIssueId) });
+    }
+    return;
+  }
+
   if (event.type === "activity.logged") {
     invalidateActivityQueries(queryClient, expectedCompanyId, payload, currentActor, { pathname });
     if (shouldDeferVisibleIssueCommentActivity(queryClient, pathname, payload)) {

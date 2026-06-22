@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PlanGateRollup } from "./PlanGateRollup";
+import { PlanSupervisionTimeline } from "./PlanSupervisionTimeline";
 
 interface PlanDetailDrawerProps {
   companyId: string | null;
@@ -104,6 +105,10 @@ export function PlanDetailDrawer({ companyId }: PlanDetailDrawerProps) {
               )}
 
               {planId && <PlanGateRollup companyId={companyId} planIssueId={planId} />}
+
+              {planId && (
+                <PlanSupervisionTimeline planIssueId={planId} planState={state} />
+              )}
 
               {/* Budget cap */}
               <div className="space-y-1.5">
