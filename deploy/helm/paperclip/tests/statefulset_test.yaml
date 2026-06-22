@@ -1,0 +1,30 @@
+suite: statefulset
+release:
+  name: paperclip
+templates:
+  - templates/statefulset.yaml
+tests:
+  - it: binds the StatefulSet to the headless Service
+    asserts:
+      - equal:
+          path: spec.serviceName
+          value: paperclip-headless
+
+  - it: always allows 127.0.0.1 so agents reach the local API
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PAPERCLIP_ALLOWED_HOSTNAMES
+            value: "127.0.0.1"
+
+  - it: keeps 127.0.0.1 first when extra allowed hostnames are configured
+    set:
+      env.extraAllowedHostnames:
+        - foo.example.com
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PAPERCLIP_ALLOWED_HOSTNAMES
+            value: "127.0.0.1,foo.example.com"

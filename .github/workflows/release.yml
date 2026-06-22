@@ -211,6 +211,8 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    outputs:
+      tag: ${{ steps.push_tag.outputs.tag }}
 
     steps:
       - name: Checkout repository
@@ -252,6 +254,7 @@ jobs:
           ./scripts/release.sh "${args[@]}"
 
       - name: Push stable tag
+        id: push_tag
         run: |
           tag="$(git tag --points-at HEAD | grep '^v' | head -1)"
           if [ -z "$tag" ]; then
@@ -259,6 +262,7 @@ jobs:
             exit 1
           fi
           git push origin "refs/tags/${tag}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         env:
@@ -271,3 +275,18 @@ jobs:
             exit 1
           fi
           ./scripts/create-github-release.sh "$version"
+
+  publish_stable_image:
+    # `publish_stable` pushes the tag using the default GITHUB_TOKEN. GitHub
+    # Actions deliberately does not fire workflows from GITHUB_TOKEN-sourced
+    # pushes, so the `tags: [v*]` trigger on `docker.yml` never runs on that
+    # push. Invoke it explicitly as a reusable workflow on the just-pushed tag
+    # so `ghcr.io/<repo>:vX.Y.Z` images exist for every stable release.
+    needs: publish_stable
+    if: needs.publish_stable.outputs.tag != ''
+    uses: ./.github/workflows/docker.yml
+    with:
+      ref: ${{ needs.publish_stable.outputs.tag }}
+    permissions:
+      contents: read
+      packages: write

@@ -1,0 +1,75 @@
+name: chart-lint
+
+on:
+  pull_request:
+    paths:
+      - "deploy/helm/**"
+      - ".pre-commit-config.yaml"
+      - ".github/workflows/chart-lint.yml"
+  push:
+    branches: [helm]
+    paths:
+      - "deploy/helm/**"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: helm lint
+        run: helm lint deploy/helm/paperclip
+
+      - name: Install helm-unittest
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.1.0 --verify=false
+
+      - name: helm unittest
+        run: helm unittest deploy/helm/paperclip
+
+      - name: helm template (default values)
+        run: helm template paperclip deploy/helm/paperclip > /tmp/default.yaml
+
+      - name: helm template (ingress enabled)
+        run: |
+          helm template paperclip deploy/helm/paperclip \
+            --set ingress.enabled=true \
+            --set ingress.hosts[0].host=paperclip.example.com \
+            --set ingress.hosts[0].paths[0].path=/ \
+            --set ingress.hosts[0].paths[0].pathType=Prefix \
+            > /tmp/ingress.yaml
+
+      - name: Install helm-docs
+        run: |
+          VERSION=v1.14.2
+          SHA256=a8cf72ada34fad93285ba2a452b38bdc5bd52cc9a571236244ec31022928d6cc
+          TARBALL=helm-docs_${VERSION#v}_Linux_x86_64.tar.gz
+          curl -fsSL -o "/tmp/${TARBALL}" \
+            "https://github.com/norwoodj/helm-docs/releases/download/${VERSION}/${TARBALL}"
+          echo "${SHA256}  /tmp/${TARBALL}" | sha256sum -c -
+          tar -xz -C /usr/local/bin -f "/tmp/${TARBALL}" helm-docs
+          helm-docs --version
+
+      - name: Regenerate README and verify no drift
+        run: |
+          helm-docs --chart-search-root=deploy/helm --template-files=README.md.gotmpl --sort-values-order=file
+          git diff --exit-code deploy/helm/paperclip/README.md || {
+            echo "::error::README.md is out of date. Run 'pre-commit run helm-docs' locally and commit."
+            exit 1
+          }
+
+      - name: Verify all values are documented
+        run: |
+          # helm-docs emits a warning for undocumented values; turn it into an error.
+          OUT=$(helm-docs --chart-search-root=deploy/helm --dry-run --log-level=warn 2>&1)
+          echo "$OUT"
+          if echo "$OUT" | grep -qi 'has no description'; then
+            echo "::error::At least one value in values.yaml is missing a helm-docs description."
+            exit 1
+          fi

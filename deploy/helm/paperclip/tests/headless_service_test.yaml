@@ -1,0 +1,19 @@
+suite: headless service
+release:
+  name: paperclip
+templates:
+  - templates/service-headless.yaml
+tests:
+  - it: is a headless Service that publishes not-ready addresses
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: metadata.name
+          value: paperclip-headless
+      - equal:
+          path: spec.clusterIP
+          value: None
+      - equal:
+          path: spec.publishNotReadyAddresses
+          value: true
