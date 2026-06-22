@@ -26,7 +26,7 @@ function sampleConfig(models: Record<string, { name: string }>) {
         npm: "@ai-sdk/openai-compatible",
         name: "dev",
         options: {
-          baseURL: "http://192.168.54.238:11434/v1",
+          baseURL: "http://localhost:11434/v1",
           timeout: 60000000,
           apiKey: "yoursecretkeyhere",
         },
@@ -105,7 +105,7 @@ describe("deriveOllamaBaseUrl", () => {
   });
   it("derives from provider.dev.options.baseURL and strips /v1", () => {
     const cfg = sampleConfig({});
-    expect(deriveOllamaBaseUrl(cfg, { env: {} })).toBe("http://192.168.54.238:11434");
+    expect(deriveOllamaBaseUrl(cfg, { env: {} })).toBe("http://localhost:11434");
   });
 });
 
@@ -134,7 +134,7 @@ describe("applyDevModelRefresh", () => {
     const cfg = sampleConfig({ "gemma4:31b": { name: "gemma4:31b" } });
     const { nextConfig } = applyDevModelRefresh(cfg, ["qwen3.6:35b"]);
     expect((nextConfig.provider as any).dev.options).toEqual({
-      baseURL: "http://192.168.54.238:11434/v1",
+      baseURL: "http://localhost:11434/v1",
       timeout: 60000000,
       apiKey: "yoursecretkeyhere",
     });
@@ -263,7 +263,7 @@ describe("refreshDevModels (end-to-end, temp fs)", () => {
       // dev provider config
       "provider": {
         "dev": {
-          "options": { "baseURL": "http://192.168.54.238:11434/v1", },
+          "options": { "baseURL": "http://localhost:11434/v1", },
           "models": { "old:1": { "name": "old" }, },
         },
       },
@@ -275,7 +275,7 @@ describe("refreshDevModels (end-to-end, temp fs)", () => {
       logger: () => {},
     });
     expect(result.changed).toBe(true);
-    expect(result.ollamaUrl).toBe("http://192.168.54.238:11434");
+    expect(result.ollamaUrl).toBe("http://localhost:11434");
     const written = JSON.parse(await fs.readFile(configPath, "utf8"));
     expect(Object.keys(written.provider.dev.models)).toEqual(["new:1"]);
   });

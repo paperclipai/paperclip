@@ -11,7 +11,9 @@
   atomic write with a timestamped `.bak`, and fail-safe on any
   fetch/parse/empty-result error (never clobbers a good config). Exposed both
   programmatically (`refreshDevModels`) and as a CLI
-  (`paperclip-opencode-refresh-dev-models`).
+  (`paperclip-opencode-refresh-dev-models`). The Ollama endpoint is resolved as
+  explicit flag > `OLLAMA_URL` env > config `baseURL` > `http://localhost:11434`
+  default. Documented in the new package README.
 
 ## 0.3.1
 

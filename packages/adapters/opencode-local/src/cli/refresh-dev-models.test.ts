@@ -8,7 +8,7 @@ function sampleConfig(models: Record<string, { name: string }>) {
   return {
     provider: {
       dev: {
-        options: { baseURL: "http://192.168.54.238:11434/v1" },
+        options: { baseURL: "http://localhost:11434/v1" },
         models,
       },
     },

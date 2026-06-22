@@ -8,7 +8,7 @@ import {
 } from "../server/refresh-dev-models.js";
 
 /**
- * CLI entry for the LocalLLM model-config freshness generator (DEV-653 / WS1).
+ * CLI entry for the LocalLLM model-config freshness generator.
  *
  * Polls the live Ollama server and rewrites ONLY `provider.dev.models` in the
  * source opencode config, fail-safe throughout. Intended to be run on a short

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 /**
- * Dynamic LocalLLM model-config freshness (DEV-653 / WS1 — durable TS port).
+ * Dynamic LocalLLM model-config freshness (durable TypeScript port).
  *
  * Polls the live Ollama server and rewrites ONLY `provider.dev.models` in the
  * SOURCE opencode config (`~/.config/opencode/opencode.json`) so the
@@ -12,7 +12,7 @@ import path from "node:path";
  * serves.
  *
  * Design guarantees (fail-safe by construction — mirrors the proven
- * `refresh-dev-models.py` reference):
+ * Python reference implementation):
  *   - Preserves `provider.dev.options` (baseURL/timeout/apiKey/...) verbatim.
  *   - Preserves every non-`dev` provider and all other top-level keys/order.
  *   - JSONC-tolerant read (strips `//` and `/* *\/` comments and trailing
@@ -30,7 +30,7 @@ import path from "node:path";
  */
 
 export const DEFAULT_PROVIDER_KEY = "dev";
-export const DEFAULT_OLLAMA_URL = "http://192.168.54.238:11434";
+export const DEFAULT_OLLAMA_URL = "http://localhost:11434";
 export const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 
 /** Error raised for every fail-safe condition. The CLI maps it to exit code 1. */
