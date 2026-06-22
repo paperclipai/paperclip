@@ -286,10 +286,10 @@ async function handleSwitch(input: PluginApiRequestInput): Promise<PluginApiResp
 
 async function handleSetSession(input: PluginApiRequestInput): Promise<PluginApiResponse> {
   // Operator-supplied sessionKey paste. Proxies to the auth-bot's
-  // /setSession, then chains the Claude email-magic relogin path. The
-  // saved sessionKey remains useful as auth-bot state, but stale Claude
-  // accounts now recover more reliably via /reloginViaEmailMagicAuto
-  // than by replaying the pasted sessionKey through /reloginViaSession.
+  // /setSession, then uses that pasted browser session to drive Claude OAuth.
+  // Do not fall back to email-magic here: Workspace SSO accounts route through
+  // Google rather than a Claude email-code screen, so fallback hides the real
+  // pasted-session failure behind an unrelated "code input never visible" error.
   //
   // Auth-bot is reachable via the cluster Service `ccrotate-auth-bot:7000`
   // (paperclip-0 runs in-namespace). For local-dev this would 404 quietly —
@@ -326,8 +326,8 @@ async function handleSetSession(input: PluginApiRequestInput): Promise<PluginApi
     const text = await setRes.text().catch(() => "");
     return { status: setRes.status, body: { error: `bot /setSession returned ${setRes.status}: ${text.slice(0, 300)}` } };
   }
-  // Step 2: chain relogin (~30-120s)
-  const reloginEndpoint = "/reloginViaEmailMagicAuto";
+  // Step 2: chain relogin through the freshly persisted sessionKey first.
+  const reloginEndpoint = "/reloginViaSession";
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120_000);
   let loginRes: Response;
@@ -370,7 +370,9 @@ async function handleSetSession(input: PluginApiRequestInput): Promise<PluginApi
       body: {
         ok: false,
         sessionKeyPersisted: true,
-        error: `bot ${reloginEndpoint} returned ${loginRes.status}: ${String(loginBody?.error || "").slice(0, 300)}`,
+        error: `sessionKey saved but bot ${reloginEndpoint} returned ${loginRes.status}: ${String(loginBody?.error || "").slice(0, 300)}. Stale-poller will retry.`,
+        ...(loginBody?.code ? { code: loginBody.code } : {}),
+        ...(loginBody?.reason ? { reason: loginBody.reason } : {}),
       },
     };
   }
