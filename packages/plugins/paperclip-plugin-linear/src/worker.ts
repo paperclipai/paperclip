@@ -1200,6 +1200,24 @@ const plugin = definePlugin({
       let created = 0;
       let imported = 0;
 
+      // Pre-load all PC milestones once so both phase 1 and phase 2 can do
+      // name-based dedup without repeated list calls.
+      const allPcMilestones = await ctx.milestones.list({ companyId });
+      // projectId:normalizedName → milestone (used to avoid creating duplicates
+      // when a title-backfill milestone already exists for a Linear milestone)
+      const pcMilestoneByProjectAndName = new Map<
+        string,
+        { id: string; projectId: string | null | undefined; name: string }
+      >();
+      for (const m of allPcMilestones) {
+        if (m.projectId) {
+          pcMilestoneByProjectAndName.set(
+            `${m.projectId}:${m.name.trim().toLowerCase()}`,
+            m,
+          );
+        }
+      }
+
       // Phase 1: Linear → Paperclip import.
       // Walk all project links for this company and import any Linear milestones
       // that do not yet exist as Paperclip milestones.
@@ -1229,23 +1247,47 @@ const plugin = definePlugin({
             const existing = await sync.getMilestoneLinkByLinear(ctx, lm.id);
             if (existing) { reconciled++; continue; }
 
-            // Create the Paperclip milestone
-            const pc = await ctx.milestones.create({
-              companyId,
-              name: lm.name,
-              projectId: entry.value.paperclipProjectId,
-              description: lm.description ?? null,
-              targetDate: lm.targetDate ?? null,
-            });
+            // Before creating a new PC milestone, check if one with the same
+            // name already exists in this project (e.g. created by title backfill).
+            // Linking to the existing milestone avoids duplicate PC milestones and
+            // ensures phase 1.5 stamps issues against the canonical milestone.
+            const nameKey = `${entry.value.paperclipProjectId}:${lm.name.trim().toLowerCase()}`;
+            const existingByName = pcMilestoneByProjectAndName.get(nameKey);
 
-            await sync.createMilestoneLink(ctx, {
-              paperclipMilestoneId: pc.id,
-              paperclipCompanyId: companyId,
-              paperclipProjectId: entry.value.paperclipProjectId,
-              linearMilestoneId: lm.id,
-              linearMilestoneName: lm.name,
-            });
-            imported++;
+            if (existingByName) {
+              await sync.createMilestoneLink(ctx, {
+                paperclipMilestoneId: existingByName.id,
+                paperclipCompanyId: companyId,
+                paperclipProjectId: entry.value.paperclipProjectId,
+                linearMilestoneId: lm.id,
+                linearMilestoneName: lm.name,
+              });
+              ctx.logger.debug(
+                `reconcile-milestones phase 1: linked existing PC milestone ${existingByName.id} ("${lm.name}") to Linear milestone ${lm.id}`,
+              );
+              reconciled++;
+            } else {
+              // Create the Paperclip milestone
+              const pc = await ctx.milestones.create({
+                companyId,
+                name: lm.name,
+                projectId: entry.value.paperclipProjectId,
+                description: lm.description ?? null,
+                targetDate: lm.targetDate ?? null,
+              });
+              // Register in cache so duplicate Linear milestones in the same run
+              // do not create a second PC milestone.
+              pcMilestoneByProjectAndName.set(nameKey, pc);
+
+              await sync.createMilestoneLink(ctx, {
+                paperclipMilestoneId: pc.id,
+                paperclipCompanyId: companyId,
+                paperclipProjectId: entry.value.paperclipProjectId,
+                linearMilestoneId: lm.id,
+                linearMilestoneName: lm.name,
+              });
+              imported++;
+            }
           }
 
           await new Promise((r) => setTimeout(r, 150)); // rate-limit headroom
@@ -1259,6 +1301,12 @@ const plugin = definePlugin({
       let membershipBackfilled = 0;
       let membershipSkipped = 0;
       let milestoneLinkOffset = 0;
+      const hostLinkFallbackAvailable = typeof ctx.issues.getByLinearIssueId === "function";
+      if (!hostLinkFallbackAvailable) {
+        ctx.logger.warn(
+          `reconcile-milestones phase 1.5: ctx.issues.getByLinearIssueId unavailable — host-link fallback disabled; host-linked issues without a plugin-state reverse key will be skipped`,
+        );
+      }
       // eslint-disable-next-line no-constant-condition
       while (true) {
         const page = await ctx.state.list({
@@ -1283,7 +1331,26 @@ const plugin = definePlugin({
                 ctx.http.fetch.bind(ctx.http), token, entry.value.linearMilestoneId, cursor ?? undefined,
               );
             for (const li of linearIssues) {
-              const issueLink = await sync.getLinkByLinear(ctx, li.id);
+              let issueLink = await sync.getLinkByLinear(ctx, li.id);
+              if (!issueLink && hostLinkFallbackAvailable) {
+                // Fallback: the host allocator path writes only the DB linear_issue_links row,
+                // not the plugin state reverse key. Similarly, broken pre-BLO-11247 runs of
+                // link-linear-issue overwrote the reverse key with "undefined". Recover via
+                // getByLinearIssueId and repair the reverse key for future runs.
+                const hostLinked = await ctx.issues.getByLinearIssueId({ linearIssueId: li.id, companyId });
+                if (hostLinked) {
+                  const forwardLink = await sync.getLink(ctx, hostLinked.id);
+                  if (forwardLink && forwardLink.linearIssueId === li.id && forwardLink.paperclipIssueId === hostLinked.id) {
+                    // Reverse key repair is project-independent; the cross-project guard below
+                    // governs milestone stamping only.
+                    await sync.repairReverseLink(ctx, forwardLink);
+                    issueLink = forwardLink;
+                    ctx.logger.debug(
+                      `reconcile-milestones phase 1.5: repaired missing reverse key for ${li.identifier} via host link`,
+                    );
+                  }
+                }
+              }
               if (!issueLink) {
                 ctx.logger.debug(`reconcile-milestones phase 1.5: skipping ${li.identifier} — no PC issue link`);
                 membershipSkipped++;
@@ -1327,8 +1394,7 @@ const plugin = definePlugin({
 
       // Phase 2: Paperclip → Linear sync.
       // Walk all Paperclip milestones and create any that are missing in Linear.
-      const pcMilestones = await ctx.milestones.list({ companyId });
-      for (const milestone of pcMilestones) {
+      for (const milestone of allPcMilestones) {
         if (!milestone.projectId) continue;
 
         const existingLink = await sync.getMilestoneLink(ctx, milestone.id);
@@ -1373,7 +1439,7 @@ const plugin = definePlugin({
       }
 
       ctx.logger.info(`Milestone reconcile done: ${reconciled} reconciled, ${imported} imported from Linear, ${created} pushed to Linear, ${membershipBackfilled} issue memberships backfilled`);
-      return { reconciled, created, imported, membershipBackfilled };
+      return { reconciled, created, imported, membershipBackfilled, membershipSkipped };
     });
 
     // One-time bounded backfill: write Paperclip back-links for already-mirrored

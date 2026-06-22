@@ -211,6 +211,19 @@ export async function createLink(
   return link;
 }
 
+/** Write the reverse lookup key (linearId → paperclipId) for an existing forward link.
+ * Use to repair state after the host allocator path or a broken pre-BLO-11247
+ * link-linear-issue run left the reverse key missing or stale. */
+export async function repairReverseLink(ctx: PluginContext, link: IssueLink): Promise<void> {
+  if (!link.linearIssueId || !link.paperclipIssueId) {
+    throw new Error(`repairReverseLink: link has falsy linearIssueId or paperclipIssueId — refusing to write a mangled state key`);
+  }
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: linearStateKey(link.linearIssueId) },
+    link.paperclipIssueId,
+  );
+}
+
 export async function removeLink(
   ctx: PluginContext,
   paperclipIssueId: string,
