@@ -101,6 +101,66 @@ describeEmbeddedPostgres("heartbeat list", () => {
     }
   });
 
+  it("pages through runs with limit + offset, newest first", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // Insert 5 runs with strictly increasing createdAt so the expected
+    // newest-first ordering (run4 … run0) is deterministic.
+    const runIds: string[] = [];
+    for (let index = 0; index < 5; index++) {
+      const runId = randomUUID();
+      runIds.push(runId);
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        createdAt: new Date(`2026-04-18T12:0${index}:00Z`),
+      });
+    }
+    const newestFirst = [...runIds].reverse();
+
+    const service = heartbeatService(db);
+
+    const page1 = await service.list(companyId, agentId, 2, 0);
+    expect(page1.map((r) => r.id)).toEqual(newestFirst.slice(0, 2));
+
+    const page2 = await service.list(companyId, agentId, 2, 2);
+    expect(page2.map((r) => r.id)).toEqual(newestFirst.slice(2, 4));
+
+    const page3 = await service.list(companyId, agentId, 2, 4);
+    expect(page3.map((r) => r.id)).toEqual(newestFirst.slice(4, 5));
+
+    // Offset beyond the end yields an empty page (pagination terminates).
+    const page4 = await service.list(companyId, agentId, 2, 6);
+    expect(page4).toHaveLength(0);
+
+    // No limit still returns the full ordered list (backward compatible).
+    const all = await service.list(companyId, agentId);
+    expect(all.map((r) => r.id)).toEqual(newestFirst);
+  });
+
   it("returns small result json payloads unchanged from getRun", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
