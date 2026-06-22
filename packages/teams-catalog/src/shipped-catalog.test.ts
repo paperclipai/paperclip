@@ -91,12 +91,13 @@ describe("shipped teams catalog", () => {
     expect(devTeam.agentSlugs).toEqual([
       "architect",
       "code-reviewer",
+      "completeness-critic",
       "cto",
       "implementor-1",
       "implementor-2",
       "wiring-expert",
     ]);
-    expect(devTeam.counts.agents).toBe(6);
+    expect(devTeam.counts.agents).toBe(7);
     expect(devTeam.counts.localSkills).toBe(7);
     // All gate-team skills resolve in-package (no external sources / scripts).
     expect(devTeam.requiredSkills.every((skill) => skill.type === "local" && skill.resolved)).toBe(true);

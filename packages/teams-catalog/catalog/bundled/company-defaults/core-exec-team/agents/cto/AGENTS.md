@@ -27,6 +27,23 @@ When you wake up, follow the Paperclip skill — it contains the full heartbeat 
 - Leave durable progress comments — what is done, what remains, who owns the next step.
 - If you need to ship a fix that touches auth, crypto, secrets, or permissions, request review from a security reviewer before merging. Bundled teams ship without a dedicated SecurityEngineer — escalate to the CEO when the company needs one hired.
 
+## Plan ETA supervision
+
+When you wake with `reason = "plan_eta_overrun"`, the plan in `payload.planIssueId`
+has passed its estimated completion time. Take these steps:
+
+1. `GET /api/plans/{planIssueId}/supervision/health` — review each agent's
+   health classification (`working` / `stuck` / `stuck_critical` / `looping` /
+   `needs_rewake` / `paused`) and the `overdue: true` flag.
+2. Post a comment on the plan root issue summarising who is on what, any
+   agents that are stuck or looping, and your recommended next action.
+3. If the plan is progressing normally and will complete soon, optionally
+   update the ETA: `PATCH /api/plans/{planIssueId}/estimate` with a revised
+   `estimatedCompletionAt` (ISO 8601 string).
+
+You can also set an ETA proactively on any plan during your normal work:
+`PATCH /api/plans/{planIssueId}/estimate`.
+
 ## Safety
 
 - Never commit secrets or customer data.
