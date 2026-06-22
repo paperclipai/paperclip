@@ -30,6 +30,7 @@ import type { Agent } from "./agent.js";
 import type { CompanySkill } from "./company-skill.js";
 import type { Project } from "./project.js";
 import type { Routine, RoutineTrigger, RoutineVariable } from "./routine.js";
+import type { PluginHooksDeclaration } from "./plugin-hooks.js";
 
 // ---------------------------------------------------------------------------
 // JSON Schema placeholder – plugins declare config schemas as JSON Schema
@@ -571,6 +572,14 @@ export interface PaperclipPluginManifestV1 {
   launchers?: PluginLauncherDeclaration[];
   /** UI bundle declarations. Requires `entrypoints.ui` when populated. */
   ui?: PluginUiDeclaration;
+  /**
+   * Optional plugin hook declarations (Phase 1a — MYO-50.1).
+   *
+   * Declarative metadata only: priority and `when` predicate per kind. Handlers
+   * are registered at worker boot; the host reads this block to know which
+   * hook kinds the plugin opts into and how to order/gate them.
+   */
+  hooks?: PluginHooksDeclaration;
 }
 
 // ---------------------------------------------------------------------------
