@@ -1,6 +1,6 @@
 import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type CSSProperties, type DragEvent, type RefObject } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { IssueWorkMode } from "@paperclipai/shared";
+import type { IssueLabel, IssueWorkMode } from "@paperclipai/shared";
 import { pickTextColorForSolidBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -51,6 +51,7 @@ import {
   ArrowDown,
   AlertTriangle,
   Tag,
+  Plus,
   Calendar,
   Paperclip,
   FileText,
@@ -459,6 +460,11 @@ export function NewIssueDialog() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [workModeOpen, setWorkModeOpen] = useState(false);
+  const [labelsOpen, setLabelsOpen] = useState(false);
+  const [labelSearch, setLabelSearch] = useState("");
+  const [selectedLabelIds, setSelectedLabelIds] = useState<string[]>([]);
+  const [newLabelName, setNewLabelName] = useState("");
+  const [newLabelColor, setNewLabelColor] = useState("#6366f1");
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -477,6 +483,36 @@ export function NewIssueDialog() {
     queryFn: () => projectsApi.list(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
+
+  const { data: labels } = useQuery({
+    queryKey: queryKeys.issues.labels(effectiveCompanyId!),
+    queryFn: () => issuesApi.listLabels(effectiveCompanyId!),
+    enabled: !!effectiveCompanyId && newIssueOpen,
+  });
+
+  const createLabel = useMutation({
+    mutationFn: (data: { name: string; color: string }) => issuesApi.createLabel(effectiveCompanyId!, data),
+    onSuccess: (created) => {
+      queryClient.setQueryData<IssueLabel[] | undefined>(
+        queryKeys.issues.labels(effectiveCompanyId!),
+        (current) => {
+          if (!current) return [created];
+          if (current.some((label) => label.id === created.id)) return current;
+          return [...current, created];
+        },
+      );
+      setSelectedLabelIds((current) => (current.includes(created.id) ? current : [...current, created.id]));
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(effectiveCompanyId!) });
+      setNewLabelName("");
+    },
+  });
+
+  const toggleLabel = useCallback((labelId: string) => {
+    setSelectedLabelIds((current) =>
+      current.includes(labelId) ? current.filter((id) => id !== labelId) : [...current, labelId],
+    );
+  }, []);
+
   const { data: reusableExecutionWorkspaces } = useQuery({
     queryKey: queryKeys.executionWorkspaces.summaryList(effectiveCompanyId!, {
       projectId,
@@ -932,6 +968,10 @@ export function NewIssueDialog() {
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
     setWorkMode("standard");
+    setLabelsOpen(false);
+    setLabelSearch("");
+    setSelectedLabelIds([]);
+    setNewLabelName("");
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);
@@ -962,6 +1002,9 @@ export function NewIssueDialog() {
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
     setWorkMode("standard");
+    setSelectedLabelIds([]);
+    setLabelSearch("");
+    setNewLabelName("");
   }
 
   function discardDraft() {
@@ -1026,6 +1069,7 @@ export function NewIssueDialog() {
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
+      ...(selectedLabelIds.length > 0 ? { labelIds: selectedLabelIds } : {}),
       ...(taskWatchdogsEnabled && watchdogAgentId
         ? { watchdog: { agentId: watchdogAgentId, instructions: watchdogInstructions.trim() || null } }
         : {}),
@@ -2074,11 +2118,106 @@ export function NewIssueDialog() {
             </PopoverContent>
           </Popover>
 
-          {/* Labels chip — disabled, not wired up yet */}
-          {/* <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-            <Tag className="h-3 w-3" />
-            Labels
-          </button> */}
+          {/* Labels chip */}
+          <Popover
+            open={labelsOpen}
+            onOpenChange={(open) => { setLabelsOpen(open); if (!open) setLabelSearch(""); }}
+          >
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                data-testid="new-issue-labels-chip"
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
+              >
+                <Tag className="h-3 w-3" />
+                {selectedLabelIds.length > 0 ? (
+                  <span className="flex items-center gap-1">
+                    {(labels ?? [])
+                      .filter((label) => selectedLabelIds.includes(label.id))
+                      .slice(0, 2)
+                      .map((label) => (
+                        <span key={label.id} className="inline-flex items-center gap-1">
+                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: label.color }} />
+                          {label.name}
+                        </span>
+                      ))}
+                    {selectedLabelIds.length > 2 ? `+${selectedLabelIds.length - 2}` : null}
+                  </span>
+                ) : (
+                  "Labels"
+                )}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-56 p-1" align="start">
+              <input
+                className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+                placeholder="Search labels..."
+                value={labelSearch}
+                onChange={(e) => setLabelSearch(e.target.value)}
+                autoFocus
+              />
+              <div className="max-h-44 overflow-y-auto overscroll-contain space-y-0.5">
+                {(labels ?? [])
+                  .filter((label) => {
+                    if (!labelSearch.trim()) return true;
+                    return label.name.toLowerCase().includes(labelSearch.toLowerCase());
+                  })
+                  .map((label) => {
+                    const selected = selectedLabelIds.includes(label.id);
+                    return (
+                      <button
+                        key={label.id}
+                        type="button"
+                        className={cn(
+                          "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
+                          selected && "bg-accent",
+                        )}
+                        onClick={() => toggleLabel(label.id)}
+                      >
+                        <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
+                        <span className="truncate flex-1">{label.name}</span>
+                        {selected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" aria-hidden="true" />}
+                      </button>
+                    );
+                  })}
+                {(labels ?? []).length === 0 && (
+                  <p className="px-2 py-2 text-xs text-muted-foreground">No labels yet.</p>
+                )}
+              </div>
+              <div className="mt-2 border-t border-border pt-2 space-y-1">
+                <div className="flex items-center gap-1">
+                  <input
+                    className="h-7 w-7 p-0 rounded bg-transparent"
+                    type="color"
+                    value={newLabelColor}
+                    onChange={(e) => setNewLabelColor(e.target.value)}
+                    aria-label="New label color"
+                  />
+                  <input
+                    className="flex-1 px-2 py-1.5 text-xs bg-transparent outline-none rounded placeholder:text-muted-foreground/50"
+                    placeholder="New label"
+                    value={newLabelName}
+                    onChange={(e) => setNewLabelName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newLabelName.trim() && !createLabel.isPending) {
+                        e.preventDefault();
+                        createLabel.mutate({ name: newLabelName.trim(), color: newLabelColor });
+                      }
+                    }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="flex items-center justify-center gap-1.5 w-full px-2 py-1.5 text-xs rounded border border-border hover:bg-accent/50 disabled:opacity-50"
+                  disabled={!newLabelName.trim() || createLabel.isPending}
+                  onClick={() => createLabel.mutate({ name: newLabelName.trim(), color: newLabelColor })}
+                >
+                  <Plus className="h-3 w-3" />
+                  {createLabel.isPending ? "Creating…" : "Create label"}
+                </button>
+              </div>
+            </PopoverContent>
+          </Popover>
 
           <input
             ref={stageFileInputRef}
