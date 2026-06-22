@@ -288,30 +288,32 @@ export function agentMemoryConsolidationService(db: Db) {
   async function tickMemoryConsolidation(now: Date = new Date()): Promise<{ processed: number; promoted: number; forgotten: number }> {
     const cutoff = new Date(now.getTime() - CONSOLIDATION_CADENCE_MS);
 
-    const lastRuns = await db
+    // Select due agents entirely in SQL: most-overdue first (never-consolidated
+    // agents sort first via NULLS FIRST), limited to MAX_AGENTS_PER_TICK. This has
+    // no fixed prefilter cap, so no agent can be starved regardless of fleet size.
+    const lastRun = db
       .select({
         agentId: agentMemoryConsolidationRuns.agentId,
-        lastAt: sql<Date>`max(${agentMemoryConsolidationRuns.startedAt})`,
+        lastAt: sql<Date | null>`max(${agentMemoryConsolidationRuns.startedAt})`.as("last_at"),
       })
       .from(agentMemoryConsolidationRuns)
-      .groupBy(agentMemoryConsolidationRuns.agentId);
-    const lastByAgent = new Map(lastRuns.map((r) => [r.agentId, r.lastAt ? new Date(r.lastAt) : null]));
+      .groupBy(agentMemoryConsolidationRuns.agentId)
+      .as("last_run");
 
-    // TODO(#307): this prefilters the first 500 active agents without neediness
-    // ordering, so in fleets larger than 500 some agents could be starved. Fine at
-    // current scale; revisit by pushing the due-selection (join + order by last
-    // consolidation + limit) into SQL when fleets grow.
-    const activeAgents = await db
+    const due = await db
       .select({ id: agents.id, companyId: agents.companyId })
       .from(agents)
-      .where(eq(agents.status, "active"))
-      .limit(500);
-
-    const due = activeAgents
-      .map((a) => ({ ...a, lastAt: lastByAgent.get(a.id) ?? null }))
-      .filter((a) => !a.lastAt || a.lastAt < cutoff)
-      .sort((x, y) => (x.lastAt?.getTime() ?? 0) - (y.lastAt?.getTime() ?? 0))
-      .slice(0, MAX_AGENTS_PER_TICK);
+      .leftJoin(lastRun, eq(lastRun.agentId, agents.id))
+      .where(
+        and(
+          eq(agents.status, "active"),
+          // Cast the cutoff explicitly: the aliased max() column has no Drizzle type
+          // mapper, so a raw Date param cannot be encoded by the driver.
+          sql`(last_run.last_at is null or last_run.last_at < ${cutoff.toISOString()}::timestamptz)`,
+        ),
+      )
+      .orderBy(sql`last_run.last_at asc nulls first`)
+      .limit(MAX_AGENTS_PER_TICK);
 
     let processed = 0;
     let promoted = 0;

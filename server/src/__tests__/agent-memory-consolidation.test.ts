@@ -204,6 +204,46 @@ describeEmbeddedPostgres("agentMemoryConsolidationService (dreaming)", () => {
     expect(all.some((m) => m.body.includes("beta secret"))).toBe(false);
   });
 
+  it("does not starve agents beyond the per-tick cap (most-overdue first, across ticks)", async () => {
+    // Seed one company with more active agents than MAX_AGENTS_PER_TICK (3).
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Fleet",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const agentIds: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const id = randomUUID();
+      agentIds.push(id);
+      await db.insert(agents).values({
+        id,
+        companyId,
+        name: `Agent ${i}`,
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+
+    const now = new Date();
+    const tick1 = await svc.tickMemoryConsolidation(now);
+    expect(tick1.processed).toBe(3); // capped per tick
+    const tick2 = await svc.tickMemoryConsolidation(now);
+    expect(tick2.processed).toBe(2); // the remaining never-consolidated agents
+
+    // Every agent ended up consolidated; none was starved.
+    const consolidated = await db
+      .selectDistinct({ agentId: agentMemoryConsolidationRuns.agentId })
+      .from(agentMemoryConsolidationRuns)
+      .where(eq(agentMemoryConsolidationRuns.companyId, companyId));
+    expect(consolidated.map((r) => r.agentId).sort()).toEqual([...agentIds].sort());
+  });
+
   it("tick picks up due active agents and records a consolidation run", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent(db);
     await seedRun(db, companyId, agentId, "Shipped the onboarding flow and shipped the onboarding emails");
