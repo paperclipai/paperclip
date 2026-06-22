@@ -1033,6 +1033,12 @@ export interface PluginMetricsClient {
   write(name: string, value: number, tags?: Record<string, string>): Promise<void>;
 }
 
+export type PluginTelemetryDimensionValue = string | number | boolean;
+
+export type PluginTelemetryDimensions = Record<string, PluginTelemetryDimensionValue>;
+
+export type PluginTelemetryPrivateRefs = Record<string, string>;
+
 /**
  * `ctx.telemetry` — emit plugin-scoped telemetry to the host's external
  * telemetry pipeline.
@@ -1044,14 +1050,18 @@ export interface PluginTelemetryClient {
    * Track a plugin telemetry event.
    *
    * The host prefixes the final event name as `plugin.<pluginId>.<eventName>`
-   * before forwarding it to the shared telemetry client.
+   * before forwarding it to the shared telemetry client. Dimension keys and
+   * values must be low-cardinality primitives; stable/private identifiers must
+   * be sent through `privateRefs` so the host hashes them before egress.
    *
    * @param eventName - Bare plugin event slug (for example `"sync_completed"`)
-   * @param dimensions - Optional structured dimensions
+   * @param dimensions - Optional safe primitive dimensions
+   * @param privateRefs - Optional raw private references to hash server-side
    */
   track(
     eventName: string,
-    dimensions?: Record<string, string | number | boolean>,
+    dimensions?: PluginTelemetryDimensions,
+    privateRefs?: PluginTelemetryPrivateRefs,
   ): Promise<void>;
 }
 

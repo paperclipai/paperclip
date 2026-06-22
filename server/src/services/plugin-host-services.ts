@@ -89,6 +89,168 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 /** Only these protocols are allowed for plugin HTTP requests. */
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
+const PLUGIN_TELEMETRY_MAX_DIMENSIONS = 20;
+const PLUGIN_TELEMETRY_MAX_STRING_LENGTH = 64;
+const PLUGIN_TELEMETRY_MAX_PRIVATE_REF_LENGTH = 512;
+const PLUGIN_TELEMETRY_MAX_NUMBER_ABS = 1_000_000_000;
+const PLUGIN_TELEMETRY_DIMENSION_KEY_REGEX = /^[a-z][a-z0-9_]{0,39}$/;
+const PLUGIN_TELEMETRY_SAFE_STRING_REGEX = /^[a-z0-9][a-z0-9_.:-]{0,63}$/;
+const PLUGIN_TELEMETRY_FORBIDDEN_KEY_PARTS = new Set([
+  "id",
+  "uuid",
+  "email",
+  "user",
+  "agent",
+  "company",
+  "project",
+  "issue",
+  "task",
+  "run",
+  "session",
+  "token",
+  "secret",
+  "key",
+  "url",
+  "uri",
+  "path",
+  "ref",
+  "name",
+  "title",
+  "message",
+  "prompt",
+  "content",
+  "query",
+  "search",
+  "ip",
+  "host",
+  "domain",
+]);
+const PLUGIN_TELEMETRY_FORBIDDEN_COMPACT_KEYS = new Set(["companyid", "userid", "hostname"]);
+
+type PluginTelemetryDimensionValue = string | number | boolean;
+
+type ValidatedPluginTelemetryInput = {
+  dimensions: Record<string, PluginTelemetryDimensionValue>;
+  privateRefs: Array<{ key: string; value: string }>;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normaliseTelemetryKey(key: string): string {
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+function assertPluginTelemetryKey(key: string, kind: "dimension" | "private ref"): void {
+  if (!PLUGIN_TELEMETRY_DIMENSION_KEY_REGEX.test(key)) {
+    throw new Error(
+      `Plugin telemetry ${kind} keys must be lowercase snake_case slugs up to 40 characters.`,
+    );
+  }
+  if (key.endsWith("_hashed") || key.endsWith("_is_hashed")) {
+    throw new Error(`Plugin telemetry ${kind} keys may not use reserved hash marker suffixes.`);
+  }
+}
+
+function assertSafePluginTelemetryDimensionKey(key: string): void {
+  assertPluginTelemetryKey(key, "dimension");
+  const normalisedKey = normaliseTelemetryKey(key);
+  const parts = normalisedKey.split("_");
+  const forbidden = Array.from(PLUGIN_TELEMETRY_FORBIDDEN_KEY_PARTS).find((part) =>
+    parts.includes(part),
+  );
+  if (forbidden || PLUGIN_TELEMETRY_FORBIDDEN_COMPACT_KEYS.has(normalisedKey)) {
+    throw new Error(
+      `Plugin telemetry dimension "${key}" is not allowed; send private identifiers through privateRefs so the host can hash them.`,
+    );
+  }
+}
+
+function looksSensitivePluginTelemetryValue(value: string): boolean {
+  return (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) ||
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ||
+    /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ||
+    /(^\/|^~\/|^[A-Za-z]:\\|[\\/])/.test(value) ||
+    /^[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$/.test(value) ||
+    /^[a-f0-9]{32,}$/i.test(value) ||
+    /^[A-Za-z0-9+/_=-]{32,}$/.test(value) ||
+    /^(bearer|sk|pk|ghp|github_pat|glpat|xox[baprs])[-_]/i.test(value)
+  );
+}
+
+function assertSafePluginTelemetryDimensionValue(key: string, value: unknown): PluginTelemetryDimensionValue {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || Math.abs(value) > PLUGIN_TELEMETRY_MAX_NUMBER_ABS) {
+      throw new Error(`Plugin telemetry dimension "${key}" must be a finite bounded number.`);
+    }
+    return value;
+  }
+  if (typeof value === "string") {
+    if (value.length === 0 || value.length > PLUGIN_TELEMETRY_MAX_STRING_LENGTH) {
+      throw new Error(
+        `Plugin telemetry string dimension "${key}" must be 1-${PLUGIN_TELEMETRY_MAX_STRING_LENGTH} characters.`,
+      );
+    }
+    if (looksSensitivePluginTelemetryValue(value) || !PLUGIN_TELEMETRY_SAFE_STRING_REGEX.test(value)) {
+      throw new Error(
+        `Plugin telemetry string dimension "${key}" must be a short low-cardinality slug and must not contain identifiers or sensitive data.`,
+      );
+    }
+    return value;
+  }
+  throw new Error(`Plugin telemetry dimension "${key}" must be a string, number, or boolean.`);
+}
+
+function validatePluginTelemetryInput(
+  dimensions: unknown,
+  privateRefs: unknown,
+): ValidatedPluginTelemetryInput {
+  if (dimensions !== undefined && !isRecord(dimensions)) {
+    throw new Error("Plugin telemetry dimensions must be an object when provided.");
+  }
+  if (privateRefs !== undefined && !isRecord(privateRefs)) {
+    throw new Error("Plugin telemetry privateRefs must be an object when provided.");
+  }
+
+  const safeDimensions: Record<string, PluginTelemetryDimensionValue> = {};
+  const privateRefEntries: Array<{ key: string; value: string }> = [];
+  const dimensionEntries = Object.entries(dimensions ?? {});
+  const privateEntries = Object.entries(privateRefs ?? {});
+  const outgoingDimensionCount = dimensionEntries.length + privateEntries.length * 2;
+  if (outgoingDimensionCount > PLUGIN_TELEMETRY_MAX_DIMENSIONS) {
+    throw new Error(
+      `Plugin telemetry events may include at most ${PLUGIN_TELEMETRY_MAX_DIMENSIONS} outgoing dimensions.`,
+    );
+  }
+
+  for (const [key, value] of dimensionEntries) {
+    assertSafePluginTelemetryDimensionKey(key);
+    safeDimensions[key] = assertSafePluginTelemetryDimensionValue(key, value);
+  }
+
+  const allocatedOutputKeys = new Set(Object.keys(safeDimensions));
+  for (const [key, value] of privateEntries) {
+    assertPluginTelemetryKey(key, "private ref");
+    if (typeof value !== "string" || value.length === 0 || value.length > PLUGIN_TELEMETRY_MAX_PRIVATE_REF_LENGTH) {
+      throw new Error(
+        `Plugin telemetry private ref "${key}" must be a non-empty string up to ${PLUGIN_TELEMETRY_MAX_PRIVATE_REF_LENGTH} characters.`,
+      );
+    }
+    const hashKey = `${key}_hashed`;
+    const markerKey = `${key}_is_hashed`;
+    if (allocatedOutputKeys.has(hashKey) || allocatedOutputKeys.has(markerKey)) {
+      throw new Error(`Plugin telemetry private ref "${key}" collides with existing dimensions.`);
+    }
+    allocatedOutputKeys.add(hashKey);
+    allocatedOutputKeys.add(markerKey);
+    privateRefEntries.push({ key, value });
+  }
+
+  return { dimensions: safeDimensions, privateRefs: privateRefEntries };
+}
 
 /**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
@@ -1292,9 +1454,17 @@ export function buildHostServices(
             'Plugin telemetry event names must be lowercase slugs using letters, numbers, "_" or "-".',
           );
         }
+        const telemetryInput = validatePluginTelemetryInput(params.dimensions, params.privateRefs);
         const telemetryClient = getTelemetryClient();
         if (!telemetryClient) return;
-        telemetryClient.track(`plugin.${pluginKey}.${eventName}`, params.dimensions);
+        const dimensions: Record<string, PluginTelemetryDimensionValue> = {
+          ...telemetryInput.dimensions,
+        };
+        for (const { key, value } of telemetryInput.privateRefs) {
+          dimensions[`${key}_hashed`] = telemetryClient.hashPrivateRef(value);
+          dimensions[`${key}_is_hashed`] = true;
+        }
+        telemetryClient.track(`plugin.${pluginKey}.${eventName}`, dimensions);
       },
     },
 

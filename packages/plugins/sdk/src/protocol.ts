@@ -848,7 +848,11 @@ export interface WorkerToHostMethods {
 
   // Telemetry
   "telemetry.track": [
-    params: { eventName: string; dimensions?: Record<string, string | number | boolean> },
+    params: {
+      eventName: string;
+      dimensions?: Record<string, string | number | boolean>;
+      privateRefs?: Record<string, string>;
+    },
     result: void,
   ];
 

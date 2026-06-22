@@ -128,7 +128,11 @@ export interface TestHarness {
   logs: TestHarnessLogEntry[];
   activity: Array<{ message: string; entityType?: string; entityId?: string; metadata?: Record<string, unknown> }>;
   metrics: Array<{ name: string; value: number; tags?: Record<string, string> }>;
-  telemetry: Array<{ eventName: string; dimensions?: Record<string, string | number | boolean> }>;
+  telemetry: Array<{
+    eventName: string;
+    dimensions?: Record<string, string | number | boolean>;
+    privateRefs?: Record<string, string>;
+  }>;
   dbQueries: Array<{ sql: string; params?: unknown[] }>;
   dbExecutes: Array<{ sql: string; params?: unknown[] }>;
 }
@@ -2301,9 +2305,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     telemetry: {
-      async track(eventName, dimensions) {
+      async track(eventName, dimensions, privateRefs) {
         requireCapability(manifest, capabilitySet, "telemetry.track");
-        telemetry.push({ eventName, dimensions });
+        telemetry.push({ eventName, dimensions, privateRefs });
       },
     },
     logger: {

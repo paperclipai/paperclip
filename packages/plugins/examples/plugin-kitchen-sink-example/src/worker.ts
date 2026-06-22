@@ -407,7 +407,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     await ctx.metrics.write("demo.events.emitted", 1, { source: "manual" });
     await ctx.telemetry.track("demo_event", {
       source: "manual",
-      has_company: Boolean(companyId),
+      configured: Boolean(companyId),
     });
     pushRecord({
       level: "info",

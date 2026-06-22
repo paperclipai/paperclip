@@ -372,6 +372,26 @@ Declare in `manifest.capabilities`. Grouped by scope:
 
 Full list in code: import `PLUGIN_CAPABILITIES` from `@paperclipai/plugin-sdk`.
 
+### Plugin telemetry privacy contract
+
+Plugins with `telemetry.track` may emit only low-cardinality primitive
+dimensions: bounded numbers, booleans, and short slug-like enum/status strings.
+Raw identifiers, emails, URLs, file paths, tokens, prompts, messages, names, and
+other free-form text are rejected by the host before telemetry egress.
+
+Stable or private references must be passed as the third `privateRefs` argument:
+
+```ts
+await ctx.telemetry.track(
+  "sync_completed",
+  { source: "manual", success: true },
+  { company_id: companyId },
+);
+```
+
+The host hashes each private ref with the instance telemetry salt and forwards
+only `<key>_hashed` plus `<key>_is_hashed: true` dimensions.
+
 ### Restricted Database Namespace
 
 Trusted orchestration plugins can declare a host-owned PostgreSQL namespace:

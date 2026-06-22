@@ -832,6 +832,19 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `agent.sessions.send`
 - `agent.sessions.close`
 
+### Telemetry privacy
+
+`telemetry.track` is an external telemetry egress capability. Plugin telemetry
+dimensions are fail-closed at the host boundary: safe dimensions are limited to
+bounded primitive counts, booleans, and short low-cardinality slug strings. Raw
+identifiers, emails, URLs, paths, tokens, prompts, messages, names, and
+free-form text are rejected before egress.
+
+Stable/private references must use the hashed private-ref path exposed by the
+SDK (`ctx.telemetry.track(event, dimensions, privateRefs)`). The host hashes raw
+refs with `TelemetryClient.hashPrivateRef()` and forwards only `<key>_hashed`
+and `<key>_is_hashed: true` dimensions.
+
 ### Plugin State
 
 - `plugin.state.read`

@@ -1255,8 +1255,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async track(
           eventName: string,
           dimensions?: Record<string, string | number | boolean>,
+          privateRefs?: Record<string, string>,
         ): Promise<void> {
-          await callHost("telemetry.track", { eventName, dimensions });
+          await callHost("telemetry.track", { eventName, dimensions, privateRefs });
         },
       },
 
