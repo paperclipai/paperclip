@@ -61,7 +61,7 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
 ];
 
-export const DEFAULT_OPENCODE_CHEAP_MODEL = "openai/gpt-5.1-codex-mini";
+export const DEFAULT_OPENCODE_CHEAP_MODEL = "opencode/north-mini-code-free";
 
 // The "cheap" budget profile (used for recovery retries and other low-cost lanes).
 // Defaults to OpenCode's known Codex mini model, but is overridable so a deployment
