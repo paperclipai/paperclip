@@ -46,7 +46,6 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
-      enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? false,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
@@ -62,7 +61,6 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   return {
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
-    enableStreamlinedLeftNavigation: false,
     enableConferenceRoomChat: false,
     enableTaskWatchdogs: false,
     enableIssuePlanDecompositions: false,

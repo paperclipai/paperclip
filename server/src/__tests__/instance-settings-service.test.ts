@@ -14,12 +14,11 @@ describe("instance settings service", () => {
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
       enableNewestFirstIssueThread: true,
+      enableStreamlinedLeftNavigation: true,
     })).toEqual({
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
-      enableStreamlinedLeftNavigation: false,
       enableConferenceRoomChat: false,
-      enableTaskWatchdogs: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
@@ -35,7 +34,7 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({}).enableConferenceRoomChat).toBe(false);
     // Rows persisted before the flag existed (PAP-137) must normalize to off.
     expect(
-      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true }).enableConferenceRoomChat,
+      normalizeExperimentalSettings({ enableEnvironments: true }).enableConferenceRoomChat,
     ).toBe(false);
   });
 
@@ -54,7 +53,6 @@ describe("instance settings service", () => {
     const current = normalizeExperimentalSettings({});
     const enabled = normalizeExperimentalSettings({ ...current, enableConferenceRoomChat: true });
     expect(enabled.enableConferenceRoomChat).toBe(true);
-    expect(enabled.enableStreamlinedLeftNavigation).toBe(false);
 
     const disabled = normalizeExperimentalSettings({ ...enabled, enableConferenceRoomChat: false });
     expect(disabled).toEqual(current);

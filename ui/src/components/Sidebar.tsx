@@ -24,7 +24,6 @@ import { NavLink } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarAgents } from "./SidebarAgents";
-import { SidebarProjects } from "./SidebarProjects";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -57,11 +56,6 @@ export function Sidebar() {
   });
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
-  // IA flag (PAP-89): branch the sidebar nav presentation. Default OFF = classic
-  // (per-project collapsible, no Projects nav link). ON = streamlined
-  // (top-level Projects link). Issue/Task wording is split to PR #7651.
-  // Gating is navigation-only; all routes stay registered in both modes.
-  const streamlined = experimentalSettings?.enableStreamlinedLeftNavigation === true;
   // Conference Room Chat flag (PAP-136/PAP-137): the Conference Room nav item
   // is a new surface, hidden entirely while the flag is off (same no-flash
   // pattern as showWorkspacesLink above).
@@ -179,9 +173,7 @@ export function Sidebar() {
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
-          {streamlined ? (
-            <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
-          ) : null}
+          <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
             context={pluginContext}
@@ -197,10 +189,7 @@ export function Sidebar() {
           />
         </SidebarSection>
 
-        {/* Classic mode restores the per-project collapsible below Work. */}
-        {streamlined ? null : <SidebarProjects />}
-
-        <SidebarAgents streamlined={streamlined} />
+        <SidebarAgents />
 
         <SidebarSection label="Company">
           <SidebarNavItem to="/org" label="Org" icon={Network} />

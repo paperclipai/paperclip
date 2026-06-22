@@ -246,7 +246,7 @@ function SidebarAgentItem({
   );
 }
 
-export function SidebarAgents({ streamlined = false }: { streamlined?: boolean } = {}) {
+export function SidebarAgents() {
   const [open, setOpen] = useState(true);
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
   const queryClient = useQueryClient();
@@ -314,24 +314,18 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     [orderedAgents, sortMode],
   );
 
-  // IA Phase 5 (streamlined): if any agent has a live run, show only those
-  // active agents. Otherwise fall back to up to RECENT_AGENT_LIMIT agents. Either
-  // way a "See all agents" link is shown so the full list is always reachable.
-  // Classic mode (PAP-89, flag OFF) restores the show-all behavior.
+  // If any agent has a live run, show only those active agents. Otherwise fall
+  // back to up to RECENT_AGENT_LIMIT agents. Either way, a "See all agents" link
+  // keeps the full list reachable.
   const runningAgents = useMemo(
     () => sortedAgents.filter((agent: Agent) => (liveCountByAgent.get(agent.id) ?? 0) > 0),
     [sortedAgents, liveCountByAgent],
   );
   const hasActiveAgents = runningAgents.length > 0;
-  const displayedAgents = !streamlined
-    ? sortedAgents
-    : hasActiveAgents
-      ? runningAgents
-      : sortedAgents.slice(0, RECENT_AGENT_LIMIT);
-  // Always expose "See all agents" whenever the displayed list is a subset of all
-  // agents, so users never lose the entry point to the full list. In classic mode
-  // every agent is already shown, so the link is unnecessary.
-  const showSeeAllLink = streamlined && sortedAgents.length > 0;
+  const displayedAgents = hasActiveAgents
+    ? runningAgents
+    : sortedAgents.slice(0, RECENT_AGENT_LIMIT);
+  const showSeeAllLink = sortedAgents.length > 0;
 
   const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/);
   const activeAgentId = agentMatch?.[1] ?? null;

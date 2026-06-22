@@ -232,8 +232,6 @@ export function InstanceExperimentalSettings() {
 
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
-  const enableStreamlinedLeftNavigation =
-    experimentalQuery.data?.enableStreamlinedLeftNavigation === true;
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
@@ -367,28 +365,6 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle isolated workspaces experimental setting"
-          />
-        </div>
-      </section>
-
-      <section className="rounded-xl border border-border bg-card p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Streamlined Left Navigation Bar</h2>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Reduces the maximum number of items in the left navigation bar — nests Projects under Work with a
-              dedicated Projects page, and shows only active agents (max 5 recently-active) in the sidebar.
-            </p>
-          </div>
-          <ToggleSwitch
-            checked={enableStreamlinedLeftNavigation}
-            onCheckedChange={() =>
-              toggleMutation.mutate({
-                enableStreamlinedLeftNavigation: !enableStreamlinedLeftNavigation,
-              })
-            }
-            disabled={toggleMutation.isPending}
-            aria-label="Toggle streamlined left navigation experimental setting"
           />
         </div>
       </section>

@@ -91,13 +91,7 @@ vi.mock("./SidebarCompanyMenu", () => ({
 }));
 
 vi.mock("./SidebarAgents", () => ({
-  SidebarAgents: ({ streamlined }: { streamlined?: boolean }) => (
-    <div data-testid="sidebar-agents" data-streamlined={String(streamlined)} />
-  ),
-}));
-
-vi.mock("./SidebarProjects", () => ({
-  SidebarProjects: () => <div data-testid="sidebar-projects">Projects collapsible</div>,
+  SidebarAgents: () => <div data-testid="sidebar-agents" />,
 }));
 
 async function flushReact() {
@@ -163,7 +157,6 @@ describe("Sidebar", () => {
   it("renders plugin sidebar launchers inside the Work section", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-      enableStreamlinedLeftNavigation: true,
     });
     const root = await renderSidebar();
 
@@ -180,11 +173,8 @@ describe("Sidebar", () => {
     });
   });
 
-  it("streamlined (flag ON): keeps Task wording, top-level Projects link, no per-project collapsible", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIsolatedWorkspaces: false,
-      enableStreamlinedLeftNavigation: true,
-    });
+  it("uses the streamlined navigation by default", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
     expect(container.textContent).toContain("New Task");
@@ -197,37 +187,7 @@ describe("Sidebar", () => {
     const projectsLink = [...container.querySelectorAll("nav a")].find((a) => a.textContent?.trim() === "Projects");
     expect(projectsLink?.getAttribute("href")).toBe("/projects");
 
-    expect(container.querySelector('[data-testid="sidebar-projects"]')).toBeNull();
-    expect(
-      container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
-    ).toBe("true");
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("classic (flag OFF): New Task button, Tasks label, per-project collapsible, no top-level Projects link", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIsolatedWorkspaces: false,
-      enableStreamlinedLeftNavigation: false,
-    });
-    const root = await renderSidebar();
-
-    expect(container.textContent).toContain("New Task");
-    expect(container.textContent).not.toContain("New Issue");
-
-    const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
-    expect(navLabels).toContain("Tasks");
-    expect(navLabels).not.toContain("Issues");
-    // No top-level Projects nav link in classic mode (D5 option A).
-    expect(navLabels).not.toContain("Projects");
-
-    // Per-project collapsible restored below Work.
-    expect(container.querySelector('[data-testid="sidebar-projects"]')).not.toBeNull();
-    expect(
-      container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
-    ).toBe("false");
+    expect(container.querySelector('[data-testid="sidebar-agents"]')).not.toBeNull();
 
     await act(async () => {
       root.unmount();

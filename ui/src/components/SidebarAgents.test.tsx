@@ -264,21 +264,7 @@ describe("SidebarAgents", () => {
     vi.clearAllMocks();
   });
 
-  async function renderSidebarAgents(streamlined = true) {
-    const currentRoot = createRoot(container);
-    root = currentRoot;
-
-    await act(async () => {
-      currentRoot.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarAgents streamlined={streamlined} />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-  }
-
-  async function renderSidebarAgentsWithDefaultProps() {
+  async function renderSidebarAgents() {
     const currentRoot = createRoot(container);
     root = currentRoot;
 
@@ -301,7 +287,7 @@ describe("SidebarAgents", () => {
       currentRoot.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <SidebarAgents streamlined />
+            <SidebarAgents />
           </TooltipProvider>
         </QueryClientProvider>,
       );
@@ -571,30 +557,7 @@ describe("SidebarAgents", () => {
     expect(seeAllAgentsLink(container)?.getAttribute("href")).toBe("/agents/all");
   });
 
-  it("classic mode (flag OFF) shows all agents and no See all link even when one is running", async () => {
-    mockAgentsApi.list.mockResolvedValue([
-      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
-      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
-      makeAgent({ id: "agent-c", name: "Charlie", urlKey: "charlie" }),
-    ]);
-    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
-      { id: "run-1", agentId: "agent-b", status: "running" },
-    ]);
-
-    await renderSidebarAgents(false);
-
-    // Show-all: every agent is listed regardless of live-run state. (Bravo's
-    // label includes its live-run badge text, so match by prefix.)
-    const labels = agentLinkLabels(container);
-    expect(labels).toHaveLength(3);
-    expect(labels[0]).toBe("Alpha");
-    expect(labels[1]).toContain("Bravo");
-    expect(labels[2]).toBe("Charlie");
-    // No recent-5 truncation, so no "See all agents" link in classic mode.
-    expect(seeAllAgentsLink(container)).toBeNull();
-  });
-
-  it("classic mode (flag OFF) shows more than 5 agents without truncation", async () => {
+  it("uses the streamlined agent limit by default", async () => {
     mockAgentsApi.list.mockResolvedValue(
       Array.from({ length: 7 }, (_, index) =>
         makeAgent({
@@ -606,28 +569,10 @@ describe("SidebarAgents", () => {
     );
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
 
-    await renderSidebarAgents(false);
+    await renderSidebarAgents();
 
-    expect(agentLinkLabels(container)).toHaveLength(7);
-    expect(seeAllAgentsLink(container)).toBeNull();
-  });
-
-  it("defaults to classic mode when rendered outside the Sidebar flag path", async () => {
-    mockAgentsApi.list.mockResolvedValue(
-      Array.from({ length: 7 }, (_, index) =>
-        makeAgent({
-          id: `agent-${index}`,
-          name: `Agent ${index}`,
-          urlKey: `agent-${index}`,
-        }),
-      ),
-    );
-    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
-
-    await renderSidebarAgentsWithDefaultProps();
-
-    expect(agentLinkLabels(container)).toHaveLength(7);
-    expect(seeAllAgentsLink(container)).toBeNull();
+    expect(agentLinkLabels(container)).toHaveLength(5);
+    expect(seeAllAgentsLink(container)?.getAttribute("href")).toBe("/agents/all");
   });
 
   it("does not offer sidebar resume for budget-paused agents", async () => {
