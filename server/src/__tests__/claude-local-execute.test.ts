@@ -66,9 +66,9 @@ const payload = {
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
 }
-console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }));
-console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }));
-console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "11111111-1111-4111-8111-111111111111", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "assistant", session_id: "11111111-1111-4111-8111-111111111111", message: { content: [{ type: "text", text: "hello" }] } }));
+console.log(JSON.stringify({ type: "result", session_id: "11111111-1111-4111-8111-111111111111", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -89,6 +89,72 @@ type CapturePayload = {
   appendedSystemPromptFilePath?: string | null;
   appendedSystemPromptFileContents?: string | null;
 };
+
+async function writePoisonedMessageIdClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const statePath = process.env.PAPERCLIP_TEST_STATE_PATH;
+const payload = {
+  argv: process.argv.slice(2),
+  prompt: fs.readFileSync(0, "utf8"),
+};
+if (capturePath) {
+  const entries = fs.existsSync(capturePath) ? JSON.parse(fs.readFileSync(capturePath, "utf8")) : [];
+  entries.push(payload);
+  fs.writeFileSync(capturePath, JSON.stringify(entries), "utf8");
+}
+const resumed = process.argv.includes("--resume");
+const shouldFailResume = resumed && statePath && !fs.existsSync(statePath);
+if (shouldFailResume) {
+  fs.writeFileSync(statePath, "retried", "utf8");
+  console.log(JSON.stringify({
+    type: "result",
+    subtype: "success",
+    session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    is_error: true,
+    result: "API Error: 400 diagnostics.previous_message_id: must be the \`id\` from a prior /v1/messages response (starts with \`msg_\`)",
+  }));
+  process.exit(1);
+}
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "assistant", session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", message: { content: [{ type: "text", text: "hello" }] } }));
+console.log(JSON.stringify({ type: "result", session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeAlwaysPoisonedMessageIdClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const payload = {
+  argv: process.argv.slice(2),
+  prompt: fs.readFileSync(0, "utf8"),
+};
+if (capturePath) {
+  const entries = fs.existsSync(capturePath) ? JSON.parse(fs.readFileSync(capturePath, "utf8")) : [];
+  entries.push(payload);
+  fs.writeFileSync(capturePath, JSON.stringify(entries), "utf8");
+}
+// Both --resume and fresh attempts emit the poisoned previous_message_id result.
+// The fresh attempt still carries a session_id in the result; the adapter must
+// NOT persist it, otherwise the next continuation re-resumes a known-bad transcript.
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  session_id: "fffff111-0000-4000-8000-000000000003",
+  is_error: true,
+  result: "API Error: 400 diagnostics.previous_message_id: must be the \`id\` from a prior /v1/messages response (starts with \`msg_\`)",
+}));
+process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
 
 async function writeRetryThenSucceedClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -117,15 +183,15 @@ if (shouldFailResume) {
   console.log(JSON.stringify({
     type: "result",
     subtype: "error",
-    session_id: "claude-session-1",
-    result: "No conversation found with session id claude-session-1",
-    errors: ["No conversation found with session id claude-session-1"],
+    session_id: "11111111-1111-4111-8111-111111111111",
+    result: "No conversation found with session id 11111111-1111-4111-8111-111111111111",
+    errors: ["No conversation found with session id 11111111-1111-4111-8111-111111111111"],
   }));
   process.exit(1);
 }
-console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-2", model: "claude-sonnet" }));
-console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-2", message: { content: [{ type: "text", text: "hello" }] } }));
-console.log(JSON.stringify({ type: "result", session_id: "claude-session-2", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "22222222-2222-4222-8222-222222222222", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "assistant", session_id: "22222222-2222-4222-8222-222222222222", message: { content: [{ type: "text", text: "hello" }] } }));
+console.log(JSON.stringify({ type: "result", session_id: "22222222-2222-4222-8222-222222222222", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -239,7 +305,7 @@ describe("claude execute", () => {
       await execute({
         runId: "run-resume",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
-        runtime: { sessionId: "claude-session-1", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
           command: commandPath,
           cwd: workspace,
@@ -307,7 +373,7 @@ describe("claude execute", () => {
       await execute({
         runId: "run-notes-resume",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
-        runtime: { sessionId: "claude-session-1", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
           command: commandPath,
           cwd: workspace,
@@ -339,7 +405,7 @@ describe("claude execute", () => {
       const result = await execute({
         runId: "run-resume-fallback",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
-        runtime: { sessionId: "claude-session-1", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
           command: commandPath,
           cwd: workspace,
@@ -382,7 +448,7 @@ describe("claude execute", () => {
       expect(metaEvents).toHaveLength(2);
       expect(metaEvents[0]?.commandNotes).toHaveLength(0);
       expect(metaEvents[1]?.commandNotes.some((note) => note.includes("--append-system-prompt-file"))).toBe(true);
-      expect(result.sessionId).toBe("claude-session-2");
+      expect(result.sessionId).toBe("22222222-2222-4222-8222-222222222222");
       expect(result.clearSession).toBe(false);
     } finally {
       restore();
@@ -395,7 +461,7 @@ describe("claude execute", () => {
     const resultEvent = {
       type: "result",
       subtype: "error_max_turns",
-      session_id: "claude-session-1",
+      session_id: "11111111-1111-4111-8111-111111111111",
       is_error: true,
       result: "Maximum turns reached.",
       usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
@@ -435,7 +501,7 @@ describe("claude execute", () => {
     const resultEvent = {
       type: "result",
       subtype: "error",
-      session_id: "claude-session-1",
+      session_id: "11111111-1111-4111-8111-111111111111",
       is_error: true,
       result: "Tool output said: Maximum turns reached.",
     };
@@ -730,7 +796,7 @@ describe("claude execute", () => {
       expect(first.exitCode).toBe(0);
       expect(first.errorMessage).toBeNull();
       expect(first.sessionParams).toMatchObject({
-        sessionId: "claude-session-1",
+        sessionId: "11111111-1111-4111-8111-111111111111",
         cwd: workspace,
       });
       expect(typeof first.sessionParams?.promptBundleKey).toBe("string");
@@ -822,7 +888,7 @@ describe("claude execute", () => {
       expect(capture1.instructionsContents).toContain(`The above agent instructions were loaded from ${instructionsPath}.`);
       expect(capture1.skillEntries).toContain("paperclip");
       expect(capture2.argv).toContain("--resume");
-      expect(capture2.argv).toContain("claude-session-1");
+      expect(capture2.argv).toContain("11111111-1111-4111-8111-111111111111");
       expect(capture2.prompt).toContain("## Paperclip Resume Delta");
       expect(capture2.prompt).not.toContain("Follow the paperclip heartbeat.");
     } finally {
@@ -950,7 +1016,7 @@ describe("claude execute", () => {
       resultEvent: {
         type: "result",
         subtype: "error",
-        session_id: "claude-session-extra",
+        session_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
         is_error: true,
         result: "You're out of extra usage · resets 4pm (America/Chicago)",
         errors: [{ type: "rate_limit_error", message: "You're out of extra usage" }],
@@ -1015,7 +1081,7 @@ describe("claude execute", () => {
       resultEvent: {
         type: "result",
         subtype: "error",
-        session_id: "claude-session-overloaded",
+        session_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
         is_error: true,
         result: "Overloaded",
         errors: [{ type: "overloaded_error", message: "Overloaded_error: API is overloaded." }],
@@ -1073,7 +1139,7 @@ describe("claude execute", () => {
       resultEvent: {
         type: "result",
         subtype: "error_max_turns",
-        session_id: "claude-session-max-turns",
+        session_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
         is_error: true,
         result: "Maximum turns reached.",
       },
@@ -1113,6 +1179,138 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-rotates session on previous_message_id 400 (synthetic-msg poisoning) and succeeds on retry", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-poisoned-msgid-"));
+    const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writePoisonedMessageIdClaudeCommand,
+    });
+    const logs: string[] = [];
+    try {
+      const result = await execute({
+        runId: "run-poisoned-msgid",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            PAPERCLIP_TEST_STATE_PATH: statePath,
+          },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async (_stream, chunk) => { logs.push(chunk); },
+      });
+
+      const captured: Array<{ argv: string[] }> = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      // First attempt resumes, second attempt starts fresh
+      expect(captured).toHaveLength(2);
+      expect(captured[0]?.argv).toContain("--resume");
+      expect(captured[1]?.argv).not.toContain("--resume");
+      // Result comes from the fresh retry
+      expect(result.sessionId).toBe("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+      expect(result.errorCode).toBeNull();
+      // Adapter logged the fallback reason
+      expect(logs.some((l) => l.includes("poisoned message-id"))).toBe(true);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Regression for RED-978: the adapter must not persist a sessionId from a
+   * run that ended with a poisoned previous_message_id error. Otherwise the
+   * next continuation auto-resumes a known-bad transcript and Anthropic
+   * /v1/messages returns 400 again, permanently stranding the issue.
+   */
+  it("drops sessionId and forces clearSession when a fresh run reports a poisoned previous_message_id", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-poisoned-fresh-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeAlwaysPoisonedMessageIdClaudeCommand,
+    });
+    try {
+      const result = await execute({
+        runId: "run-poisoned-fresh",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      // The fake CLI emits a session_id in its poisoned result; the adapter
+      // must not propagate it. The server uses clearSession=true to wipe
+      // any previously-persisted session state for this issue/task.
+      expect(result.sessionId).toBeNull();
+      expect(result.sessionParams).toBeNull();
+      expect(result.sessionDisplayId).toBeNull();
+      expect(result.clearSession).toBe(true);
+      expect(result.errorCode).toBe("claude_poisoned_previous_message_id");
+      expect(result.errorMessage ?? "").toContain("previous_message_id");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Regression for RED-978: if the auto-retry after a poisoned resume *also*
+   * fails with a poisoned previous_message_id, the adapter must still emit
+   * clearSession=true so the next heartbeat starts from a clean transcript.
+   * Before this fix, the retry result's session_id ("fffff111-0000-4000-8000-000000000003")
+   * was persisted and every subsequent continuation hit the same 400 again.
+   */
+  it("forces clearSession when the recovery retry also reports a poisoned previous_message_id", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-poisoned-retry-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeAlwaysPoisonedMessageIdClaudeCommand,
+    });
+    try {
+      const result = await execute({
+        runId: "run-poisoned-retry",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: {
+          sessionId: "aaaaaaaa-0000-4000-8000-000000000004",
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      const captured: Array<{ argv: string[] }> = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      // Resume attempt + fresh recovery attempt, both poisoned.
+      expect(captured).toHaveLength(2);
+      expect(captured[0]?.argv).toContain("--resume");
+      expect(captured[1]?.argv).not.toContain("--resume");
+      // Crucially: do NOT persist the retry's reported sessionId.
+      expect(result.sessionId).toBeNull();
+      expect(result.sessionParams).toBeNull();
+      expect(result.clearSession).toBe(true);
+      expect(result.errorCode).toBe("claude_poisoned_previous_message_id");
+    } finally {
+      restore();
       await fs.rm(root, { recursive: true, force: true });
     }
   });

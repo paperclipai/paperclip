@@ -222,7 +222,11 @@
   [data-size="icon-xs"],
   [data-size="icon-sm"],
   input[type="checkbox"],
-  input[type="radio"] {
+  input[type="radio"],
+  /* Auto-resizing title fields are vertically centered inside their own bar,
+     which already provides the touch area; the 44px floor would top-align the
+     single line of text and push it too high (notably on mobile Safari). */
+  textarea[data-autosize-title] {
     min-height: 0;
   }
 }

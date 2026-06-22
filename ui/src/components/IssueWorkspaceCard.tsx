@@ -10,7 +10,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
-import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
+import { Check, Copy, FileSearch, FolderOpen, FolderSearch, GitBranch, Pencil, X } from "lucide-react";
 
 /* -------------------------------------------------------------------------- */
 /*  Utility helpers (mirrored from IssueProperties for self-containment)      */
@@ -192,6 +192,10 @@ interface IssueWorkspaceCardProps {
   initialEditing?: boolean;
   livePreview?: boolean;
   onDraftChange?: (data: Record<string, unknown>, meta: { canSave: boolean; workspaceBranchName?: string | null }) => void;
+  /** Opens the workspace file browser sheet. When omitted, the browse row is hidden. */
+  onBrowseFiles?: () => void;
+  /** Opens the same browser sheet focused for path entry. */
+  onOpenFileByPath?: () => void;
 }
 
 export function IssueWorkspaceCard({
@@ -201,6 +205,8 @@ export function IssueWorkspaceCard({
   initialEditing = false,
   livePreview = false,
   onDraftChange,
+  onBrowseFiles,
+  onOpenFileByPath,
 }: IssueWorkspaceCardProps) {
   const { selectedCompanyId } = useCompany();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -570,6 +576,28 @@ export function IssueWorkspaceCard({
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Workspace file discovery — calm row under the workspace identity. */}
+      {!showEditingControls && onBrowseFiles && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/50 pt-2 text-xs">
+          <button
+            type="button"
+            onClick={onBrowseFiles}
+            className="inline-flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <FolderSearch className="h-3.5 w-3.5 shrink-0" />
+            Browse files…
+          </button>
+          <button
+            type="button"
+            onClick={onOpenFileByPath ?? onBrowseFiles}
+            className="inline-flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <FileSearch className="h-3.5 w-3.5 shrink-0" />
+            Open file by path…
+          </button>
         </div>
       )}
     </div>

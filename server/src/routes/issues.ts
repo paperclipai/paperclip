@@ -124,6 +124,11 @@ import {
   type CompanySearchRateLimiter,
 } from "../services/company-search-rate-limit.js";
 import {
+  createUploadRateLimiter,
+  type UploadRateLimiter,
+  type UploadRateLimitActor,
+} from "../services/upload-rate-limit.js";
+import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -598,6 +603,7 @@ function summarizeIssueRelationForActivity(relation: {
 }
 
 const defaultCompanySearchRateLimiter = createCompanySearchRateLimiter();
+const defaultUploadRateLimiter = createUploadRateLimiter();
 
 function companySearchRateLimitActor(req: Request, companyId: string) {
   if (req.actor.type === "agent") {
@@ -610,6 +616,21 @@ function companySearchRateLimitActor(req: Request, companyId: string) {
   return {
     companyId,
     actorType: "board" as const,
+    actorId: req.actor.userId ?? req.actor.source ?? "board",
+  };
+}
+
+function uploadRateLimitActor(req: Request, companyId: string): UploadRateLimitActor {
+  if (req.actor.type === "agent") {
+    return {
+      companyId,
+      actorType: "agent",
+      actorId: req.actor.agentId ?? req.actor.keyId ?? "unknown-agent",
+    };
+  }
+  return {
+    companyId,
+    actorType: "board",
     actorId: req.actor.userId ?? req.actor.source ?? "board",
   };
 }
@@ -943,6 +964,7 @@ export function issueRoutes(
     };
     searchService?: CompanySearchService;
     searchRateLimiter?: CompanySearchRateLimiter;
+    uploadRateLimiter?: UploadRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
   } = {},
 ) {
@@ -960,6 +982,7 @@ export function issueRoutes(
     return searchSvc;
   };
   const searchRateLimiter = opts.searchRateLimiter ?? defaultCompanySearchRateLimiter;
+  const uploadRateLimiter = opts.uploadRateLimiter ?? defaultUploadRateLimiter;
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
@@ -992,6 +1015,42 @@ export function issueRoutes(
     actor: ReturnType<typeof getActorInfo>,
   ) {
     return resolveActorSourceTrustForIssue({ db, issue, actor });
+  }
+
+  function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
+    return input.parentId !== undefined ||
+      input.inheritExecutionWorkspaceFromIssueId !== undefined ||
+      input.projectWorkspaceId !== undefined ||
+      input.executionWorkspaceId !== undefined ||
+      input.executionWorkspacePreference !== undefined ||
+      input.executionWorkspaceSettings !== undefined;
+  }
+
+  async function resolveRunIssueWorkspaceInheritanceSource(
+    companyId: string,
+    actor: ReturnType<typeof getActorInfo>,
+  ): Promise<string | null> {
+    if (actor.actorType !== "agent" || !actor.agentId || !actor.runId) return null;
+    const run = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, actor.runId),
+        eq(heartbeatRuns.companyId, companyId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!run || run.agentId !== actor.agentId) return null;
+    const context = run.contextSnapshot && typeof run.contextSnapshot === "object"
+      ? run.contextSnapshot as Record<string, unknown>
+      : null;
+    if (!context || !readNonEmptyString(context.executionWorkspaceId)) return null;
+    const paperclipIssue = context.paperclipIssue && typeof context.paperclipIssue === "object"
+      ? context.paperclipIssue as Record<string, unknown>
+      : null;
+    return readNonEmptyString(context.issueId) ?? readNonEmptyString(paperclipIssue?.id);
   }
 
   async function resolveAgentTrustForIssue(
@@ -2168,6 +2227,26 @@ export function issueRoutes(
     }
 
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
+  }
+
+  function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
+    return {
+      errorCode: "operator_interrupted",
+      resultJson: {
+        operatorInterrupted: true,
+        interruptionSource: "issue_comment_interrupt",
+        interruptedIssueId: input.issueId,
+        interruptedByActorType: input.actor.actorType,
+        interruptedByActorId: input.actor.actorId,
+      },
+      eventMessage: "run interrupted by board comment",
+      eventPayload: {
+        issueId: input.issueId,
+        source: "issue_comment_interrupt",
+        interruptedByActorType: input.actor.actorType,
+        interruptedByActorId: input.actor.actorId,
+      },
+    };
   }
 
   async function normalizeIssueAssigneeAgentReference(
@@ -4269,9 +4348,16 @@ export function issueRoutes(
       companyId,
       req.body.assigneeAgentId as string | null | undefined,
     );
+    const actor = getActorInfo(req);
+    const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(req.body)
+      ? null
+      : await resolveRunIssueWorkspaceInheritanceSource(companyId, actor);
     const createBody = {
       ...req.body,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(runWorkspaceInheritanceSourceIssueId
+        ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
+        : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
@@ -4288,7 +4374,6 @@ export function issueRoutes(
     }
     await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
 
-    const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(createBody.executionPolicy),
       actor.actorType,
@@ -4845,7 +4930,11 @@ export function issueRoutes(
 
       const runToInterrupt = await resolveActiveIssueRun(existing);
       if (runToInterrupt) {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+        const cancelled = await heartbeat.cancelRun(
+          runToInterrupt.id,
+          "Interrupted by board comment",
+          operatorInterruptCancelOptions({ issueId: existing.id, actor }),
+        );
         if (cancelled) {
           interruptedRunId = cancelled.id;
           await logActivity(db, {
@@ -4857,7 +4946,13 @@ export function issueRoutes(
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
-            details: { agentId: cancelled.agentId, source: "issue_comment_interrupt", issueId: existing.id },
+            details: {
+              agentId: cancelled.agentId,
+              source: "issue_comment_interrupt",
+              issueId: existing.id,
+              cancellationKind: "operator_interrupted",
+              operatorInterrupted: true,
+            },
           });
         }
       }
@@ -6776,7 +6871,11 @@ export function issueRoutes(
 
       const runToInterrupt = await resolveActiveIssueRun(currentIssue);
       if (runToInterrupt) {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+        const cancelled = await heartbeat.cancelRun(
+          runToInterrupt.id,
+          "Interrupted by board comment",
+          operatorInterruptCancelOptions({ issueId: currentIssue.id, actor }),
+        );
         if (cancelled) {
           interruptedRunId = cancelled.id;
           await logActivity(db, {
@@ -6788,7 +6887,13 @@ export function issueRoutes(
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
-            details: { agentId: cancelled.agentId, source: "issue_comment_interrupt", issueId: currentIssue.id },
+            details: {
+              agentId: cancelled.agentId,
+              source: "issue_comment_interrupt",
+              issueId: currentIssue.id,
+              cancellationKind: "operator_interrupted",
+              operatorInterrupted: true,
+            },
           });
         }
       }
@@ -7100,6 +7205,18 @@ export function issueRoutes(
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+
+    const uploadRateLimit = uploadRateLimiter.consume(uploadRateLimitActor(req, companyId));
+    res.setHeader("X-RateLimit-Limit", String(uploadRateLimit.limit));
+    res.setHeader("X-RateLimit-Remaining", String(uploadRateLimit.remaining));
+    if (!uploadRateLimit.allowed) {
+      res.setHeader("Retry-After", String(uploadRateLimit.retryAfterSeconds));
+      res.status(429).json({
+        error: "Upload rate limit exceeded",
+        retryAfterSeconds: uploadRateLimit.retryAfterSeconds,
+      });
+      return;
+    }
 
     const company = await companiesSvc.getById(companyId);
     const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(company?.attachmentMaxBytes);

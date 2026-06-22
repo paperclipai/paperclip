@@ -1285,7 +1285,23 @@ describe.sequential("issue comment reopen routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-1");
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      "run-1",
+      "Interrupted by board comment",
+      expect.objectContaining({
+        errorCode: "operator_interrupted",
+        resultJson: expect.objectContaining({
+          operatorInterrupted: true,
+          interruptionSource: "issue_comment_interrupt",
+          interruptedIssueId: "11111111-1111-4111-8111-111111111111",
+        }),
+        eventMessage: "run interrupted by board comment",
+        eventPayload: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          source: "issue_comment_interrupt",
+        }),
+      }),
+    );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -1293,6 +1309,8 @@ describe.sequential("issue comment reopen routes", () => {
         details: expect.objectContaining({
           source: "issue_comment_interrupt",
           issueId: "11111111-1111-4111-8111-111111111111",
+          cancellationKind: "operator_interrupted",
+          operatorInterrupted: true,
         }),
       }),
     );

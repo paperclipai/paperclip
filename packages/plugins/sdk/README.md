@@ -238,7 +238,9 @@ Adds a navigation-style entry to the main company sidebar navigation area, rende
 
 #### `routeSidebar`
 
-Replaces the normal company sidebar while the current route is a plugin page route with the same `routePath`. Use this for full-page plugin workspaces that need their own local navigation while keeping the company rail and account footer. Receives `PluginRouteSidebarProps` with `context.companyId` and `context.companyPrefix` set to the active company. Requires the `ui.sidebar.register` capability.
+A contextual sidebar shown while the current route is a plugin page route with the same `routePath`. Use this for full-page plugin workspaces that need their own local navigation. It does **not** replace the app sidebar: the host collapses the main `<Sidebar/>` to its 64px icon rail (still hover/peek-able) and renders your `routeSidebar` in a secondary pane beside it, producing `[ app rail ][ your sidebar ][ content ]`. Receives `PluginRouteSidebarProps` with `context.companyId` and `context.companyPrefix` set to the active company. Requires the `ui.sidebar.register` capability.
+
+Do **not** mount `RequestCollapsedSidebar` (or otherwise try to collapse the app sidebar) from a `routeSidebar` plugin — the host drives the collapse automatically while your route is active and restores the user's preference when they navigate away. The collapse is a hard invariant: a secondary sidebar always forces the app rail collapsed (hiding its expand toggle), overriding any user pin, but it never mutates the user's saved expanded/collapsed preference — that is restored as soon as they leave your route.
 
 #### `sidebarPanel`
 

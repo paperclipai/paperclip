@@ -214,9 +214,9 @@ pnpm paperclipai configure --section storage
 
 ## Agent Artifact Uploads
 
-When an agent generates a file that a board user or reviewer should inspect,
-attach it to the issue before marking the task complete. Do not rely on a local
-workspace path as the only access path.
+When an agent generates a file that a board user or reviewer should inspect as
+a deliverable, attach it to the issue before marking the task complete. Do not
+rely on a local workspace path as the only access path.
 
 Use the helper bundled with the Paperclip skill from the repo root:
 
@@ -237,6 +237,10 @@ skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
 The helper uploads the file as an issue attachment, creates an artifact work
 product by default, and prints markdown links for the final issue comment. See
 `doc/AGENT-ARTIFACTS.md` for the full completion pattern and direct API shape.
+If a file intentionally remains workspace-only, create a work product with
+`metadata.resourceRef.kind: "workspace_file"` and include the workspace-relative
+path in the final comment. Use browse/search only as the fallback for recovering
+that file, not as the main completion path for deliverables.
 
 ## Default Agent Workspaces
 

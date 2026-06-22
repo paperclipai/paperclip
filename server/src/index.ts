@@ -32,12 +32,17 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
   backfillPrincipalAccessCompatibility,
+  bootstrapExecutionPolicyFromEnv,
   heartbeatService,
   instanceSettingsService,
   reconcileCloudUpstreamRunsOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
+import {
+  parseAdapterRegistryEnv,
+  reconcileAdapterAvailability,
+} from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -716,6 +721,27 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
   
+  // Force the instance onto the Kubernetes sandbox provider when configured via
+  // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
+  // queued runs so the policy + managed k8s environments are in place. A bad
+  // PAPERCLIP_EXECUTION_MODE / PAPERCLIP_K8S_* value throws and fails startup
+  // (fail-loud) rather than silently allowing local execution.
+  try {
+    const policyResult = await bootstrapExecutionPolicyFromEnv(db as any);
+    if (policyResult) {
+      logger.warn(
+        {
+          executionMode: policyResult.executionMode,
+          companiesConfigured: policyResult.companiesConfigured,
+        },
+        "forced execution policy applied at startup",
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, "failed to apply forced execution policy from environment");
+    throw err;
+  }
+
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
@@ -752,6 +778,12 @@ export async function startServer(): Promise<StartedServer> {
         const scanned = await heartbeat.scanSilentActiveRuns();
         if (scanned.created > 0 || scanned.escalated > 0) {
           logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
+        }
+      })
+      .then(async () => {
+        const swept = await heartbeat.sweepStaleIssueLocks();
+        if (swept.cleared > 0) {
+          logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
         }
       })
       .then(async () => {
@@ -821,6 +853,12 @@ export async function startServer(): Promise<StartedServer> {
           }
         })
         .then(async () => {
+          const swept = await heartbeat.sweepStaleIssueLocks();
+          if (swept.cleared > 0) {
+            logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
+          }
+        })
+        .then(async () => {
           const reviewed = await heartbeat.reconcileProductivityReviews();
           if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
@@ -855,6 +893,18 @@ export async function startServer(): Promise<StartedServer> {
   // reject valid external adapter types during the startup loading window.
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
   await waitForExternalAdapters();
+
+  // Reconcile the agent-creation picker to the declaratively-configured adapter
+  // set (PAPERCLIP_ADAPTERS). Must run after external adapters are loaded so the
+  // known-adapter list is complete. Fail loud on misconfig (a declared adapter
+  // with no implementation), consistent with the execution-policy bootstrap:
+  // log the structured error, then rethrow to fail startup.
+  try {
+    reconcileAdapterAvailability(parseAdapterRegistryEnv());
+  } catch (err) {
+    logger.error({ err }, "failed to reconcile adapter availability from PAPERCLIP_ADAPTERS");
+    throw err;
+  }
 
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
