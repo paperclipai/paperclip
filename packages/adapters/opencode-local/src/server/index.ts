@@ -71,3 +71,22 @@ export {
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
 export { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+
+// DEV-653 WS1: dynamic LocalLLM model-config freshness via the live Ollama /api/tags.
+export {
+  syncOllamaModels,
+  fetchOllamaModels,
+  resolveOllamaUrl,
+  resolveConfigPath,
+  stripJsonc,
+  computeDrift,
+  applyOllamaModels,
+  atomicWriteWithBackup,
+} from "./ollama-models.js";
+export type {
+  OllamaSyncResult,
+  OllamaSyncStatus,
+  OllamaConfigDrift,
+  SyncOllamaModelsOptions,
+  FetchLike,
+} from "./ollama-models.js";
