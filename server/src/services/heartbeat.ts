@@ -320,6 +320,22 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "opencode_local",
   "pi_local",
 ]);
+const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_DELAY_MS = Math.max(
+  ...BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
+);
+// HELA-1643: a transient-upstream retry can inherit a far-future usage-limit
+// reset hint (retryNotBefore — e.g. the weekly-quota reset, hours away) as its
+// scheduledRetryAt. The promoter otherwise hard-waits that exact pin and never
+// re-probes whether the upstream/account actually recovered earlier. When such a
+// far-future-pinned transient retry's company shows a recent successful run
+// (positive proof the upstream is serving again), pull the pin forward and let
+// the run flow through the normal due-promotion gates instead of idling to the
+// reset. The remaining-pin floor is set above the bounded backoff ceiling so
+// normally-scheduled transient backoffs (<= the max bounded delay) are never
+// disturbed — only abnormally-far quota-reset pins qualify.
+const EARLY_UPSTREAM_RECOVERY_MIN_REMAINING_PIN_MS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_DELAY_MS;
+const EARLY_UPSTREAM_RECOVERY_GREEN_LOOKBACK_MS = 30 * 60 * 1000;
+const EARLY_UPSTREAM_RECOVERY_MAX_CANDIDATES = 50;
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -8720,6 +8736,95 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  // HELA-1643: detect whether the upstream/account has demonstrably recovered for
+  // a company since a retry's pin was set, by looking for a recent successful run.
+  async function hasRecentSuccessfulCompanyRun(companyId: string, after: Date, now: Date) {
+    const greenLookbackFloor = new Date(now.getTime() - EARLY_UPSTREAM_RECOVERY_GREEN_LOOKBACK_MS);
+    const greenFloor = after.getTime() > greenLookbackFloor.getTime() ? after : greenLookbackFloor;
+    const recovered = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "succeeded"),
+          gt(heartbeatRuns.finishedAt, greenFloor),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return recovered;
+  }
+
+  // HELA-1643: release transient-upstream retries whose far-future pin (typically a
+  // quota-reset hint) is now stale because the upstream/account recovered early.
+  // Each candidate must show positive recovery evidence (a recent successful run in
+  // the same company), then its pin is pulled forward to `now` so it flows through
+  // the normal promotion gates on this tick instead of idling to the reset.
+  async function promoteEarlyUpstreamRecoveryRetries(now: Date, alreadyDueRunIds: Set<string>) {
+    const reprobeThreshold = new Date(now.getTime() + EARLY_UPSTREAM_RECOVERY_MIN_REMAINING_PIN_MS);
+    const candidates = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          eq(heartbeatRuns.scheduledRetryReason, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON),
+          gt(heartbeatRuns.scheduledRetryAt, reprobeThreshold),
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.scheduledRetryAt), asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(EARLY_UPSTREAM_RECOVERY_MAX_CANDIDATES);
+
+    const promotedRunIds: string[] = [];
+
+    for (const candidate of candidates) {
+      if (alreadyDueRunIds.has(candidate.id)) continue;
+
+      const pinSetAt = candidate.updatedAt ?? candidate.createdAt ?? new Date(0);
+      const recovered = await hasRecentSuccessfulCompanyRun(candidate.companyId, pinSetAt, now);
+      if (!recovered) continue;
+
+      // Pull the pin forward to `now` (guarding on the still-future pin) so the run
+      // becomes due and re-uses the normal promotion path and all of its safety gates.
+      const advanced = await db
+        .update(heartbeatRuns)
+        .set({ scheduledRetryAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(heartbeatRuns.id, candidate.id),
+            eq(heartbeatRuns.status, "scheduled_retry"),
+            gt(heartbeatRuns.scheduledRetryAt, now),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!advanced) continue;
+
+      await appendRunEvent(advanced, await nextRunEventSeq(advanced.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Scheduled retry re-probed early because the upstream recovered before the pinned retry window",
+        payload: {
+          scheduledRetryAttempt: advanced.scheduledRetryAttempt,
+          scheduledRetryReason: advanced.scheduledRetryReason,
+          originalScheduledRetryAt: candidate.scheduledRetryAt
+            ? new Date(candidate.scheduledRetryAt).toISOString()
+            : null,
+          upstreamRecoveryEvidenceRunId: recovered.id,
+        },
+      });
+
+      const result = await promoteScheduledRetryRun(advanced, now);
+      if (result.outcome === "promoted") {
+        promotedRunIds.push(result.run.id);
+      }
+    }
+
+    return promotedRunIds;
+  }
+
   async function promoteDueScheduledRetries(now = new Date()) {
     const dueRuns = await db
       .select()
@@ -8741,6 +8846,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         promotedRunIds.push(result.run.id);
       }
     }
+
+    // HELA-1643: in addition to runs whose pin is already due, release far-future
+    // transient-upstream retries whose upstream has demonstrably recovered early.
+    const earlyReprobedRunIds = await promoteEarlyUpstreamRecoveryRetries(
+      now,
+      new Set(dueRuns.map((run) => run.id)),
+    );
+    promotedRunIds.push(...earlyReprobedRunIds);
 
     return {
       promoted: promotedRunIds.length,
