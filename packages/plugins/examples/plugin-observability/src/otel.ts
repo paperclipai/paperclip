@@ -6,7 +6,7 @@
  */
 
 import { NodeSDK } from "@opentelemetry/sdk-node";
-import { Resource } from "@opentelemetry/resources";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_VERSION,
@@ -40,7 +40,7 @@ export function initOTel(config: ObservabilityConfig): OTelHandle {
   const traceTimeoutMs =
     config.traceExportTimeoutMs ?? DEFAULT_CONFIG.traceExportTimeoutMs;
 
-  const resource = new Resource({
+  const resource = resourceFromAttributes({
     [ATTR_SERVICE_NAME]: serviceName,
     [ATTR_SERVICE_VERSION]: PLUGIN_VERSION,
     "paperclip.plugin": "observability",
