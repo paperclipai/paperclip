@@ -388,6 +388,7 @@ Rules:
   backwards compatibility
 - `capabilities` must be static and install-time visible
 - config schema must be JSON Schema compatible
+- `entrypoints.worker` and `entrypoints.ui` are relative package paths; absolute paths, URL-like paths, and `..` traversal segments are invalid
 - `entrypoints.ui` points to the directory containing the built UI bundle
 - `ui.slots` declares which extension slots the plugin fills, so the host knows what to mount without loading the bundle eagerly; each slot references an `exportName` from the UI bundle
 - declare managed declarations with the matching `*.managed` capability:

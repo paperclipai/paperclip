@@ -37,6 +37,53 @@ describe("plugin manifest validators", () => {
 
     expect(parsed.capabilities).toEqual(["ui.dashboardWidget.register"]);
   });
+
+  it.each([
+    "../dist/worker.js",
+    "dist/../../worker.js",
+    "/tmp/worker.js",
+    "C:\\tmp\\worker.js",
+    "https://example.com/worker.js",
+  ])("rejects unsafe worker entrypoint %s", (worker) => {
+    const parsed = pluginManifestV1Schema.safeParse({
+      id: "paperclip.unsafe-worker",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Unsafe Worker",
+      description: "Plugin with an unsafe worker entrypoint.",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["jobs.schedule"],
+      entrypoints: { worker },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it.each([
+    "../dist/ui",
+    "dist/../../ui",
+    "/tmp/ui",
+    "C:\\tmp\\ui",
+    "https://example.com/ui",
+  ])("rejects unsafe UI entrypoint %s", (ui) => {
+    const parsed = pluginManifestV1Schema.safeParse({
+      id: "paperclip.unsafe-ui",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Unsafe UI",
+      description: "Plugin with an unsafe UI entrypoint.",
+      author: "Paperclip",
+      categories: ["ui"],
+      capabilities: ["ui.dashboardWidget.register"],
+      entrypoints: {
+        worker: "./dist/worker.js",
+        ui,
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
 });
 
 describe("plugin managed routine validators", () => {

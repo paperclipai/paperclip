@@ -33,6 +33,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { pluginRegistryService } from "../services/plugin-registry.js";
+import { resolveExistingPackageEntrypoint } from "../services/plugin-entrypoint-paths.js";
 import { logger } from "../middleware/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -114,16 +115,8 @@ export function resolvePluginUiDir(
 ): string | null {
   // For local-path installs, prefer the persisted package path.
   if (packagePath) {
-    const resolvedPackagePath = path.resolve(packagePath);
-    if (fs.existsSync(resolvedPackagePath)) {
-      const uiDirFromPackagePath = path.resolve(resolvedPackagePath, entrypointsUi);
-      if (
-        uiDirFromPackagePath.startsWith(resolvedPackagePath)
-        && fs.existsSync(uiDirFromPackagePath)
-      ) {
-        return uiDirFromPackagePath;
-      }
-    }
+    const uiDirFromPackagePath = resolveExistingPackageEntrypoint(packagePath, entrypointsUi, "directory");
+    if (uiDirFromPackagePath) return uiDirFromPackagePath;
   }
 
   // Resolve the package root within the local plugin directory's node_modules.
@@ -151,15 +144,7 @@ export function resolvePluginUiDir(
     }
   }
 
-  // Resolve the UI directory relative to the package root
-  const uiDir = path.resolve(packageRoot, entrypointsUi);
-
-  // Verify the resolved UI directory exists and is actually inside the package
-  if (!fs.existsSync(uiDir)) {
-    return null;
-  }
-
-  return uiDir;
+  return resolveExistingPackageEntrypoint(packageRoot, entrypointsUi, "directory");
 }
 
 /**

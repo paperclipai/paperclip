@@ -543,6 +543,7 @@ export {
   pluginManagedSkillFileDeclarationSchema,
   pluginManagedSkillDeclarationSchema,
   pluginApiRouteDeclarationSchema,
+  isSafePackageRelativeEntrypoint,
   pluginManifestV1Schema,
   installPluginSchema,
   upsertPluginConfigSchema,
