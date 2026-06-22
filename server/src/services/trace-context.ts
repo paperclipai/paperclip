@@ -51,12 +51,19 @@ export function initServerTracing(): void {
   const testTracer = trace.getTracer("__probe__");
   const testSpan = testTracer.startSpan("__probe__");
   const hasProvider = testSpan.spanContext().traceId !== "00000000000000000000000000000000";
-  testSpan.end();
 
   if (hasProvider) {
-    // External provider already registered — use it.
+    // External provider already registered — use it. Deliberately do NOT call
+    // testSpan.end(): exporters flush on span end, so ending a recording probe
+    // span would push a meaningless "__probe__" span to the live backend. An
+    // unended span is simply never exported (batch/simple processors export
+    // on-end only), so leaving it dangling is the no-noise path.
     return;
   }
+
+  // No provider: the probe is a non-recording no-op span with a zero trace id,
+  // so ending it is harmless and exports nothing.
+  testSpan.end();
 
   const resource = resourceFromAttributes({
     "service.name": "paperclip-server",
