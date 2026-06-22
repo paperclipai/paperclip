@@ -417,6 +417,7 @@ export type {
   SecretStatus,
   SecretVersionStatus,
 } from "./secrets.js";
+export type { AgentMemory, AgentMemoryConsolidationRun } from "./agent-memory.js";
 export type {
   Routine,
   RoutineEnvConfig,

@@ -4,6 +4,7 @@ export const API = {
   health: `${API_PREFIX}/health`,
   companies: `${API_PREFIX}/companies`,
   agents: `${API_PREFIX}/agents`,
+  agentMemories: `${API_PREFIX}/agents/:agentId/memories`,
   projects: `${API_PREFIX}/projects`,
   issues: `${API_PREFIX}/issues`,
   issueWatchdog: `${API_PREFIX}/issues/:issueId/watchdog`,

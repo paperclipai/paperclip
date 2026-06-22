@@ -299,6 +299,10 @@ export {
   type PluginApiRouteCheckoutPolicy,
   type PluginEventType,
   type PluginBridgeErrorCode,
+  AGENT_MEMORY_TYPES,
+  AGENT_MEMORY_STATUSES,
+  type AgentMemoryType,
+  type AgentMemoryStatus,
 } from "./constants.js";
 
 export {
@@ -800,6 +804,8 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  AgentMemory,
+  AgentMemoryConsolidationRun,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
 export {
@@ -915,6 +921,12 @@ export {
   type TrustPresetInput,
   type LowTrustBoundaryInput,
   type TrustAuthorizationPolicyInput,
+  createAgentMemorySchema,
+  recallAgentMemorySchema,
+  correctAgentMemorySchema,
+  type CreateAgentMemory,
+  type RecallAgentMemory,
+  type CorrectAgentMemory,
 } from "./validators/index.js";
 
 export {

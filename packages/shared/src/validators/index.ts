@@ -452,6 +452,15 @@ export {
 } from "./secret.js";
 
 export {
+  createAgentMemorySchema,
+  recallAgentMemorySchema,
+  correctAgentMemorySchema,
+  type CreateAgentMemory,
+  type RecallAgentMemory,
+  type CorrectAgentMemory,
+} from "./agent-memory.js";
+
+export {
   createRoutineSchema,
   updateRoutineSchema,
   createRoutineTriggerSchema,

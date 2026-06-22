@@ -4,6 +4,7 @@ export { companySearchService } from "./company-search.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
+export { agentMemoryService } from "./agent-memories.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";

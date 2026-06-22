@@ -1,6 +1,13 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
+// Per-agent long-term memory (issue #6). Memory types follow the CoALA taxonomy.
+export const AGENT_MEMORY_TYPES = ["episodic", "semantic", "procedural", "lesson"] as const;
+export type AgentMemoryType = (typeof AGENT_MEMORY_TYPES)[number];
+
+export const AGENT_MEMORY_STATUSES = ["staged", "active", "forgotten"] as const;
+export type AgentMemoryStatus = (typeof AGENT_MEMORY_STATUSES)[number];
+
 export const DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const MAX_COMPANY_ATTACHMENT_MAX_BYTES = 1024 * 1024 * 1024;
 
