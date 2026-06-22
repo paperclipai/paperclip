@@ -27,7 +27,8 @@ import { buildCodexExecArgs } from "./codex-args.js";
 import {
   isManagedCodexHomePath,
   prepareManagedCodexHome,
-  seedCodexProbeHomeFromHostLogin,
+  resolveSharedCodexHomeDir,
+  seedManagedCodexHome,
 } from "./codex-home.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -247,17 +248,14 @@ export async function testEnvironment(
     const configuredHomeIsManaged =
       configuredCodexHome != null && isManagedCodexHomePath(process.env, ctx.companyId, configuredCodexHome);
     if (configuredHomeIsManaged) {
-      const seedResult = await seedCodexProbeHomeFromHostLogin(
-        configuredCodexHome,
-        process.env,
-        async () => {},
-      );
-      if (seedResult.copiedAuth) {
+      await seedManagedCodexHome(configuredCodexHome, process.env, async () => {});
+      const sourceHome = resolveSharedCodexHomeDir(process.env);
+      if (await fs.access(path.join(configuredCodexHome, "auth.json")).then(() => true).catch(() => false)) {
         checks.push({
           code: "codex_probe_auth_seeded_from_host_login",
           level: "info",
           message: "Seeded Codex probe authentication from the host login.",
-          detail: `Copied auth.json from ${path.join(seedResult.sourceHome, "auth.json")} into ${path.join(configuredCodexHome, "auth.json")}.`,
+          detail: `Symlinked auth.json from ${path.join(sourceHome, "auth.json")} into ${path.join(configuredCodexHome, "auth.json")}.`,
         });
       }
     }

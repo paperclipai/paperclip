@@ -102,7 +102,7 @@ describe("codex local environment probe auth", () => {
     return { root, paperclipHome, sharedCodexHome, workspaceDir, managedAgentHome };
   }
 
-  it("copies host Codex login into an empty managed CODEX_HOME before the local probe", async () => {
+  it("symlinks host Codex login into an empty managed CODEX_HOME before the local probe", async () => {
     const fx = await makeFixture();
 
     const result = await testEnvironment({
@@ -123,7 +123,7 @@ describe("codex local environment probe auth", () => {
     expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(true);
 
     const agentAuth = path.join(fx.managedAgentHome, "auth.json");
-    expect((await fs.lstat(agentAuth)).isSymbolicLink()).toBe(false);
+    expect((await fs.lstat(agentAuth)).isSymbolicLink()).toBe(true);
     expect(JSON.parse(await fs.readFile(agentAuth, "utf8"))).toEqual({
       accessToken: "host-access-token",
       accountId: "acct-1",
@@ -136,6 +136,52 @@ describe("codex local environment probe auth", () => {
       | [string, unknown, string, string[], { env: Record<string, string> }]
       | undefined;
     expect(probeCall?.[4].env.CODEX_HOME).toBe(fx.managedAgentHome);
+  });
+
+  it("keeps probe token refreshes on the host login through the auth symlink", async () => {
+    const fx = await makeFixture();
+    const hostAuth = path.join(fx.sharedCodexHome, "auth.json");
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async (_runId, _target, _command, _args, options) => {
+      await fs.writeFile(
+        path.join(options.env.CODEX_HOME, "auth.json"),
+        JSON.stringify({ accessToken: "rotated-by-probe", accountId: "acct-1" }),
+        "utf8",
+      );
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}",
+          "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"hello\"}}",
+          "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1}}",
+        ].join("\n"),
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      };
+    });
+
+    await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        command: "codex",
+        cwd: fx.workspaceDir,
+        env: {
+          CODEX_HOME: fx.managedAgentHome,
+          OPENAI_API_KEY: "",
+        },
+      },
+    });
+
+    const agentAuth = path.join(fx.managedAgentHome, "auth.json");
+    expect((await fs.lstat(agentAuth)).isSymbolicLink()).toBe(true);
+    expect(await fs.realpath(agentAuth)).toBe(await fs.realpath(hostAuth));
+    expect(JSON.parse(await fs.readFile(hostAuth, "utf8"))).toEqual({
+      accessToken: "rotated-by-probe",
+      accountId: "acct-1",
+    });
   });
 
   it("keeps the API-key probe path isolated from the managed CODEX_HOME", async () => {
