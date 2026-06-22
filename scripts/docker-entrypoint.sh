@@ -1,6 +1,24 @@
 #!/bin/sh
 set -e
 
+# Hugging Face Docker Spaces stability guard.
+# HF Space Variables can override Dockerfile ENV. Stale values like:
+# PORT=7860, PAPERCLIP_BIND=lan, PAPERCLIP_DEPLOYMENT_EXPOSURE=private
+# can make HF show Running while the public UI stays stuck on Application loading.
+if [ "${PAPERCLIP_DISABLE_HF_RUNTIME_GUARD:-false}" != "true" ]; then
+  export PORT=8080
+  export HOST=0.0.0.0
+  export SERVER_HOST=0.0.0.0
+  export SERVE_UI=true
+  export PAPERCLIP_BIND=public
+  export PAPERCLIP_DEPLOYMENT_MODE=authenticated
+  export PAPERCLIP_DEPLOYMENT_EXPOSURE=public
+  export PAPERCLIP_MIGRATION_AUTO_APPLY=true
+  export HEARTBEAT_SCHEDULER_ENABLED=false
+  export PAPERCLIP_DB_BACKUP_ENABLED=false
+  export PAPERCLIP_FAST_START=true
+fi
+
 # Render runs this image as the non-root node user because the Dockerfile has USER node.
 # In that case, switching again with gosu causes: failed switching to "node": operation not permitted.
 # If the container is ever started as root, keep the old safe behavior and drop to node.
