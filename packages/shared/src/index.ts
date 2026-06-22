@@ -814,6 +814,16 @@ export {
 } from "./issue-references.js";
 
 export {
+  ISSUE_RECURRENCE_FREQUENCIES,
+  ISSUE_RECURRENCE_MAX_INTERVAL,
+  advanceDate,
+  computeNextDueDate,
+  isIssueRecurrenceFrequency,
+  type IssueRecurrence,
+  type IssueRecurrenceFrequency,
+} from "./issue-recurrence.js";
+
+export {
   anchorSnapshotToSelector,
   createDocumentAnchorSelector,
   normalizeAnchorText,

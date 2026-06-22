@@ -28,6 +28,7 @@ import {
   MODEL_PROFILE_KEYS,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
 } from "../constants.js";
+import { ISSUE_RECURRENCE_FREQUENCIES, ISSUE_RECURRENCE_MAX_INTERVAL } from "../issue-recurrence.js";
 import { multilineTextSchema } from "./text.js";
 import { lowTrustReviewPresetPolicySchema, trustAuthorizationPolicySchema } from "./trust-policy.js";
 
@@ -373,6 +374,13 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(schema: z.ZodObje
   }, schema);
 }
 
+export const issueRecurrenceSchema = z.object({
+  frequency: z.enum(ISSUE_RECURRENCE_FREQUENCIES),
+  interval: z.number().int().positive().max(ISSUE_RECURRENCE_MAX_INTERVAL).default(1),
+}).strict();
+
+export type IssueRecurrenceInput = z.infer<typeof issueRecurrenceSchema>;
+
 const createIssueBaseSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
@@ -403,6 +411,8 @@ const createIssueBaseSchema = z.object({
     agentId: z.string().uuid(),
     instructions: multilineTextSchema.optional().nullable(),
   }).strict().optional().nullable(),
+  dueAt: z.string().datetime().optional().nullable(),
+  recurrence: issueRecurrenceSchema.optional().nullable(),
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({

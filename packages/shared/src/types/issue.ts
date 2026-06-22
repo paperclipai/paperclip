@@ -26,6 +26,7 @@ import type {
   IssueThreadInteractionStatus,
   IssueStatus,
 } from "../constants.js";
+import type { IssueRecurrence } from "../issue-recurrence.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
@@ -573,6 +574,9 @@ export interface Issue {
   completedAt: Date | null;
   cancelledAt: Date | null;
   hiddenAt: Date | null;
+  dueAt?: Date | null;
+  recurrence?: IssueRecurrence | null;
+  recurringTaskId?: string | null;
   sourceTrust?: SourceTrustMetadata | null;
   labelIds?: string[];
   labels?: IssueLabel[];

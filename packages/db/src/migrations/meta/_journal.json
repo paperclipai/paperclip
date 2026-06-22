@@ -743,6 +743,13 @@
       "when": 1781902000000,
       "tag": "0105_instance_scoped_environments",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1782002000000,
+      "tag": "0106_add_due_dates_recurrence",
+      "breakpoints": true
     }
   ]
 }

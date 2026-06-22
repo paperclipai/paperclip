@@ -274,6 +274,8 @@ export interface IssueFilters {
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
   hasPlanDocument?: boolean;
+  /** Filter by due-date window. "overdue" = past-due & still open; "upcoming" = due in the future & still open. */
+  due?: "overdue" | "upcoming";
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
   q?: string;
   limit?: number;
@@ -2007,6 +2009,9 @@ const issueListSelect = {
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
+  dueAt: issues.dueAt,
+  recurrence: issues.recurrence,
+  recurringTaskId: issues.recurringTaskId,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
@@ -4119,6 +4124,13 @@ export function issueService(db: Db) {
       }
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
+      }
+      if (filters?.due === "overdue") {
+        conditions.push(sql<boolean>`${issues.dueAt} IS NOT NULL AND ${issues.dueAt} < now()`);
+        conditions.push(notInArray(issues.status, ["done", "cancelled"]));
+      } else if (filters?.due === "upcoming") {
+        conditions.push(sql<boolean>`${issues.dueAt} IS NOT NULL AND ${issues.dueAt} >= now()`);
+        conditions.push(notInArray(issues.status, ["done", "cancelled"]));
       }
       conditions.push(isNull(issues.hiddenAt));
 
