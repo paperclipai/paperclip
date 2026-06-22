@@ -1,5 +1,5 @@
 import type { Request, RequestHandler } from "express";
-import type { IncomingHttpHeaders } from "node:http";
+import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
@@ -25,6 +25,16 @@ export type BetterAuthSessionResult = {
 };
 
 type BetterAuthInstance = ReturnType<typeof betterAuth>;
+type BetterAuthAutoInstances = {
+  secure: BetterAuthInstance;
+  insecure: BetterAuthInstance;
+};
+type BetterAuthRuntime = BetterAuthInstance | BetterAuthAutoInstances;
+type BetterAuthTransportContext = {
+  encrypted?: boolean;
+  protocol?: string | null;
+  remoteAddress?: string | null;
+};
 
 const AUTH_COOKIE_PREFIX_FALLBACK = "default";
 const AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE = /[^a-zA-Z0-9_-]+/g;
@@ -37,10 +47,14 @@ export function deriveAuthCookiePrefix(instanceId = resolvePaperclipInstanceId()
   return `paperclip-${scopedInstanceId}`;
 }
 
-export function buildBetterAuthAdvancedOptions(input: { disableSecureCookies: boolean }) {
+export function buildBetterAuthAdvancedOptions(input: {
+  disableSecureCookies?: boolean;
+  useSecureCookies?: boolean;
+}) {
+  const useSecureCookies = input.useSecureCookies ?? (input.disableSecureCookies ? false : undefined);
   return {
     cookiePrefix: deriveAuthCookiePrefix(),
-    ...(input.disableSecureCookies ? { useSecureCookies: false } : {}),
+    ...(useSecureCookies === undefined ? {} : { useSecureCookies }),
   };
 }
 
@@ -83,6 +97,52 @@ function headersFromExpressRequest(req: Request): Headers {
   return headersFromNodeHeaders(req.headers);
 }
 
+function headersFromIncomingMessage(req: IncomingMessage): Headers {
+  return headersFromNodeHeaders(req.headers);
+}
+
+function isLoopbackAddress(remoteAddress: string | null | undefined): boolean {
+  if (!remoteAddress) return false;
+  const normalized = remoteAddress.trim().toLowerCase();
+  return normalized === "::1" || normalized === "127.0.0.1" || normalized === "::ffff:127.0.0.1";
+}
+
+function forwardedProtoFromHeaders(headers: Headers): "http" | "https" | null {
+  const value = headers.get("x-forwarded-proto");
+  if (!value) return null;
+  const proto = value.split(",")[0]?.trim().toLowerCase();
+  return proto === "http" || proto === "https" ? proto : null;
+}
+
+function isTlsSocket(value: unknown): value is { encrypted?: boolean } {
+  return typeof value === "object" && value !== null && "encrypted" in value;
+}
+
+export function shouldUseSecureCookiesForAutoMode(
+  headers: Headers,
+  transport: BetterAuthTransportContext = {},
+): boolean {
+  const forwardedProto = forwardedProtoFromHeaders(headers);
+  if (forwardedProto && isLoopbackAddress(transport.remoteAddress)) {
+    return forwardedProto === "https";
+  }
+  if (transport.protocol) {
+    return transport.protocol === "https";
+  }
+  return transport.encrypted === true;
+}
+
+function selectBetterAuthInstance(
+  auth: BetterAuthRuntime,
+  headers: Headers,
+  transport: BetterAuthTransportContext = {},
+): BetterAuthInstance {
+  if (!("secure" in auth) || !("insecure" in auth)) {
+    return auth;
+  }
+  return shouldUseSecureCookiesForAutoMode(headers, transport) ? auth.secure : auth.insecure;
+}
+
 export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: number }): string[] {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const trustedOrigins = new Set<string>();
@@ -112,9 +172,13 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
-export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
+function createBetterAuthInstanceWithAdvancedOptions(
+  db: Db,
+  config: Config,
+  trustedOrigins: string[],
+  advanced: ReturnType<typeof buildBetterAuthAdvancedOptions>,
+): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
   if (!secret) {
     throw new Error(
@@ -122,14 +186,6 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
     );
   }
-  const disableSecureCookies = shouldDisableSecureAuthCookies({
-    deploymentMode: config.deploymentMode,
-    deploymentExposure: config.deploymentExposure,
-    authBaseUrlMode: config.authBaseUrlMode,
-    authPublicBaseUrl: config.authPublicBaseUrl,
-    publicUrl,
-  });
-
   const authConfig = {
     baseURL: baseUrl,
     secret,
@@ -148,7 +204,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
-    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
+    advanced,
   };
 
   if (!baseUrl) {
@@ -158,7 +214,62 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
   return betterAuth(authConfig);
 }
 
-export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandler {
+export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
+  const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
+  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
+  const disableSecureCookies = shouldDisableSecureAuthCookies({
+    deploymentMode: config.deploymentMode,
+    deploymentExposure: config.deploymentExposure,
+    authBaseUrlMode: config.authBaseUrlMode,
+    authPublicBaseUrl: config.authPublicBaseUrl,
+    publicUrl,
+  });
+
+  return createBetterAuthInstanceWithAdvancedOptions(
+    db,
+    config,
+    trustedOrigins,
+    buildBetterAuthAdvancedOptions({ disableSecureCookies }),
+  );
+}
+
+export function createAutoModeBetterAuthInstances(
+  db: Db,
+  config: Config,
+  trustedOrigins: string[],
+): BetterAuthAutoInstances {
+  return {
+    secure: createBetterAuthInstanceWithAdvancedOptions(
+      db,
+      config,
+      trustedOrigins,
+      buildBetterAuthAdvancedOptions({ useSecureCookies: true }),
+    ),
+    insecure: createBetterAuthInstanceWithAdvancedOptions(
+      db,
+      config,
+      trustedOrigins,
+      buildBetterAuthAdvancedOptions({ useSecureCookies: false }),
+    ),
+  };
+}
+
+export function createBetterAuthHandler(auth: BetterAuthRuntime): RequestHandler {
+  if ("secure" in auth && "insecure" in auth) {
+    const secureHandler = toNodeHandler(auth.secure);
+    const insecureHandler = toNodeHandler(auth.insecure);
+    return (req, res, next) => {
+      const headers = headersFromExpressRequest(req);
+      const selected = selectBetterAuthInstance(auth, headers, {
+        encrypted: isTlsSocket(req.socket) ? req.socket.encrypted === true : false,
+        protocol: req.protocol,
+        remoteAddress: req.socket.remoteAddress ?? null,
+      });
+      const handler = selected === auth.secure ? secureHandler : insecureHandler;
+      void Promise.resolve(handler(req, res)).catch(next);
+    };
+  }
+
   const handler = toNodeHandler(auth);
   return (req, res, next) => {
     void Promise.resolve(handler(req, res)).catch(next);
@@ -166,10 +277,12 @@ export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandle
 }
 
 export async function resolveBetterAuthSessionFromHeaders(
-  auth: BetterAuthInstance,
+  auth: BetterAuthRuntime,
   headers: Headers,
+  transport: BetterAuthTransportContext = {},
 ): Promise<BetterAuthSessionResult | null> {
-  const api = (auth as unknown as { api?: { getSession?: (input: unknown) => Promise<unknown> } }).api;
+  const authInstance = selectBetterAuthInstance(auth, headers, transport);
+  const api = (authInstance as unknown as { api?: { getSession?: (input: unknown) => Promise<unknown> } }).api;
   if (!api?.getSession) return null;
 
   const sessionValue = await api.getSession({
@@ -196,9 +309,23 @@ export async function resolveBetterAuthSessionFromHeaders(
   return { session, user };
 }
 
+export async function resolveBetterAuthSessionFromRequest(
+  auth: BetterAuthRuntime,
+  req: IncomingMessage,
+): Promise<BetterAuthSessionResult | null> {
+  return resolveBetterAuthSessionFromHeaders(auth, headersFromIncomingMessage(req), {
+    encrypted: isTlsSocket(req.socket) ? req.socket.encrypted === true : false,
+    remoteAddress: req.socket.remoteAddress ?? null,
+  });
+}
+
 export async function resolveBetterAuthSession(
-  auth: BetterAuthInstance,
+  auth: BetterAuthRuntime,
   req: Request,
 ): Promise<BetterAuthSessionResult | null> {
-  return resolveBetterAuthSessionFromHeaders(auth, headersFromExpressRequest(req));
+  return resolveBetterAuthSessionFromHeaders(auth, headersFromExpressRequest(req), {
+    encrypted: isTlsSocket(req.socket) ? req.socket.encrypted === true : false,
+    protocol: req.protocol,
+    remoteAddress: req.socket.remoteAddress ?? null,
+  });
 }
