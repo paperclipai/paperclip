@@ -950,48 +950,10 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       expect(run).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1, 30_000);
       const payload = gateway.getAgentPayloads()[0] ?? {};
-      expect(payload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_commented",
-          issue: {
-            id: fixture.issues.reviewRoot.id,
-            title: fixture.issues.reviewRoot.title,
-          },
-          latestCommentId: comment.body.id,
-          commentIds: [comment.body.id],
-          comments: [
-            {
-              id: comment.body.id,
-              issueId: fixture.issues.assignedReview.id,
-              body: LOW_TRUST_QUARANTINED_BODY,
-              presentation: null,
-              metadata: null,
-              sourceTrust: {
-                preset: LOW_TRUST_REVIEW_PRESET,
-                disposition: "quarantined",
-                sourceIssueId: fixture.issues.assignedReview.id,
-                sourceRunId: fixture.runs.lowTrust.id,
-                sourceAgentId: fixture.agents.lowTrust.id,
-              },
-            },
-          ],
-          continuationSummary: {
-            body: LOW_TRUST_QUARANTINED_BODY,
-            sourceTrust: {
-              preset: LOW_TRUST_REVIEW_PRESET,
-              disposition: "quarantined",
-            },
-          },
-          livenessContinuation: {
-            attempt: 1,
-            maxAttempts: 2,
-            sourceRunId: fixture.runs.lowTrust.id,
-            state: "quarantined_low_trust_handoff",
-            reason: "Low-trust review output requires sanitized follow-up.",
-            instruction: "Continue from the sanitized quarantine stub only.",
-          },
-        },
-      });
+      // v4 no longer sends structured context via agentParams.paperclip
+      expect(payload.paperclip).toBeUndefined();
+      // quarantined body appears in the text wake payload instead
+      expect(String(payload.message ?? "")).toContain(LOW_TRUST_QUARANTINED_BODY);
       expect(String(payload.message ?? "")).toContain("## Paperclip Wake Payload");
       expectNoCanary(payload, fixture.canaries.raw);
       gateway.releaseFirstWait();

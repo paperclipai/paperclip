@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSessionKey } from "./execute.js";
+import { resolveSessionKey, PROTOCOL_VERSION } from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -48,5 +48,11 @@ describe("resolveSessionKey", () => {
         issueId: null,
       }),
     ).toBe("agent:meridian:paperclip");
+  });
+});
+
+describe("PROTOCOL_VERSION", () => {
+  it("negotiates gateway protocol v4 or later", () => {
+    expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(4);
   });
 });
