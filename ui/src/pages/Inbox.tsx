@@ -9,6 +9,7 @@ import { ApiError } from "../api/client";
 import { dashboardApi } from "../api/dashboard";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
+import type { AwaitingHumanInteractionItem } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -554,7 +555,7 @@ function ApprovalInboxRow({
 }
 
 function AwaitingHumanInboxRow({
-  interaction,
+  interactions,
   issue,
   onDismiss,
   onNavigate,
@@ -566,7 +567,7 @@ function AwaitingHumanInboxRow({
   selected = false,
   className,
 }: {
-  interaction: IssueThreadInteraction;
+  interactions: IssueThreadInteraction[];
   issue: { id: string; identifier: string | null; title: string; status: string };
   onDismiss: () => void;
   onNavigate: () => void;
@@ -578,7 +579,14 @@ function AwaitingHumanInboxRow({
   selected?: boolean;
   className?: string;
 }) {
-  const kindLabel = interactionKindLabel(interaction.kind);
+  // Most-recent ask drives the summary/time; multiple asks on one issue collapse to one row.
+  const latest = interactions.reduce((a, b) =>
+    new Date(b.updatedAt).getTime() > new Date(a.updatedAt).getTime() ? b : a,
+  );
+  const kindLabel =
+    interactions.length > 1
+      ? `${interactions.length} requests`
+      : interactionKindLabel(latest.kind);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
@@ -644,8 +652,8 @@ function AwaitingHumanInboxRow({
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <span className="font-medium text-foreground">{kindLabel}</span>
-              {interaction.summary && <span className="truncate max-w-[300px]">{interaction.summary}</span>}
-              <span>{timeAgo(interaction.createdAt)}</span>
+              {latest.summary && <span className="truncate max-w-[300px]">{latest.summary}</span>}
+              <span>{timeAgo(latest.createdAt)}</span>
             </span>
           </span>
         </button>
@@ -1224,7 +1232,18 @@ export function Inbox() {
       ),
     [awaitingHumanInteractionsData, dismissedAtByKey],
   );
-  const awaitingHumanInteractionsForTab = tab === "waiting" ? awaitingHumanVisible : [];
+  // Group by issue so an issue with several pending asks reads as a single row (and a single
+  // badge count), instead of repeating the same issue once per interaction.
+  const awaitingHumanGroups = useMemo(() => {
+    const byIssue = new Map<string, { issue: AwaitingHumanInteractionItem["issue"]; interactions: IssueThreadInteraction[] }>();
+    for (const { issue, interaction } of awaitingHumanVisible) {
+      const existing = byIssue.get(issue.id);
+      if (existing) existing.interactions.push(interaction);
+      else byIssue.set(issue.id, { issue, interactions: [interaction] });
+    }
+    return [...byIssue.values()];
+  }, [awaitingHumanVisible]);
+  const awaitingHumanGroupsForTab = tab === "waiting" ? awaitingHumanGroups : [];
 
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
@@ -2076,7 +2095,7 @@ export function Inbox() {
     showOnUnread: false,
     showOnAll: hasAlerts,
   });
-  const hasAwaitingHuman = awaitingHumanInteractionsForTab.length > 0;
+  const hasAwaitingHuman = awaitingHumanGroupsForTab.length > 0;
   // "Waiting on you" is its own tab, so the section only renders there.
   const showAwaitingHumanSection = tab === "waiting" && hasAwaitingHuman;
 
@@ -2148,9 +2167,9 @@ export function Inbox() {
                 label: (
                   <span className="inline-flex items-center gap-1.5">
                     Waiting on you
-                    {awaitingHumanVisible.length > 0 && (
+                    {awaitingHumanGroups.length > 0 && (
                       <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-500/20 px-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-                        {awaitingHumanVisible.length}
+                        {awaitingHumanGroups.length}
                       </span>
                     )}
                   </span>
@@ -2914,15 +2933,19 @@ export function Inbox() {
           {showSeparatorBefore("waiting_on_you") && <Separator />}
           <div>
             <div className="divide-y divide-border border border-border">
-              {awaitingHumanInteractionsForTab.map(({ interaction, issue }) => {
-                const interactionKey = `interaction:${interaction.id}`;
-                const isArchiving = archivingNonIssueIds.has(interactionKey);
+              {awaitingHumanGroupsForTab.map(({ interactions, issue }) => {
+                // Dismissals are tracked per interaction; the primary key drives the row's
+                // unread/animation state, and dismissing the row clears every ask on the issue.
+                const interactionKeys = interactions.map((i) => `interaction:${i.id}`);
+                const primaryKey = interactionKeys[0];
+                const dismissGroup = () => interactionKeys.forEach((k) => handleArchiveNonIssue(k));
+                const isArchiving = interactionKeys.some((k) => archivingNonIssueIds.has(k));
                 return (
                   <AwaitingHumanInboxRow
-                    key={interactionKey}
-                    interaction={interaction}
+                    key={issue.id}
+                    interactions={interactions}
                     issue={issue}
-                    onDismiss={() => handleArchiveNonIssue(interactionKey)}
+                    onDismiss={dismissGroup}
                     onNavigate={() => {
                       const pathId = issue.identifier ?? issue.id;
                       const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue as Partial<Issue> as Issue));
@@ -2931,9 +2954,9 @@ export function Inbox() {
                       navigate(createIssueDetailPath(pathId), { state: detailState });
                     }}
                     isNavigating={false}
-                    unreadState={nonIssueUnreadState(interactionKey)}
-                    onMarkRead={() => handleMarkNonIssueRead(interactionKey)}
-                    onArchive={() => handleArchiveNonIssue(interactionKey)}
+                    unreadState={nonIssueUnreadState(primaryKey)}
+                    onMarkRead={() => interactionKeys.forEach((k) => handleMarkNonIssueRead(k))}
+                    onArchive={dismissGroup}
                     archiveDisabled={isArchiving}
                     className={
                       isArchiving

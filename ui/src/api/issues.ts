@@ -315,8 +315,17 @@ export const issuesApi = {
     api.patch<IssueWorkProduct>(`/work-products/${id}`, data),
   deleteWorkProduct: (id: string) => api.delete<IssueWorkProduct>(`/work-products/${id}`),
   listAwaitingHumanInteractions: (companyId: string) =>
-    api.get<Array<{
-      interaction: IssueThreadInteraction;
-      issue: { id: string; identifier: string | null; title: string; status: string; assigneeAgentId: string | null; assigneeUserId: string | null };
-    }>>(`/companies/${companyId}/awaiting-human-interactions`),
+    api.get<AwaitingHumanInteractionItem[]>(`/companies/${companyId}/awaiting-human-interactions`),
 };
+
+export interface AwaitingHumanInteractionItem {
+  interaction: IssueThreadInteraction;
+  issue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+    assigneeAgentId: string | null;
+    assigneeUserId: string | null;
+  };
+}
