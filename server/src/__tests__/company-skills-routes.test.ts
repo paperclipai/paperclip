@@ -31,7 +31,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
 }));
 
 const mockCatalogService = vi.hoisted(() => ({
-  listCatalogSkills: vi.fn(),
+  listCatalogSkillsOrEmpty: vi.fn(),
   getCatalogSkillOrThrow: vi.fn(),
   readCatalogSkillFile: vi.fn(),
 }));
@@ -115,6 +115,7 @@ describe("company skill mutation permissions", () => {
       imported: [],
       warnings: [],
     });
+    mockCatalogService.listCatalogSkillsOrEmpty.mockReturnValue([]);
     mockCompanySkillService.list.mockResolvedValue([]);
     mockCompanySkillService.categoryCounts.mockResolvedValue([]);
     mockCompanySkillService.detail.mockResolvedValue(null);
@@ -260,7 +261,7 @@ describe("company skill mutation permissions", () => {
       slug: "find-skills",
       name: "Find Skills",
     });
-    mockCatalogService.listCatalogSkills.mockReturnValue([]);
+    mockCatalogService.listCatalogSkillsOrEmpty.mockReturnValue([]);
     mockCatalogService.getCatalogSkillOrThrow.mockReturnValue({
       id: "paperclipai:bundled:software-development:review",
       key: "paperclipai/bundled/software-development/review",
@@ -312,7 +313,7 @@ describe("company skill mutation permissions", () => {
   });
 
   it("serves catalog listing without mutating company skills", async () => {
-    mockCatalogService.listCatalogSkills.mockReturnValue([
+    mockCatalogService.listCatalogSkillsOrEmpty.mockReturnValue([
       {
         id: "paperclipai:bundled:software-development:review",
         key: "paperclipai/bundled/software-development/review",
@@ -344,7 +345,7 @@ describe("company skill mutation permissions", () => {
       .get("/api/skills/catalog?kind=bundled&q=review");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCatalogService.listCatalogSkills).toHaveBeenCalledWith({ kind: "bundled", q: "review" });
+    expect(mockCatalogService.listCatalogSkillsOrEmpty).toHaveBeenCalledWith({ kind: "bundled", q: "review" });
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
     expect(mockCompanySkillService.installFromCatalog).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -360,7 +361,7 @@ describe("company skill mutation permissions", () => {
     expect(list.status, JSON.stringify(list.body)).toBe(401);
     expect(detail.status, JSON.stringify(detail.body)).toBe(401);
     expect(file.status, JSON.stringify(file.body)).toBe(401);
-    expect(mockCatalogService.listCatalogSkills).not.toHaveBeenCalled();
+    expect(mockCatalogService.listCatalogSkillsOrEmpty).not.toHaveBeenCalled();
     expect(mockCatalogService.getCatalogSkillOrThrow).not.toHaveBeenCalled();
     expect(mockCatalogService.readCatalogSkillFile).not.toHaveBeenCalled();
   });

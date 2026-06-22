@@ -262,7 +262,6 @@ export function IssueWorkspaceCard({
 
   const [draftSelection, setDraftSelection] = useState(currentSelection);
   const [draftExecutionWorkspaceId, setDraftExecutionWorkspaceId] = useState(issue.executionWorkspaceId ?? "");
-  const [draftEnvironmentId, setDraftEnvironmentId] = useState(issue.executionWorkspaceSettings?.environmentId ?? "");
   const projectEnvironmentId = environmentsEnabled
     ? project?.executionWorkspacePolicy?.environmentId ?? null
     : null;
@@ -271,7 +270,6 @@ export function IssueWorkspaceCard({
     ? (
         (currentSelection === "reuse_existing" && currentReusableEnvironmentId)
         ?? workspace?.config?.environmentId
-        ?? issue.executionWorkspaceSettings?.environmentId
         ?? projectEnvironmentId
       )
     : null;
@@ -283,8 +281,7 @@ export function IssueWorkspaceCard({
     if (editing) return;
     setDraftSelection(currentSelection);
     setDraftExecutionWorkspaceId(issue.executionWorkspaceId ?? "");
-    setDraftEnvironmentId(issue.executionWorkspaceSettings?.environmentId ?? "");
-  }, [currentSelection, editing, issue.executionWorkspaceId, issue.executionWorkspaceSettings?.environmentId]);
+  }, [currentSelection, editing, issue.executionWorkspaceId]);
 
   const activeNonDefaultWorkspace = Boolean(workspace && workspace.mode !== "shared_workspace");
 
@@ -304,17 +301,6 @@ export function IssueWorkspaceCard({
   });
 
   const canSaveWorkspaceConfig = draftSelection !== "reuse_existing" || draftExecutionWorkspaceId.length > 0;
-  const reuseExistingSelection = draftSelection === "reuse_existing";
-  const selectedReusableEnvironmentId = configuredReusableWorkspace?.config?.environmentId ?? "";
-  const runSelectableEnvironments = useMemo(
-    () => environmentsEnabled ? (environments ?? []).filter((environment) => {
-      if (environment.driver === "local" || environment.driver === "ssh") return true;
-      if (environment.driver !== "sandbox") return false;
-      const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
-      return provider !== null && provider !== "fake";
-    }) : [],
-    [environments, environmentsEnabled],
-  );
   const draftWorkspaceBranchName =
     draftSelection === "reuse_existing" && configuredReusableWorkspace?.mode !== "shared_workspace"
       ? configuredReusableWorkspace?.branchName ?? null
@@ -328,11 +314,10 @@ export function IssueWorkspaceCard({
         draftSelection === "reuse_existing"
           ? issueModeForExistingWorkspace(configuredReusableWorkspace?.mode)
           : draftSelection,
-      environmentId: draftSelection === "reuse_existing" ? null : draftEnvironmentId || null,
+      environmentId: null,
     },
   }), [
     configuredReusableWorkspace?.mode,
-    draftEnvironmentId,
     draftExecutionWorkspaceId,
     draftSelection,
   ]);
@@ -358,9 +343,8 @@ export function IssueWorkspaceCard({
   const handleCancel = useCallback(() => {
     setDraftSelection(currentSelection);
     setDraftExecutionWorkspaceId(issue.executionWorkspaceId ?? "");
-    setDraftEnvironmentId(issue.executionWorkspaceSettings?.environmentId ?? "");
     setEditing(false);
-  }, [currentSelection, issue.executionWorkspaceId, issue.executionWorkspaceSettings?.environmentId]);
+  }, [currentSelection, issue.executionWorkspaceId]);
 
   if (!policyEnabled || !project) return null;
 
@@ -519,42 +503,6 @@ export function IssueWorkspaceCard({
               ))}
             </select>
           )}
-
-          {environmentsEnabled ? (
-            <>
-              <select
-                className={cn(
-                  "w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none",
-                  reuseExistingSelection && "cursor-not-allowed opacity-70",
-                )}
-                value={reuseExistingSelection ? selectedReusableEnvironmentId : draftEnvironmentId}
-                onChange={(e) => setDraftEnvironmentId(e.target.value)}
-                disabled={reuseExistingSelection}
-              >
-                <option value="">
-                  {reuseExistingSelection
-                    ? configuredReusableWorkspace
-                      ? "No environment on reused workspace"
-                      : "Select an existing workspace to inspect its environment"
-                    : projectEnvironmentId
-                      ? "Project default environment"
-                      : "No environment"}
-                </option>
-                {runSelectableEnvironments.map((environment) => (
-                  <option key={environment.id} value={environment.id}>
-                    {environment.name} · {environment.driver}
-                  </option>
-                ))}
-              </select>
-              {reuseExistingSelection && (
-                <div className="text-[11px] text-muted-foreground">
-                  {configuredReusableWorkspace
-                    ? "Environment selection is locked while reusing an existing workspace. The next run will use that workspace's persisted environment config."
-                    : "Choose an existing workspace first. Its persisted environment config will determine the next run."}
-                </div>
-              )}
-            </>
-          ) : null}
 
           {/* Current workspace summary when editing */}
           {workspace && (
