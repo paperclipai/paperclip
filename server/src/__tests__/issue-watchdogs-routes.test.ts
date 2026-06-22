@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
   agentWakeupRequests,
   agents,
   companies,
@@ -54,6 +55,9 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     await db.delete(issueRelations);
     await db.delete(issueWatchdogs);
     await db.delete(issues);
+    // agent_runtime_state FK-references agents.id (no ON DELETE cascade), so it
+    // must be cleared before agents to avoid a delete-from-"agents" FK violation.
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
