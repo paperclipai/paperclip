@@ -3157,6 +3157,27 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/model-policies",
+  tags: ["model-policies"],
+  summary: "Get the model-policy rules for a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/model-policies",
+  tags: ["model-policies"],
+  summary: "Replace the model-policy rules for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({ rules: z.array(z.record(z.unknown())) })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/skills",
   tags: ["skills"],
   summary: "List skills for a company",

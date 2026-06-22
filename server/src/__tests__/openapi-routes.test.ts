@@ -22,6 +22,7 @@ const apiPrefixes: Record<string, string> = {
   "cloud-upstreams.ts": "/api",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
+  "company-model-policies.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "environments.ts": "/api",
@@ -47,6 +48,10 @@ const apiPrefixes: Record<string, string> = {
   "teams-catalog.ts": "/api",
   "user-profiles.ts": "/api",
 };
+
+// Internal route files mounted outside the public /api surface (on the top-level
+// app, e.g. /internal/recovery); intentionally excluded from OpenAPI coverage.
+const INTERNAL_ROUTE_FILES = new Set(["internal-recovery.ts"]);
 
 const ROUTE_LITERAL_PATTERN = /router\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/g;
 const ROUTER_METHOD_PATTERN = /router\.(get|post|put|patch|delete)\(/;
@@ -84,6 +89,7 @@ function loadActualRoutes() {
   const unknownRouteFiles: string[] = [];
 
   for (const file of fs.readdirSync(ROUTES_DIR).filter((entry) => entry.endsWith(".ts"))) {
+    if (INTERNAL_ROUTE_FILES.has(file)) continue;
     const prefix = apiPrefixes[file];
     const source = fs.readFileSync(path.join(ROUTES_DIR, file), "utf8");
     if (!prefix) {
