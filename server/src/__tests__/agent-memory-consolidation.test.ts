@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { activityLog, agentMemories, agentMemoryConsolidationRuns, agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import {
+  activityLog,
+  agentMemories,
+  agentMemoryConsolidationRuns,
+  agents,
+  companies,
+  createDb,
+  heartbeatRuns,
+  issueComments,
+  issues,
+} from "@paperclipai/db";
 import { agentMemoryConsolidationService } from "../services/agent-memory-consolidation.ts";
 import { agentMemoryService } from "../services/agent-memories.ts";
 import {
@@ -66,6 +76,8 @@ describeEmbeddedPostgres("agentMemoryConsolidationService (dreaming)", () => {
     await db.delete(agentMemoryConsolidationRuns);
     await db.delete(agentMemories);
     await db.delete(activityLog);
+    await db.delete(issueComments);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -130,6 +142,66 @@ describeEmbeddedPostgres("agentMemoryConsolidationService (dreaming)", () => {
       .from(agentMemories)
       .where(and(eq(agentMemories.agentId, agentId), eq(agentMemories.status, "staged")));
     expect(remaining).toHaveLength(0);
+  });
+
+  it("ingests only activity since the previous consolidation, not the whole lookback window", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent(db);
+    const now = new Date();
+    // A previous consolidation finished 1 hour ago.
+    await db.insert(agentMemoryConsolidationRuns).values({
+      companyId,
+      agentId,
+      status: "completed",
+      startedAt: new Date(now.getTime() - 60 * 60 * 1000),
+      finishedAt: new Date(now.getTime() - 60 * 60 * 1000),
+    });
+    // One run AFTER the last consolidation (should ingest) and one BEFORE it (should not).
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: "succeeded",
+      startedAt: new Date(now.getTime() - 31 * 60 * 1000),
+      finishedAt: new Date(now.getTime() - 30 * 60 * 1000),
+      resultJson: { summary: "Recent deploy pipeline event after last consolidation" },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: "succeeded",
+      startedAt: new Date(now.getTime() - 2 * 60 * 60 * 1000),
+      finishedAt: new Date(now.getTime() - 2 * 60 * 60 * 1000 + 1000),
+      resultJson: { summary: "Stale event from before the last consolidation" },
+    });
+
+    const result = await svc.consolidateAgentMemories(companyId, agentId, now);
+    expect(result.ingested).toBe(1); // only the run after the previous consolidation
+  });
+
+  it("ignores soft-deleted agent comments during ingestion", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent(db);
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Issue", status: "in_progress" });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "Kept comment about the alpha widget rollout",
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "Deleted comment about the beta secret that must not resurface",
+      deletedAt: new Date(),
+    });
+
+    await svc.consolidateAgentMemories(companyId, agentId);
+
+    const all = await db.select().from(agentMemories).where(eq(agentMemories.agentId, agentId));
+    expect(all.some((m) => m.body.includes("alpha widget"))).toBe(true);
+    expect(all.some((m) => m.body.includes("beta secret"))).toBe(false);
   });
 
   it("tick picks up due active agents and records a consolidation run", async () => {

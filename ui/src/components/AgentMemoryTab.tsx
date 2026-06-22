@@ -78,6 +78,10 @@ export function AgentMemoryTab({ agentId }: { agentId: string }) {
     mutationFn: () => agentMemoriesApi.consolidate(agentId),
     onSuccess: (result) => {
       setLastRun(result);
+      if (result.status === "failed") {
+        pushToast({ title: "Consolidation failed", body: "The dreaming pass did not complete.", tone: "error" });
+        return;
+      }
       pushToast({
         title: "Consolidation done",
         body: `staged ${result.staged}, promoted ${result.promoted}, forgotten ${result.forgotten}`,

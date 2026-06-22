@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentMemories, agentMemoryConsolidationRuns, agents, heartbeatRuns, issueComments } from "@paperclipai/db";
 import { buildHeartbeatRunIssueComment } from "./heartbeat-run-summary.js";
@@ -104,6 +104,7 @@ export function agentMemoryConsolidationService(db: Db) {
         and(
           eq(issueComments.companyId, companyId),
           eq(issueComments.authorAgentId, agentId),
+          isNull(issueComments.deletedAt),
           gt(issueComments.createdAt, since),
         ),
       )
@@ -148,6 +149,12 @@ export function agentMemoryConsolidationService(db: Db) {
     agentId: string,
     now: Date = new Date(),
   ): Promise<ConsolidationResult> {
+    // Read the previous consolidation time BEFORE inserting this run's row, otherwise
+    // getLastConsolidationAt would return the row we just inserted and `since` would
+    // always fall back to the lookback window.
+    const lastAt = await getLastConsolidationAt(companyId, agentId);
+    const since = lastAt && lastAt < now ? lastAt : new Date(now.getTime() - INGEST_FALLBACK_LOOKBACK_MS);
+
     const [run] = await db
       .insert(agentMemoryConsolidationRuns)
       .values({ companyId, agentId, status: "running", startedAt: now })
@@ -159,9 +166,6 @@ export function agentMemoryConsolidationService(db: Db) {
     let forgotten = 0;
 
     try {
-      const lastAt = await getLastConsolidationAt(companyId, agentId);
-      // lastAt is the run we just inserted's predecessor; if none, use a lookback window.
-      const since = lastAt && lastAt < now ? lastAt : new Date(now.getTime() - INGEST_FALLBACK_LOOKBACK_MS);
 
       // Existing active memories: dedup target + recurrence corpus.
       const existing = await memories.list(companyId, agentId);
@@ -293,6 +297,10 @@ export function agentMemoryConsolidationService(db: Db) {
       .groupBy(agentMemoryConsolidationRuns.agentId);
     const lastByAgent = new Map(lastRuns.map((r) => [r.agentId, r.lastAt ? new Date(r.lastAt) : null]));
 
+    // TODO(#307): this prefilters the first 500 active agents without neediness
+    // ordering, so in fleets larger than 500 some agents could be starved. Fine at
+    // current scale; revisit by pushing the due-selection (join + order by last
+    // consolidation + limit) into SQL when fleets grow.
     const activeAgents = await db
       .select({ id: agents.id, companyId: agents.companyId })
       .from(agents)
