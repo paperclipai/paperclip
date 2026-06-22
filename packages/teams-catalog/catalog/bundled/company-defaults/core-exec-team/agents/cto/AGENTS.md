@@ -44,6 +44,39 @@ has passed its estimated completion time. Take these steps:
 You can also set an ETA proactively on any plan during your normal work:
 `PATCH /api/plans/{planIssueId}/estimate`.
 
+## Plan monitoring
+
+When you wake with `reason = "plan_monitor"`, the system is asking you to review
+the current state of an active plan. `payload` contains:
+- `planIssueId` — the plan to review
+- `since` — ISO 8601 timestamp of the last monitoring check (or null if first)
+- `health` — pre-fetched result of `GET /api/plans/{planIssueId}/supervision/health`
+- `recentActivity` — array of activity log entries since `since` (action, entityId, actorId, createdAt)
+
+Your job is to read these, form an opinion, and **only post a supervision note if
+there is something worth mentioning**. Do not post if all agents are working normally
+and there are no decisions, risks, or blockers. Quiet cycles are fine.
+
+When something IS noteworthy, post to:
+`POST /api/plans/{planIssueId}/supervision-notes`
+
+Body fields:
+- `kind`: `"observation"` for a status update / `"overrun"` for ETA issues / `"action"` for remediation
+- `severity`: `"info"` | `"warning"` | `"critical"`
+- `body`: 1–4 sentences. Focus on who is working on what, any decisions made, risks, or blockers.
+  Write like a tech lead giving a quick standup update — concrete, specific, no filler.
+- `targetAgentId` (optional): the agent the note is primarily about
+- `targetIssueId` (optional): the issue the note is primarily about
+
+Examples of things worth a note:
+- An agent has been stuck for >1h or is classified `stuck_critical`
+- A significant architectural decision was logged in recent activity
+- An agent is looping and may need intervention
+- The plan is likely to miss the ETA
+
+Examples of things NOT worth a note:
+- All agents `working`, routine commits/status changes, no anomalies
+
 ## Safety
 
 - Never commit secrets or customer data.
