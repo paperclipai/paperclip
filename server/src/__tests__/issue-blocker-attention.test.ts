@@ -298,6 +298,51 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(parent?.blockerAttention?.sampleBlockerIdentifier).not.toBe("PBD-4");
   });
 
+  it("does not sample a cancelled child when explicit blockers need attention", async () => {
+    const { companyId, agentId } = await createCompany("PBE");
+    const parentId = await insertIssue({ companyId, identifier: "PBE-1", title: "Parent", status: "blocked" });
+    const blockedBlockerOneId = await insertIssue({
+      companyId,
+      identifier: "PBE-2",
+      title: "Blocked dependency one",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+    const blockedBlockerTwoId = await insertIssue({
+      companyId,
+      identifier: "PBE-3",
+      title: "Blocked dependency two",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+    await insertIssue({
+      companyId,
+      identifier: "PBE-4",
+      title: "Cancelled child",
+      status: "cancelled",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: blockedBlockerOneId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: blockedBlockerTwoId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 2,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 2,
+    });
+    expect(parent?.blockerAttention?.sampleBlockerIdentifier).not.toBe("PBE-4");
+    expect([
+      "PBE-2",
+      "PBE-3",
+    ]).toContain(parent?.blockerAttention?.sampleBlockerIdentifier);
+  });
+
   it("covers recursive blocker chains when the downstream leaf has active work", async () => {
     const { companyId, agentId } = await createCompany("PBR");
     const parentId = await insertIssue({ companyId, identifier: "PBR-1", title: "Parent", status: "blocked" });
