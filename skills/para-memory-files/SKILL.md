@@ -75,14 +75,33 @@ How the user operates -- patterns, preferences, lessons learned.
 - Not facts about the world; facts about the user.
 - Update whenever you learn new operating patterns.
 
+#### The `## Lessons` self-correction loop (read every run)
+
+`$AGENT_HOME/MEMORY.md` must contain a `## Lessons` section. This is your self-improvement
+loop -- the durable record of corrections so you do not repeat a mistake across sessions.
+
+- **Read it at the start of every run** (your heartbeat checklist points here). Treat each
+  lesson as a standing rule for this run.
+- **Append the moment you are corrected** -- whenever the board/operator, a reviewer, QA, or
+  a failed verification tells you that you did something wrong. Do not wait for the next
+  heartbeat; record it before you move on.
+- One line per lesson: `- YYYY-MM-DD -- <trigger> -> <the rule to follow next time>`.
+- Keep it sharp: if a new lesson supersedes an old one, edit the old line rather than piling
+  on. Lessons are rules, not a diary (that is what daily notes are for).
+- Ruthlessly iterate: when the same class of mistake recurs, tighten the rule until it stops.
+  The goal is a falling mistake rate, not a longer list.
+- You CANNOT edit your own instruction bundle (`AGENTS.md`, `HEARTBEAT.md`, etc.) -- those are
+  board-managed. `## Lessons` in your writable `MEMORY.md` is where your corrections live.
+
 ## Write It Down -- No Mental Notes
 
 Memory does not survive session restarts. Files do.
 
 - Want to remember something -> WRITE IT TO A FILE.
 - "Remember this" -> update `$AGENT_HOME/memory/YYYY-MM-DD.md` or the relevant entity file.
-- Learn a lesson -> update AGENTS.md, TOOLS.md, or the relevant skill file.
-- Make a mistake -> document it so future-you does not repeat it.
+- Learn a lesson / get corrected -> append to the `## Lessons` section of `$AGENT_HOME/MEMORY.md`
+  (your instruction bundle is board-managed and not yours to edit).
+- Make a mistake -> document it in `## Lessons` so future-you does not repeat it.
 - On-disk text files are always better than holding it in temporary context.
 
 ## Memory Recall -- Use qmd
