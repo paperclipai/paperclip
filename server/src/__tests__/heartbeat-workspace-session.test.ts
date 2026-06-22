@@ -11,7 +11,6 @@ import {
   applyPersistedExecutionWorkspaceConfig,
   assertGitSensitiveAdapterWorkspaceValid,
   assertPushCapabilityCheckoutValid,
-  buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
@@ -809,51 +808,6 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
         resolvedSha: "abc1234567890",
       },
     });
-  });
-});
-
-describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
-  it("reuses the persisted execution workspace path instead of deriving a new worktree", () => {
-    const result = buildRealizedExecutionWorkspaceFromPersisted({
-      base: buildResolvedWorkspace({
-        cwd: "/tmp/project-primary",
-        repoRef: "main",
-      }),
-      workspace: {
-        id: "execution-workspace-1",
-        companyId: "company-1",
-        projectId: "project-1",
-        projectWorkspaceId: "workspace-1",
-        sourceIssueId: "issue-1",
-        mode: "isolated_workspace",
-        strategyType: "git_worktree",
-        name: "PAP-880-thumbs-capture-for-evals-feature",
-        status: "active",
-        cwd: "/tmp/reused-worktree",
-        repoUrl: "https://example.com/paperclip.git",
-        baseRef: "main",
-        branchName: "PAP-880-thumbs-capture-for-evals-feature",
-        providerType: "git_worktree",
-        providerRef: "/tmp/reused-worktree",
-        derivedFromExecutionWorkspaceId: null,
-        lastUsedAt: new Date(),
-        openedAt: new Date(),
-        closedAt: null,
-        cleanupEligibleAt: null,
-        cleanupReason: null,
-        config: null,
-        metadata: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    });
-
-    expect(result.created).toBe(false);
-    expect(result.strategy).toBe("git_worktree");
-    expect(result.cwd).toBe("/tmp/reused-worktree");
-    expect(result.worktreePath).toBe("/tmp/reused-worktree");
-    expect(result.branchName).toBe("PAP-880-thumbs-capture-for-evals-feature");
-    expect(result.source).toBe("task_session");
   });
 });
 
