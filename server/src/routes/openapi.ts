@@ -4180,6 +4180,9 @@ for (const route of [
   ["post", "/api/plans/{issueId}/stop", "Stop a running plan"],
   ["patch", "/api/plans/{issueId}/estimate", "Set or clear plan ETA"],
   ["get", "/api/plans/{issueId}/supervision/health", "Get plan health diagnosis"],
+  ["get", "/api/plans/{issueId}/supervision-notes", "List plan supervision notes"],
+  ["post", "/api/plans/{issueId}/supervision-notes", "Add a supervision note to a plan"],
+  ["post", "/api/plans/{issueId}/supervision/monitor", "Trigger on-demand CTO monitoring wake"],
   ["delete", "/api/plans/{issueId}", "Delete a plan"],
 ] as const) {
   registerCurrentRoute({

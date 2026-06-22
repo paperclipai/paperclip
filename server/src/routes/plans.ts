@@ -4,6 +4,11 @@ import type { Db } from "@paperclipai/db";
 import { planService, type PlanTier } from "../services/plans.js";
 import { agentService, heartbeatService, issueService, logActivity } from "../services/index.js";
 import { diagnosePlanHealth } from "../services/plan-supervision.js";
+import {
+  addSupervisionNote,
+  listSupervisionNotes,
+  monitorNow,
+} from "../services/plan-supervision-notes.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { cancelIssueSubtree } from "../services/issue-subtree-cancel.js";
 import { PLAN_APPROVAL_WAKE_REASON, buildGateWorkspaceContext } from "../services/plan-gates.js";
@@ -415,6 +420,106 @@ export function planRoutes(
     assertCompanyAccess(req, existing.companyId);
     const health = await diagnosePlanHealth(req.params.issueId as string, db);
     res.json({ health });
+  });
+
+  const addNoteSchema = z.object({
+    kind: z.enum(["observation", "overrun", "action"]),
+    severity: z.enum(["info", "warning", "critical"]).optional(),
+    body: z.string().min(1).max(8000),
+    targetAgentId: z.string().uuid().nullish(),
+    targetIssueId: z.string().uuid().nullish(),
+    healthSnapshot: z.record(z.unknown()).nullish(),
+    actionTaken: z.string().nullish(),
+  });
+
+  // List supervision notes for a plan (most recent first, limit 50).
+  router.get("/plans/:issueId/supervision-notes", async (req, res) => {
+    const existing = await issues.getById(req.params.issueId as string);
+    if (!existing) {
+      res.status(404).json({ error: "Plan not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const notes = await listSupervisionNotes(db, req.params.issueId as string);
+    res.json({ notes });
+  });
+
+  // Add a supervision note to a plan. Typically called by the CTO agent after
+  // a monitoring wake; can also be called by a board actor for manual notes.
+  router.post("/plans/:issueId/supervision-notes", async (req, res) => {
+    const parsed = addNoteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid note payload", details: parsed.error.flatten() });
+      return;
+    }
+    const existing = await issues.getById(req.params.issueId as string);
+    if (!existing) {
+      res.status(404).json({ error: "Plan not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const actor = getActorInfo(req);
+
+    const note = await addSupervisionNote(db, {
+      planIssueId: req.params.issueId as string,
+      companyId: existing.companyId,
+      authorAgentId: actor.agentId ?? null,
+      authorUserId: actor.actorType === "user" ? actor.actorId : null,
+      kind: parsed.data.kind,
+      severity: parsed.data.severity,
+      body: parsed.data.body,
+      targetAgentId: parsed.data.targetAgentId ?? null,
+      targetIssueId: parsed.data.targetIssueId ?? null,
+      healthSnapshot: parsed.data.healthSnapshot as Parameters<typeof addSupervisionNote>[1]["healthSnapshot"],
+      actionTaken: parsed.data.actionTaken ?? null,
+    });
+
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "plan.supervision_note_added",
+      entityType: "issue",
+      entityId: existing.id,
+      details: { kind: parsed.data.kind, severity: parsed.data.severity ?? "info", noteId: note.id },
+    });
+
+    publishLiveEvent({
+      companyId: existing.companyId,
+      type: "plan.supervision.note",
+      payload: { planIssueId: existing.id, noteId: note.id },
+    });
+
+    res.status(201).json({ note });
+  });
+
+  // Trigger an on-demand CTO monitoring wake for this plan. Ignores the 15-min
+  // interval gate — equivalent of clicking "Monitor now" in the drawer.
+  router.post("/plans/:issueId/supervision/monitor", async (req, res) => {
+    const existing = await issues.getById(req.params.issueId as string);
+    if (!existing) {
+      res.status(404).json({ error: "Plan not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    try {
+      const result = await monitorNow(db, heartbeat, req.params.issueId as string);
+      res.json(result);
+    } catch (err: unknown) {
+      const status = (err as { status?: number }).status;
+      if (status === 409) {
+        res.status(409).json({ error: (err as Error).message });
+        return;
+      }
+      if (status === 404) {
+        res.status(404).json({ error: (err as Error).message });
+        return;
+      }
+      throw err;
+    }
   });
 
   // Delete a plan and its entire subtree. Cancels active work first so no
