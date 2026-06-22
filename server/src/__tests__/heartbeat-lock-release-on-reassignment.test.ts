@@ -13,6 +13,7 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
+  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -29,6 +30,15 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  // Drain per-test heartbeat instances before deleting rows / closing the client
+  // so detached executeRun chains never query a torn-down socket.
+  const heartbeats: Array<ReturnType<typeof heartbeatService>> = [];
+
+  function makeHeartbeat(...args: Parameters<typeof heartbeatService>) {
+    const heartbeat = heartbeatService(...args);
+    heartbeats.push(heartbeat);
+    return heartbeat;
+  }
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-lock-release-on-reassignment-");
@@ -36,6 +46,9 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
   }, 60_000);
 
   afterEach(async () => {
+    while (heartbeats.length > 0) {
+      await heartbeats.pop()?.drain();
+    }
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -46,6 +59,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
   });
 
   afterAll(async () => {
+    await closeDbClient(db);
     await tempDb?.cleanup();
   });
 
@@ -137,7 +151,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     const { coderAgentId, reviewerAgentId, issueId, holderRunId, wakeupRequestId } =
       await seedCrossAgentScenario({ holderStatus: "running" });
 
-    const heartbeat = heartbeatService(db);
+    const heartbeat = makeHeartbeat(db);
     const followupRun = await heartbeat.wakeup(reviewerAgentId, {
       source: "automation",
       triggerDetail: "system",
