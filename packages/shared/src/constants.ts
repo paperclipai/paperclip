@@ -74,6 +74,32 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 };
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
+
+/**
+ * Global ceiling on how many local (Ollama-backed) agent chats may run at once
+ * across the whole instance. This is a cross-agent cap enforced by the run
+ * scheduler and is distinct from the per-agent
+ * `runtimeConfig.heartbeat.maxConcurrentRuns` knob. Retune via
+ * `PAPERCLIP_MAX_CONCURRENT_LOCAL_RUNS` when hardware changes.
+ */
+export const DEFAULT_MAX_CONCURRENT_LOCAL_RUNS = 4;
+
+/**
+ * Global ceiling on how many distinct local models may be loaded at once
+ * (a proxy for Ollama VRAM pressure). Retune via
+ * `PAPERCLIP_MAX_DISTINCT_LOCAL_MODELS`.
+ */
+export const DEFAULT_MAX_DISTINCT_LOCAL_MODELS = 2;
+
+/**
+ * Model providers (the segment before `/` in an `opencode_local` model id such
+ * as `dev/qwen3.6:35b`) that are treated as local/Ollama-backed and therefore
+ * counted against the local-run caps above. Cloud-backed `opencode_local`
+ * agents (e.g. `github-copilot/...`) are exempt. Retune via
+ * `PAPERCLIP_LOCAL_MODEL_PROVIDERS` (comma-separated).
+ */
+export const DEFAULT_LOCAL_MODEL_PROVIDERS = ["dev"] as const;
+
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;

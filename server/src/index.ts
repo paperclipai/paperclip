@@ -774,7 +774,14 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeat = heartbeatService(db as any, {
+      pluginWorkerManager,
+      localRunCaps: {
+        maxConcurrentRuns: config.maxConcurrentLocalRuns,
+        maxDistinctModels: config.maxDistinctLocalModels,
+        localModelProviders: config.localModelProviders,
+      },
+    });
     const routines = routineService(db as any, { pluginWorkerManager });
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce

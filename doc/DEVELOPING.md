@@ -671,6 +671,40 @@ Default behavior:
 - `local_trusted`: enabled
 - `authenticated`: disabled
 
+## Local Run Concurrency Caps
+
+Local (Ollama-backed) `opencode_local` agent chats share one GPU/VRAM budget on
+the Ollama host, so Paperclip enforces two global, cross-agent caps in the run
+scheduler (`startNextQueuedRunForAgent`). These are distinct from the per-agent
+`runtimeConfig.heartbeat.maxConcurrentRuns` knob, which only bounds a single
+agent: even with every local agent eligible at once, the whole instance stays
+within a single budget. Runs that would breach a cap stay queued and are
+admitted as running runs finish and free a slot.
+
+Scope: only `opencode_local` runs whose model provider (the segment before `/`
+in a model id such as `dev/qwen3.6:35b`) is in the local-provider list count
+against the caps. Cloud-backed `opencode_local` agents (for example
+`github-copilot/...`) are exempt because they neither occupy an Ollama chat slot
+nor load an Ollama model.
+
+Environment overrides (each must be a positive integer; invalid values fall back
+to the default):
+
+- `PAPERCLIP_MAX_CONCURRENT_LOCAL_RUNS=<n>` — max concurrent running local chats
+  across the instance. Default `4`.
+- `PAPERCLIP_MAX_DISTINCT_LOCAL_MODELS=<n>` — max distinct local models loaded
+  simultaneously (a proxy for VRAM pressure). Default `2`. When the ceiling is
+  reached, an agent whose model is not already loaded stays queued until a model
+  slot frees up; an agent reusing an already-loaded model is unaffected.
+- `PAPERCLIP_LOCAL_MODEL_PROVIDERS=dev,other` — comma-separated providers treated
+  as local/Ollama-backed. Default `dev`.
+
+Retune these when the Ollama host hardware changes (more VRAM → raise the caps).
+The distinct-model ceiling is enforced inside Paperclip rather than delegated to
+Ollama's `OLLAMA_MAX_LOADED_MODELS`, so the scheduler holds runs queued instead
+of letting Ollama load-then-evict models under memory pressure. You may still set
+`OLLAMA_MAX_LOADED_MODELS` on the Ollama host as defense-in-depth.
+
 ## CLI Client Operations
 
 Paperclip CLI now includes client-side control-plane commands in addition to setup commands.
