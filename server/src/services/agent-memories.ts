@@ -1,6 +1,6 @@
 import { and, arrayOverlaps, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentMemories } from "@paperclipai/db";
+import { agentMemories, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import type {
   AgentMemory,
   AgentMemoryType,
@@ -8,7 +8,7 @@ import type {
   RecallAgentMemory,
   CorrectAgentMemory,
 } from "@paperclipai/shared";
-import { notFound } from "../errors.js";
+import { notFound, unprocessable } from "../errors.js";
 
 type AgentMemoryRow = typeof agentMemories.$inferSelect;
 
@@ -65,6 +65,45 @@ export interface MemoryActor {
 }
 
 export function agentMemoryService(db: Db) {
+  /**
+   * Verify caller-supplied provenance ids reference resources in this company (and,
+   * for runs, this agent) so callers cannot attach memory provenance to unrelated
+   * tenant/resource ids and corrupt audit lineage. Internal callers (consolidation)
+   * pass ids they already queried in-scope and skip this.
+   */
+  async function assertProvenanceInScope(companyId: string, agentId: string, input: CreateAgentMemory): Promise<void> {
+    if (input.sourceRunId) {
+      const ok = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, input.sourceRunId),
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, agentId),
+          ),
+        )
+        .then((rows) => rows.length > 0);
+      if (!ok) throw unprocessable("sourceRunId does not reference a run for this agent");
+    }
+    if (input.sourceIssueId) {
+      const ok = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.id, input.sourceIssueId), eq(issues.companyId, companyId)))
+        .then((rows) => rows.length > 0);
+      if (!ok) throw unprocessable("sourceIssueId does not reference an issue in this company");
+    }
+    if (input.sourceCommentId) {
+      const ok = await db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(and(eq(issueComments.id, input.sourceCommentId), eq(issueComments.companyId, companyId)))
+        .then((rows) => rows.length > 0);
+      if (!ok) throw unprocessable("sourceCommentId does not reference a comment in this company");
+    }
+  }
+
   async function getOwnedRow(companyId: string, agentId: string, memoryId: string): Promise<AgentMemoryRow> {
     const row = await db
       .select()
@@ -92,7 +131,7 @@ export function agentMemoryService(db: Db) {
         body: redactSecrets(input.body),
         status,
         confidence: input.confidence ?? 0,
-        tags: input.tags ?? [],
+        tags: (input.tags ?? []).map((tag) => redactSecrets(tag)),
         sourceRunId: input.sourceRunId ?? null,
         sourceIssueId: input.sourceIssueId ?? null,
         sourceCommentId: input.sourceCommentId ?? null,
@@ -259,6 +298,7 @@ export function agentMemoryService(db: Db) {
     correct,
     renderMarkdown,
     buildContextSummary,
+    assertProvenanceInScope,
     redactSecrets,
   };
 }

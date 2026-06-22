@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agentMemories, agents, companies, createDb } from "@paperclipai/db";
+import { agentMemories, agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { correctAgentMemorySchema } from "@paperclipai/shared";
 import { agentMemoryService, redactSecrets } from "../services/agent-memories.ts";
 import {
   getEmbeddedPostgresTestSupport,
@@ -49,6 +50,7 @@ describeEmbeddedPostgres("agentMemoryService (per-agent long-term memory)", () =
 
   afterEach(async () => {
     await db.delete(agentMemories);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -86,11 +88,26 @@ describeEmbeddedPostgres("agentMemoryService (per-agent long-term memory)", () =
     expect(textHits[0].title).toBe("Stripe key location");
   });
 
-  it("does not leak memory across agents", async () => {
+  it("does not leak memory across agents (other company and same-company agent)", async () => {
     const a = await seedCompanyAndAgent(db);
     const b = await seedCompanyAndAgent(db);
+    // A second agent inside the SAME company as `a`, to prove recall isolates by
+    // agentId and not only companyId.
+    const sameCompanyAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: sameCompanyAgentId,
+      companyId: a.companyId,
+      name: "Bob",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
     await svc.write(a.companyId, a.agentId, { title: "A secret", body: "only for A" }, boardActor);
-    expect(await svc.recall(b.companyId, b.agentId, { limit: 20 })).toHaveLength(0);
+    expect(await svc.recall(b.companyId, b.agentId, { limit: 20 })).toHaveLength(0); // other company
+    expect(await svc.recall(a.companyId, sameCompanyAgentId, { limit: 20 })).toHaveLength(0); // same company, other agent
   });
 
   it("bumps recall stats on recall", async () => {
@@ -127,16 +144,71 @@ describeEmbeddedPostgres("agentMemoryService (per-agent long-term memory)", () =
     expect(old?.supersededByMemoryId).toBe(corrected.id);
   });
 
+  it("preserves existing tags/confidence when a correction omits them (via schema)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent(db);
+    const original = await svc.write(
+      companyId,
+      agentId,
+      { title: "Old fact", body: "wrong", tags: ["ops", "deploy"], confidence: 70 },
+      boardActor,
+    );
+    // Parse through the same schema the route uses; omitted tags/confidence must stay
+    // undefined so the service preserves the originals instead of wiping them.
+    const input = correctAgentMemorySchema.parse({ title: "New fact", body: "right" });
+    const corrected = await svc.correct(companyId, agentId, original.id, input, boardActor);
+
+    expect(corrected.tags).toEqual(["ops", "deploy"]);
+    expect(corrected.confidence).toBe(70);
+  });
+
+  it("rejects provenance ids outside the agent/company scope, accepts in-scope ones", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent(db);
+    const base = { type: "episodic" as const, title: "t", body: "b", tags: [], confidence: 0 };
+
+    await expect(
+      svc.assertProvenanceInScope(companyId, agentId, {
+        ...base,
+        sourceRunId: randomUUID(),
+        sourceIssueId: null,
+        sourceCommentId: null,
+      }),
+    ).rejects.toThrow();
+
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      startedAt: new Date(),
+      finishedAt: new Date(),
+    });
+    await expect(
+      svc.assertProvenanceInScope(companyId, agentId, {
+        ...base,
+        sourceRunId: runId,
+        sourceIssueId: null,
+        sourceCommentId: null,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it("redacts secret-looking values before persisting", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent(db);
     const created = await svc.write(
       companyId,
       agentId,
-      { title: "Key is sk-abcdefghijklmnopqrstuvwx", body: "token AKIAIOSFODNN7EXAMPLE here" },
+      {
+        title: "Key is sk-abcdefghijklmnopqrstuvwx",
+        body: "token AKIAIOSFODNN7EXAMPLE here",
+        tags: ["sk-abcdefghijklmnopqrstuvwx", "ops"],
+      },
       boardActor,
     );
     expect(created.title).not.toContain("sk-abcdefghijklmnopqrstuvwx");
     expect(created.body).toContain("[redacted-secret]");
+    expect(created.tags).toContain("[redacted-secret]");
+    expect(created.tags).toContain("ops");
   });
 
   it("renders an inspectable MEMORY.md grouped by type", async () => {

@@ -64,6 +64,7 @@ export function agentMemoryRoutes(db: Db) {
   router.post("/agents/:agentId/memories", validate(createAgentMemorySchema), async (req, res) => {
     const agentId = req.params.agentId as string;
     const { companyId, actor } = await resolveContext(req, agentId);
+    await svc.assertProvenanceInScope(companyId, agentId, req.body);
     const memory = await svc.write(companyId, agentId, req.body, actor);
     await logActivity(db, {
       companyId,
