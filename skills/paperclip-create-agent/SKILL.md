@@ -19,6 +19,12 @@ You need either:
 
 If you do not have this permission, escalate to your CEO or board.
 
+> **Pre-hire governance gate.** `can_create_agents=true` is a capability, not implicit
+> board approval. Unless the hire is trivially in-scope of an already-approved plan, post a
+> `request_board_approval` (or equivalent) with the draft prompt/config/role and **wait for
+> acceptance before submitting**. This natural gate prevents the COD-873 / COD-1264 pattern,
+> where a privileged agent submitted the hire first and the board had to ratify after the fact.
+
 ## Workflow
 
 ### 1. Confirm identity and company context
