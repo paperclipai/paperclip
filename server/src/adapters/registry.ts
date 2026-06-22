@@ -5,6 +5,7 @@ import type {
   ServerAdapterModule,
 } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
+import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
@@ -215,6 +216,24 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   return ctx;
 }
 
+function passHermesCustomProviderThroughExtraArgs(config: Record<string, unknown>): Record<string, unknown> {
+  const provider = typeof config.provider === "string" ? config.provider.trim() : "";
+  if (!provider.startsWith("custom:")) return config;
+
+  const existingExtraArgs = Array.isArray(config.extraArgs)
+    ? config.extraArgs.filter((arg): arg is string => typeof arg === "string")
+    : [];
+  const alreadyHasProviderArg = existingExtraArgs.some((arg) =>
+    arg === "--provider" || arg.startsWith("--provider=")
+  );
+  if (alreadyHasProviderArg) return config;
+
+  return {
+    ...config,
+    extraArgs: [...existingExtraArgs, "--provider", provider],
+  };
+}
+
 function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
   const seen = new Set<string>();
   const result: AdapterModel[] = [];
@@ -249,7 +268,7 @@ async function listAcpxModels(): Promise<AdapterModel[]> {
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
-  execute: claudeExecute,
+  execute: stampClaudeAgentIdHeader(claudeExecute),
   testEnvironment: claudeTestEnvironment,
   listSkills: listClaudeSkills,
   syncSkills: syncClaudeSkills,
@@ -438,6 +457,10 @@ const piLocalAdapter: ServerAdapterModule = {
 // hermes-paperclip-adapter v0.2.0 predates the authToken field; cast is
 // intentional until hermes ships a matching AdapterExecutionContext type.
 const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
+// hermes-paperclip-adapter v0.2.0 still depends on the published @paperclipai/adapter-utils
+// that ships the "paperclip_required" origin; casts bridge until hermes upgrades.
+const listHermesSkills = hermesListSkills as unknown as ServerAdapterModule["listSkills"];
+const syncHermesSkills = hermesSyncSkills as unknown as ServerAdapterModule["syncSkills"];
 
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
@@ -471,19 +494,20 @@ const hermesLocalAdapter: ServerAdapterModule = {
         PAPERCLIP_RUN_ID: normalizedCtx.runId,
       },
     };
+    const effectivePatchedConfig = passHermesCustomProviderThroughExtraArgs(patchedConfig);
 
     // Only inject the auth guard into promptTemplate when a custom template already exists.
     // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
     // overwriting it with only the auth guard text would strip the assigned issue/workflow instructions.
     if (promptTemplate) {
-      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
+      effectivePatchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
     }
 
     const patchedCtx = {
       ...normalizedCtx,
       agent: {
         ...normalizedCtx.agent,
-        adapterConfig: patchedConfig,
+        adapterConfig: effectivePatchedConfig,
       },
     };
 
@@ -491,8 +515,8 @@ const hermesLocalAdapter: ServerAdapterModule = {
   },
   testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
   sessionCodec: hermesSessionCodec,
-  listSkills: hermesListSkills,
-  syncSkills: hermesSyncSkills,
+  listSkills: listHermesSkills,
+  syncSkills: syncHermesSkills,
   models: hermesModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: false,

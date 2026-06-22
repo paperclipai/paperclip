@@ -78,6 +78,7 @@ export interface InstanceExperimentalSettings {
   enableIsolatedWorkspaces: boolean;
   enableStreamlinedLeftNavigation: boolean;
   enableConferenceRoomChat: boolean;
+  enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableCloudSync: boolean;
@@ -96,6 +97,7 @@ export interface InstanceExperimentalSettings {
 
 export interface InstanceSettings {
   id: string;
+  defaultEnvironmentId: string | null;
   general: InstanceGeneralSettings;
   experimental: InstanceExperimentalSettings;
   createdAt: Date;

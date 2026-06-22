@@ -1,4 +1,5 @@
 export {
+  instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -6,9 +7,11 @@ export {
   instanceExperimentalSettingsSchema,
   masterRuntimeFailoverSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
+  type PatchInstanceSettings,
   type IssueGraphLivenessAutoRecoveryRequest,
 } from "./instance.js";
 
@@ -304,6 +307,7 @@ export {
   issueDocumentKeySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
+  upsertIssueWatchdogSchema,
   type CreateIssue,
   type CreateChildIssue,
   type CreateAcceptedPlanDecomposition,
@@ -324,6 +328,7 @@ export {
   type IssueDocumentFormat,
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
+  type UpsertIssueWatchdog,
 } from "./issue.js";
 
 export {

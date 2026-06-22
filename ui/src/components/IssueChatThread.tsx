@@ -25,6 +25,7 @@ import {
   type ChangeEvent,
   type DragEvent as ReactDragEvent,
   type ErrorInfo,
+  type KeyboardEvent as ReactKeyboardEvent,
   type Ref,
   type ReactNode,
 } from "react";
@@ -45,6 +46,8 @@ import type {
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
+import { useOptionalToastActions } from "../context/ToastContext";
+import { copyTextToClipboard } from "../lib/clipboard";
 import {
   buildIssueChatMessages,
   formatDurationWords,
@@ -157,6 +160,7 @@ import {
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { nextWorkMode, titleForPendingWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
@@ -1047,6 +1051,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
 
 function CopyablePreBlock({ children, className }: { children: string; className?: string }) {
   const [copied, setCopied] = useState(false);
+  const toastActions = useOptionalToastActions();
   return (
     <div className="group/pre relative">
       <pre className={className}>{children}</pre>
@@ -1059,9 +1064,15 @@ function CopyablePreBlock({ children, className }: { children: string; className
         title="Copy"
         aria-label="Copy"
         onClick={() => {
-          void navigator.clipboard.writeText(children).then(() => {
+          void copyTextToClipboard(children).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
+          }).catch((error) => {
+            toastActions?.pushToast({
+              title: "Copy failed",
+              body: error instanceof Error ? error.message : "Unable to copy text",
+              tone: "error",
+            });
           });
         }}
       >
@@ -1310,6 +1321,7 @@ function IssueChatUserMessage({
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const toastActions = useOptionalToastActions();
   const {
     isCurrentUser,
     authorName: resolvedAuthorName,
@@ -1436,9 +1448,15 @@ function IssueChatUserMessage({
                   .filter((p): p is { type: "text"; text: string } => p.type === "text")
                   .map((p) => p.text)
                   .join("\n\n");
-                void navigator.clipboard.writeText(text).then(() => {
+                void copyTextToClipboard(text).then(() => {
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
+                }).catch((error) => {
+                  toastActions?.pushToast({
+                    title: "Copy failed",
+                    body: error instanceof Error ? error.message : "Unable to copy message",
+                    tone: "error",
+                  });
                 });
               }}
             >
@@ -1551,6 +1569,7 @@ function IssueChatAssistantMessage({
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
   const [copied, setCopied] = useState(false);
+  const toastActions = useOptionalToastActions();
   const copyText = deleted ? "" : getThreadMessageCopyText(message);
 
   // Derive fold state synchronously during render (not in useEffect) so the
@@ -1609,9 +1628,15 @@ function IssueChatAssistantMessage({
         title="Copy message"
         aria-label="Copy message"
         onClick={() => {
-          void navigator.clipboard.writeText(copyText).then(() => {
+          void copyTextToClipboard(copyText).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
+          }).catch((error) => {
+            toastActions?.pushToast({
+              title: "Copy failed",
+              body: error instanceof Error ? error.message : "Unable to copy message",
+              tone: "error",
+            });
           });
         }}
       >
@@ -1653,7 +1678,13 @@ function IssueChatAssistantMessage({
         <DropdownMenuContent align="end">
           <DropdownMenuItem
             onClick={() => {
-              void navigator.clipboard.writeText(copyText);
+              void copyTextToClipboard(copyText).catch((error) => {
+                toastActions?.pushToast({
+                  title: "Copy failed",
+                  body: error instanceof Error ? error.message : "Unable to copy message",
+                  tone: "error",
+                });
+              });
             }}
           >
             <Copy className="mr-2 h-3.5 w-3.5" />
@@ -2411,6 +2442,7 @@ function SystemNoticeCommentRow({
   anchorId?: string;
 }) {
   const { onImageClick, agentMap, issueStatus, successfulRunHandoff } = useContext(IssueChatCtx);
+  const toastActions = useOptionalToastActions();
   const custom = message.metadata.custom as Record<string, unknown>;
   const presentation = isIssueCommentPresentation(custom.presentation) ? custom.presentation : null;
   const commentMetadata = isIssueCommentMetadata(custom.commentMetadata) ? custom.commentMetadata : null;
@@ -2460,18 +2492,30 @@ function SystemNoticeCommentRow({
   });
 
   const handleCopy = () => {
-    void navigator.clipboard.writeText(bodyText).then(() => {
+    void copyTextToClipboard(bodyText).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }).catch((error) => {
+      toastActions?.pushToast({
+        title: "Copy failed",
+        body: error instanceof Error ? error.message : "Unable to copy system notice",
+        tone: "error",
+      });
     });
   };
 
   const handleCopyLink = () => {
     if (!anchorId || typeof window === "undefined") return;
     const url = `${window.location.origin}${window.location.pathname}#${anchorId}`;
-    void navigator.clipboard.writeText(url).then(() => {
+    void copyTextToClipboard(url).then(() => {
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2000);
+    }).catch((error) => {
+      toastActions?.pushToast({
+        title: "Copy failed",
+        body: error instanceof Error ? error.message : "Unable to copy system notice link",
+        tone: "error",
+      });
     });
   };
 
@@ -3676,7 +3720,15 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     );
   }
 
-  const isPlanning = pendingWorkMode === "planning";
+  const workModeOptions = workModeMetaList(true);
+  const pendingWorkModeMeta = workModeMetaFor(pendingWorkMode, true);
+  const PendingWorkModeIcon = pendingWorkModeMeta.icon;
+
+  function handleComposerKeyDown(evt: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!(evt.metaKey || evt.ctrlKey) || evt.code !== "Period") return;
+    evt.preventDefault();
+    setPendingWorkMode((current) => nextWorkMode(current, true));
+  }
 
   return (
     <div
@@ -3685,9 +3737,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       data-pending-work-mode={pendingWorkMode}
       className={cn(
         "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
-        isPlanning && "border-amber-500/60 bg-amber-50/60 supports-[backdrop-filter]:bg-amber-50/40 dark:border-amber-500/50 dark:bg-amber-500/[0.07] dark:supports-[backdrop-filter]:bg-amber-500/[0.07]",
+        pendingWorkModeMeta.classes.container,
         isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
       )}
+      onKeyDownCapture={handleComposerKeyDown}
       onDragEnterCapture={handleFileDragEnter}
       onDragOverCapture={handleFileDragOver}
       onDragLeaveCapture={handleFileDragLeave}
@@ -3823,24 +3876,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   data-pending-work-mode={pendingWorkMode}
                   aria-haspopup="menu"
                   aria-expanded={workModeMenuOpen}
-                  title={
-                    isPlanning
-                      ? "Plan mode is on for this submission. Click to change."
-                      : "Agent mode for this submission. Click to switch to plan mode."
-                  }
+                  aria-pressed={pendingWorkMode !== "standard"}
+                  aria-keyshortcuts="Meta+Period Control+Period"
+                  title={titleForPendingWorkMode(pendingWorkMode, true)}
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors",
-                    isPlanning
-                      ? "border-amber-500/60 bg-amber-500/15 text-amber-800 hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
-                      : "border-border bg-muted/40 text-muted-foreground hover:bg-accent hover:text-foreground",
+                    pendingWorkModeMeta.classes.chip,
                   )}
                 >
-                  {isPlanning ? (
-                    <ClipboardList className="h-3.5 w-3.5" aria-hidden />
-                  ) : (
-                    <Hammer className="h-3.5 w-3.5" aria-hidden />
-                  )}
-                  <span>{isPlanning ? "Plan mode" : "Agent mode"}</span>
+                  <PendingWorkModeIcon className="h-3.5 w-3.5" aria-hidden />
+                  <span>{pendingWorkModeMeta.label}</span>
                   <ChevronDown className="h-3 w-3 opacity-60" aria-hidden />
                 </button>
               </PopoverTrigger>
@@ -3849,26 +3894,34 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                 align="start"
                 data-testid="issue-chat-composer-work-mode-menu"
               >
-                <button
-                  type="button"
-                  data-testid="issue-chat-composer-work-mode-menu-toggle"
-                  data-pending-work-mode={pendingWorkMode}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
-                    isPlanning ? "text-foreground" : "text-amber-700 dark:text-amber-300",
-                  )}
-                  onClick={() => {
-                    setPendingWorkMode((prev) => (prev === "planning" ? "standard" : "planning"));
-                    setWorkModeMenuOpen(false);
-                  }}
-                >
-                  {isPlanning ? (
-                    <Hammer className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                  ) : (
-                    <ClipboardList className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden />
-                  )}
-                  <span>{isPlanning ? "Switch to agent mode" : "Switch to plan mode"}</span>
-                </button>
+                {workModeOptions.map((option) => {
+                  const Icon = option.icon;
+                  const active = option.value === pendingWorkMode;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      data-testid={`issue-chat-composer-work-mode-menu-${option.value}`}
+                      data-pending-work-mode={pendingWorkMode}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                        active && "bg-accent",
+                        option.classes.menuItem,
+                      )}
+                      onClick={() => {
+                        setPendingWorkMode(option.value);
+                        setWorkModeMenuOpen(false);
+                      }}
+                    >
+                      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <span>{option.label}</span>
+                      {active ? <Check className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+                    </button>
+                  );
+                })}
+                <div className="mt-1 border-t px-2 py-1.5 text-[10px] text-muted-foreground">
+                  Cmd/Ctrl+. cycles modes
+                </div>
               </PopoverContent>
             </Popover>
           ) : null}

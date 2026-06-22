@@ -202,6 +202,7 @@ export const queryKeys = {
       ["management", "companies", companyId, "runs", activeOnly] as const,
   },
   instance: {
+    settings: ["instance", "settings"] as const,
     generalSettings: ["instance", "general-settings"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,

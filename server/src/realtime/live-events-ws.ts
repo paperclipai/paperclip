@@ -54,10 +54,31 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+function isWritableUpgradeSocket(socket: Duplex) {
+  const maybeWritableState = socket as Duplex & { writable?: boolean; writableEnded?: boolean; writableDestroyed?: boolean };
+  return !socket.destroyed && maybeWritableState.writable !== false && !maybeWritableState.writableEnded && !maybeWritableState.writableDestroyed;
+}
+
+function closeUpgradeSocket(socket: Duplex) {
+  if (!socket.destroyed) {
+    socket.destroy();
+  }
+}
+
 function rejectUpgrade(socket: Duplex, statusLine: string, message: string) {
   const safe = message.replace(/[\r\n]+/g, " ").trim();
-  socket.write(`HTTP/1.1 ${statusLine}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${safe}`);
-  socket.destroy();
+  if (!isWritableUpgradeSocket(socket)) {
+    closeUpgradeSocket(socket);
+    return;
+  }
+
+  try {
+    socket.once("finish", () => closeUpgradeSocket(socket));
+    socket.end(`HTTP/1.1 ${statusLine}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${safe}`);
+  } catch (err) {
+    logger.warn({ err }, "failed to reject live websocket upgrade");
+    closeUpgradeSocket(socket);
+  }
 }
 
 function parseCompanyId(pathname: string) {
@@ -234,6 +255,17 @@ export function setupLiveEventsWebSocketServer(
   });
 
   server.on("upgrade", (req, socket, head) => {
+    const onRawSocketError = (err: Error) => {
+      logger.warn({ err, path: req.url }, "live websocket upgrade socket error");
+    };
+    const cleanupRawSocketListeners = () => {
+      socket.off("error", onRawSocketError);
+      socket.off("close", cleanupRawSocketListeners);
+    };
+
+    socket.on("error", onRawSocketError);
+    socket.once("close", cleanupRawSocketListeners);
+
     if (!req.url) {
       rejectUpgrade(socket, "400 Bad Request", "missing url");
       return;
@@ -242,7 +274,7 @@ export function setupLiveEventsWebSocketServer(
     const url = new URL(req.url, "http://localhost");
     const companyId = parseCompanyId(url.pathname);
     if (!companyId) {
-      socket.destroy();
+      closeUpgradeSocket(socket);
       return;
     }
 
@@ -256,9 +288,15 @@ export function setupLiveEventsWebSocketServer(
           return;
         }
 
+        if (!isWritableUpgradeSocket(socket)) {
+          cleanupRawSocketListeners();
+          return;
+        }
+
         const reqWithContext = req as IncomingMessageWithContext;
         reqWithContext.paperclipUpgradeContext = context;
 
+        cleanupRawSocketListeners();
         wss.handleUpgrade(req, socket, head, (ws: WsSocket) => {
           wss.emit("connection", ws, reqWithContext);
         });
