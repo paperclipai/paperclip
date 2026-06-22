@@ -4,9 +4,9 @@ import {
   buildCompanyUserInlineOptions,
   buildCompanyUserLabelMap,
   buildCompanyUserProfileMap,
+  buildIssueMentionOptions,
   buildMarkdownMentionOptions,
 } from "./company-members";
-import type { AgentOrgChainHealth } from "@paperclipai/shared";
 
 const activeMember = (overrides: Partial<CompanyMember>): CompanyMember => ({
   id: overrides.id ?? "member-1",
@@ -22,15 +22,6 @@ const activeMember = (overrides: Partial<CompanyMember>): CompanyMember => ({
     : overrides.user,
   grants: overrides.grants ?? [],
 });
-
-const invalidOrgChainHealth: AgentOrgChainHealth = {
-  status: "invalid_org_chain",
-  reason: "terminated_ancestor",
-  fullChain: [],
-  firstInvalidAncestor: { id: "manager-1", name: "Manager", status: "terminated" },
-  invalidAncestors: [{ id: "manager-1", name: "Manager", status: "terminated" }],
-  repairGuidance: "Repair the reporting chain.",
-};
 
 describe("company-members helpers", () => {
   it("builds labels from company member profiles", () => {
@@ -92,22 +83,45 @@ describe("company-members helpers", () => {
     ]);
   });
 
-  it("omits invalid-org-chain agents from markdown mention options", () => {
+  it("builds issue mention options with identifier + title search text", () => {
+    const options = buildIssueMentionOptions([
+      { id: "issue-1", identifier: "PAP-102", title: "@task references" },
+      { id: "issue-2", identifier: "PAP-7", title: "" },
+    ]);
+
+    expect(options).toEqual([
+      {
+        id: "issue:issue-1",
+        name: "PAP-102 @task references",
+        kind: "issue",
+        issueId: "issue-1",
+        issueIdentifier: "PAP-102",
+      },
+      {
+        id: "issue:issue-2",
+        name: "PAP-7",
+        kind: "issue",
+        issueId: "issue-2",
+        issueIdentifier: "PAP-7",
+      },
+    ]);
+  });
+
+  it("appends issue mention options after agents and projects, preserving order", () => {
     const options = buildMarkdownMentionOptions({
-      agents: [
-        { id: "agent-1", name: "CodexCoder", status: "active", icon: "code" },
-        {
-          id: "agent-2",
-          name: "InvalidCoder",
-          status: "active",
-          icon: "code",
-          orgChainHealth: invalidOrgChainHealth,
-        },
+      agents: [{ id: "agent-1", name: "CodexCoder", status: "active", icon: "code" }],
+      projects: [{ id: "project-1", name: "Paperclip App", color: "#336699" }],
+      issues: [
+        { id: "issue-2", identifier: "PAP-50", title: "Newer" },
+        { id: "issue-1", identifier: "PAP-3", title: "Older" },
       ],
     });
 
-    expect(options).toEqual([
-      { id: "agent:agent-1", name: "CodexCoder", kind: "agent", agentId: "agent-1", agentIcon: "code" },
+    expect(options.map((option) => option.id)).toEqual([
+      "agent:agent-1",
+      "project:project-1",
+      "issue:issue-2",
+      "issue:issue-1",
     ]);
   });
 

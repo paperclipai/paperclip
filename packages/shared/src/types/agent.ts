@@ -96,6 +96,7 @@ export interface Agent {
   spentMonthlyCents: number;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
+  errorReason?: string | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;
@@ -108,6 +109,8 @@ export interface AgentDetail extends Agent {
   chainOfCommand: AgentChainOfCommandEntry[];
   access: AgentAccessState;
 }
+
+export type ClearAgentErrorResponse = Agent;
 
 export interface AgentKeyCreated {
   id: string;

@@ -2,7 +2,8 @@ import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/r
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
-import { OnboardingWizard } from "./components/OnboardingWizard";
+import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
+import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
@@ -29,6 +30,7 @@ import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
 import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
+import { BoardChat } from "./pages/BoardChat";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
 import { CloudUpstream } from "./pages/CloudUpstream";
@@ -60,9 +62,13 @@ import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
 import { useCompany } from "./context/CompanyContext";
-import { useDialogActions } from "./context/DialogContext";
+import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
-import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-route";
+import {
+  isOnboardingWizardActive,
+  shouldRedirectCompanylessRouteToOnboarding,
+} from "./lib/onboarding-route";
+import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 
 function boardRoutes() {
   return (
@@ -73,7 +79,7 @@ function boardRoutes() {
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
-      <Route path="company/settings/environments" element={<CompanyEnvironments />} />
+      <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
       <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
       <Route path="company/settings/members" element={<CompanyAccess />} />
       <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
@@ -82,6 +88,16 @@ function boardRoutes() {
       <Route path="company/export/*" element={<CompanyExport />} />
       <Route path="company/import" element={<CompanyImport />} />
       <Route path="company/settings/secrets" element={<Secrets />} />
+      <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
+      <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
+      <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />
+      <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
+      <Route path="company/settings/instance/access" element={<InstanceAccess />} />
+      <Route path="company/settings/instance/heartbeats" element={<InstanceSettings />} />
+      <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
+      <Route path="company/settings/instance/plugins" element={<PluginManager />} />
+      <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
+      <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
       <Route path="company/settings/:settingsRoutePath/*" element={<CompanySettingsPluginPage />} />
       <Route path="skills/*" element={<CompanySkills />} />
       <Route path="settings" element={<LegacySettingsRedirect />} />
@@ -120,6 +136,7 @@ function boardRoutes() {
       ) : null}
       <Route path="routines" element={<Routines />} />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
+      <Route path="routines/:routineId/:section" element={<RoutineDetail />} />
       <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/services" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
@@ -135,6 +152,15 @@ function boardRoutes() {
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
       <Route path="activity" element={<Activity />} />
+      {/* Conference Room Chat surfaces (PAP-136/PAP-137): routes stay
+          registered but redirect to the company home while the experimental
+          flag is off. The board-level `artifacts` mount below is the new
+          conference-room one; the master-level mount above it still serves
+          `/artifacts` in both modes. */}
+      <Route element={<ConferenceRoomChatGate />}>
+        <Route path="board-chat" element={<BoardChat />} />
+        <Route path="artifacts" element={<Artifacts />} />
+      </Route>
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
@@ -158,13 +184,59 @@ function InboxRootRedirect() {
 
 function LegacySettingsRedirect() {
   const location = useLocation();
-  return <Navigate to={`/instance/settings/general${location.search}${location.hash}`} replace />;
+  const { companies, selectedCompany, loading } = useCompany();
+  const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+
+  if (loading) {
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+  }
+
+  const targetCompany =
+    (companyPrefix
+      ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase())
+      : null) ??
+    selectedCompany ??
+    companies[0] ??
+    null;
+
+  if (!targetCompany) {
+    if (
+      shouldRedirectCompanylessRouteToOnboarding({
+        pathname: location.pathname,
+        hasCompanies: false,
+      })
+    ) {
+      return <Navigate to="/onboarding" replace />;
+    }
+    return <NoCompaniesStartPage />;
+  }
+
+  const normalizedPath = normalizeRememberedInstanceSettingsPath(
+    `${location.pathname}${location.search}${location.hash}`,
+  );
+
+  return (
+    <Navigate
+      to={`/${targetCompany.issuePrefix}${normalizedPath}`}
+      replace
+    />
+  );
 }
 
 function OnboardingRoutePage() {
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
+  const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+
+  // The OnboardingWizard auto-opens on this route (and can also be opened
+  // explicitly). While it is showing it covers the whole screen, so the
+  // launcher card below must not stay interactive behind it — otherwise users
+  // can tab/click through to the form behind the modal (PAP-52). The launcher
+  // only needs to render as a re-entry point once the wizard is dismissed.
+  if (isOnboardingWizardActive({ onboardingOpen, routeDismissed: onboardingRouteDismissed })) {
+    return null;
+  }
   const matchedCompany = companyPrefix
     ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
     : null;
@@ -292,18 +364,9 @@ export function App() {
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
           <Route path="onboarding" element={<OnboardingRoutePage />} />
-          <Route path="instance" element={<Navigate to="/instance/settings/general" replace />} />
-          <Route path="instance/settings" element={<Layout />}>
-            <Route index element={<Navigate to="general" replace />} />
-            <Route path="profile" element={<ProfileSettings />} />
-            <Route path="general" element={<InstanceGeneralSettings />} />
-            <Route path="access" element={<InstanceAccess />} />
-            <Route path="heartbeats" element={<InstanceSettings />} />
-            <Route path="experimental" element={<InstanceExperimentalSettings />} />
-            <Route path="plugins" element={<PluginManager />} />
-            <Route path="plugins/:pluginId" element={<PluginSettings />} />
-            <Route path="adapters" element={<AdapterManager />} />
-          </Route>
+          <Route path="instance" element={<LegacySettingsRedirect />} />
+          <Route path="instance/settings" element={<LegacySettingsRedirect />} />
+          <Route path="instance/settings/*" element={<LegacySettingsRedirect />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
@@ -340,7 +403,7 @@ export function App() {
           <Route path="*" element={<NotFoundPage scope="global" />} />
         </Route>
       </Routes>
-      <OnboardingWizard />
+      <OnboardingWizardVariant />
     </>
   );
 }

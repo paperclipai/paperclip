@@ -42,7 +42,6 @@
     "diff"
   ],
   "scripts": {
-    "postinstall": "node ../../../scripts/link-plugin-dev-sdk.mjs",
     "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "tsc && node ./scripts/build-ui.mjs",
     "clean": "rm -rf dist",
@@ -56,7 +55,7 @@
     "@pierre/diffs": "^1.1.22"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
+    "@types/node": "^22.19.21",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "esbuild": "^0.28.0",

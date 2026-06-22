@@ -18,9 +18,12 @@ const BOARD_ROUTE_ROOTS = new Set([
   "usage",
   "activity",
   "inbox",
+  "board-chat",
+  "artifacts",
   "u",
   "design-guide",
   "search",
+  "settings",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

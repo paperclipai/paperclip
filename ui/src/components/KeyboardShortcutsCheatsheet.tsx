@@ -3,7 +3,21 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 interface ShortcutEntry {
   keys: string[];
   label: string;
+  /** Render keys as a simultaneous chord (joined with "+") rather than a
+   *  "then" sequence. */
+  combo?: boolean;
 }
+
+// Platform-appropriate label for the Cmd/Ctrl modifier so the cheatsheet shows
+// the same key the user actually presses (re-pointed in the collapsible sidebar
+// work — Cmd/Ctrl+B toggles the rail).
+function getPlatformLabel() {
+  if (typeof navigator === "undefined") return "";
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  return nav.userAgentData?.platform || navigator.userAgent || "";
+}
+
+const META_KEY = /Mac|iPhone|iPad|iPod/.test(getPlatformLabel()) ? "⌘" : "Ctrl";
 
 interface ShortcutSection {
   title: string;
@@ -41,6 +55,7 @@ const sections: ShortcutSection[] = [
       { keys: ["/"], label: "Search current page or quick search" },
       { keys: ["c"], label: "New task" },
       { keys: ["["], label: "Toggle sidebar" },
+      { keys: [META_KEY, "B"], label: "Collapse or expand sidebar", combo: true },
       { keys: ["]"], label: "Toggle panel" },
       { keys: ["?"], label: "Show keyboard shortcuts" },
     ],
@@ -74,7 +89,11 @@ export function KeyboardShortcutsCheatsheetContent() {
                   <div className="flex items-center gap-1">
                     {shortcut.keys.map((key, i) => (
                       <span key={key} className="flex items-center gap-1">
-                        {i > 0 && <span className="text-xs text-muted-foreground">then</span>}
+                        {i > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            {shortcut.combo ? "+" : "then"}
+                          </span>
+                        )}
                         <KeyCap>{key}</KeyCap>
                       </span>
                     ))}

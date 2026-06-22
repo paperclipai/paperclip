@@ -19,6 +19,7 @@ vi.mock("@daytonaio/sdk", () => ({
 }));
 
 import plugin from "./plugin.js";
+import manifest from "./manifest.js";
 
 function createMockSandbox(overrides: {
   id?: string;
@@ -495,5 +496,26 @@ describe("Daytona sandbox provider plugin", () => {
       stdout: "",
       stderr: "command timed out\n",
     });
+  });
+});
+
+describe("daytona manifest memory config", () => {
+  const memorySchema = (
+    manifest.environmentDrivers?.[0]?.configSchema as {
+      properties?: Record<string, { type?: string; enum?: unknown[] }>;
+      required?: string[];
+    }
+  );
+
+  it("offers memory as a fixed dropdown of supported sandbox sizes", () => {
+    expect(memorySchema.properties?.memory?.enum).toEqual([1, 2, 4, 8]);
+  });
+
+  it("excludes 0 — an invalid Daytona memory configuration", () => {
+    expect(memorySchema.properties?.memory?.enum).not.toContain(0);
+  });
+
+  it("keeps memory optional so the blank/default selection stays valid", () => {
+    expect(memorySchema.required ?? []).not.toContain("memory");
   });
 });

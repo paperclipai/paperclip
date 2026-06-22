@@ -37,7 +37,8 @@ export function InstanceGeneralSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
+      { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings" },
       { label: "General" },
     ]);
   }, [setBreadcrumbs]);
