@@ -21,7 +21,7 @@ import {
   type Issue,
   type Project,
 } from "@paperclipai/plugin-sdk";
-import { SpanStatusCode, type Span } from "@opentelemetry/api";
+import { SpanStatusCode, type Span, type Meter } from "@opentelemetry/api";
 import type { ObservabilityConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { JOB_KEYS, METRIC_NAMES } from "./constants.js";
@@ -292,6 +292,184 @@ function createRouter(): EventTelemetryRouter {
 // Plugin definition
 // ---------------------------------------------------------------------------
 
+
+/**
+ * Register all observable gauges against the given Meter. Called from setup()
+ * and again from onConfigChanged() after the SDK is reinitialised, so the
+ * gauge callbacks are always bound to the *current* Meter. Without re-binding,
+ * a config reload swaps in a fresh Meter and the gauges registered on the old
+ * (torn-down) Meter would silently stop reporting.
+ */
+function registerObservableGauges(meter: Meter): void {
+    const agentCountGauge = meter.createObservableGauge(
+      METRIC_NAMES.agentsCount,
+      { description: "Number of agents by status" },
+    );
+    agentCountGauge.addCallback((obs) => {
+      const seen = new Map<string, { count: number; companyId: string; status: string }>();
+      for (const snap of agentSnapshots) {
+        const key = `${snap.companyId}:${snap.status}`;
+        const entry = seen.get(key);
+        if (entry) {
+          entry.count++;
+        } else {
+          seen.set(key, { count: 1, companyId: snap.companyId, status: snap.status });
+        }
+      }
+      for (const { count, companyId, status } of seen.values()) {
+        obs.observe(count, { status, company_id: companyId });
+      }
+    });
+
+    const heartbeatAgeGauge = meter.createObservableGauge(
+      METRIC_NAMES.agentsHeartbeatAge,
+      { description: "Seconds since last agent heartbeat", unit: "s" },
+    );
+    heartbeatAgeGauge.addCallback((obs) => {
+      for (const snap of agentSnapshots) {
+        if (snap.heartbeatAgeSec != null) {
+          obs.observe(snap.heartbeatAgeSec, {
+            agent_id: snap.agentId,
+            agent_name: snap.agentName,
+            agent_role: snap.agentRole,
+            company_id: snap.companyId,
+          });
+        }
+      }
+    });
+
+    const budgetUtilGauge = meter.createObservableGauge(
+      METRIC_NAMES.budgetUtilization,
+      { description: "Budget utilization percentage" },
+    );
+    budgetUtilGauge.addCallback((obs) => {
+      for (const snap of agentSnapshots) {
+        if (snap.budgetMonthlyCents > 0) {
+          const utilPct = (snap.spentMonthlyCents / snap.budgetMonthlyCents) * 100;
+          obs.observe(utilPct, {
+            agent_id: snap.agentId,
+            agent_name: snap.agentName,
+            company_id: snap.companyId,
+            scope: "agent",
+          });
+        }
+      }
+    });
+
+    const budgetRemainingGauge = meter.createObservableGauge(
+      METRIC_NAMES.budgetRemaining,
+      { description: "Remaining budget in cents", unit: "cent" },
+    );
+    budgetRemainingGauge.addCallback((obs) => {
+      for (const snap of agentSnapshots) {
+        if (snap.budgetMonthlyCents > 0) {
+          obs.observe(snap.budgetMonthlyCents - snap.spentMonthlyCents, {
+            agent_id: snap.agentId,
+            agent_name: snap.agentName,
+            company_id: snap.companyId,
+          });
+        }
+      }
+    });
+
+    const issueCountGauge = meter.createObservableGauge(
+      METRIC_NAMES.issuesCount,
+      { description: "Number of issues by status and project" },
+    );
+    issueCountGauge.addCallback((obs) => {
+      for (const snap of issueSnapshots) {
+        obs.observe(snap.count, {
+          status: snap.status,
+          project_id: snap.projectId,
+          project_name: snap.projectName,
+          company_id: snap.companyId,
+        });
+      }
+    });
+
+    const approvalsPendingGauge = meter.createObservableGauge(
+      METRIC_NAMES.approvalsPending,
+      { description: "Number of pending approvals" },
+    );
+    approvalsPendingGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.approvalsPending, { company_id: snap.companyId });
+      }
+    });
+
+    const budgetIncidentsGauge = meter.createObservableGauge(
+      METRIC_NAMES.budgetIncidentsActive,
+      { description: "Number of active budget incidents" },
+    );
+    budgetIncidentsGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.budgetIncidentsActive, {
+          company_id: snap.companyId,
+        });
+      }
+    });
+
+    const companyBudgetUtilGauge = meter.createObservableGauge(
+      METRIC_NAMES.companyBudgetUtilization,
+      { description: "Company-level budget utilization percentage" },
+    );
+    companyBudgetUtilGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.companyBudgetUtilPct, {
+          company_id: snap.companyId,
+        });
+      }
+    });
+
+    const pausedAgentsGauge = meter.createObservableGauge(
+      METRIC_NAMES.budgetPausedAgents,
+      { description: "Number of agents paused due to budget" },
+    );
+    pausedAgentsGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.pausedAgentCount, { company_id: snap.companyId });
+      }
+    });
+
+    const pausedProjectsGauge = meter.createObservableGauge(
+      METRIC_NAMES.budgetPausedProjects,
+      { description: "Number of projects paused due to budget" },
+    );
+    pausedProjectsGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.pausedProjectCount, { company_id: snap.companyId });
+      }
+    });
+
+    const healthScoreGauge = meter.createObservableGauge(
+      METRIC_NAMES.agentHealthScore,
+      { description: "Agent health score (0-100)" },
+    );
+    healthScoreGauge.addCallback((obs) => {
+      for (const snap of healthScoreSnapshots) {
+        obs.observe(snap.score, {
+          agent_id: snap.agentId,
+          agent_name: snap.agentName,
+          agent_role: snap.agentRole,
+          company_id: snap.companyId,
+          health_status: snap.healthStatus,
+        });
+      }
+    });
+
+    const serverHealthGauge = meter.createObservableGauge(
+      METRIC_NAMES.serverHealthScore,
+      { description: "Server health score (100 if healthy, 0 if error)" },
+    );
+    serverHealthGauge.addCallback((obs) => {
+      obs.observe(serverHealthSnapshot.score, {
+        db_reachable: String(serverHealthSnapshot.dbReachable),
+        otel_initialized: String(serverHealthSnapshot.otelSdkInitialized),
+      });
+    });
+
+}
+
 const plugin: PaperclipPlugin = definePlugin({
   async setup(pluginCtx: PluginContext) {
     ctx = pluginCtx;
@@ -385,7 +563,11 @@ const plugin: PaperclipPlugin = definePlugin({
 
     for (const eventType of eventTypes) {
       ctx.events.on(eventType, async (event) => {
-        if (!telemetryCtx) return;
+        // `telemetryCtx` is captured once, but its meter/tracer/otelLogger
+        // getters dereference the live `otel` handle. A failed onConfigChanged()
+        // sets `otel = null`, so dispatching here would throw a TypeError inside
+        // the getters. Guard on the live handle, not just the captured context.
+        if (!telemetryCtx || !otel) return;
         eventsProcessed++;
         await router.dispatch(event, telemetryCtx);
       });
@@ -394,174 +576,8 @@ const plugin: PaperclipPlugin = definePlugin({
     // ----- Register observable gauges (read from snapshots) -----
 
     if (otel) {
-    const agentCountGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.agentsCount,
-      { description: "Number of agents by status" },
-    );
-    agentCountGauge.addCallback((obs) => {
-      const seen = new Map<string, { count: number; companyId: string; status: string }>();
-      for (const snap of agentSnapshots) {
-        const key = `${snap.companyId}:${snap.status}`;
-        const entry = seen.get(key);
-        if (entry) {
-          entry.count++;
-        } else {
-          seen.set(key, { count: 1, companyId: snap.companyId, status: snap.status });
-        }
-      }
-      for (const { count, companyId, status } of seen.values()) {
-        obs.observe(count, { status, company_id: companyId });
-      }
-    });
-
-    const heartbeatAgeGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.agentsHeartbeatAge,
-      { description: "Seconds since last agent heartbeat", unit: "s" },
-    );
-    heartbeatAgeGauge.addCallback((obs) => {
-      for (const snap of agentSnapshots) {
-        if (snap.heartbeatAgeSec != null) {
-          obs.observe(snap.heartbeatAgeSec, {
-            agent_id: snap.agentId,
-            agent_name: snap.agentName,
-            agent_role: snap.agentRole,
-            company_id: snap.companyId,
-          });
-        }
-      }
-    });
-
-    const budgetUtilGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.budgetUtilization,
-      { description: "Budget utilization percentage" },
-    );
-    budgetUtilGauge.addCallback((obs) => {
-      for (const snap of agentSnapshots) {
-        if (snap.budgetMonthlyCents > 0) {
-          const utilPct = (snap.spentMonthlyCents / snap.budgetMonthlyCents) * 100;
-          obs.observe(utilPct, {
-            agent_id: snap.agentId,
-            agent_name: snap.agentName,
-            company_id: snap.companyId,
-            scope: "agent",
-          });
-        }
-      }
-    });
-
-    const budgetRemainingGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.budgetRemaining,
-      { description: "Remaining budget in cents", unit: "cent" },
-    );
-    budgetRemainingGauge.addCallback((obs) => {
-      for (const snap of agentSnapshots) {
-        if (snap.budgetMonthlyCents > 0) {
-          obs.observe(snap.budgetMonthlyCents - snap.spentMonthlyCents, {
-            agent_id: snap.agentId,
-            agent_name: snap.agentName,
-            company_id: snap.companyId,
-          });
-        }
-      }
-    });
-
-    const issueCountGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.issuesCount,
-      { description: "Number of issues by status and project" },
-    );
-    issueCountGauge.addCallback((obs) => {
-      for (const snap of issueSnapshots) {
-        obs.observe(snap.count, {
-          status: snap.status,
-          project_id: snap.projectId,
-          project_name: snap.projectName,
-          company_id: snap.companyId,
-        });
-      }
-    });
-
-    const approvalsPendingGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.approvalsPending,
-      { description: "Number of pending approvals" },
-    );
-    approvalsPendingGauge.addCallback((obs) => {
-      for (const snap of governanceSnapshots) {
-        obs.observe(snap.approvalsPending, { company_id: snap.companyId });
-      }
-    });
-
-    const budgetIncidentsGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.budgetIncidentsActive,
-      { description: "Number of active budget incidents" },
-    );
-    budgetIncidentsGauge.addCallback((obs) => {
-      for (const snap of governanceSnapshots) {
-        obs.observe(snap.budgetIncidentsActive, {
-          company_id: snap.companyId,
-        });
-      }
-    });
-
-    const companyBudgetUtilGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.companyBudgetUtilization,
-      { description: "Company-level budget utilization percentage" },
-    );
-    companyBudgetUtilGauge.addCallback((obs) => {
-      for (const snap of governanceSnapshots) {
-        obs.observe(snap.companyBudgetUtilPct, {
-          company_id: snap.companyId,
-        });
-      }
-    });
-
-    const pausedAgentsGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.budgetPausedAgents,
-      { description: "Number of agents paused due to budget" },
-    );
-    pausedAgentsGauge.addCallback((obs) => {
-      for (const snap of governanceSnapshots) {
-        obs.observe(snap.pausedAgentCount, { company_id: snap.companyId });
-      }
-    });
-
-    const pausedProjectsGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.budgetPausedProjects,
-      { description: "Number of projects paused due to budget" },
-    );
-    pausedProjectsGauge.addCallback((obs) => {
-      for (const snap of governanceSnapshots) {
-        obs.observe(snap.pausedProjectCount, { company_id: snap.companyId });
-      }
-    });
-
-    const healthScoreGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.agentHealthScore,
-      { description: "Agent health score (0-100)" },
-    );
-    healthScoreGauge.addCallback((obs) => {
-      for (const snap of healthScoreSnapshots) {
-        obs.observe(snap.score, {
-          agent_id: snap.agentId,
-          agent_name: snap.agentName,
-          agent_role: snap.agentRole,
-          company_id: snap.companyId,
-          health_status: snap.healthStatus,
-        });
-      }
-    });
-
-    const serverHealthGauge = otel.meter.createObservableGauge(
-      METRIC_NAMES.serverHealthScore,
-      { description: "Server health score (100 if healthy, 0 if error)" },
-    );
-    serverHealthGauge.addCallback((obs) => {
-      obs.observe(serverHealthSnapshot.score, {
-        db_reachable: String(serverHealthSnapshot.dbReachable),
-        otel_initialized: String(serverHealthSnapshot.otelSdkInitialized),
-      });
-    });
-
-    } // end if (otel) — gauge registration
+      registerObservableGauges(otel.meter);
+    }
 
     // ----- Register collect-metrics job (refreshes snapshots) -----
 
@@ -628,7 +644,14 @@ const plugin: PaperclipPlugin = definePlugin({
         }
 
         const issueBuckets = new Map<string, IssueSnapshot>();
-        issueContextMap.clear();
+        // Accumulate into a fresh map and swap it in synchronously at the end.
+        // Clearing issueContextMap up front and repopulating across `await`
+        // boundaries would leave a window where concurrent event dispatch (cost
+        // attribution, delegation linking) sees empty issue context.
+        const nextIssueContext = new Map<
+          string,
+          { projectId: string; identifier: string; title: string; parentId?: string }
+        >();
 
         for (const company of companies) {
           const issues = await ctx.issues.list({
@@ -656,7 +679,7 @@ const plugin: PaperclipPlugin = definePlugin({
             // Build issue context map for cost attribution and delegation linking
             // The Issue SDK type does not expose parentId, but the API always returns it.
             const issueWithParent = issue as Issue & { parentId?: string };
-            issueContextMap.set(issue.id, {
+            nextIssueContext.set(issue.id, {
               projectId,
               identifier: issue.identifier ?? "",
               title: issue.title ?? "",
@@ -664,6 +687,11 @@ const plugin: PaperclipPlugin = definePlugin({
             });
           }
         }
+
+        // Atomic swap: no `await` between clear and refill, so dispatchers never
+        // observe a partially-populated map.
+        issueContextMap.clear();
+        for (const [id, octx] of nextIssueContext) issueContextMap.set(id, octx);
 
         issueSnapshots = Array.from(issueBuckets.values());
         ctx.logger.info("Issue count snapshots updated", {
@@ -877,6 +905,10 @@ const plugin: PaperclipPlugin = definePlugin({
     try {
       otel = initOTel(config);
       lastError = null;
+      // Re-bind the observable gauges to the new Meter. The originals were
+      // registered against the previous (now shut-down) Meter in setup(); if we
+      // don't re-register here the gauges silently stop reporting after a reload.
+      registerObservableGauges(otel.meter);
       ctx?.logger.info("OTel SDK reinitialised with new config");
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);

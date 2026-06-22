@@ -179,6 +179,9 @@ describe("worker", () => {
 
     it("logs activity on successful initialization", async () => {
       const mockCtx = createMockPluginContext();
+      // The init activity.log is guarded behind a real companyId (we no longer
+      // emit with a hardcoded/empty company), so the mock must surface one.
+      mockCtx.companies.list.mockResolvedValue([{ id: "company-1" }]);
       await holder.definition.setup(mockCtx);
 
       expect(mockCtx.activity.log).toHaveBeenCalled();
