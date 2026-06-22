@@ -181,7 +181,12 @@ ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98
 # binary, never fails the run. PR kkroo/paperclip-adapter-opencode-k8s#31;
 # 33794ca's parent is ce9b7b8 (no regress). Local adapter verification:
 # job-manifest.test.ts (102 tests) and typecheck passed.
-ARG OPENCODE_K8S_REF=33794ca1eaa6af7e6bcc9e5e9b276472d0f8d247
+# Bumped 2026-06-22 to b5b99fd (v0.2.5): no-task workspace_subpath runs now
+# use ephemeral emptyDir DB storage instead of a shared _no_task_ DB, while
+# issue-scoped runs keep durable DBs. Also resets DB/WAL/SHM when combined
+# size exceeds 500 MiB. PR kkroo/paperclip-adapter-opencode-k8s#32; local
+# adapter verification passed focused tests, typecheck, build, and full tests.
+ARG OPENCODE_K8S_REF=b5b99fdb419695e47403374679a7bf6a547e64af
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
