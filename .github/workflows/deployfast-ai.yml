@@ -88,16 +88,19 @@ jobs:
     - name: Push Docker image
       run: docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
 
+    - name: Create staging namespace
+      run: kubectl create namespace staging --dry-run=client -o yaml | kubectl apply -f -
+
     - name: Deploy to Staging
       run: |
         echo "Deploying ghcr.io/${{ github.repository }}:${{ github.sha }} to staging"
         kubectl apply -f k8s/staging/deployment.yaml --record
-        kubectl rollout status deployment/deployfast-ai-staging
+        kubectl rollout status deployment/paperclip-staging -n staging
 
     - name: Verify staging deployment
       run: |
-        kubectl get pods -n staging
-        curl -sSf http://staging.deployfast.ai/api/health
+        kubectl get pods -n staging -l app=paperclip
+        curl -sSf http://staging.paperclip.ai/api/health
 
     - name: Run smoke tests
       run: npm test
@@ -129,28 +132,27 @@ jobs:
       run: |
         echo "Deploying canary (10% traffic) for v${{ github.event.inputs.version }}"
         kubectl apply -f k8s/production/canary.yaml --record
-        kubectl rollout status deployment/deployfast-ai-canary
-        sleep 60  # Wait for canary to stabilize
+        kubectl rollout status deployment/paperclip-canary -n production
+        sleep 60
 
     - name: Verify canary metrics
       run: |
-        kubectl get pods -n production -l app=deployfast-ai-canary
-        curl -sSf http://canary.deployfast.ai/api/health
-        # Add metrics verification logic here
+        kubectl get pods -n production -l app=paperclip,track=canary
+        curl -sSf http://canary.paperclip.ai/api/health
 
     - name: Full production rollout
       if: success()
       run: |
         echo "Rolling out v${{ github.event.inputs.version }} to 100% traffic"
-        kubectl apply -f k8s/production/deployment.yaml --record
-        kubectl rollout status deployment/deployfast-ai-production
+        kubectl set image deployment/paperclip-production -n production paperclip=ghcr.io/${{ github.repository }}:v${{ github.event.inputs.version }} --record
+        kubectl rollout status deployment/paperclip-production -n production
 
     - name: Rollback if needed
       if: failure()
       run: |
         echo "Rolling back due to canary failure"
-        kubectl rollout undo deployment/deployfast-ai-production
-        kubectl rollout status deployment/deployfast-ai-production
+        kubectl rollout undo deployment/paperclip-production -n production
+        kubectl rollout status deployment/paperclip-production -n production
         exit 1
 
     - name: Run production validation
@@ -159,8 +161,7 @@ jobs:
     - name: Setup monitoring
       run: |
         kubectl apply -f k8s/production/monitoring.yaml
-        # Verify metrics are being collected
-        curl -sSf http://metrics.deployfast.ai/api/health
+        curl -sSf http://monitoring.paperclip.ai/api/health
 
     - name: Notify team
       run: |

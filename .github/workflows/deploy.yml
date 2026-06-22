@@ -46,10 +46,18 @@ jobs:
       - name: Pull Docker image
         run: docker pull ghcr.io/${{ github.repository }}:${{ steps.get_image_tag.outputs.IMAGE_TAG }}
 
+      - name: Create k8s namespace
+        run: kubectl create namespace staging --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Deploy to Staging
-        run: echo "Simulating deployment of ghcr.io/${{ github.repository }}:${{ steps.get_image_tag.outputs.IMAGE_TAG }} to staging"
-        # Placeholder for actual deployment commands to staging environment
+        run: |
+          kubectl set image deployment/paperclip-staging -n staging paperclip=ghcr.io/${{ github.repository }}:${{ steps.get_image_tag.outputs.IMAGE_TAG }} --record
+          kubectl rollout status deployment/paperclip-staging -n staging
+
+      - name: Verify Staging Deployment
+        run: |
+          kubectl get pods -n staging -l app=paperclip
+          curl -sSf http://staging.paperclip.ai/api/health
 
       - name: Run Staging Smoke Tests
-        run: echo "Running smoke tests on staging environment..."
-        # Placeholder for actual smoke tests
+        run: npm test

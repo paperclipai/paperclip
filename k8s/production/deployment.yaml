@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paperclip-production
+  namespace: production
+  labels:
+    app: paperclip
+    environment: production
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: paperclip
+      environment: production
+  template:
+    metadata:
+      labels:
+        app: paperclip
+        environment: production
+    spec:
+      containers:
+      - name: paperclip
+        image: ghcr.io/paperclipai/paperclip:vVERSION_PLACEHOLDER
+        ports:
+        - containerPort: 3100
+        env:
+        - name: NODE_ENV
+          value: production
+        - name: HOST
+          value: "0.0.0.0"
+        - name: PORT
+          value: "3100"
+        - name: SERVE_UI
+          value: "true"
+        - name: PAPERCLIP_DEPLOYMENT_MODE
+          value: "authenticated"
+        - name: PAPERCLIP_DEPLOYMENT_EXPOSURE
+          value: "private"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: paperclip-db
+              key: url
+        - name: BETTER_AUTH_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: paperclip-auth
+              key: secret
+        - name: PAPERCLIP_PUBLIC_URL
+          value: "https://paperclip.ai"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 3100
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 3100
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: paperclip-production
+  namespace: production
+  labels:
+    app: paperclip
+    environment: production
+spec:
+  selector:
+    app: paperclip
+    environment: production
+  ports:
+  - port: 3100
+    targetPort: 3100
+  type: ClusterIP
