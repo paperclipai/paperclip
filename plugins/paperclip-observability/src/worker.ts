@@ -777,18 +777,25 @@ const plugin: PaperclipPlugin = definePlugin({
           otelSdkInitialized,
         });
 
-        await ctx.activity.log({
-          companyId: "",
-          message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${govSnapshots.length} governance snapshots, ${healthSnapshots.length} health scores, ${eventsProcessed} events processed since startup`,
-        });
+        const jobCompanyId = companies[0]?.id;
+        if (jobCompanyId) {
+          await ctx.activity.log({
+            companyId: jobCompanyId,
+            message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${govSnapshots.length} governance snapshots, ${healthSnapshots.length} health scores, ${eventsProcessed} events processed since startup`,
+          });
+        }
       },
     );
 
-    await ctx.activity.log({
-      companyId: "",
-      message:
-        "Observability plugin initialised and subscribed to domain events",
-    });
+    const initCompanies = await ctx.companies.list({ limit: 1, offset: 0 });
+    const initCompanyId = initCompanies[0]?.id;
+    if (initCompanyId) {
+      await ctx.activity.log({
+        companyId: initCompanyId,
+        message:
+          "Observability plugin initialised and subscribed to domain events",
+      });
+    }
   },
 
   async onHealth(): Promise<PluginHealthDiagnostics> {
