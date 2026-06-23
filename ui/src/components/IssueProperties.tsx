@@ -28,6 +28,7 @@ import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
 import { formatMonitorOffset } from "../lib/issue-monitor";
 import { formatRetryReason } from "../lib/runRetryState";
+import { useCancelScheduledRetryMutation } from "../hooks/useCancelScheduledRetryMutation";
 import { useRetryNowMutation } from "../hooks/useRetryNowMutation";
 import { RetryErrorBand } from "./IssueScheduledRetryCard";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
@@ -64,7 +65,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2, ScanEye } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2, ScanEye, Ban } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import {
@@ -1428,6 +1429,7 @@ export function IssueProperties({
 
   const scheduledRetry = issue.scheduledRetry ?? null;
   const retryNow = useRetryNowMutation(issue.id);
+  const cancelRetry = useCancelScheduledRetryMutation(issue.id);
   const showScheduledRetryRow = scheduledRetry && scheduledRetry.status === "scheduled_retry";
   const scheduledRetryDueAtIso = scheduledRetry?.scheduledRetryAt
     ? new Date(scheduledRetry.scheduledRetryAt).toISOString()
@@ -1458,6 +1460,9 @@ export function IssueProperties({
   })();
   const scheduledRetryRetryNowSuccess = retryNow.isSuccess
     && (retryNow.data?.outcome === "promoted" || retryNow.data?.outcome === "already_promoted");
+  const scheduledRetryCancelSuccess = cancelRetry.isSuccess
+    && (cancelRetry.data?.outcome === "cancelled" || cancelRetry.data?.outcome === "already_cancelled");
+  const scheduledRetryControlsSettled = scheduledRetryRetryNowSuccess || scheduledRetryCancelSuccess;
   const scheduledRetryAttemptBadge = scheduledRetryAttempt !== null ? (
     <span className="text-xs text-muted-foreground">Attempt {scheduledRetryAttempt}</span>
   ) : null;
@@ -1547,40 +1552,83 @@ export function IssueProperties({
           retryNow.mutate();
         }}
       />
+      <RetryErrorBand
+        error={cancelRetry.lastError}
+        title="Couldn't cancel retry"
+        testId="issue-scheduled-retry-properties-cancel-error-band"
+        onRetry={() => {
+          cancelRetry.reset();
+          cancelRetry.mutate();
+        }}
+      />
       <Separator className="my-1" />
       <div className="flex items-center justify-between gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="default"
-          onClick={() => retryNow.mutate()}
-          disabled={retryNow.isPending || scheduledRetryRetryNowSuccess}
-          data-testid="issue-scheduled-retry-properties-retry-now"
-        >
-          {retryNow.isPending ? (
-            <span className="inline-flex items-center gap-1.5">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              Retrying…
-            </span>
-          ) : scheduledRetryRetryNowSuccess ? (
-            <span className="inline-flex items-center gap-1.5">
-              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-              {retryNow.data?.outcome === "already_promoted" ? "Already promoted" : "Promoted"}
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1.5">
-              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-              Retry now
-            </span>
-          )}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="default"
+            onClick={() => retryNow.mutate()}
+            disabled={retryNow.isPending || cancelRetry.isPending || scheduledRetryControlsSettled}
+            data-testid="issue-scheduled-retry-properties-retry-now"
+          >
+            {retryNow.isPending ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                Retrying…
+              </span>
+            ) : scheduledRetryRetryNowSuccess ? (
+              <span className="inline-flex items-center gap-1.5">
+                <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                {retryNow.data?.outcome === "already_promoted" ? "Already promoted" : "Promoted"}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5">
+                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                Retry now
+              </span>
+            )}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="border-rose-500/30 text-rose-700 shadow-none hover:bg-rose-500/10 dark:text-rose-300"
+            onClick={() => cancelRetry.mutate()}
+            disabled={retryNow.isPending || cancelRetry.isPending || scheduledRetryControlsSettled}
+            data-testid="issue-scheduled-retry-properties-cancel"
+          >
+            {cancelRetry.isPending ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                Cancelling…
+              </span>
+            ) : scheduledRetryCancelSuccess ? (
+              <span className="inline-flex items-center gap-1.5">
+                <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                {cancelRetry.data?.outcome === "already_cancelled" ? "Already cancelled" : "Cancelled"}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5">
+                <Ban className="h-3.5 w-3.5" aria-hidden="true" />
+                Cancel retry
+              </span>
+            )}
+          </Button>
+        </div>
         <span className="text-right text-xs text-muted-foreground">
           {retryNow.isPending
             ? "Promoting scheduled retry"
+            : cancelRetry.isPending
+              ? "Cancelling scheduled retry"
             : scheduledRetryRetryNowSuccess
               ? retryNow.data?.outcome === "already_promoted"
                 ? "Already promoted — run starting"
                 : "Promoted — run starting"
+              : scheduledRetryCancelSuccess
+                ? cancelRetry.data?.outcome === "already_cancelled"
+                  ? "Already cancelled — retry will not start"
+                  : "Cancelled — retry will not start"
               : scheduledRetryIsContinuation
                 ? "Pulls continuation forward immediately"
                 : "Pulls retry forward immediately"}

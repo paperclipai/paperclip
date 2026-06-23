@@ -7020,6 +7020,141 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  async function cancelScheduledRetry(input: {
+    issueId: string;
+    actor?: { actorType?: "user" | "agent" | "system"; actorId?: string | null };
+  }) {
+    const issue = await db
+      .select({ id: issues.id, companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, input.issueId))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) throw notFound("Issue not found");
+
+    const scheduled = await getIssueRetryRun(issue.companyId, issue.id, ["scheduled_retry"]);
+    if (!scheduled) {
+      const alreadyPromoted = await getIssueRetryRun(issue.companyId, issue.id, ["queued", "running"]);
+      if (alreadyPromoted) {
+        return {
+          outcome: "already_promoted" as const,
+          message: "Scheduled retry was already promoted",
+          scheduledRetry: summarizeIssueScheduledRetryRun(alreadyPromoted),
+        };
+      }
+      const alreadyCancelled = await getIssueRetryRun(issue.companyId, issue.id, ["cancelled"]);
+      if (alreadyCancelled) {
+        return {
+          outcome: "already_cancelled" as const,
+          message: "Scheduled retry was already cancelled",
+          scheduledRetry: summarizeIssueScheduledRetryRun(alreadyCancelled),
+        };
+      }
+      return {
+        outcome: "no_scheduled_retry" as const,
+        message: "No live scheduled retry exists for this issue",
+        scheduledRetry: null,
+      };
+    }
+
+    const now = new Date();
+    const reason = "Scheduled retry cancelled by board request";
+    const cancelled = await db.transaction(async (tx) => {
+      const row = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: reason,
+          errorCode: "scheduled_retry_cancelled",
+          updatedAt: now,
+        })
+        .where(and(eq(heartbeatRuns.id, scheduled.run.id), eq(heartbeatRuns.status, "scheduled_retry")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+
+      if (row.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: reason,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, row.wakeupRequestId));
+      }
+
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.companyId, issue.companyId),
+            eq(issues.id, issue.id),
+            eq(issues.executionRunId, row.id),
+          ),
+        );
+
+      return row;
+    });
+
+    if (cancelled?.status === "cancelled") {
+      await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "scheduled retry cancelled",
+        payload: {
+          issueId: issue.id,
+          scheduledRetryAttempt: cancelled.scheduledRetryAttempt,
+          scheduledRetryAt: cancelled.scheduledRetryAt
+            ? new Date(cancelled.scheduledRetryAt).toISOString()
+            : null,
+          scheduledRetryReason: cancelled.scheduledRetryReason,
+          requestedByActorType: input.actor?.actorType ?? null,
+          requestedByActorId: input.actor?.actorId ?? null,
+        },
+      });
+
+      return {
+        outcome: "cancelled" as const,
+        message: "Scheduled retry was cancelled",
+        scheduledRetry: summarizeIssueScheduledRetryRun({
+          run: cancelled,
+          agentName: scheduled.agentName,
+        }),
+      };
+    }
+
+    const alreadyPromoted = await getIssueRetryRun(issue.companyId, issue.id, ["queued", "running"]);
+    if (alreadyPromoted) {
+      return {
+        outcome: "already_promoted" as const,
+        message: "Scheduled retry was already promoted",
+        scheduledRetry: summarizeIssueScheduledRetryRun(alreadyPromoted),
+      };
+    }
+    const alreadyCancelled = await getIssueRetryRun(issue.companyId, issue.id, ["cancelled"]);
+    if (alreadyCancelled) {
+      return {
+        outcome: "already_cancelled" as const,
+        message: "Scheduled retry was already cancelled",
+        scheduledRetry: summarizeIssueScheduledRetryRun(alreadyCancelled),
+      };
+    }
+    return {
+      outcome: "no_scheduled_retry" as const,
+      message: "No live scheduled retry exists for this issue",
+      scheduledRetry: null,
+    };
+  }
+
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
@@ -12197,6 +12332,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reapOrphanedRuns,
 
     promoteDueScheduledRetries,
+    cancelScheduledRetry,
     retryScheduledRetryNow,
 
     resumeQueuedRuns,

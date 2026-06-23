@@ -36,6 +36,8 @@ const mockIssuesApi = vi.hoisted(() => ({
   createLabel: vi.fn(),
   upsertWatchdog: vi.fn(),
   deleteWatchdog: vi.fn(),
+  retryScheduledRetryNow: vi.fn(),
+  cancelScheduledRetry: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -407,6 +409,8 @@ describe("IssueProperties", () => {
     }));
     mockIssuesApi.upsertWatchdog.mockResolvedValue({});
     mockIssuesApi.deleteWatchdog.mockResolvedValue({ ok: true });
+    mockIssuesApi.retryScheduledRetryNow.mockReset();
+    mockIssuesApi.cancelScheduledRetry.mockReset();
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableTaskWatchdogs: false,
@@ -480,6 +484,72 @@ describe("IssueProperties", () => {
     });
     await flush();
     expect(onUpdate).toHaveBeenCalledWith({ assigneeAgentId: "agent-2", assigneeUserId: null });
+
+    act(() => root.unmount());
+  });
+
+  it("shows scheduled retry actions in issue properties and cancels the retry", async () => {
+    mockIssuesApi.cancelScheduledRetry.mockResolvedValue({
+      outcome: "cancelled",
+      message: "Scheduled retry was cancelled",
+      scheduledRetry: {
+        runId: "run-retry-1",
+        status: "cancelled",
+        agentId: "agent-1",
+        agentName: "ClaudeCoder",
+        retryOfRunId: "run-prev-1",
+        scheduledRetryAt: "2026-04-18T20:15:00.000Z",
+        scheduledRetryAttempt: 4,
+        scheduledRetryReason: "transient_failure",
+        retryExhaustedReason: null,
+        error: "Upstream provider rate limited",
+        errorCode: "rate_limited",
+      },
+    });
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        scheduledRetry: {
+          runId: "run-retry-1",
+          status: "scheduled_retry",
+          agentId: "agent-1",
+          agentName: "ClaudeCoder",
+          retryOfRunId: "run-prev-1",
+          scheduledRetryAt: "2026-04-18T20:15:00.000Z",
+          scheduledRetryAttempt: 4,
+          scheduledRetryReason: "transient_failure",
+          retryExhaustedReason: null,
+          error: "Upstream provider rate limited",
+          errorCode: "rate_limited",
+        },
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Scheduled retry");
+    expect(container.textContent).toContain("Attempt 4");
+    expect(container.textContent).toContain("Retry now");
+    expect(container.textContent).toContain("Cancel retry");
+
+    const cancelButton = container.querySelector<HTMLButtonElement>(
+      '[data-testid="issue-scheduled-retry-properties-cancel"]',
+    );
+    expect(cancelButton).not.toBeNull();
+    await act(async () => {
+      cancelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.cancelScheduledRetry).toHaveBeenCalledWith("issue-1");
+      expect(cancelButton!.textContent).toContain("Cancelled");
+      expect(cancelButton!.disabled).toBe(true);
+      const retryButton = container.querySelector<HTMLButtonElement>(
+        '[data-testid="issue-scheduled-retry-properties-retry-now"]',
+      );
+      expect(retryButton?.disabled).toBe(true);
+    });
 
     act(() => root.unmount());
   });

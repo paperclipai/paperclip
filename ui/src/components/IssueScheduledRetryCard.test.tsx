@@ -5,11 +5,16 @@ import type { ComponentProps, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { IssueRetryNowOutcome, IssueScheduledRetry } from "@paperclipai/shared";
+import type {
+  IssueCancelScheduledRetryOutcome,
+  IssueRetryNowOutcome,
+  IssueScheduledRetry,
+} from "@paperclipai/shared";
 import { IssueScheduledRetryCard } from "./IssueScheduledRetryCard";
 import { ToastProvider } from "../context/ToastContext";
 
 const retryNowMock = vi.hoisted(() => vi.fn());
+const cancelRetryMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string } & ComponentProps<"a">) => (
@@ -20,7 +25,13 @@ vi.mock("@/lib/router", () => ({
 vi.mock("../api/issues", () => ({
   issuesApi: {
     retryScheduledRetryNow: retryNowMock,
+    cancelScheduledRetry: cancelRetryMock,
   },
+}));
+
+vi.mock("../context/ToastContext", () => ({
+  ToastProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+  useToastActions: () => ({ pushToast: vi.fn() }),
 }));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -63,12 +74,39 @@ function buildRetryResponse(outcome: IssueRetryNowOutcome) {
   };
 }
 
+function buildCancelResponse(outcome: IssueCancelScheduledRetryOutcome) {
+  return {
+    outcome,
+    message:
+      outcome === "cancelled"
+        ? "Scheduled retry was cancelled"
+        : outcome === "already_cancelled"
+          ? "Scheduled retry was already cancelled"
+          : outcome === "already_promoted"
+            ? "Scheduled retry was already promoted"
+            : "No scheduled retry",
+    scheduledRetry:
+      outcome === "cancelled" || outcome === "already_cancelled"
+        ? { ...baseRetry, status: "cancelled" as const }
+        : outcome === "already_promoted"
+          ? { ...baseRetry, status: "queued" as const }
+          : null,
+  };
+}
+
 async function waitForUi(assertion: () => void) {
   await vi.waitFor(async () => {
     await act(async () => {
       await Promise.resolve();
     });
     assertion();
+  });
+}
+
+async function clickAndFlush(button: HTMLButtonElement) {
+  await act(async () => {
+    button.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
@@ -99,6 +137,7 @@ function renderWithProviders(ui: ReactNode) {
 beforeEach(() => {
   dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(SYSTEM_NOW);
   retryNowMock.mockReset();
+  cancelRetryMock.mockReset();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -117,6 +156,12 @@ function getCard() {
 function getRetryNowButton() {
   return container.querySelector<HTMLButtonElement>(
     '[data-testid="issue-scheduled-retry-card-retry-now"]',
+  );
+}
+
+function getCancelButton() {
+  return container.querySelector<HTMLButtonElement>(
+    '[data-testid="issue-scheduled-retry-card-cancel"]',
   );
 }
 
@@ -148,6 +193,7 @@ describe("IssueScheduledRetryCard", () => {
     expect(text).toContain("Transient failure");
     expect(text).toContain("Automatic retry in 15m");
     expect(text).toContain("run-prev");
+    expect(text).toContain("Cancel retry");
   });
 
   it("uses continuation copy for max-turn continuations", () => {
@@ -182,14 +228,13 @@ describe("IssueScheduledRetryCard", () => {
     const button = getRetryNowButton();
     expect(button).not.toBeNull();
 
-    act(() => {
-      button!.click();
-    });
+    await clickAndFlush(button!);
     await waitForRetryButtonText("Promoted");
     expect(retryNowMock).toHaveBeenCalledWith("issue-1");
     const finalButton = getRetryNowButton();
     expect(finalButton!.textContent ?? "").toContain("Promoted");
     expect(finalButton!.disabled).toBe(true);
+    expect(getCancelButton()!.disabled).toBe(true);
   });
 
   it("shows already promoted state when backend reports duplicate click", async () => {
@@ -197,9 +242,7 @@ describe("IssueScheduledRetryCard", () => {
     renderWithProviders(
       <IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />,
     );
-    act(() => {
-      getRetryNowButton()!.click();
-    });
+    await clickAndFlush(getRetryNowButton()!);
     await waitForRetryButtonText("Already promoted");
     expect(getRetryNowButton()!.textContent ?? "").toContain("Already promoted");
     expect(container.querySelector('[data-testid="issue-scheduled-retry-error-band"]')).toBeNull();
@@ -210,9 +253,7 @@ describe("IssueScheduledRetryCard", () => {
     renderWithProviders(
       <IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />,
     );
-    act(() => {
-      getRetryNowButton()!.click();
-    });
+    await clickAndFlush(getRetryNowButton()!);
     await waitForUi(() => {
       const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
       expect(band).not.toBeNull();
@@ -226,14 +267,72 @@ describe("IssueScheduledRetryCard", () => {
     renderWithProviders(
       <IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />,
     );
-    act(() => {
-      getRetryNowButton()!.click();
-    });
+    await clickAndFlush(getRetryNowButton()!);
     await waitForUi(() => {
       const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
       expect(band).not.toBeNull();
       expect((band?.textContent ?? "")).toContain("Promotion suppressed");
       expect(getRetryNowButton()!.disabled).toBe(false);
+    });
+  });
+
+  it("invokes cancel retry and shows cancelled state on success", async () => {
+    cancelRetryMock.mockResolvedValue(buildCancelResponse("cancelled"));
+    renderWithProviders(
+      <IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />,
+    );
+    const button = getCancelButton();
+    expect(button).not.toBeNull();
+
+    await clickAndFlush(button!);
+    await waitForUi(() => {
+      expect(getCancelButton()!.textContent ?? "").toContain("Cancelled");
+      expect(getCancelButton()!.disabled).toBe(true);
+      expect(getRetryNowButton()!.disabled).toBe(true);
+      expect(getCard()!.textContent ?? "").toContain("retry will not start");
+    });
+    expect(cancelRetryMock).toHaveBeenCalledWith("issue-1");
+  });
+
+  it("shows already cancelled state when backend reports a duplicate cancel", async () => {
+    cancelRetryMock.mockResolvedValue(buildCancelResponse("already_cancelled"));
+    renderWithProviders(
+      <IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />,
+    );
+    await clickAndFlush(getCancelButton()!);
+    await waitForUi(() => {
+      expect(getCancelButton()!.textContent ?? "").toContain("Already cancelled");
+      expect(getCancelButton()!.disabled).toBe(true);
+      expect(container.querySelector('[data-testid="issue-scheduled-retry-cancel-error-band"]')).toBeNull();
+    });
+  });
+
+  it("renders an inline cancel error band on backend failure", async () => {
+    cancelRetryMock.mockRejectedValue(new Error("Server error"));
+    renderWithProviders(
+      <IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />,
+    );
+    await clickAndFlush(getCancelButton()!);
+    await waitForUi(() => {
+      const band = container.querySelector('[data-testid="issue-scheduled-retry-cancel-error-band"]');
+      expect(band).not.toBeNull();
+      expect((band?.textContent ?? "")).toContain("Couldn't cancel retry");
+      expect((band?.textContent ?? "")).toContain("Server error");
+      expect(getCancelButton()!.disabled).toBe(false);
+    });
+  });
+
+  it("surfaces already-promoted cancel outcomes via the inline error band", async () => {
+    cancelRetryMock.mockResolvedValue(buildCancelResponse("already_promoted"));
+    renderWithProviders(
+      <IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />,
+    );
+    await clickAndFlush(getCancelButton()!);
+    await waitForUi(() => {
+      const band = container.querySelector('[data-testid="issue-scheduled-retry-cancel-error-band"]');
+      expect(band).not.toBeNull();
+      expect((band?.textContent ?? "")).toContain("Scheduled retry was already promoted");
+      expect(getCancelButton()!.disabled).toBe(false);
     });
   });
 });

@@ -1,11 +1,12 @@
-import { Clock, RotateCcw, AlertCircle, Loader2, CheckCircle2 } from "lucide-react";
+import { Clock, RotateCcw, AlertCircle, Loader2, CheckCircle2, Ban } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { cn, formatDateTime } from "@/lib/utils";
 import { formatMonitorOffset } from "@/lib/issue-monitor";
 import { formatRetryReason } from "@/lib/runRetryState";
 import type { IssueScheduledRetry } from "@paperclipai/shared";
-import { useRetryNowMutation, type RetryNowError } from "../hooks/useRetryNowMutation";
+import { useCancelScheduledRetryMutation } from "../hooks/useCancelScheduledRetryMutation";
+import { useRetryNowMutation } from "../hooks/useRetryNowMutation";
 
 const MAX_TURN_CONTINUATION = "max_turns_continuation";
 
@@ -27,6 +28,7 @@ export function IssueScheduledRetryCard({
   scheduledRetry,
 }: IssueScheduledRetryCardProps) {
   const retryNow = useRetryNowMutation(issueId);
+  const cancelRetry = useCancelScheduledRetryMutation(issueId);
 
   if (!scheduledRetry || !issueId) return null;
   if (scheduledRetry.status !== "scheduled_retry") return null;
@@ -63,8 +65,12 @@ export function IssueScheduledRetryCard({
     ? "Pulls continuation forward immediately"
     : "Pulls retry forward immediately";
   const isError = retryNow.isError || retryNow.lastError !== null;
+  const isCancelError = cancelRetry.isError || cancelRetry.lastError !== null;
   const isSuccessTransient = retryNow.isSuccess
     && (retryNow.data?.outcome === "promoted" || retryNow.data?.outcome === "already_promoted");
+  const isCancelSuccess = cancelRetry.isSuccess
+    && (cancelRetry.data?.outcome === "cancelled" || cancelRetry.data?.outcome === "already_cancelled");
+  const controlsSettled = isSuccessTransient || isCancelSuccess;
 
   return (
     <div
@@ -117,41 +123,86 @@ export function IssueScheduledRetryCard({
               }}
             />
           ) : null}
+          {isCancelError ? (
+            <RetryErrorBand
+              error={cancelRetry.lastError}
+              title="Couldn't cancel retry"
+              testId="issue-scheduled-retry-cancel-error-band"
+              onRetry={() => {
+                cancelRetry.reset();
+                cancelRetry.mutate();
+              }}
+            />
+          ) : null}
         </div>
         <div className="flex flex-col items-stretch gap-1 sm:items-end">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="shrink-0 shadow-none"
-            onClick={() => retryNow.mutate()}
-            disabled={retryNow.isPending || isSuccessTransient}
-            data-testid="issue-scheduled-retry-card-retry-now"
-          >
-            {retryNow.isPending ? (
-              <span className="inline-flex items-center gap-1.5">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                Retrying…
-              </span>
-            ) : isSuccessTransient ? (
-              <span className="inline-flex items-center gap-1.5">
-                <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-                {retryNow.data?.outcome === "already_promoted" ? "Already promoted" : "Promoted"}
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5">
-                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                Retry now
-              </span>
-            )}
-          </Button>
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0 shadow-none"
+              onClick={() => retryNow.mutate()}
+              disabled={retryNow.isPending || cancelRetry.isPending || controlsSettled}
+              data-testid="issue-scheduled-retry-card-retry-now"
+            >
+              {retryNow.isPending ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  Retrying…
+                </span>
+              ) : isSuccessTransient ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  {retryNow.data?.outcome === "already_promoted" ? "Already promoted" : "Promoted"}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5">
+                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  Retry now
+                </span>
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0 border-rose-500/30 text-rose-700 shadow-none hover:bg-rose-500/10 dark:text-rose-300"
+              onClick={() => cancelRetry.mutate()}
+              disabled={retryNow.isPending || cancelRetry.isPending || controlsSettled}
+              data-testid="issue-scheduled-retry-card-cancel"
+            >
+              {cancelRetry.isPending ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  Cancelling…
+                </span>
+              ) : isCancelSuccess ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  {cancelRetry.data?.outcome === "already_cancelled" ? "Already cancelled" : "Cancelled"}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5">
+                  <Ban className="h-3.5 w-3.5" aria-hidden="true" />
+                  Cancel retry
+                </span>
+              )}
+            </Button>
+          </div>
           <span className="text-right text-xs text-muted-foreground sm:max-w-[12rem]">
             {retryNow.isPending
               ? "Promoting scheduled retry"
+              : cancelRetry.isPending
+                ? "Cancelling scheduled retry"
               : isSuccessTransient
                 ? retryNow.data?.outcome === "already_promoted"
                   ? "Already promoted — run starting"
                   : "Promoted — run starting"
+                : isCancelSuccess
+                  ? cancelRetry.data?.outcome === "already_cancelled"
+                    ? "Already cancelled — retry will not start"
+                    : "Cancelled — retry will not start"
                 : helperIdle}
           </span>
         </div>
@@ -161,12 +212,20 @@ export function IssueScheduledRetryCard({
 }
 
 interface RetryErrorBandProps {
-  error: RetryNowError | null;
+  error: { message: string } | null;
   onRetry: () => void;
   className?: string;
+  title?: string;
+  testId?: string;
 }
 
-export function RetryErrorBand({ error, onRetry, className }: RetryErrorBandProps) {
+export function RetryErrorBand({
+  error,
+  onRetry,
+  className,
+  title = "Couldn't retry now",
+  testId = "issue-scheduled-retry-error-band",
+}: RetryErrorBandProps) {
   if (!error) return null;
   return (
     <div
@@ -175,11 +234,11 @@ export function RetryErrorBand({ error, onRetry, className }: RetryErrorBandProp
         className,
       )}
       role="alert"
-      data-testid="issue-scheduled-retry-error-band"
+      data-testid={testId}
     >
       <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1">
-        <div className="font-medium">Couldn't retry now</div>
+        <div className="font-medium">{title}</div>
         <div className="mt-0.5 text-muted-foreground">{error.message}</div>
       </div>
       <button

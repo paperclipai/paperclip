@@ -4528,6 +4528,13 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/issues/{id}/scheduled-retry/cancel",
+  tags: ["issues"],
+  summary: "Cancel a scheduled issue retry",
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/issues/{id}/monitor/check-now",
   tags: ["issues"],
   summary: "Run an issue monitor check now",

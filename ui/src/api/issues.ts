@@ -9,6 +9,7 @@ import type {
   FeedbackVote,
   Issue,
   IssueAttachment,
+  IssueCancelScheduledRetryResponse,
   IssueCostSummary,
   IssueComment,
   IssueDocument,
@@ -188,6 +189,8 @@ export const issuesApi = {
   checkMonitorNow: (id: string) => api.post<{ ok: true }>(`/issues/${id}/monitor/check-now`, {}),
   retryScheduledRetryNow: (id: string) =>
     api.post<IssueRetryNowResponse>(`/issues/${id}/scheduled-retry/retry-now`, {}),
+  cancelScheduledRetry: (id: string) =>
+    api.post<IssueCancelScheduledRetryResponse>(`/issues/${id}/scheduled-retry/cancel`, {}),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {

@@ -287,6 +287,111 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     });
   });
 
+  it("cancels the existing scheduled retry and treats duplicate cancels as idempotent", async () => {
+    const { companyId, issueId, retryRunId } = await seedIssueWithRetry();
+    const app = createApp(boardActor(companyId));
+
+    const first = await request(app).post(`/api/issues/${issueId}/scheduled-retry/cancel`).send({});
+
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body).toMatchObject({
+      outcome: "cancelled",
+      scheduledRetry: {
+        runId: retryRunId,
+        status: "cancelled",
+        errorCode: "scheduled_retry_cancelled",
+      },
+    });
+
+    const [run] = await db
+      .select({
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, retryRunId));
+    expect(run).toEqual({
+      status: "cancelled",
+      error: "Scheduled retry cancelled by board request",
+      errorCode: "scheduled_retry_cancelled",
+    });
+
+    const [wakeup] = await db
+      .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.runId, retryRunId));
+    expect(wakeup).toEqual({
+      status: "cancelled",
+      error: "Scheduled retry cancelled by board request",
+    });
+
+    const [issue] = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issue).toEqual({
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const [activity] = await db
+      .select({ action: activityLog.action, entityId: activityLog.entityId, runId: activityLog.runId })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activity).toEqual({
+      action: "issue.scheduled_retry_cancel",
+      entityId: issueId,
+      runId: retryRunId,
+    });
+
+    const second = await request(app).post(`/api/issues/${issueId}/scheduled-retry/cancel`).send({});
+
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.body).toMatchObject({
+      outcome: "already_cancelled",
+      scheduledRetry: {
+        runId: retryRunId,
+        status: "cancelled",
+      },
+    });
+  });
+
+  it("returns a clear no-op response when cancelling without a scheduled retry", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "NOCANCEL",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "No retry",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 1,
+      identifier: "NOCANCEL-1",
+    });
+
+    const res = await request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/scheduled-retry/cancel`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      outcome: "no_scheduled_retry",
+      scheduledRetry: null,
+    });
+  });
+
   it("reports already-promoted retries without creating another run", async () => {
     const { companyId, issueId, retryRunId } = await seedIssueWithRetry({ retryStatus: "queued" });
 
@@ -302,6 +407,29 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
         status: "queued",
       },
     });
+  });
+
+  it("reports already-promoted retries on cancel without cancelling the active retry", async () => {
+    const { companyId, issueId, retryRunId } = await seedIssueWithRetry({ retryStatus: "queued" });
+
+    const res = await request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/scheduled-retry/cancel`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      outcome: "already_promoted",
+      scheduledRetry: {
+        runId: retryRunId,
+        status: "queued",
+      },
+    });
+
+    const [run] = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, retryRunId));
+    expect(run).toEqual({ status: "queued", errorCode: null });
   });
 
   it("uses normal promotion gates and records gate-suppressed retries", async () => {
@@ -348,11 +476,31 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     expect(res.status).toBe(403);
   });
 
+  it("requires board access for scheduled retry cancel", async () => {
+    const { companyId, agentId, issueId } = await seedIssueWithRetry();
+
+    const res = await request(createApp(agentActor(companyId, agentId)))
+      .post(`/api/issues/${issueId}/scheduled-retry/cancel`)
+      .send({});
+
+    expect(res.status).toBe(403);
+  });
+
   it("enforces company scoping for retry-now", async () => {
     const { issueId } = await seedIssueWithRetry();
 
     const res = await request(createApp(boardActor(randomUUID())))
       .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
+      .send({});
+
+    expect(res.status).toBe(403);
+  });
+
+  it("enforces company scoping for scheduled retry cancel", async () => {
+    const { issueId } = await seedIssueWithRetry();
+
+    const res = await request(createApp(boardActor(randomUUID())))
+      .post(`/api/issues/${issueId}/scheduled-retry/cancel`)
       .send({});
 
     expect(res.status).toBe(403);

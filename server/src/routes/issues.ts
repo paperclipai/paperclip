@@ -5628,6 +5628,44 @@ export function issueRoutes(
     res.json(result);
   });
 
+  router.post("/issues/:id/scheduled-retry/cancel", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const actor = getActorInfo(req);
+    const result = await heartbeat.cancelScheduledRetry({
+      issueId: issue.id,
+      actor: {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "issue.scheduled_retry_cancel",
+      entityType: "issue",
+      entityId: issue.id,
+      agentId: result.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+      runId: result.scheduledRetry?.runId ?? null,
+      details: {
+        outcome: result.outcome,
+        message: result.message,
+        scheduledRetry: result.scheduledRetry,
+      },
+    });
+
+    res.json(result);
+  });
+
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);

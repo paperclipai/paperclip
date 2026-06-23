@@ -386,6 +386,18 @@ export interface IssueRetryNowResponse {
   scheduledRetry: IssueScheduledRetry | null;
 }
 
+export type IssueCancelScheduledRetryOutcome =
+  | "cancelled"
+  | "already_cancelled"
+  | "already_promoted"
+  | "no_scheduled_retry";
+
+export interface IssueCancelScheduledRetryResponse {
+  outcome: IssueCancelScheduledRetryOutcome;
+  message: string;
+  scheduledRetry: IssueScheduledRetry | null;
+}
+
 export interface IssueRelation {
   id: string;
   companyId: string;

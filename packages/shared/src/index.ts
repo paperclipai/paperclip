@@ -561,6 +561,8 @@ export type {
   SuccessfulRunHandoffStateKind,
   IssueScheduledRetry,
   IssueScheduledRetryStatus,
+  IssueCancelScheduledRetryOutcome,
+  IssueCancelScheduledRetryResponse,
   IssueRetryNowOutcome,
   IssueRetryNowResponse,
   IssueReferenceSource,
