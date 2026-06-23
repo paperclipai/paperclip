@@ -9,7 +9,20 @@ import {
 import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+const MODELS_DISCOVERY_TIMEOUT_DEFAULT_MS = 20_000;
+
+// XIP-4690: the 20s enumeration timeout was hardcoded, so when the shared local
+// host is saturated (the daily research fan-out spawns several `opencode`
+// processes at once) the wrapper trips even though `opencode models` is healthy.
+// Make it configurable so operators can relax it under known-heavy load.
+function resolveModelsDiscoveryTimeoutMs(): number {
+  const raw = process.env.PAPERCLIP_OPENCODE_MODELS_TIMEOUT_MS;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    const parsed = Math.floor(Number(raw));
+    if (Number.isFinite(parsed) && parsed >= 1_000) return parsed;
+  }
+  return MODELS_DISCOVERY_TIMEOUT_DEFAULT_MS;
+}
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -21,6 +34,10 @@ function resolveOpenCodeCommand(input: unknown): string {
 }
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
+// XIP-4690: single-flight de-duplication. On a cold cache a simultaneous
+// fan-out (N agents) would each spawn `opencode models`; sharing one in-flight
+// promise per cache key collapses that to a single spawn.
+const inFlightDiscoveries = new Map<string, Promise<AdapterModel[]>>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
 
@@ -94,13 +111,17 @@ function hashValue(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function discoveryCacheKey(command: string, cwd: string, env: Record<string, string>) {
+// XIP-4690: the cache key intentionally omits `cwd`. The model list is a
+// function of the opencode binary and its provider auth (env), not the working
+// directory, so keying on cwd meant distinct researcher cwds never shared a
+// cached result and each re-enumerated under load.
+function discoveryCacheKey(command: string, env: Record<string, string>) {
   const envKey = Object.entries(env)
     .filter(([key]) => !isVolatileEnvKey(key))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}=${hashValue(value)}`)
     .join("\n");
-  return `${command}\n${cwd}\n${envKey}`;
+  return `${command}\n${envKey}`;
 }
 
 function pruneExpiredDiscoveryCache(now: number) {
@@ -132,6 +153,7 @@ export async function discoverOpenCodeModels(input: {
   // Prevent OpenCode from writing an opencode.json into the working directory.
   const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
 
+  const timeoutMs = resolveModelsDiscoveryTimeoutMs();
   const result = await runChildProcess(
     `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     command,
@@ -139,14 +161,14 @@ export async function discoverOpenCodeModels(input: {
     {
       cwd,
       env: runtimeEnv,
-      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
-      graceSec: 3,
+      timeoutSec: timeoutMs / 1000,
+      graceSec: 5,
       onLog: async () => {},
     },
   );
 
   if (result.timedOut) {
-    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
+    throw new Error(`\`opencode models\` timed out after ${timeoutMs / 1000}s.`);
   }
   if ((result.exitCode ?? 1) !== 0) {
     const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
@@ -164,15 +186,28 @@ export async function discoverOpenCodeModelsCached(input: {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const key = discoveryCacheKey(command, cwd, env);
+  const key = discoveryCacheKey(command, env);
   const now = Date.now();
   pruneExpiredDiscoveryCache(now);
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
 
-  const models = await discoverOpenCodeModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
-  return models;
+  // Single-flight: if a discovery for this key is already running, await it
+  // instead of spawning a second `opencode models`.
+  const inFlight = inFlightDiscoveries.get(key);
+  if (inFlight) return inFlight;
+
+  const discovery = (async () => {
+    const models = await discoverOpenCodeModels({ command, cwd, env });
+    discoveryCache.set(key, { expiresAt: Date.now() + MODELS_CACHE_TTL_MS, models });
+    return models;
+  })();
+  inFlightDiscoveries.set(key, discovery);
+  try {
+    return await discovery;
+  } finally {
+    inFlightDiscoveries.delete(key);
+  }
 }
 
 export function isTruthyEnvFlag(value: string | undefined): boolean {
@@ -229,4 +264,5 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
 
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
+  inFlightDiscoveries.clear();
 }
