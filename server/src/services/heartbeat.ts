@@ -3103,40 +3103,66 @@ export function heartbeatService(db: Db) {
             // livelock (~$196 burned). Chain-wake only advances the queue to a
             // *different* task; re-running the same one is the next external
             // trigger's job, not this immediate re-fire's.
-            const nextTask = await db
-              .select()
-              .from(issues)
-              .where(
-                and(
-                  eq(issues.companyId, agent.companyId),
-                  eq(issues.assigneeAgentId, agent.id),
-                  ne(issues.id, issueId),
-                  inArray(issues.status, ["in_progress", "in_review", "todo"]),
-                ),
-              )
-              .orderBy(
-                sql`CASE ${issues.status} WHEN 'in_progress' THEN 0 WHEN 'in_review' THEN 1 ELSE 2 END`,
-                asc(issues.createdAt),
-              )
-              .limit(1)
-              .then((rows) => rows[0] ?? null);
-            if (nextTask) {
+            //
+            // SECOND GUARD (AA-1611) — suppress chain-wake after a *no-progress*
+            // run (one that made zero tool calls). The `ne(issues.id, issueId)`
+            // guard above only breaks a 1-cycle (re-firing the same task); two
+            // no-skill verify tasks both runnable form a 2-cycle: run A →
+            // chain-wake selects B (≠A, passes the guard) → run B → chain-wake
+            // selects A → … forever. Each run is a no-skill short-circuit that
+            // emits text and succeeds without touching the worktree. A run that
+            // called no tools advanced nothing, so it must not advance the
+            // queue — that breaks the 2-cycle (and any N-cycle) at the source.
+            // For the claude_local adapter the CLI `result` event reports
+            // `num_turns`; a single-turn text reply with no tool round-trip is
+            // `num_turns <= 1` (empirically: real work is always >= 2). When
+            // turns can't be measured (other adapters / missing field), fall
+            // back to the prior behaviour and allow the chain-wake.
+            const numTurnsRaw = adapterResult.resultJson?.num_turns;
+            const numTurns =
+              typeof numTurnsRaw === "number" ? numTurnsRaw : Number(numTurnsRaw);
+            const lastRunMadeNoProgress = Number.isFinite(numTurns) && numTurns <= 1;
+            if (lastRunMadeNoProgress) {
               logger.info(
-                { agentId: agent.id, nextTaskId: nextTask.id, nextTaskIdentifier: nextTask.identifier },
-                "chain-waking agent for next queued task",
+                { agentId: agent.id, issueId, numTurns },
+                "skipping chain-wake — last run made zero tool calls (no-progress run must not advance the queue; AA-1611 N-cycle guard)",
               );
-              await enqueueWakeup(agent.id, {
-                source: "automation",
-                triggerDetail: "callback",
-                reason: "queue_chain",
-                payload: { issueId: nextTask.id, mutation: "chain_wake" },
-                contextSnapshot: { issueId: nextTask.id, source: "queue.chain" },
-              }).catch((err: unknown) =>
-                logger.warn(
-                  { err, agentId: agent.id, nextTaskId: nextTask.id },
-                  "failed to chain-wake agent on queue continuation",
-                ),
-              );
+            } else {
+              const nextTask = await db
+                .select()
+                .from(issues)
+                .where(
+                  and(
+                    eq(issues.companyId, agent.companyId),
+                    eq(issues.assigneeAgentId, agent.id),
+                    ne(issues.id, issueId),
+                    inArray(issues.status, ["in_progress", "in_review", "todo"]),
+                  ),
+                )
+                .orderBy(
+                  sql`CASE ${issues.status} WHEN 'in_progress' THEN 0 WHEN 'in_review' THEN 1 ELSE 2 END`,
+                  asc(issues.createdAt),
+                )
+                .limit(1)
+                .then((rows) => rows[0] ?? null);
+              if (nextTask) {
+                logger.info(
+                  { agentId: agent.id, nextTaskId: nextTask.id, nextTaskIdentifier: nextTask.identifier },
+                  "chain-waking agent for next queued task",
+                );
+                await enqueueWakeup(agent.id, {
+                  source: "automation",
+                  triggerDetail: "callback",
+                  reason: "queue_chain",
+                  payload: { issueId: nextTask.id, mutation: "chain_wake" },
+                  contextSnapshot: { issueId: nextTask.id, source: "queue.chain" },
+                }).catch((err: unknown) =>
+                  logger.warn(
+                    { err, agentId: agent.id, nextTaskId: nextTask.id },
+                    "failed to chain-wake agent on queue continuation",
+                  ),
+                );
+              }
             }
           }
         }
