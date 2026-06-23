@@ -7,7 +7,6 @@ import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
-  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
@@ -51,6 +50,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
+import { resolveAgentDefaultMaxConcurrentRuns } from "../services/agent-concurrency-defaults.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
@@ -1027,7 +1027,7 @@ export function agentRoutes(
       heartbeat.enabled = false;
     }
     if (parseNumberLike(heartbeat.maxConcurrentRuns) == null) {
-      heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+      heartbeat.maxConcurrentRuns = resolveAgentDefaultMaxConcurrentRuns();
     }
 
     normalizedRuntimeConfig.heartbeat = heartbeat;
