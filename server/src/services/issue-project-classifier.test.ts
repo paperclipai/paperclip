@@ -3,7 +3,8 @@ import {
   suggestProjectsForIssue,
   type ClassifierProject,
   type ProjectSignal,
-} from "./issue-project-classifier";
+  type ProjectSuggestion,
+} from "./issue-project-classifier.js";
 
 // Fixtures modelled on the real Tony AI Lab project set (TON-2266 grounding).
 const PROJECTS: ClassifierProject[] = [
@@ -115,7 +116,7 @@ describe("suggestProjectsForIssue", () => {
       SIGNALS,
       { excludeProjectIds: ["p-uncl"] },
     );
-    expect(result.suggestions.every((s) => s.projectId !== "p-uncl")).toBe(true);
+    expect(result.suggestions.every((s: ProjectSuggestion) => s.projectId !== "p-uncl")).toBe(true);
     expect(result.topConfident?.projectId).not.toBe("p-uncl");
   });
 
@@ -129,7 +130,7 @@ describe("suggestProjectsForIssue", () => {
       archived,
       SIGNALS,
     );
-    expect(result.suggestions.every((s) => s.projectId !== "p-old")).toBe(true);
+    expect(result.suggestions.every((s: ProjectSuggestion) => s.projectId !== "p-old")).toBe(true);
   });
 
   it("returns empty when there are no eligible candidate projects", () => {

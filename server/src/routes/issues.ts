@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, notInArray, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -104,6 +104,11 @@ import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
+import {
+  suggestProjectsForIssue,
+  type ClassifierProject,
+  type ProjectSignal,
+} from "../services/issue-project-classifier.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
   createCompanySearchRateLimiter,
@@ -2395,6 +2400,76 @@ export function issueRoutes(
       mentionedProjects,
       currentExecutionWorkspace,
       workProducts,
+    });
+  });
+
+  // TON-2266 Phase 2: ranked project suggestions for an (usually unclassified)
+  // issue, from the dependency-free heuristic classifier. Read-only — it never
+  // mutates the issue; the UI applies a pick via the existing PATCH /issues/:id.
+  router.get("/issues/:id/project-suggestions", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const projectRows = await projectsSvc.list(issue.companyId);
+    const projects: ClassifierProject[] = projectRows.map((p) => ({
+      id: p.id,
+      name: p.name,
+      description: p.description ?? null,
+      status: p.status ?? null,
+    }));
+
+    // Anchor the per-project term profiles with already-classified issues.
+    // Bounded direct read (lightweight columns only); the classifier further
+    // caps anchors per project. Exclude the issue under classification itself.
+    const ANCHOR_LIMIT = 1000;
+    const anchorRows = await db
+      .select({
+        projectId: issueRows.projectId,
+        title: issueRows.title,
+        description: issueRows.description,
+      })
+      .from(issueRows)
+      .where(
+        and(
+          eq(issueRows.companyId, issue.companyId),
+          isNotNull(issueRows.projectId),
+          ne(issueRows.id, issue.id),
+        ),
+      )
+      .orderBy(desc(issueRows.updatedAt))
+      .limit(ANCHOR_LIMIT);
+
+    const signalMap = new Map<string, ProjectSignal>();
+    for (const row of anchorRows) {
+      if (!row.projectId) continue;
+      let signal = signalMap.get(row.projectId);
+      if (!signal) {
+        signal = { projectId: row.projectId, issues: [] };
+        signalMap.set(row.projectId, signal);
+      }
+      signal.issues.push({ title: row.title, description: row.description });
+    }
+    const signals: ProjectSignal[] = [...signalMap.values()];
+
+    const result = suggestProjectsForIssue(
+      { id: issue.id, title: issue.title, description: issue.description },
+      projects,
+      signals,
+      // Don't re-suggest the project it's already in (if any).
+      issue.projectId ? { excludeProjectIds: [issue.projectId] } : {},
+    );
+
+    res.json({
+      issueId: issue.id,
+      currentProjectId: issue.projectId ?? null,
+      alreadyClassified: Boolean(issue.projectId),
+      candidateProjectCount: projects.length,
+      ...result,
     });
   });
 
