@@ -122,6 +122,8 @@ export const queryKeys = {
     runs: (id: string) => ["routines", "runs", id] as const,
     revisions: (id: string) => ["routines", "revisions", id] as const,
     activity: (companyId: string, id: string) => ["routines", "activity", companyId, id] as const,
+    documentAnnotations: (routineId: string, key: "description", status: "open" | "resolved" | "all" = "all") =>
+      ["routines", "document-annotations", routineId, key, status] as const,
   },
   executionWorkspaces: {
     list: (companyId: string, filters?: Record<string, string | boolean | undefined>) =>
@@ -138,6 +140,13 @@ export const queryKeys = {
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+  },
+  externalObjects: {
+    byIssue: (issueId: string) => ["external-objects", "by-issue", issueId] as const,
+    issueSummary: (issueId: string) => ["external-objects", "issue-summary", issueId] as const,
+    issueSummaries: (companyId: string, issueIds: readonly string[]) =>
+      ["external-objects", "issue-summaries", companyId, issueIds] as const,
+    projectSummary: (projectId: string) => ["external-objects", "project-summary", projectId] as const,
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,

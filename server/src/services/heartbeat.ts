@@ -841,6 +841,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
 function leaseReleaseStatusForRunStatus(
   status: string | null | undefined,
 ): Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> {
+  if (status === "cancelled") return "expired";
   return status === "failed" || status === "timed_out" ? "failed" : "released";
 }
 
@@ -1416,6 +1417,20 @@ const heartbeatRunListColumns = {
   nextAction: heartbeatRuns.nextAction,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
+} as const;
+
+const heartbeatRunSummaryListColumns = {
+  ...heartbeatRunListColumns,
+  usageJson: sql<Record<string, unknown> | null>`NULL`.as("usageJson"),
+  sessionIdBefore: sql<string | null>`NULL`.as("sessionIdBefore"),
+  sessionIdAfter: sql<string | null>`NULL`.as("sessionIdAfter"),
+  logStore: sql<string | null>`NULL`.as("logStore"),
+  logRef: sql<string | null>`NULL`.as("logRef"),
+  logSha256: sql<string | null>`NULL`.as("logSha256"),
+  externalRunId: sql<string | null>`NULL`.as("externalRunId"),
+  processPid: sql<number | null>`NULL`.as("processPid"),
+  processGroupId: sql<number | null>`NULL`.as("processGroupId"),
+  resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
 } as const;
 
 const heartbeatRunListContextColumns = {
@@ -8830,6 +8845,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       companyId: agent.companyId,
       heartbeatRunId: run.id,
       executionWorkspaceId: existingExecutionWorkspace?.id ?? null,
+      issueId,
     });
     const executionWorkspaceBase = {
       baseCwd: resolvedWorkspace.cwd,
@@ -11938,11 +11954,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (
+      companyId: string,
+      agentId?: string,
+      limit?: number,
+      options: { summary?: boolean } = {},
+    ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+      const summary = options.summary === true;
       const query = db
         .select(
-          safeForLegacyEncoding
+          summary
+            ? {
+                ...heartbeatRunSummaryListColumns,
+                ...heartbeatRunListContextColumns,
+              }
+            : safeForLegacyEncoding
             ? {
                 ...heartbeatRunListColumns,
                 error: sql<string | null>`NULL`.as("error"),
@@ -12003,7 +12030,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             wakeSource: contextWakeSource,
             wakeTriggerDetail: contextWakeTriggerDetail,
           }),
-          resultJson: safeForLegacyEncoding
+          resultJson: safeForLegacyEncoding || summary
             ? null
             : summarizeHeartbeatRunListResultJson({
                 summary: resultSummary,

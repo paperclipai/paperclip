@@ -743,6 +743,41 @@
       "when": 1781902000000,
       "tag": "0105_instance_scoped_environments",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1781902100000,
+      "tag": "0106_external_object_references",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1782165200000,
+      "tag": "0107_external_object_display_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1781902200000,
+      "tag": "0108_workspace_operations_issue_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1781902300000,
+      "tag": "0109_routine_description_annotations",
+      "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1781902400000,
+      "tag": "0110_document_company_cascade",
+      "breakpoints": true
     }
   ]
 }
