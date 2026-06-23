@@ -17,12 +17,21 @@ import { PLAN_APPROVAL_WAKE_REASON, buildGateWorkspaceContext } from "../service
 import { publishLiveEvent } from "../services/live-events.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { logger } from "../middleware/logger.js";
+import { createCompanySearchRateLimiter } from "../services/company-search-rate-limit.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 // Heartbeat run statuses that can be cancelled. Mirrors
 // CANCELLABLE_HEARTBEAT_RUN_STATUSES in heartbeat.ts (module-private there);
 // used to reject CTO cancel actions against already-terminal runs.
 const CANCELLABLE_RUN_STATUSES: readonly string[] = ["queued", "running", "scheduled_retry"];
+
+// Per-actor rate limit for the destructive supervision actions endpoint
+// (cancel / reassign / stop_escalate). Lower than the search limit since these
+// mutate live runs and plans. Sliding 1-minute window, 20 actions/actor.
+const supervisionActionRateLimiter = createCompanySearchRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 20,
+});
 
 const planTierSchema = z.object({
   id: z.string(),
@@ -586,6 +595,23 @@ export function planRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     const actor = getActorInfo(req);
+
+    const rateLimit = supervisionActionRateLimiter.consume({
+      companyId: existing.companyId,
+      actorType: actor.actorType === "agent" ? "agent" : "board",
+      actorId: actor.agentId ?? actor.actorId ?? "unknown",
+    });
+    res.setHeader("X-RateLimit-Limit", String(rateLimit.limit));
+    res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));
+    if (!rateLimit.allowed) {
+      res.setHeader("Retry-After", String(rateLimit.retryAfterSeconds));
+      res.status(429).json({
+        error: "Supervision action rate limit exceeded",
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+      });
+      return;
+    }
+
     const data = parsed.data;
 
     let actionTaken: string;

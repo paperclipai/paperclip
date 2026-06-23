@@ -439,4 +439,38 @@ describeEmbeddedPostgres("POST /plans/:issueId/supervision/actions", () => {
       expect(row?.state).toBe("stopped");
     });
   });
+
+  // ─── rate limiting ────────────────────────────────────────────────────────────
+
+  describe("rate limiting", () => {
+    it("returns 429 once the per-actor action limit is exceeded", async () => {
+      const companyId = await seedCompany();
+      const planId = await seedPlan(companyId);
+      asBoardOf(companyId);
+      const app = buildApp();
+
+      // Fire rewake actions against a non-existent agent (each 400s after the
+      // limiter consumes a slot) until the limiter trips. Fresh companyId means
+      // the module-scoped limiter has no prior hits for this actor key.
+      let sawRateLimit = false;
+      let limit = 0;
+      for (let i = 0; i < 25; i++) {
+        const res = await request(app)
+          .post(ACTIONS_PATH(planId))
+          .send({ action: "rewake", targetAgentId: randomUUID() });
+        limit = Number(res.headers["x-ratelimit-limit"]) || limit;
+        if (res.status === 429) {
+          expect(res.body.error).toMatch(/rate limit/i);
+          expect(Number(res.headers["retry-after"])).toBeGreaterThan(0);
+          sawRateLimit = true;
+          break;
+        }
+        // Pre-trip responses are 400 (agent not found) but still consume a slot.
+        expect(res.status).toBe(400);
+      }
+
+      expect(sawRateLimit).toBe(true);
+      expect(limit).toBe(20);
+    });
+  });
 });

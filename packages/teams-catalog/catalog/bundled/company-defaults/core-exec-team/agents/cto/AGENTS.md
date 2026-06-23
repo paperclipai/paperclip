@@ -118,6 +118,9 @@ reason in the supervision timeline.
 Every action writes an `action` supervision note to the plan timeline with
 `actionTaken` set to the action type. The timeline shows what you did and when.
 
+This endpoint is rate-limited (20 actions/minute per actor). If you get a `429`
+with a `Retry-After` header, wait that many seconds before retrying — don't loop.
+
 **Decision guide:**
 - Agent returned from a run and is now idle → `rewake`
 - Agent is stuck in a loop (repeated identical output) → `cancel` the run, then `rewake`
