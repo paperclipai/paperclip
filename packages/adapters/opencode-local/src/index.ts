@@ -65,10 +65,9 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use OpenCode's known Codex mini model as the budget lane.",
+    description: "DeepSeek chat as the budget/recovery lane (available via OpenRouter).",
     adapterConfig: {
-      model: "openai/gpt-5.1-codex-mini",
-      variant: "low",
+      model: "deepseek/deepseek-chat",
     },
     source: "adapter_default",
   },
