@@ -2591,6 +2591,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         missingDisposition: input.successfulRunHandoffEvidence.missingDisposition,
       });
     }
+    const escalationComment = recoveryCause === "workspace_validation_failed"
+      ? "Paperclip blocked this issue because its workspace failed validation before adapter launch. Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution."
+      : input.comment;
     const recoveryLine = recoveryAction.ownerAgentId
       ? [
         "",
@@ -2636,7 +2639,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             metadata: notice.metadata,
           });
         } else {
-          await issuesSvc.addComment(input.issue.id, `${input.comment ?? ""}${recoveryLine}`, {}, {
+          await issuesSvc.addComment(input.issue.id, `${escalationComment ?? ""}${recoveryLine}`, {}, {
             authorType: "system",
           });
         }
