@@ -220,6 +220,22 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+
+// Host-global concurrency gate for opencode_local runs (XIP-4907 / XIP-4690).
+// opencode_local agents all execute on the same local host, so a per-agent run
+// cap does nothing to bound cross-agent fan-out: the daily IP-collection routine
+// dispatches ~6 distinct opencode_local researcher agents at once, each spawning
+// its own `opencode run` + model enumeration simultaneously, saturating the host.
+// This caps the number of opencode_local runs running concurrently across ALL
+// agents on the host. Held runs stay queued and drain via the existing re-poll.
+const OPENCODE_LOCAL_ADAPTER_TYPE = "opencode_local";
+const OPENCODE_LOCAL_GLOBAL_MAX_CONCURRENT_DEFAULT = 2;
+
+function getOpencodeLocalGlobalMaxConcurrent(): number {
+  const raw = Number(process.env.PAPERCLIP_OPENCODE_LOCAL_MAX_CONCURRENT);
+  if (!Number.isFinite(raw) || raw < 1) return OPENCODE_LOCAL_GLOBAL_MAX_CONCURRENT_DEFAULT;
+  return Math.floor(raw);
+}
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -7244,6 +7260,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  // Counts runs currently `running` across ALL agents whose adapter is the given
+  // type. Used by the host-global opencode_local concurrency gate (XIP-4907):
+  // heartbeat_runs has no adapterType column, so we join through agents.
+  async function countRunningRunsForAdapterType(adapterType: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(eq(agents.adapterType, adapterType), eq(heartbeatRuns.status, "running")));
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -8205,8 +8233,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      let availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
+
+      // Host-global concurrency gate (XIP-4907): opencode_local agents all execute
+      // on the same local host, so the per-agent cap above does nothing to bound
+      // cross-agent fan-out. Clamp this agent's claimable slots to the host-wide
+      // remaining budget so the total number of concurrently running
+      // opencode_local runs never exceeds the global cap — even when one agent has
+      // several queued runs. If the host is already at the cap, leave the runs
+      // queued; the scheduler re-poll drains them as slots free.
+      if (agent.adapterType === OPENCODE_LOCAL_ADAPTER_TYPE) {
+        const globalMax = getOpencodeLocalGlobalMaxConcurrent();
+        const globalRunning = await countRunningRunsForAdapterType(OPENCODE_LOCAL_ADAPTER_TYPE);
+        const globalRemaining = Math.max(0, globalMax - globalRunning);
+        availableSlots = Math.min(availableSlots, globalRemaining);
+        if (availableSlots <= 0) return [];
+      }
 
       const queuedRuns = await db
         .select()
