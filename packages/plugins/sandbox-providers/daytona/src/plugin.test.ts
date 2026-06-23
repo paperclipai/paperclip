@@ -115,6 +115,78 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
+  it("applies quota-safety auto-stop/archive/delete defaults when unset", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+
+    const result = await plugin.definition.onEnvironmentValidateConfig?.({
+      driverKey: "daytona",
+      config: {
+        snapshot: "base-snapshot",
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      normalizedConfig: {
+        autoStopInterval: 15,
+        autoArchiveInterval: 60,
+        autoDeleteInterval: 10080,
+      },
+    });
+  });
+
+  it("preserves an explicit 0/-1 to disable auto intervals", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+
+    const result = await plugin.definition.onEnvironmentValidateConfig?.({
+      driverKey: "daytona",
+      config: {
+        snapshot: "base-snapshot",
+        timeoutMs: 300000,
+        autoStopInterval: 0,
+        autoArchiveInterval: 0,
+        autoDeleteInterval: -1,
+        reuseLease: true,
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      normalizedConfig: {
+        autoStopInterval: 0,
+        autoArchiveInterval: 0,
+        autoDeleteInterval: -1,
+      },
+    });
+  });
+
+  it("forwards auto-archive/auto-delete defaults to the Daytona create call", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      config: {
+        image: "node:20",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+    });
+
+    const [createParams] = mockCreate.mock.calls[0] as [Record<string, unknown>];
+    expect(createParams).toMatchObject({
+      autoStopInterval: 15,
+      autoArchiveInterval: 60,
+      autoDeleteInterval: 10080,
+    });
+  });
+
   it("rejects ambiguous or invalid config", async () => {
     await expect(plugin.definition.onEnvironmentValidateConfig?.({
       driverKey: "daytona",

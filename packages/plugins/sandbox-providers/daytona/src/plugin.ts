@@ -52,6 +52,21 @@ type WorkspaceSentinelResult = {
 
 const WORKSPACE_SENTINEL_RELATIVE_PATH = ".paperclip-runtime/reusable-sandbox-lease.json";
 
+// Quota-safety defaults (minutes). Daytona counts *stopped* sandboxes against
+// the storage quota; only *archived* sandboxes move to cold object storage and
+// stop counting. Without these, stopped/leaked sandboxes accumulate until the
+// org quota fills. We apply sane defaults so every sandbox eventually leaves the
+// quota on its own even when our own cleanup fails or never runs (crashed runs,
+// failed lease destroys, orphaned probes). All three stay overridable per
+// environment; an explicit 0/-1 in config is preserved.
+//
+// - autoStop: stop idle *running* sandboxes (frees CPU/RAM, starts the archive clock).
+// - autoArchive: archive *stopped* sandboxes so they leave the disk quota.
+// - autoDelete: backstop reaper for sandboxes nobody resumes.
+const DEFAULT_AUTO_STOP_INTERVAL_MINUTES = 15;
+const DEFAULT_AUTO_ARCHIVE_INTERVAL_MINUTES = 60;
+const DEFAULT_AUTO_DELETE_INTERVAL_MINUTES = 7 * 24 * 60; // 7 days
+
 function parseOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -82,9 +97,9 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     memory: parseOptionalNumber(raw.memory),
     disk: parseOptionalNumber(raw.disk),
     gpu: parseOptionalNumber(raw.gpu),
-    autoStopInterval: parseOptionalInteger(raw.autoStopInterval),
-    autoArchiveInterval: parseOptionalInteger(raw.autoArchiveInterval),
-    autoDeleteInterval: parseOptionalInteger(raw.autoDeleteInterval),
+    autoStopInterval: parseOptionalInteger(raw.autoStopInterval) ?? DEFAULT_AUTO_STOP_INTERVAL_MINUTES,
+    autoArchiveInterval: parseOptionalInteger(raw.autoArchiveInterval) ?? DEFAULT_AUTO_ARCHIVE_INTERVAL_MINUTES,
+    autoDeleteInterval: parseOptionalInteger(raw.autoDeleteInterval) ?? DEFAULT_AUTO_DELETE_INTERVAL_MINUTES,
     reuseLease: raw.reuseLease === true,
   };
 }
