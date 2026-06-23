@@ -217,6 +217,7 @@ let child: ReturnType<typeof spawn> | null = null;
 let childExitPromise: Promise<{ code: number; signal: NodeJS.Signals | null }> | null = null;
 let scanTimer: ReturnType<typeof setInterval> | null = null;
 let autoRestartTimer: ReturnType<typeof setInterval> | null = null;
+let rl: ReturnType<typeof createInterface> | null = null;
 
 function toError(error: unknown, context = "Dev runner command failed") {
   if (error instanceof Error) return error;
@@ -636,7 +637,7 @@ function installDevIntervals() {
   if (stdin.isTTY) {
     try {
       // using the statically imported createInterface from top of the file
-      const rl = createInterface({
+      rl = createInterface({
         input: stdin,
         output: process.stdout,
         terminal: true
@@ -653,7 +654,7 @@ function installDevIntervals() {
       });
       console.log("[paperclip] press 'q' and ENTER to shutdown gracefully");
     } catch (err) {
-      console.warn("[paperclip] failed to set raw mode on stdin:", err instanceof Error ? err.message : err);
+      console.warn("[paperclip] failed to initialize readline:", err instanceof Error ? err.message : err);
     }
   } else {
     console.log("[paperclip] non-interactive terminal detected, 'q' shortcut disabled");
@@ -678,13 +679,9 @@ function clearDevIntervals() {
     clearInterval(autoRestartTimer);
     autoRestartTimer = null;
   }
-  if (stdin.isTTY) {
-    try {
-      stdin.setRawMode(false);
-      stdin.pause();
-    } catch {
-      // ignore
-    }
+  if (rl) {
+    rl.close();
+    rl = null;
   }
 }
 

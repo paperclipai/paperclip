@@ -1525,6 +1525,17 @@ async function resolveSpawnTarget(
   }
 
   const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
+
+  if (/\.(cmd|bat)$/i.test(executable)) {
+    // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
+    // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
+    const shell = resolveWindowsCmdShell(env);
+    return {
+      command: shell,
+      args: ["/d", "/s", "/c", commandLine],
+    };
+  }
+
   if (commandLine.length > 8000) {
     return {
       command: "powershell.exe",
@@ -1534,16 +1545,6 @@ async function resolveSpawnTarget(
         "-Command",
         `& '${executable.replace(/'/g, "''")}' ${args.map((a) => `'${a.replace(/'/g, "''")}'`).join(" ")}`,
       ],
-    };
-  }
-
-  if (/\.(cmd|bat)$/i.test(executable)) {
-    // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
-    // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
-    const shell = resolveWindowsCmdShell(env);
-    return {
-      command: shell,
-      args: ["/d", "/s", "/c", commandLine],
     };
   }
 
