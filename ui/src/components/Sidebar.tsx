@@ -57,7 +57,7 @@ export function Sidebar() {
   });
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
-  const showPipelines = true;
+  const showPipelines = experimentalSettings?.enablePipelines === true;
   // IA flag: branch the sidebar nav presentation. Default ON =
   // streamlined (top-level Projects link). Users can opt out in experiments to
   // get classic (per-project collapsible, no Projects nav link). Issue/Task

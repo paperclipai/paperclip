@@ -124,6 +124,14 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(container.querySelector(CONFERENCE_TOGGLE_SELECTOR)).toBeNull();
   });
 
+  it("does not render the Pipelines experimental setting for now", async () => {
+    await renderPage();
+
+    const headings = [...container.querySelectorAll("section h2")].map((h) => h.textContent);
+    expect(headings).not.toContain("Pipelines");
+    expect(container.querySelector('button[aria-label="Toggle pipelines experimental setting"]')).toBeNull();
+  });
+
   it("does not render the toggle even when the stored flag is currently enabled", async () => {
     currentExperimentalSettings = {
       ...currentExperimentalSettings,
