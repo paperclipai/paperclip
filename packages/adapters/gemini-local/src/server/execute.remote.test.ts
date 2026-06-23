@@ -175,12 +175,12 @@ describe("Gemini remote execution", () => {
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
-      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/Gemini/skills`,
+      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/agy/skills`,
       followSymlinks: true,
     }));
     expect(runSshCommand).toHaveBeenCalledWith(
       expect.anything(),
-      expect.stringContaining(".Gemini/skills"),
+      expect.stringContaining(".agy/skills"),
       expect.anything(),
     );
     const call = runChildProcess.mock.calls[0] as unknown as
