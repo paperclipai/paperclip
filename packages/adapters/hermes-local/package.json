@@ -26,7 +26,11 @@
     ".": "./src/index.ts",
     "./server": "./src/server/index.ts",
     "./ui": "./src/ui/index.ts",
-    "./cli": "./src/cli/index.ts"
+    "./cli": "./src/cli/index.ts",
+    "./ui-parser": "./ui-parser.cjs"
+  },
+  "paperclip": {
+    "adapterUiParser": "1.0.0"
   },
   "publishConfig": {
     "access": "public",
@@ -46,7 +50,8 @@
       "./cli": {
         "types": "./dist/cli/index.d.ts",
         "import": "./dist/cli/index.js"
-      }
+      },
+      "./ui-parser": "./ui-parser.cjs"
     },
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
@@ -54,6 +59,7 @@
   },
   "files": [
     "dist",
+    "ui-parser.cjs",
     "README.md",
     "LICENSE"
   ],
@@ -64,6 +70,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:command-resolution": "vitest run src/server/command-resolution.test.ts",
+    "prepack": "node scripts/prepare-publish-package.mjs",
+    "postpack": "node scripts/restore-dev-package.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {

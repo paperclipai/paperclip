@@ -72,6 +72,7 @@ function parseToolCompletionLine(
   let verbAndDetail = durationMatch
     ? cleaned.slice(0, cleaned.lastIndexOf(durationMatch[0])).trim()
     : cleaned;
+  verbAndDetail = verbAndDetail.replace(/^\p{Emoji_Presentation}\s*/u, "");
 
   // Check for error suffixes
   const hasError = /\[(?:exit \d+|error|full)\]/.test(verbAndDetail) ||
