@@ -160,6 +160,23 @@ When adding endpoints:
 
 ## 10. Pull Request Requirements
 
+### GitHub Write Governance
+
+No Codex, Gemini, or other agent may use `GH_GUARD_BYPASS` for `paperclipai/paperclip` or any non-Grant-owned GitHub owner unless Grant explicitly approves that exact GitHub write in the current prompt.
+
+Allowed without additional approval:
+
+- local commits
+- pushes to the `gboyles2paperclipAI` fork
+- generating PR bodies, reports, and compare URLs
+
+Not allowed without explicit current-prompt approval:
+
+- opening, closing, commenting on, editing, labeling, requesting review on, or merging upstream PRs or issues
+- any write to `paperclipai/paperclip`
+- any write to a non-Grant-owned GitHub owner
+- any `GH_GUARD_BYPASS` use
+
 When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
 
 - **Thinking Path** — trace reasoning from project context to this change (see `CONTRIBUTING.md` for examples)
