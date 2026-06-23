@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "../lib/utils";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
+import { FoldCurtain } from "./FoldCurtain";
 
 interface InlineEditorProps {
   value: string;
@@ -16,6 +17,13 @@ interface InlineEditorProps {
   onDropFile?: (file: File) => Promise<void>;
   mentions?: MentionOption[];
   nullable?: boolean;
+  /** When true, long display-mode markdown is clipped with a fade curtain that expands on click. */
+  foldable?: boolean;
+  /**
+   * Optional host-resolved external object metadata. Forwarded to the read-mode
+   * `MarkdownBody` so resolved URLs render with the inline status icon prefix.
+   */
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 /** Shared padding so display and edit modes occupy the exact same box. */
@@ -51,6 +59,8 @@ export function InlineEditor({
   imageUploadHandler,
   onDropFile,
   mentions,
+  foldable = false,
+  externalReferences,
 }: InlineEditorProps) {
   const [editing, setEditing] = useState(false);
   const [multilineEditing, setMultilineEditing] = useState(false);
@@ -282,9 +292,23 @@ export function InlineEditor({
           aria-label={placeholder}
           tabIndex={0}
         >
-          <MarkdownBody className={cn("paperclip-edit-in-place-content", className)}>
-            {previewValue}
-          </MarkdownBody>
+          {foldable ? (
+            <FoldCurtain>
+              <MarkdownBody
+                className={cn("paperclip-edit-in-place-content", className)}
+                externalReferences={externalReferences}
+              >
+                {previewValue}
+              </MarkdownBody>
+            </FoldCurtain>
+          ) : (
+            <MarkdownBody
+              className={cn("paperclip-edit-in-place-content", className)}
+              externalReferences={externalReferences}
+            >
+              {previewValue}
+            </MarkdownBody>
+          )}
         </div>
       );
     }

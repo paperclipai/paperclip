@@ -15,6 +15,10 @@
  */
 
 import type {
+  AnchorHTMLAttributes,
+  MouseEvent as ReactMouseEvent,
+} from "react";
+import type {
   PluginBridgeErrorCode,
   PluginLauncherBounds,
   PluginLauncherRenderEnvironment,
@@ -50,6 +54,7 @@ export type {
  * Error codes:
  * - `WORKER_UNAVAILABLE` — plugin worker is not running
  * - `CAPABILITY_DENIED` — plugin lacks the required capability
+ * - `INVOCATION_SCOPE_DENIED` — plugin call escaped the invocation company scope
  * - `WORKER_ERROR` — worker returned an error from its handler
  * - `TIMEOUT` — worker did not respond within the configured timeout
  * - `UNKNOWN` — unexpected bridge-level failure
@@ -132,6 +137,83 @@ export interface PluginRenderEnvironmentContext
 }
 
 // ---------------------------------------------------------------------------
+// Host navigation
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for host-managed Paperclip navigation from plugin UI.
+ */
+export interface HostNavigationOptions {
+  /** Replace the current history entry instead of pushing a new one. */
+  replace?: boolean;
+  /** Optional state forwarded to the host router. */
+  state?: unknown;
+}
+
+/**
+ * Options for `useHostNavigation().linkProps()`.
+ */
+export interface HostNavigationLinkOptions extends HostNavigationOptions {
+  /** Standard anchor target. Non-`_self` targets are not intercepted. */
+  target?: AnchorHTMLAttributes<HTMLAnchorElement>["target"];
+  /** Standard anchor rel attribute. */
+  rel?: AnchorHTMLAttributes<HTMLAnchorElement>["rel"];
+}
+
+/**
+ * Anchor props returned by `useHostNavigation().linkProps()`.
+ *
+ * The `href` is always real so browser affordances such as copy-link,
+ * modifier-click, middle-click, and open-in-new-tab continue to work.
+ */
+export interface HostNavigationLinkProps
+  extends Pick<AnchorHTMLAttributes<HTMLAnchorElement>, "href" | "target" | "rel"> {
+  onClick: (event: ReactMouseEvent<HTMLAnchorElement>) => void;
+}
+
+/**
+ * Snapshot of the host router location, exposed to plugin UI through
+ * `useHostLocation()`. Mirrors the relevant subset of `Location` from
+ * `react-router-dom` so plugins can react to URL changes without importing
+ * router internals.
+ *
+ * @see PLUGIN_SPEC.md §19 — UI Extension Model
+ */
+export interface HostLocation {
+  /** Current pathname, e.g. `/PAP/wiki`. */
+  pathname: string;
+  /** Current search string, e.g. `?tab=config` (includes the leading `?`). */
+  search: string;
+  /** Current hash, e.g. `#document-plan` (includes the leading `#`). */
+  hash: string;
+  /** Optional state forwarded by the host router for same-tab SPA navigation. */
+  state?: unknown;
+}
+
+/**
+ * Host-managed navigation helpers for plugin UI.
+ */
+export interface HostNavigation {
+  /**
+   * Resolve a Paperclip-internal path using the active company prefix.
+   *
+   * For example, in company `PAP`, `resolveHref("/wiki")` returns
+   * `"/PAP/wiki"`, while `resolveHref("/PAP/wiki")` stays unchanged.
+   */
+  resolveHref(to: string): string;
+  /** Navigate through the host router without reloading the document. */
+  navigate(to: string, options?: HostNavigationOptions): void;
+  /**
+   * Build anchor props for host-managed links.
+   *
+   * Plain left-clicks are routed through the host SPA router. Browser-native
+   * link gestures are left alone because the returned props include a real
+   * `href`.
+   */
+  linkProps(to: string, options?: HostNavigationLinkOptions): HostNavigationLinkProps;
+}
+
+// ---------------------------------------------------------------------------
 // Slot component prop interfaces
 // ---------------------------------------------------------------------------
 
@@ -145,6 +227,18 @@ export interface PluginRenderEnvironmentContext
  */
 export interface PluginPageProps {
   /** The current host context. */
+  context: PluginHostContext;
+}
+
+/**
+ * Props passed to a plugin company settings page component.
+ *
+ * A company settings page is mounted at
+ * `/:companyPrefix/company/settings/:routePath` and always receives the active
+ * company id and prefix when available.
+ */
+export interface PluginCompanySettingsPageProps {
+  /** The current host context, including company id and prefix. */
   context: PluginHostContext;
 }
 
@@ -184,6 +278,19 @@ export interface PluginDetailTabProps {
  * @see PLUGIN_SPEC.md §19.5 — Sidebar Entries
  */
 export interface PluginSidebarProps {
+  /** The current host context. */
+  context: PluginHostContext;
+}
+
+/**
+ * Props passed to a plugin route sidebar component.
+ *
+ * A route sidebar replaces the normal company sidebar while the user is on a
+ * matching plugin page route declared with the same `routePath`.
+ *
+ * @see PLUGIN_SPEC.md §19.5 — Sidebar Entries
+ */
+export interface PluginRouteSidebarProps {
   /** The current host context. */
   context: PluginHostContext;
 }

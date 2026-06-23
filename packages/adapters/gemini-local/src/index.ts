@@ -1,5 +1,13 @@
+import {
+  buildSandboxNpmInstallCommand,
+  type AdapterModelProfileDefinition,
+} from "@paperclipai/adapter-utils";
+
 export const type = "gemini_local";
 export const label = "Gemini CLI (local)";
+
+export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@google/gemini-cli");
+
 export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
 export const models = [
@@ -9,6 +17,18 @@ export const models = [
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
   { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
   { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
+];
+
+export const modelProfiles: AdapterModelProfileDefinition[] = [
+  {
+    key: "cheap",
+    label: "Cheap",
+    description: "Use Gemini Flash Lite as the budget Gemini CLI lane while preserving the primary model.",
+    adapterConfig: {
+      model: "gemini-2.5-flash-lite",
+    },
+    source: "adapter_default",
+  },
 ];
 
 export const agentConfigurationDoc = `# gemini_local agent configuration
@@ -40,7 +60,8 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- Runs use positional prompt arguments, not stdin.
+- Runs use --prompt for non-interactive execution, not stdin.
+- The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
 - Sessions resume with --resume when stored session cwd matches the current cwd.
 - Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
 - Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY or local Gemini CLI login.

@@ -2,17 +2,30 @@ import type { Environment, EnvironmentProbeResult } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
 import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
 import {
+  parseEnvironmentDriverConfig,
   resolveEnvironmentDriverConfigForRuntime,
   type ParsedEnvironmentConfig,
 } from "./environment-config.js";
 import os from "node:os";
+import { isBuiltinSandboxProvider, probeSandboxProvider } from "./sandbox-provider-runtime.js";
+import { probePluginEnvironmentDriver, probePluginSandboxProviderDriver } from "./plugin-environment-driver.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 export async function probeEnvironment(
   db: Db,
   environment: Environment,
-  options: { resolvedConfig?: ParsedEnvironmentConfig } = {},
+  options: {
+    companyId?: string | null;
+    pluginWorkerManager?: PluginWorkerManager;
+    resolvedConfig?: ParsedEnvironmentConfig;
+  } = {},
 ): Promise<EnvironmentProbeResult> {
-  const parsed = options.resolvedConfig ?? await resolveEnvironmentDriverConfigForRuntime(db, environment.companyId, environment);
+  const resolvedCompanyId = options.companyId ?? null;
+  const parsed = options.resolvedConfig ?? (
+    resolvedCompanyId
+      ? await resolveEnvironmentDriverConfigForRuntime(db, resolvedCompanyId, environment)
+      : parseEnvironmentDriverConfig(environment)
+  );
 
   if (parsed.driver === "local") {
     return {
@@ -24,6 +37,51 @@ export async function probeEnvironment(
         cwd: process.cwd(),
       },
     };
+  }
+
+  if (parsed.driver === "sandbox") {
+    if (!isBuiltinSandboxProvider(parsed.config.provider)) {
+      if (!options.pluginWorkerManager) {
+        return {
+          ok: false,
+          driver: "sandbox",
+          summary: `Sandbox provider "${parsed.config.provider}" requires a running provider plugin.`,
+          details: {
+            provider: parsed.config.provider,
+          },
+        };
+      }
+      return await probePluginSandboxProviderDriver({
+        db,
+        workerManager: options.pluginWorkerManager,
+        companyId: resolvedCompanyId ?? "instance",
+        environmentId: environment.id,
+        provider: parsed.config.provider,
+        config: parsed.config as unknown as Record<string, unknown>,
+      });
+    }
+    return await probeSandboxProvider(parsed.config);
+  }
+
+  if (parsed.driver === "plugin") {
+    if (!options.pluginWorkerManager) {
+      return {
+        ok: false,
+        driver: "plugin",
+        summary: `Plugin environment probes require a plugin worker manager for "${parsed.config.pluginKey}:${parsed.config.driverKey}".`,
+        details: {
+          pluginKey: parsed.config.pluginKey,
+          driverKey: parsed.config.driverKey,
+        },
+      };
+    }
+    return await probePluginEnvironmentDriver({
+      db,
+      workerManager: options.pluginWorkerManager,
+      companyId: resolvedCompanyId ?? "instance",
+      environmentId: environment.id,
+      config: parsed.config,
+    });
   }
 
   try {

@@ -1,4 +1,16 @@
-import type { Issue } from "@paperclipai/shared";
+import type { ExternalObjectSummary, Issue } from "@paperclipai/shared";
+
+export type IssueFilterWorkspaceLookup = {
+  mode?: string | null;
+  projectWorkspaceId?: string | null;
+};
+
+export type IssueFilterWorkspaceContext = {
+  executionWorkspaceById?: ReadonlyMap<string, IssueFilterWorkspaceLookup>;
+  defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
+  externalObjectSummaryByIssueId?: ReadonlyMap<string, ExternalObjectSummary>;
+  externalObjectSummariesReady?: boolean;
+};
 
 export type IssueFilterState = {
   statuses: string[];
@@ -8,6 +20,22 @@ export type IssueFilterState = {
   labels: string[];
   projects: string[];
   workspaces: string[];
+  liveOnly?: boolean;
+  /**
+   * External object status filter. Values are special tokens that map to
+   * properties of the issue's external-object summary (rather than to a
+   * single category) so the filter UI can describe intent rather than every
+   * possible permutation.
+   *
+   *   - `failed`         — any external object with `statusCategory in (failed, blocked)`
+   *   - `waiting`        — any external object with `statusCategory in (waiting)`
+   *   - `running`        — any external object with `statusCategory in (running)`
+   *   - `auth_required`  — any external object with `liveness == auth_required`
+   *   - `unreachable`    — any external object with `liveness == unreachable`
+   *   - `stale`          — any external object with `liveness == stale`
+   *   - `none`           — issues with zero external objects
+   */
+  externalObjectStatuses: string[];
   hideRoutineExecutions: boolean;
 };
 
@@ -19,8 +47,34 @@ export const defaultIssueFilterState: IssueFilterState = {
   labels: [],
   projects: [],
   workspaces: [],
+  liveOnly: false,
+  externalObjectStatuses: [],
   hideRoutineExecutions: false,
 };
+
+export const externalObjectFilterOrder = [
+  "failed",
+  "waiting",
+  "running",
+  "auth_required",
+  "unreachable",
+  "stale",
+  "none",
+];
+
+const EXTERNAL_OBJECT_FILTER_LABELS: Record<string, string> = {
+  failed: "Any failed",
+  waiting: "Any waiting",
+  running: "Any running",
+  auth_required: "Auth required",
+  unreachable: "Unreachable",
+  stale: "Stale",
+  none: "No external objects",
+};
+
+export function externalObjectFilterLabel(value: string): string {
+  return EXTERNAL_OBJECT_FILTER_LABELS[value] ?? issueFilterLabel(value);
+}
 
 export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
@@ -59,6 +113,8 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     labels: normalizeIssueFilterValueArray(candidate.labels),
     projects: normalizeIssueFilterValueArray(candidate.projects),
     workspaces: normalizeIssueFilterValueArray(candidate.workspaces),
+    liveOnly: candidate.liveOnly === true,
+    externalObjectStatuses: normalizeIssueFilterValueArray(candidate.externalObjectStatuses),
     hideRoutineExecutions: candidate.hideRoutineExecutions === true,
   };
 }
@@ -68,9 +124,74 @@ export function toggleIssueFilterValue(values: string[], value: string): string[
 }
 
 export function resolveIssueFilterWorkspaceId(
-  issue: Pick<Issue, "executionWorkspaceId" | "projectWorkspaceId">,
+  issue: Pick<Issue, "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
+  context: IssueFilterWorkspaceContext = {},
 ): string | null {
-  return issue.executionWorkspaceId ?? issue.projectWorkspaceId ?? null;
+  const defaultProjectWorkspaceId = issue.projectId
+    ? context.defaultProjectWorkspaceIdByProjectId?.get(issue.projectId) ?? null
+    : null;
+
+  if (issue.executionWorkspaceId) {
+    const executionWorkspace = context.executionWorkspaceById?.get(issue.executionWorkspaceId) ?? null;
+    const linkedProjectWorkspaceId =
+      executionWorkspace?.projectWorkspaceId ?? issue.projectWorkspaceId ?? null;
+    const isDefaultSharedExecutionWorkspace =
+      executionWorkspace?.mode === "shared_workspace"
+      && linkedProjectWorkspaceId != null
+      && linkedProjectWorkspaceId === defaultProjectWorkspaceId;
+    if (isDefaultSharedExecutionWorkspace) return null;
+    return issue.executionWorkspaceId;
+  }
+
+  if (issue.projectWorkspaceId) {
+    if (issue.projectWorkspaceId === defaultProjectWorkspaceId) return null;
+    return issue.projectWorkspaceId;
+  }
+
+  return null;
+}
+
+export function shouldIncludeIssueFilterWorkspaceOption(
+  workspace: { id: string; mode?: string | null; projectWorkspaceId?: string | null },
+  defaultProjectWorkspaceIds: ReadonlySet<string>,
+): boolean {
+  if (defaultProjectWorkspaceIds.has(workspace.id)) return false;
+  return !(workspace.mode === "shared_workspace"
+    && workspace.projectWorkspaceId != null
+    && defaultProjectWorkspaceIds.has(workspace.projectWorkspaceId));
+}
+
+function summaryRecordCount(record: Record<string, number> | undefined, key: string): number {
+  return record?.[key] ?? 0;
+}
+
+function issueMatchesExternalObjectStatusFilter(
+  summary: ExternalObjectSummary | null | undefined,
+  value: string,
+): boolean {
+  const total = summary?.total ?? 0;
+  switch (value) {
+    case "failed":
+      return summaryRecordCount(summary?.byStatusCategory, "failed") > 0
+        || summaryRecordCount(summary?.byStatusCategory, "blocked") > 0;
+    case "waiting":
+      return summaryRecordCount(summary?.byStatusCategory, "waiting") > 0;
+    case "running":
+      return summaryRecordCount(summary?.byStatusCategory, "running") > 0;
+    case "auth_required":
+      return (summary?.authRequiredCount ?? 0) > 0
+        || summaryRecordCount(summary?.byLiveness, "auth_required") > 0;
+    case "unreachable":
+      return (summary?.unreachableCount ?? 0) > 0
+        || summaryRecordCount(summary?.byLiveness, "unreachable") > 0;
+    case "stale":
+      return (summary?.staleCount ?? 0) > 0
+        || summaryRecordCount(summary?.byLiveness, "stale") > 0;
+    case "none":
+      return total === 0;
+    default:
+      return false;
+  }
 }
 
 export function applyIssueFilters(
@@ -78,8 +199,13 @@ export function applyIssueFilters(
   state: IssueFilterState,
   currentUserId?: string | null,
   enableRoutineVisibilityFilter = false,
+  liveIssueIds?: ReadonlySet<string>,
+  workspaceContext: IssueFilterWorkspaceContext = {},
 ): Issue[] {
   let result = issues;
+  if (state.liveOnly) {
+    result = result.filter((issue) => liveIssueIds?.has(issue.id) === true);
+  }
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) {
     result = result.filter((issue) => issue.originKind !== "routine_execution");
   }
@@ -112,8 +238,18 @@ export function applyIssueFilters(
   }
   if (state.workspaces.length > 0) {
     result = result.filter((issue) => {
-      const workspaceId = resolveIssueFilterWorkspaceId(issue);
+      const workspaceId = resolveIssueFilterWorkspaceId(issue, workspaceContext);
       return workspaceId != null && state.workspaces.includes(workspaceId);
+    });
+  }
+  if (state.externalObjectStatuses.length > 0) {
+    const summaries = workspaceContext.externalObjectSummaryByIssueId;
+    if (!summaries || workspaceContext.externalObjectSummariesReady !== true) return [];
+    result = result.filter((issue) => {
+      const summary = summaries.get(issue.id) ?? null;
+      return state.externalObjectStatuses.some((status) =>
+        issueMatchesExternalObjectStatusFilter(summary, status),
+      );
     });
   }
   return result;
@@ -131,6 +267,8 @@ export function countActiveIssueFilters(
   if (state.labels.length > 0) count += 1;
   if (state.projects.length > 0) count += 1;
   if (state.workspaces.length > 0) count += 1;
+  if (state.liveOnly) count += 1;
+  if (state.externalObjectStatuses.length > 0) count += 1;
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) count += 1;
   return count;
 }

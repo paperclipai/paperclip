@@ -31,6 +31,10 @@ const mockCompanyPortabilityService = vi.hoisted(() => ({
   importBundle: vi.fn(),
 }));
 
+const mockCompanyArtifactsService = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFeedbackService = vi.hoisted(() => ({
   listIssueVotesForUser: vi.fn(),
@@ -39,41 +43,51 @@ const mockFeedbackService = vi.hoisted(() => ({
   saveIssueVote: vi.fn(),
 }));
 
-function registerModuleMocks() {
-  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+vi.mock("../services/access.js", () => ({
+  accessService: () => mockAccessService,
+}));
 
-  vi.doMock("../services/access.js", () => ({
-    accessService: () => mockAccessService,
-  }));
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: mockLogActivity,
+}));
 
-  vi.doMock("../services/activity-log.js", () => ({
-    logActivity: mockLogActivity,
-  }));
+vi.mock("../services/agents.js", () => ({
+  agentService: () => mockAgentService,
+}));
 
-  vi.doMock("../services/agents.js", () => ({
-    agentService: () => mockAgentService,
-  }));
+vi.mock("../services/budgets.js", () => ({
+  budgetService: () => mockBudgetService,
+}));
 
-  vi.doMock("../services/budgets.js", () => ({
-    budgetService: () => mockBudgetService,
-  }));
+vi.mock("../services/companies.js", () => ({
+  companyService: () => mockCompanyService,
+}));
 
-  vi.doMock("../services/companies.js", () => ({
-    companyService: () => mockCompanyService,
-  }));
+vi.mock("../services/company-portability.js", () => ({
+  companyPortabilityService: () => mockCompanyPortabilityService,
+}));
 
-  vi.doMock("../services/company-portability.js", () => ({
-    companyPortabilityService: () => mockCompanyPortabilityService,
-  }));
+vi.mock("../services/feedback.js", () => ({
+  feedbackService: () => mockFeedbackService,
+}));
 
-  vi.doMock("../services/feedback.js", () => ({
-    feedbackService: () => mockFeedbackService,
-  }));
+vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  budgetService: () => mockBudgetService,
+  companyArtifactsService: () => mockCompanyArtifactsService,
+  companyPortabilityService: () => mockCompanyPortabilityService,
+  companyService: () => mockCompanyService,
+  feedbackService: () => mockFeedbackService,
+  logActivity: mockLogActivity,
+}));
 
+function registerCompanyRouteMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     budgetService: () => mockBudgetService,
+    companyArtifactsService: () => mockCompanyArtifactsService,
     companyPortabilityService: () => mockCompanyPortabilityService,
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
@@ -81,10 +95,16 @@ function registerModuleMocks() {
   }));
 }
 
+let appImportCounter = 0;
+
 async function createApp(actor: Record<string, unknown>) {
+  registerCompanyRouteMocks();
+  appImportCounter += 1;
+  const routeModulePath = `../routes/companies.js?company-portability-routes-${appImportCounter}`;
+  const middlewareModulePath = `../middleware/index.js?company-portability-routes-${appImportCounter}`;
   const [{ companyRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/companies.js")>("../routes/companies.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/companies.js")>,
+    import(middlewareModulePath) as Promise<typeof import("../middleware/index.js")>,
   ]);
   const app = express();
   app.use(express.json());
@@ -98,6 +118,9 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 const companyId = "11111111-1111-4111-8111-111111111111";
+const otherCompanyId = "22222222-2222-4222-8222-222222222222";
+const ceoAgentId = "ceo-agent";
+const engineerAgentId = "engineer-agent";
 
 const exportRequest = {
   include: { company: true, agents: true, projects: true },
@@ -123,33 +146,88 @@ function createExportResult() {
   };
 }
 
-describe("company portability routes", () => {
+const importRequest = {
+  source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+  include: { company: true, agents: true, projects: false, issues: false },
+  target: { mode: "existing_company", companyId },
+  collisionStrategy: "rename",
+};
+
+const cloudHeaders = {
+  "x-paperclip-cloud-stack-id": "stack-alpha",
+  "x-paperclip-cloud-paperclip-company-id": companyId,
+};
+
+function cloudTenantActor() {
+  return {
+    type: "board",
+    userId: "cloud-user-1",
+    userName: "Cloud User",
+    userEmail: "cloud-user@example.com",
+    companyIds: [companyId],
+    memberships: [{ companyId, membershipRole: "owner", status: "active" }],
+    isInstanceAdmin: true,
+    source: "cloud_tenant",
+  };
+}
+
+function createImportResult(action = "updated") {
+  return {
+    company: { id: companyId, action },
+    agents: [{ id: "agent-1" }],
+    warnings: [],
+  };
+}
+
+async function waitForImportJobStatus(app: express.Express, statusUrl: string, status: string) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const res = await request(app).get(statusUrl).set(cloudHeaders);
+    if (res.body.job?.status === status) {
+      return res;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for import job to reach ${status}`);
+}
+
+async function waitForCondition(condition: () => boolean, label: string) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
+describe.sequential("company portability routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/access.js");
-    vi.doUnmock("../services/activity-log.js");
-    vi.doUnmock("../services/agents.js");
-    vi.doUnmock("../services/budgets.js");
-    vi.doUnmock("../services/companies.js");
-    vi.doUnmock("../services/company-portability.js");
-    vi.doUnmock("../services/feedback.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/companies.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
+    mockAgentService.getById.mockImplementation(async (id: string) => ({
+      id,
+      companyId,
+      role: id === ceoAgentId ? "ceo" : "engineer",
+    }));
+    mockCompanyPortabilityService.exportBundle.mockResolvedValue(createExportResult());
+    mockCompanyPortabilityService.previewExport.mockResolvedValue({
+      rootPath: "paperclip",
+      manifest: { agents: [], skills: [], projects: [], issues: [], envInputs: [], includes: { company: true, agents: true, projects: true, issues: false, skills: false }, company: null, schemaVersion: 1, generatedAt: new Date().toISOString(), source: null },
+      files: {},
+      fileInventory: [],
+      counts: { files: 0, agents: 0, skills: 0, projects: 0, issues: 0 },
+      warnings: [],
+      paperclipExtensionPath: ".paperclip.yaml",
+    });
+    mockCompanyPortabilityService.previewImport.mockResolvedValue({ ok: true });
+    mockCompanyPortabilityService.importBundle.mockResolvedValue({
+      company: { id: companyId, action: "created" },
+      agents: [],
+      warnings: [],
+    });
   });
 
-  it("rejects non-CEO agents from CEO-safe export preview routes", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId,
-      role: "engineer",
-    });
+  it.sequential("rejects non-CEO agents from CEO-safe export preview routes", async () => {
     const app = await createApp({
       type: "agent",
-      agentId: "agent-1",
+      agentId: engineerAgentId,
       companyId,
       source: "agent_key",
       runId: "run-1",
@@ -164,15 +242,28 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
   });
 
-  it("rejects non-CEO agents from legacy and CEO-safe export bundle routes", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId,
-      role: "engineer",
-    });
+  it.sequential("rejects non-CEO export preview callers before validating request shape", async () => {
     const app = await createApp({
       type: "agent",
-      agentId: "agent-1",
+      agentId: engineerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/exports/preview`)
+      .send({ agents: [123] });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only CEO agents");
+    expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
+  });
+
+  it.sequential("rejects non-CEO agents from legacy and CEO-safe export bundle routes", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: engineerAgentId,
       companyId,
       source: "agent_key",
       runId: "run-1",
@@ -187,12 +278,7 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.exportBundle).not.toHaveBeenCalled();
   });
 
-  it("allows CEO agents to use company-scoped export preview routes", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId,
-      role: "ceo",
-    });
+  it.sequential("allows CEO agents to use company-scoped export preview routes", async () => {
     mockCompanyPortabilityService.previewExport.mockResolvedValue({
       rootPath: "paperclip",
       manifest: { agents: [], skills: [], projects: [], issues: [], envInputs: [], includes: { company: true, agents: true, projects: true, issues: false, skills: false }, company: null, schemaVersion: 1, generatedAt: new Date().toISOString(), source: null },
@@ -204,7 +290,7 @@ describe("company portability routes", () => {
     });
     const app = await createApp({
       type: "agent",
-      agentId: "agent-1",
+      agentId: ceoAgentId,
       companyId,
       source: "agent_key",
       runId: "run-1",
@@ -218,16 +304,11 @@ describe("company portability routes", () => {
     expect(res.body.rootPath).toBe("paperclip");
   });
 
-  it("allows CEO agents to export through legacy and CEO-safe bundle routes", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId,
-      role: "ceo",
-    });
+  it.sequential("allows CEO agents to export through legacy and CEO-safe bundle routes", async () => {
     mockCompanyPortabilityService.exportBundle.mockResolvedValue(createExportResult());
     const app = await createApp({
       type: "agent",
-      agentId: "agent-1",
+      agentId: ceoAgentId,
       companyId,
       source: "agent_key",
       runId: "run-1",
@@ -244,7 +325,7 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.exportBundle).toHaveBeenNthCalledWith(2, companyId, exportRequest);
   });
 
-  it("allows board users to export through legacy and CEO-safe bundle routes", async () => {
+  it.sequential("allows board users to export through legacy and CEO-safe bundle routes", async () => {
     mockCompanyPortabilityService.exportBundle.mockResolvedValue(createExportResult());
     const app = await createApp({
       type: "board",
@@ -263,15 +344,34 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects replace collision strategy on CEO-safe import routes", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId: "11111111-1111-4111-8111-111111111111",
-      role: "ceo",
-    });
+  it.sequential("rejects CEO agents from exporting another company before services run", async () => {
     const app = await createApp({
       type: "agent",
-      agentId: "agent-1",
+      agentId: ceoAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    for (const path of [
+      `/api/companies/${otherCompanyId}/export`,
+      `/api/companies/${otherCompanyId}/exports`,
+      `/api/companies/${otherCompanyId}/exports/preview`,
+    ]) {
+      const res = await request(app).post(path).send(exportRequest);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("another company");
+    }
+    expect(mockCompanyPortabilityService.exportBundle).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.sequential("rejects replace collision strategy on CEO-safe import routes", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: ceoAgentId,
       companyId: "11111111-1111-4111-8111-111111111111",
       source: "agent_key",
       runId: "run-1",
@@ -291,10 +391,62 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
   });
 
-  it("keeps global import preview routes board-only", async () => {
+  it.sequential("rejects CEO agents from previewing or applying imports against another route company", async () => {
     const app = await createApp({
       type: "agent",
-      agentId: "agent-1",
+      agentId: ceoAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    for (const path of [
+      `/api/companies/${otherCompanyId}/imports/preview`,
+      `/api/companies/${otherCompanyId}/imports/apply`,
+    ]) {
+      const res = await request(app).post(path).send({
+        ...importRequest,
+        target: { mode: "existing_company", companyId: otherCompanyId },
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("another company");
+    }
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.sequential("rejects CEO-safe import bodies that target a different company than the route", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: ceoAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    for (const path of [
+      `/api/companies/${companyId}/imports/preview`,
+      `/api/companies/${companyId}/imports/apply`,
+    ]) {
+      const res = await request(app).post(path).send({
+        ...importRequest,
+        target: { mode: "existing_company", companyId: otherCompanyId },
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("only target the route company");
+    }
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.sequential("keeps global import preview routes board-only", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: engineerAgentId,
       companyId: "11111111-1111-4111-8111-111111111111",
       source: "agent_key",
       runId: "run-1",
@@ -313,7 +465,25 @@ describe("company portability routes", () => {
     expect(res.body.error).toContain("Board access required");
   });
 
-  it("requires instance admin for new-company import preview", async () => {
+  it.sequential("keeps global import preview board-only before validating request shape", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: engineerAgentId,
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/import/preview")
+      .send({ target: { mode: "existing_company", companyId: "not-a-uuid" } });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
+  it.sequential("requires instance admin for new-company import preview", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -336,15 +506,10 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
   });
 
-  it("rejects replace collision strategy on CEO-safe import apply routes", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId: "11111111-1111-4111-8111-111111111111",
-      role: "ceo",
-    });
+  it.sequential("rejects replace collision strategy on CEO-safe import apply routes", async () => {
     const app = await createApp({
       type: "agent",
-      agentId: "agent-1",
+      agentId: ceoAgentId,
       companyId: "11111111-1111-4111-8111-111111111111",
       source: "agent_key",
       runId: "run-1",
@@ -364,15 +529,10 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
   });
 
-  it("rejects non-CEO agents from CEO-safe import preview routes", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId: "11111111-1111-4111-8111-111111111111",
-      role: "engineer",
-    });
+  it.sequential("rejects non-CEO agents from CEO-safe import preview routes", async () => {
     const app = await createApp({
       type: "agent",
-      agentId: "agent-1",
+      agentId: engineerAgentId,
       companyId: "11111111-1111-4111-8111-111111111111",
       source: "agent_key",
       runId: "run-1",
@@ -392,15 +552,28 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
   });
 
-  it("rejects non-CEO agents from CEO-safe import apply routes", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId: "11111111-1111-4111-8111-111111111111",
-      role: "engineer",
-    });
+  it.sequential("rejects non-CEO import preview callers before validating request shape", async () => {
     const app = await createApp({
       type: "agent",
-      agentId: "agent-1",
+      agentId: engineerAgentId,
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/imports/preview")
+      .send({ target: { mode: "existing_company", companyId: "not-a-uuid" } });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only CEO agents");
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
+  it.sequential("rejects non-CEO agents from CEO-safe import apply routes", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: engineerAgentId,
       companyId: "11111111-1111-4111-8111-111111111111",
       source: "agent_key",
       runId: "run-1",
@@ -420,7 +593,7 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
   });
 
-  it("requires instance admin for new-company import apply", async () => {
+  it.sequential("requires instance admin for new-company import apply", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -441,5 +614,117 @@ describe("company portability routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Instance admin");
     expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+  });
+
+  it.sequential("accepts trusted Cloud async import jobs and reports success by job id", async () => {
+    let resolveImport: (value: ReturnType<typeof createImportResult>) => void = () => undefined;
+    const pendingImport = new Promise<ReturnType<typeof createImportResult>>((resolve) => {
+      resolveImport = resolve;
+    });
+    mockCompanyPortabilityService.importBundle.mockReturnValueOnce(pendingImport);
+    const app = await createApp(cloudTenantActor());
+
+    const accepted = await request(app)
+      .post("/api/companies/import")
+      .set("x-paperclip-cloud-async-import", "1")
+      .set(cloudHeaders)
+      .send(importRequest);
+
+    expect(accepted.status).toBe(202);
+    expect(accepted.body.job.status).toBe("running");
+    expect(accepted.body.statusUrl).toMatch(/^\/api\/companies\/import\/jobs\/tenant-import-/);
+    expect(accepted.body.retryAfterMs).toBe(1000);
+    await waitForCondition(() => mockCompanyPortabilityService.importBundle.mock.calls.length === 1, "import job start");
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(importRequest, "cloud-user-1");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+
+    resolveImport(createImportResult("updated"));
+    const succeeded = await waitForImportJobStatus(app, accepted.body.statusUrl, "succeeded");
+
+    expect(succeeded.status).toBe(200);
+    expect(succeeded.body.job.status).toBe("succeeded");
+    expect(succeeded.body.job.result.companyId).toBe(companyId);
+    expect(succeeded.body.retryAfterMs).toBeUndefined();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.imported",
+      companyId,
+      details: expect.objectContaining({
+        agentCount: 1,
+        warningCount: 0,
+        companyAction: "updated",
+      }),
+    }));
+
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.parse(succeeded.body.job.completedAt) + (5 * 60 * 1000) + 1);
+    try {
+      const expired = await request(app).get(accepted.body.statusUrl).set(cloudHeaders);
+      expect(expired.status).toBe(404);
+      expect(expired.body.error).toBe("Import job not found");
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it.sequential("reports trusted Cloud async import job failures with the tenant error message", async () => {
+    mockCompanyPortabilityService.importBundle.mockRejectedValueOnce(new Error("tenant import exploded"));
+    const app = await createApp(cloudTenantActor());
+
+    const accepted = await request(app)
+      .post("/api/companies/import")
+      .set("x-paperclip-cloud-async-import", "1")
+      .set(cloudHeaders)
+      .send(importRequest);
+
+    expect(accepted.status).toBe(202);
+    const failed = await waitForImportJobStatus(app, accepted.body.statusUrl, "failed");
+
+    expect(failed.status).toBe(200);
+    expect(failed.body.job.status).toBe("failed");
+    expect(failed.body.job.error.message).toBe("tenant import exploded");
+    expect(failed.body.retryAfterMs).toBeUndefined();
+    expect(failed.body.message).toBe("tenant import exploded");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.sequential("accepts trusted Cloud async import jobs before validating the full import payload", async () => {
+    const app = await createApp(cloudTenantActor());
+
+    const accepted = await request(app)
+      .post("/api/companies/import")
+      .set("x-paperclip-cloud-async-import", "1")
+      .set(cloudHeaders)
+      .send({ target: { mode: "existing_company", companyId } });
+
+    expect(accepted.status).toBe(202);
+    expect(accepted.body.job.status).toBe("running");
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+
+    const failed = await waitForImportJobStatus(app, accepted.body.statusUrl, "failed");
+
+    expect(failed.status).toBe(200);
+    expect(failed.body.job.status).toBe("failed");
+    expect(failed.body.job.error.message).toEqual(expect.any(String));
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.sequential("keeps global import apply synchronous when Cloud async opt-in is absent", async () => {
+    mockCompanyPortabilityService.importBundle.mockResolvedValueOnce(createImportResult("created"));
+    const app = await createApp(cloudTenantActor());
+
+    const res = await request(app)
+      .post("/api/companies/import")
+      .set(cloudHeaders)
+      .send(importRequest);
+
+    expect(res.status).toBe(200);
+    expect(res.body.company.id).toBe(companyId);
+    expect(res.body.company.action).toBe("created");
+    expect(res.body.job).toBeUndefined();
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(importRequest, "cloud-user-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.imported",
+      companyId,
+    }));
   });
 });

@@ -59,6 +59,8 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
         agentId: activeRun.agentId,
         agentName: activeRun.agentName,
         adapterType: activeRun.adapterType,
+        logBytes: activeRun.logBytes,
+        lastOutputBytes: activeRun.lastOutputBytes,
         issueId,
       });
     }
@@ -93,7 +95,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
           Live Runs
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Uses the shared chat-style run surface from issue activity.
+          Uses the shared chat-style run surface from task activity.
         </div>
       </div>
 

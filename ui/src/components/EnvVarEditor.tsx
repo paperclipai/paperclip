@@ -1,25 +1,54 @@
 import { useEffect, useRef, useState } from "react";
-import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
-import { X } from "lucide-react";
+import type { CompanySecret, EnvBinding, SecretVersionSelector } from "@paperclipai/shared";
+import { AlertCircle, KeyRound, X } from "lucide-react";
 import { cn } from "../lib/utils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
+
+// shadcn Select trigger sized to line up with the mono inputs above.
+const selectTriggerClass =
+  "h-[34px] min-h-[34px] rounded-md border-border bg-transparent px-2.5 text-sm font-mono shadow-none";
+
+/** Radix Select forbids empty-string item values; use a sentinel for "unset". */
+const SECRET_UNSET = "__unset__";
+
+/** Suggest an env-var-style KEY from a secret name (UPPER_SNAKE). */
+function envKeyFromSecretName(name: string): string {
+  return name
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+}
 
 type Row = {
   key: string;
   source: "plain" | "secret";
   plainValue: string;
   secretId: string;
+  version: SecretVersionSelector;
 };
+
+function emptyRow(): Row {
+  return { key: "", source: "plain", plainValue: "", secretId: "", version: "latest" };
+}
 
 function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
   if (!rec || typeof rec !== "object") {
-    return [{ key: "", source: "plain", plainValue: "", secretId: "" }];
+    return [emptyRow()];
   }
   const entries = Object.entries(rec).map(([key, binding]) => {
     if (typeof binding === "string") {
-      return { key, source: "plain" as const, plainValue: binding, secretId: "" };
+      return { key, source: "plain" as const, plainValue: binding, secretId: "", version: "latest" as const };
     }
     if (
       typeof binding === "object" &&
@@ -27,12 +56,16 @@ function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
       "type" in binding &&
       (binding as { type?: unknown }).type === "secret_ref"
     ) {
-      const record = binding as { secretId?: unknown };
+      const record = binding as { secretId?: unknown; version?: unknown };
+      const version: SecretVersionSelector = typeof record.version === "number"
+        ? record.version
+        : "latest";
       return {
         key,
         source: "secret" as const,
         plainValue: "",
         secretId: typeof record.secretId === "string" ? record.secretId : "",
+        version,
       };
     }
     if (
@@ -47,11 +80,12 @@ function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
         source: "plain" as const,
         plainValue: typeof record.value === "string" ? record.value : "",
         secretId: "",
+        version: "latest" as const,
       };
     }
-    return { key, source: "plain" as const, plainValue: "", secretId: "" };
+    return { key, source: "plain" as const, plainValue: "", secretId: "", version: "latest" as const };
   });
-  return [...entries, { key: "", source: "plain", plainValue: "", secretId: "" }];
+  return [...entries, emptyRow()];
 }
 
 export function EnvVarEditor({
@@ -59,11 +93,17 @@ export function EnvVarEditor({
   secrets,
   onCreateSecret,
   onChange,
+  recentlyUsedSecrets,
 }: {
   value: Record<string, EnvBinding>;
   secrets: CompanySecret[];
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
   onChange: (env: Record<string, EnvBinding> | undefined) => void;
+  /**
+   * Optional project-scoped secrets to surface as one-tap "quick bind" chips
+   * below the editor (§3.4). Already-bound secrets are filtered out.
+   */
+  recentlyUsedSecrets?: CompanySecret[];
 }) {
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
   const [sealError, setSealError] = useState<string | null>(null);
@@ -89,7 +129,7 @@ export function EnvVarEditor({
       if (!key) continue;
       if (row.source === "secret") {
         if (row.secretId) {
-          rec[key] = { type: "secret_ref", secretId: row.secretId, version: "latest" };
+          rec[key] = { type: "secret_ref", secretId: row.secretId, version: row.version };
         } else {
           rec[key] = { type: "plain", value: row.plainValue };
         }
@@ -102,13 +142,15 @@ export function EnvVarEditor({
   }
 
   function updateRow(index: number, patch: Partial<Row>) {
-    const withPatch = rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row));
+    const withPatch: Row[] = rows.map((row, rowIndex) =>
+      rowIndex === index ? { ...row, ...patch, version: patch.version ?? row.version } : row,
+    );
     if (
       withPatch[withPatch.length - 1].key ||
       withPatch[withPatch.length - 1].plainValue ||
       withPatch[withPatch.length - 1].secretId
     ) {
-      withPatch.push({ key: "", source: "plain", plainValue: "", secretId: "" });
+      withPatch.push(emptyRow());
     }
     setRows(withPatch);
     emit(withPatch);
@@ -122,8 +164,28 @@ export function EnvVarEditor({
       next[next.length - 1].plainValue ||
       next[next.length - 1].secretId
     ) {
-      next.push({ key: "", source: "plain", plainValue: "", secretId: "" });
+      next.push(emptyRow());
     }
+    setRows(next);
+    emit(next);
+  }
+
+  function bindRecentSecret(secret: CompanySecret) {
+    // Fill the trailing empty row (or append one) with this secret bound.
+    const next = rows.map((row) => ({ ...row }));
+    const trailing = next[next.length - 1];
+    let target: Row;
+    if (trailing && !trailing.key && !trailing.plainValue && !trailing.secretId) {
+      target = trailing;
+    } else {
+      target = emptyRow();
+      next.push(target);
+    }
+    target.source = "secret";
+    target.secretId = secret.id;
+    target.version = "latest";
+    if (!target.key) target.key = envKeyFromSecretName(secret.name);
+    next.push(emptyRow());
     setRows(next);
     emit(next);
   }
@@ -173,33 +235,86 @@ export function EnvVarEditor({
               value={row.key}
               onChange={(event) => updateRow(index, { key: event.target.value })}
             />
-            <select
-              className={cn(inputClass, "flex-[1] bg-background")}
+            <Select
               value={row.source}
-              onChange={(event) =>
+              onValueChange={(next) =>
                 updateRow(index, {
-                  source: event.target.value === "secret" ? "secret" : "plain",
-                  ...(event.target.value === "plain" ? { secretId: "" } : {}),
+                  source: next === "secret" ? "secret" : "plain",
+                  ...(next === "plain" ? { secretId: "" } : {}),
                 })
               }
             >
-              <option value="plain">Plain</option>
-              <option value="secret">Secret</option>
-            </select>
+              <SelectTrigger className={cn(selectTriggerClass, "flex-[1]")} aria-label="Binding mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="plain">Plain</SelectItem>
+                <SelectItem value="secret">Secret</SelectItem>
+              </SelectContent>
+            </Select>
             {row.source === "secret" ? (
               <>
-                <select
-                  className={cn(inputClass, "flex-[3] bg-background")}
-                  value={row.secretId}
-                  onChange={(event) => updateRow(index, { secretId: event.target.value })}
+                <Select
+                  value={row.secretId || SECRET_UNSET}
+                  onValueChange={(next) =>
+                    updateRow(index, { secretId: next === SECRET_UNSET ? "" : next })
+                  }
                 >
-                  <option value="">Select secret...</option>
-                  {secrets.map((secret) => (
-                    <option key={secret.id} value={secret.id}>
-                      {secret.name}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger
+                    aria-label="Secret"
+                    className={cn(
+                      selectTriggerClass,
+                      "flex-[3]",
+                      row.secretId &&
+                        !secrets.some((s) => s.id === row.secretId) &&
+                        "border-destructive text-destructive",
+                    )}
+                  >
+                    <SelectValue placeholder="Select secret..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {row.secretId && !secrets.some((s) => s.id === row.secretId) ? (
+                      <SelectItem value={row.secretId}>
+                        Missing ({row.secretId.slice(0, 8)}…)
+                      </SelectItem>
+                    ) : null}
+                    {secrets.map((secret) => (
+                      <SelectItem key={secret.id} value={secret.id}>
+                        {secret.name}
+                        {secret.status !== "active" ? ` (${secret.status})` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={row.version === "latest" ? "latest" : String(row.version)}
+                  onValueChange={(raw) =>
+                    updateRow(index, {
+                      version: raw === "latest" ? "latest" : Number.parseInt(raw, 10),
+                    })
+                  }
+                  disabled={!row.secretId}
+                >
+                  <SelectTrigger className={cn(selectTriggerClass, "flex-[1]")} aria-label="Version">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="latest">latest</SelectItem>
+                    {(() => {
+                      const selected = secrets.find((s) => s.id === row.secretId);
+                      if (!selected) return null;
+                      return Array.from({ length: Math.max(0, selected.latestVersion) }, (_, idx) => {
+                        const version = selected.latestVersion - idx;
+                        if (version <= 0) return null;
+                        return (
+                          <SelectItem key={version} value={String(version)}>
+                            v{version}
+                          </SelectItem>
+                        );
+                      });
+                    })()}
+                  </SelectContent>
+                </Select>
                 <button
                   type="button"
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
@@ -243,9 +358,67 @@ export function EnvVarEditor({
           </div>
         );
       })}
+      {(() => {
+        const boundIds = new Set(
+          rows.filter((row) => row.source === "secret" && row.secretId).map((row) => row.secretId),
+        );
+        const quick = (recentlyUsedSecrets ?? [])
+          .filter((secret) => secret.status === "active" && !boundIds.has(secret.id))
+          .slice(0, 8);
+        if (quick.length === 0) return null;
+        return (
+          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+            <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground/70">
+              <KeyRound className="h-3 w-3" />
+              Recently used:
+            </span>
+            {quick.map((secret) => (
+              <button
+                key={secret.id}
+                type="button"
+                onClick={() => bindRecentSecret(secret)}
+                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                title={`Bind ${secret.name}`}
+              >
+                + {secret.name}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
       {sealError && <p className="text-[11px] text-destructive">{sealError}</p>}
+      {(() => {
+        const issues: { key: string; reason: string }[] = [];
+        for (const row of rows) {
+          if (row.source !== "secret" || !row.secretId) continue;
+          const secret = secrets.find((s) => s.id === row.secretId);
+          if (!secret) {
+            issues.push({ key: row.key.trim() || row.secretId, reason: "missing" });
+          } else if (secret.status !== "active") {
+            issues.push({ key: row.key.trim() || secret.name, reason: secret.status });
+          }
+        }
+        if (!issues.length) return null;
+        return (
+          <p className="text-[11px] text-amber-700 dark:text-amber-400 inline-flex items-start gap-1">
+            <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
+            <span>
+              {issues.length} secret binding{issues.length === 1 ? "" : "s"} need attention:{" "}
+              {issues.map((issue, idx) => (
+                <span key={idx} className="font-mono">
+                  {issue.key}
+                  <span className="text-muted-foreground"> ({issue.reason})</span>
+                  {idx < issues.length - 1 ? ", " : ""}
+                </span>
+              ))}
+              . Runs will fail until you remap or re-enable.
+            </span>
+          </p>
+        );
+      })()}
       <p className="text-[11px] text-muted-foreground/60">
-        PAPERCLIP_* variables are injected automatically at runtime.
+        Set KEY to the env var name the process expects, for example GH_TOKEN. Choose Secret to resolve a stored
+        value at run start. PAPERCLIP_* variables are injected automatically.
       </p>
     </div>
   );

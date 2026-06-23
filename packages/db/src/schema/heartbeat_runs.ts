@@ -34,6 +34,10 @@ export const heartbeatRuns = pgTable(
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
+    lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
+    lastOutputSeq: integer("last_output_seq").notNull().default(0),
+    lastOutputStream: text("last_output_stream"),
+    lastOutputBytes: bigint("last_output_bytes", { mode: "number" }),
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",
     }),
@@ -63,6 +67,16 @@ export const heartbeatRuns = pgTable(
       table.companyId,
       table.livenessState,
       table.createdAt,
+    ),
+    companyStatusLastOutputIdx: index("heartbeat_runs_company_status_last_output_idx").on(
+      table.companyId,
+      table.status,
+      table.lastOutputAt,
+    ),
+    companyStatusProcessStartedIdx: index("heartbeat_runs_company_status_process_started_idx").on(
+      table.companyId,
+      table.status,
+      table.processStartedAt,
     ),
   }),
 );

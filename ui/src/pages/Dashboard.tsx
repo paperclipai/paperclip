@@ -9,7 +9,7 @@ import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
@@ -36,7 +36,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
-  const { openOnboarding } = useDialog();
+  const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
@@ -295,10 +295,10 @@ export function Dashboard() {
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart activity={data.runActivity} />
             </ChartCard>
-            <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+            <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
               <PriorityChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Status" subtitle="Last 14 days">
+            <ChartCard title="Tasks by Status" subtitle="Last 14 days">
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
             <ChartCard title="Success Rate" subtitle="Last 14 days">
@@ -356,7 +356,7 @@ export function Dashboard() {
                       <div className="flex items-start gap-2 sm:items-center sm:gap-3">
                         {/* Status icon - left column on mobile */}
                         <span className="shrink-0 sm:hidden">
-                          <StatusIcon status={issue.status} />
+                          <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
                         </span>
 
                         {/* Right column on mobile: title + metadata stacked */}
@@ -365,7 +365,7 @@ export function Dashboard() {
                             {issue.title}
                           </span>
                           <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
-                            <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} /></span>
+                            <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} /></span>
                             <span className="text-xs font-mono text-muted-foreground">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>

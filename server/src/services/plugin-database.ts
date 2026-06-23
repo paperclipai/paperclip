@@ -19,6 +19,9 @@ const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_POSTGRES_IDENTIFIER_LENGTH = 63;
 
 type SqlRef = { schema: string; table: string; keyword: string };
+type QualifiedRefPattern =
+  | { pattern: RegExp; groups: "keyword-schema-table" }
+  | { pattern: RegExp; groups: "schema-table"; keyword: string };
 
 export type PluginDatabaseRuntimeResult<T = Record<string, unknown>> = {
   rows?: T[];
@@ -123,14 +126,29 @@ function normaliseSql(input: string): string {
 
 function extractQualifiedRefs(statement: string): SqlRef[] {
   const refs: SqlRef[] = [];
-  const patterns = [
-    /\b(from|join|references|into|update)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
-    /\b(alter\s+table|create\s+table|create\s+view|drop\s+table|truncate\s+table)\s+(?:if\s+(?:not\s+)?exists\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+  const patterns: QualifiedRefPattern[] = [
+    {
+      pattern: /\b(from|join|references|into|update)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+      groups: "keyword-schema-table",
+    },
+    {
+      pattern: /\b(alter\s+table|create\s+table|create\s+view|drop\s+table|truncate\s+table)\s+(?:if\s+(?:not\s+)?exists\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+      groups: "keyword-schema-table",
+    },
+    {
+      pattern: /\bcreate\s+(?:unique\s+)?index(?:\s+concurrently)?\s+(?:if\s+not\s+exists\s+)?"?[A-Za-z_][A-Za-z0-9_]*"?\s+on\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+      groups: "schema-table",
+      keyword: "create index",
+    },
   ];
 
-  for (const pattern of patterns) {
+  for (const { pattern, ...mapping } of patterns) {
     for (const match of statement.matchAll(pattern)) {
-      refs.push({ keyword: match[1]!.toLowerCase(), schema: match[2]!, table: match[3]! });
+      if (mapping.groups === "keyword-schema-table") {
+        refs.push({ keyword: match[1]!.toLowerCase(), schema: match[2]!, table: match[3]! });
+      } else {
+        refs.push({ keyword: mapping.keyword, schema: match[1]!, table: match[2]! });
+      }
     }
   }
   return refs;
@@ -182,13 +200,35 @@ export function validatePluginMigrationStatement(
     throw new Error("Destructive plugin migrations are not allowed in Phase 1");
   }
 
-  const ddlAllowed = /^(create|alter|comment)\b/.test(normalized);
-  if (!ddlAllowed) {
-    throw new Error("Plugin migrations may contain DDL statements only");
+  if (/\bdelete\s+from\b/.test(normalized)) {
+    throw new Error("Plugin migrations cannot delete data");
+  }
+
+  const ddlOrBackfillAllowed =
+    /^(create|alter|comment)\b/.test(normalized) ||
+    /^(insert\s+into|update)\b/.test(normalized) ||
+    (normalized.startsWith("with ") && /\b(insert\s+into|update)\b/.test(normalized));
+  if (!ddlOrBackfillAllowed) {
+    throw new Error("Plugin migrations may contain DDL or namespace-scoped backfill statements only");
   }
 
   const refs = extractQualifiedRefs(statement);
   if (refs.length === 0 && !normalized.startsWith("comment ")) {
+    throw new Error("Plugin migration objects must use fully qualified schema names");
+  }
+
+  const objectRefKeywords = new Set([
+    "alter table",
+    "create index",
+    "create table",
+    "create view",
+    "drop table",
+    "into",
+    "truncate table",
+    "update",
+  ]);
+  const hasQualifiedObjectRef = refs.some((ref) => objectRefKeywords.has(ref.keyword));
+  if (!hasQualifiedObjectRef && !normalized.startsWith("comment ")) {
     throw new Error("Plugin migration objects must use fully qualified schema names");
   }
 
@@ -303,7 +343,19 @@ function resolveMigrationsDir(packageRoot: string, migrationsDir: string): strin
   return resolvedDir;
 }
 
-export function pluginDatabaseService(db: Db) {
+type PluginDatabaseClient = Pick<Db, "select" | "insert" | "update" | "execute">;
+type PluginDatabaseRootClient = PluginDatabaseClient & Partial<Pick<Db, "transaction">>;
+
+export interface ApplyPluginMigrationsOptions {
+  /**
+   * Persist failed migration ledger rows. Fresh install uses false because the
+   * caller owns a larger transaction and must roll back the plugin row and
+   * namespace together.
+   */
+  persistFailure?: boolean;
+}
+
+export function pluginDatabaseService(db: PluginDatabaseRootClient) {
   async function getPluginRecord(pluginId: string) {
     const rows = await db.select().from(plugins).where(eq(plugins.id, pluginId)).limit(1);
     const plugin = rows[0];
@@ -311,14 +363,18 @@ export function pluginDatabaseService(db: Db) {
     return plugin;
   }
 
-  async function ensureNamespace(pluginId: string, manifest: PaperclipPluginManifestV1) {
+  async function ensureNamespaceWithClient(
+    client: PluginDatabaseClient,
+    pluginId: string,
+    manifest: PaperclipPluginManifestV1,
+  ) {
     if (!manifest.database) return null;
     const namespaceName = derivePluginDatabaseNamespace(
       manifest.id,
       manifest.database.namespaceSlug,
     );
-    await db.execute(sql.raw(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(namespaceName)}`));
-    const rows = await db
+    await client.execute(sql.raw(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(namespaceName)}`));
+    const rows = await client
       .insert(pluginDatabaseNamespaces)
       .values({
         pluginId,
@@ -341,6 +397,10 @@ export function pluginDatabaseService(db: Db) {
     return rows[0] ?? null;
   }
 
+  async function ensureNamespace(pluginId: string, manifest: PaperclipPluginManifestV1) {
+    return ensureNamespaceWithClient(db, pluginId, manifest);
+  }
+
   async function getNamespace(pluginId: string) {
     const rows = await db
       .select()
@@ -358,7 +418,7 @@ export function pluginDatabaseService(db: Db) {
     return namespace.namespaceName;
   }
 
-  async function recordMigrationFailure(input: {
+  async function recordMigrationFailure(client: PluginDatabaseClient, input: {
     pluginId: string;
     pluginKey: string;
     namespaceName: string;
@@ -368,7 +428,7 @@ export function pluginDatabaseService(db: Db) {
     error: unknown;
   }): Promise<void> {
     const message = input.error instanceof Error ? input.error.message : String(input.error);
-    await db
+    await client
       .insert(pluginMigrations)
       .values({
         pluginId: input.pluginId,
@@ -391,7 +451,7 @@ export function pluginDatabaseService(db: Db) {
           appliedAt: null,
         },
       });
-    await db
+    await client
       .update(pluginDatabaseNamespaces)
       .set({ status: "migration_failed", updatedAt: new Date() })
       .where(eq(pluginDatabaseNamespaces.pluginId, input.pluginId));
@@ -400,7 +460,12 @@ export function pluginDatabaseService(db: Db) {
   return {
     ensureNamespace,
 
-    async applyMigrations(pluginId: string, manifest: PaperclipPluginManifestV1, packageRoot: string) {
+    async applyMigrations(
+      pluginId: string,
+      manifest: PaperclipPluginManifestV1,
+      packageRoot: string,
+      options: ApplyPluginMigrationsOptions = {},
+    ) {
       if (!manifest.database) return null;
       const namespace = await ensureNamespace(pluginId, manifest);
       if (!namespace) return null;
@@ -409,13 +474,14 @@ export function pluginDatabaseService(db: Db) {
       const migrationFiles = await listSqlMigrationFiles(migrationDir);
       const coreReadTables = manifest.database.coreReadTables ?? [];
       const lockKey = Number.parseInt(createHash("sha256").update(pluginId).digest("hex").slice(0, 12), 16);
+      const persistFailure = options.persistFailure ?? true;
 
-      await db.transaction(async (tx) => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockKey})`);
+      const applyWithClient = async (client: PluginDatabaseClient) => {
+        await client.execute(sql`SELECT pg_advisory_xact_lock(${lockKey})`);
         for (const migrationKey of migrationFiles) {
           const content = await readFile(path.join(migrationDir, migrationKey), "utf8");
           const checksum = createHash("sha256").update(content).digest("hex");
-          const existingRows = await tx
+          const existingRows = await client
             .select()
             .from(pluginMigrations)
             .where(and(eq(pluginMigrations.pluginId, pluginId), eq(pluginMigrations.migrationKey, migrationKey)))
@@ -435,9 +501,9 @@ export function pluginDatabaseService(db: Db) {
             }
             for (const statement of statements) {
               validatePluginMigrationStatement(statement, namespace.namespaceName, coreReadTables);
-              await tx.execute(sql.raw(statement));
+              await client.execute(sql.raw(statement));
             }
-            await tx
+            await client
               .insert(pluginMigrations)
               .values({
                 pluginId,
@@ -461,19 +527,27 @@ export function pluginDatabaseService(db: Db) {
                 },
               });
           } catch (error) {
-            await recordMigrationFailure({
-              pluginId,
-              pluginKey: manifest.id,
-              namespaceName: namespace.namespaceName,
-              migrationKey,
-              checksum,
-              pluginVersion: manifest.version,
-              error,
-            });
+            if (persistFailure) {
+              await recordMigrationFailure(db, {
+                pluginId,
+                pluginKey: manifest.id,
+                namespaceName: namespace.namespaceName,
+                migrationKey,
+                checksum,
+                pluginVersion: manifest.version,
+                error,
+              });
+            }
             throw error;
           }
         }
-      });
+      };
+
+      if (typeof db.transaction === "function") {
+        await db.transaction(async (tx) => applyWithClient(tx as PluginDatabaseClient));
+      } else {
+        await applyWithClient(db);
+      }
 
       return namespace;
     },

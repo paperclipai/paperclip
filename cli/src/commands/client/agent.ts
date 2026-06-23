@@ -1,5 +1,18 @@
 import { Command } from "commander";
-import type { Agent } from "@paperclipai/shared";
+import {
+  agentSkillSyncSchema,
+  createAgentSchema,
+  resetAgentSessionSchema,
+  updateAgentInstructionsBundleSchema,
+  updateAgentInstructionsPathSchema,
+  updateAgentPermissionsSchema,
+  updateAgentSchema,
+  upsertAgentInstructionsFileSchema,
+  wakeAgentSchema,
+  type Agent,
+  type AgentWakeupResponse,
+  type Issue,
+} from "@paperclipai/shared";
 import {
   removeMaintainerOnlySkillSymlinks,
   resolvePaperclipSkillsDir,
@@ -10,6 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   addCommonClientOptions,
+  apiPath,
   formatInlineRecord,
   handleCommandError,
   printOutput,
@@ -25,6 +39,49 @@ interface AgentLocalCliOptions extends BaseClientOptions {
   companyId?: string;
   keyName?: string;
   installSkills?: boolean;
+}
+
+interface AgentInboxMineOptions extends BaseClientOptions {
+  userId: string;
+  status?: string;
+}
+
+interface AgentWakeOptions extends BaseClientOptions {
+  companyId?: string;
+  source?: string;
+  trigger?: string;
+  reason?: string;
+  payload?: string;
+  idempotencyKey?: string;
+  forceFreshSession?: boolean;
+}
+
+interface AgentJsonPayloadOptions extends BaseClientOptions {
+  companyId?: string;
+  payloadJson: string;
+}
+
+interface AgentDeleteOptions extends BaseClientOptions {
+  yes?: boolean;
+}
+
+interface AgentResetSessionOptions extends BaseClientOptions {
+  taskKey?: string;
+}
+
+interface AgentSkillsSyncOptions extends BaseClientOptions {
+  desiredSkills: string;
+}
+
+interface AgentInstructionsFileOptions extends BaseClientOptions {
+  path: string;
+}
+
+interface AgentInstructionsFilePutOptions extends BaseClientOptions {
+  path: string;
+  content?: string;
+  contentFile?: string;
+  clearLegacyPromptTemplate?: boolean;
 }
 
 interface CreatedAgentKey {
@@ -161,13 +218,76 @@ export function registerAgentCommands(program: Command): void {
 
   addCommonClientOptions(
     agent
+      .command("me")
+      .description("Show the current agent identity")
+      .action(async (opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const me = await ctx.api.get<Agent>("/api/agents/me");
+          printOutput(me, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("inbox")
+      .description("List current agent assigned inbox items")
+      .action(async (opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const rows = (await ctx.api.get<Issue[]>("/api/agents/me/inbox-lite")) ?? [];
+          if (ctx.json) {
+            printOutput(rows, { json: true });
+            return;
+          }
+          for (const row of rows) {
+            console.log(formatInlineRecord({
+              identifier: row.identifier,
+              id: row.id,
+              status: row.status,
+              priority: row.priority,
+              title: row.title,
+              projectId: row.projectId,
+            }));
+          }
+          if (rows.length === 0) printOutput([], { json: false });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("inbox-mine")
+      .description("List current agent inbox items touched or archived by a board user")
+      .requiredOption("--user-id <id>", "Board user ID")
+      .option("--status <csv>", "Comma-separated issue statuses")
+      .action(async (opts: AgentInboxMineOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const params = new URLSearchParams({ userId: opts.userId });
+          if (opts.status) params.set("status", opts.status);
+          const rows = (await ctx.api.get<Issue[]>(`/api/agents/me/inbox/mine?${params.toString()}`)) ?? [];
+          printOutput(rows, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
       .command("list")
       .description("List agents for a company")
       .requiredOption("-C, --company-id <id>", "Company ID")
       .action(async (opts: AgentListOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const rows = (await ctx.api.get<Agent[]>(`/api/companies/${ctx.companyId}/agents`)) ?? [];
+          const rows = (await ctx.api.get<Agent[]>(apiPath`/api/companies/${ctx.companyId}/agents`)) ?? [];
 
           if (ctx.json) {
             printOutput(rows, { json: true });
@@ -207,12 +327,429 @@ export function registerAgentCommands(program: Command): void {
       .action(async (agentId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const row = await ctx.api.get<Agent>(`/api/agents/${agentId}`);
+          const row = await ctx.api.get<Agent>(apiPath`/api/agents/${agentId}`);
           printOutput(row, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
       }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("create")
+      .description("Create an agent from a JSON payload")
+      .option("-C, --company-id <id>", "Company ID")
+      .requiredOption("--payload-json <json>", "CreateAgent JSON payload")
+      .action(async (opts: AgentJsonPayloadOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const payload = createAgentSchema.parse(parseJson(opts.payloadJson));
+          const created = await ctx.api.post<Agent>(apiPath`/api/companies/${ctx.companyId}/agents`, payload);
+          printOutput(created, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("hire")
+      .description("Create an agent hire request")
+      .option("-C, --company-id <id>", "Company ID")
+      .requiredOption("--payload-json <json>", "CreateAgentHire JSON payload")
+      .action(async (opts: AgentJsonPayloadOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const result = await ctx.api.post(apiPath`/api/companies/${ctx.companyId}/agent-hires`, parseJson(opts.payloadJson));
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("update")
+      .description("Update an agent from a JSON payload")
+      .argument("<agentId>", "Agent ID")
+      .requiredOption("--payload-json <json>", "UpdateAgent JSON payload")
+      .action(async (agentId: string, opts: AgentJsonPayloadOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload = updateAgentSchema.parse(parseJson(opts.payloadJson));
+          const updated = await ctx.api.patch<Agent>(apiPath`/api/agents/${agentId}`, payload);
+          printOutput(updated, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("delete")
+      .description("Delete an agent")
+      .argument("<agentId>", "Agent ID")
+      .option("--yes", "Confirm deletion")
+      .action(async (agentId: string, opts: AgentDeleteOptions) => {
+        try {
+          if (!opts.yes) throw new Error("Refusing to delete without --yes");
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.delete(apiPath`/api/agents/${agentId}`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  for (const [name, path, description] of [
+    ["pause", "pause", "Pause an agent"],
+    ["resume", "resume", "Resume an agent"],
+    ["approve", "approve", "Approve a pending agent"],
+    ["terminate", "terminate", "Terminate an agent"],
+    ["heartbeat:invoke", "heartbeat/invoke", "Invoke an agent heartbeat"],
+    ["claude-login", "claude-login", "Trigger Claude login for an agent"],
+  ] as const) {
+    addCommonClientOptions(
+      agent
+        .command(name)
+        .description(description)
+        .argument("<agentId>", "Agent ID")
+        .action(async (agentId: string, opts: BaseClientOptions) => {
+          try {
+            const ctx = resolveCommandContext(opts);
+            const result = await ctx.api.post(`${apiPath`/api/agents/${agentId}`}/${path}`, {});
+            printOutput(result, { json: ctx.json });
+          } catch (err) {
+            handleCommandError(err);
+          }
+        }),
+    );
+  }
+
+  addCommonClientOptions(
+    agent
+      .command("permissions:update")
+      .description("Update agent permissions")
+      .argument("<agentId>", "Agent ID")
+      .requiredOption("--payload-json <json>", "UpdateAgentPermissions JSON payload")
+      .action(async (agentId: string, opts: AgentJsonPayloadOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload = updateAgentPermissionsSchema.parse(parseJson(opts.payloadJson));
+          const updated = await ctx.api.patch(apiPath`/api/agents/${agentId}/permissions`, payload);
+          printOutput(updated, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("configuration")
+      .description("Get redacted agent configuration")
+      .argument("<agentId>", "Agent ID")
+      .action(async (agentId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.get(apiPath`/api/agents/${agentId}/configuration`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("config-revisions")
+      .description("List agent config revisions")
+      .argument("<agentId>", "Agent ID")
+      .action(async (agentId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.get(apiPath`/api/agents/${agentId}/config-revisions`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("config-revision:get")
+      .description("Get one agent config revision")
+      .argument("<agentId>", "Agent ID")
+      .argument("<revisionId>", "Revision ID")
+      .action(async (agentId: string, revisionId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.get(apiPath`/api/agents/${agentId}/config-revisions/${revisionId}`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("config-revision:rollback")
+      .description("Roll an agent back to a config revision")
+      .argument("<agentId>", "Agent ID")
+      .argument("<revisionId>", "Revision ID")
+      .action(async (agentId: string, revisionId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.post(apiPath`/api/agents/${agentId}/config-revisions/${revisionId}/rollback`, {});
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("runtime-state")
+      .description("Get agent runtime state")
+      .argument("<agentId>", "Agent ID")
+      .action(async (agentId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.get(apiPath`/api/agents/${agentId}/runtime-state`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("runtime-state:reset-session")
+      .description("Reset an agent runtime session")
+      .argument("<agentId>", "Agent ID")
+      .option("--task-key <key>", "Specific task session key")
+      .action(async (agentId: string, opts: AgentResetSessionOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload = resetAgentSessionSchema.parse({ taskKey: opts.taskKey });
+          const result = await ctx.api.post(apiPath`/api/agents/${agentId}/runtime-state/reset-session`, payload);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("task-sessions")
+      .description("List agent task sessions")
+      .argument("<agentId>", "Agent ID")
+      .action(async (agentId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.get(apiPath`/api/agents/${agentId}/task-sessions`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("skills")
+      .description("List agent skills")
+      .argument("<agentId>", "Agent ID")
+      .action(async (agentId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.get(apiPath`/api/agents/${agentId}/skills`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("skills:sync")
+      .description("Sync desired skills onto an agent")
+      .argument("<agentId>", "Agent ID")
+      .requiredOption("--desired-skills <csv>", "Desired skill names")
+      .action(async (agentId: string, opts: AgentSkillsSyncOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload = agentSkillSyncSchema.parse({ desiredSkills: parseCsv(opts.desiredSkills) });
+          const result = await ctx.api.post(apiPath`/api/agents/${agentId}/skills/sync`, payload);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("instructions-path:update")
+      .description("Update an agent instructions path. Process adapters require adapterConfigKey and relative paths require adapterConfig.cwd.")
+      .argument("<agentId>", "Agent ID")
+      .requiredOption("--payload-json <json>", "UpdateAgentInstructionsPath JSON payload, for example {\"path\":\"/tmp/AGENTS.md\",\"adapterConfigKey\":\"instructionsFilePath\"}")
+      .action(async (agentId: string, opts: AgentJsonPayloadOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload = updateAgentInstructionsPathSchema.parse(parseJson(opts.payloadJson));
+          const result = await ctx.api.patch(apiPath`/api/agents/${agentId}/instructions-path`, payload);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("instructions-bundle")
+      .description("Get an agent instructions bundle")
+      .argument("<agentId>", "Agent ID")
+      .action(async (agentId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.get(apiPath`/api/agents/${agentId}/instructions-bundle`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("instructions-bundle:update")
+      .description("Update an agent instructions bundle")
+      .argument("<agentId>", "Agent ID")
+      .requiredOption("--payload-json <json>", "UpdateAgentInstructionsBundle JSON payload")
+      .action(async (agentId: string, opts: AgentJsonPayloadOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload = updateAgentInstructionsBundleSchema.parse(parseJson(opts.payloadJson));
+          const result = await ctx.api.patch(apiPath`/api/agents/${agentId}/instructions-bundle`, payload);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("instructions-file:get")
+      .description("Get an agent instructions file")
+      .argument("<agentId>", "Agent ID")
+      .requiredOption("--path <path>", "Bundle-relative file path")
+      .action(async (agentId: string, opts: AgentInstructionsFileOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const query = new URLSearchParams({ path: opts.path });
+          const result = await ctx.api.get(`${apiPath`/api/agents/${agentId}/instructions-bundle/file`}?${query.toString()}`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("instructions-file:put")
+      .description("Create or update an agent instructions file")
+      .argument("<agentId>", "Agent ID")
+      .requiredOption("--path <path>", "Bundle-relative file path")
+      .option("--content <text>", "File content")
+      .option("--content-file <path>", "Read file content from disk")
+      .option("--clear-legacy-prompt-template", "Clear legacy prompt template")
+      .action(async (agentId: string, opts: AgentInstructionsFilePutOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const content = opts.contentFile ? await fs.readFile(opts.contentFile, "utf8") : opts.content;
+          const payload = upsertAgentInstructionsFileSchema.parse({
+            path: opts.path,
+            content,
+            clearLegacyPromptTemplate: Boolean(opts.clearLegacyPromptTemplate),
+          });
+          const result = await ctx.api.put(apiPath`/api/agents/${agentId}/instructions-bundle/file`, payload);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("instructions-file:delete")
+      .description("Delete an agent instructions file")
+      .argument("<agentId>", "Agent ID")
+      .requiredOption("--path <path>", "Bundle-relative file path")
+      .action(async (agentId: string, opts: AgentInstructionsFileOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const query = new URLSearchParams({ path: opts.path });
+          const result = await ctx.api.delete(`${apiPath`/api/agents/${agentId}/instructions-bundle/file`}?${query.toString()}`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("wake")
+      .description("Request a heartbeat wakeup for an agent")
+      .argument("<agentRef>", "Agent ID or shortname/url-key")
+      .option("-C, --company-id <id>", "Company ID for shortname/url-key lookup")
+      .option("--source <source>", "Invocation source (timer, assignment, on_demand, automation)", "on_demand")
+      .option("--trigger <trigger>", "Trigger detail (manual, ping, callback, system)", "manual")
+      .option("--reason <text>", "Wakeup reason")
+      .option("--payload <json>", "JSON object payload")
+      .option("--idempotency-key <key>", "Wakeup idempotency key")
+      .option("--force-fresh-session", "Request a fresh adapter session")
+      .action(async (agentRef: string, opts: AgentWakeOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const query = opts.companyId ? `?${new URLSearchParams({ companyId: opts.companyId }).toString()}` : "";
+          const agentRow = await ctx.api.get<Agent>(`${apiPath`/api/agents/${agentRef}`}${query}`);
+          if (!agentRow) {
+            throw new Error(`Agent not found: ${agentRef}`);
+          }
+          const payload = wakeAgentSchema.parse({
+            source: opts.source,
+            triggerDetail: opts.trigger,
+            reason: opts.reason,
+            payload: parseJsonObject(opts.payload),
+            idempotencyKey: opts.idempotencyKey,
+            forceFreshSession: Boolean(opts.forceFreshSession),
+          });
+          const result = await ctx.api.post<AgentWakeupResponse>(apiPath`/api/agents/${agentRow.id}/wakeup`, payload);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
   );
 
   addCommonClientOptions(
@@ -233,7 +770,7 @@ export function registerAgentCommands(program: Command): void {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const query = new URLSearchParams({ companyId: ctx.companyId ?? "" });
           const agentRow = await ctx.api.get<Agent>(
-            `/api/agents/${encodeURIComponent(agentRef)}?${query.toString()}`,
+            `${apiPath`/api/agents/${agentRef}`}?${query.toString()}`,
           );
           if (!agentRow) {
             throw new Error(`Agent not found: ${agentRef}`);
@@ -241,7 +778,7 @@ export function registerAgentCommands(program: Command): void {
 
           const now = new Date().toISOString().replaceAll(":", "-");
           const keyName = opts.keyName?.trim() ? opts.keyName.trim() : `local-cli-${now}`;
-          const key = await ctx.api.post<CreatedAgentKey>(`/api/agents/${agentRow.id}/keys`, { name: keyName });
+          const key = await ctx.api.post<CreatedAgentKey>(apiPath`/api/agents/${agentRow.id}/keys`, { name: keyName });
           if (!key) {
             throw new Error("Failed to create API key");
           }
@@ -312,4 +849,22 @@ export function registerAgentCommands(program: Command): void {
       }),
     { includeCompany: false },
   );
+}
+
+function parseJsonObject(value: string | undefined): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  const parsed = JSON.parse(value) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("--payload must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function parseJson(value: string): unknown {
+  return JSON.parse(value) as unknown;
+}
+
+function parseCsv(value: string | undefined): string[] {
+  if (!value) return [];
+  return value.split(",").map((part) => part.trim()).filter(Boolean);
 }

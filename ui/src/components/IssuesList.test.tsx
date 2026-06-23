@@ -2,9 +2,9 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import type { ReactNode } from "react";
+import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssuesList } from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -42,12 +42,33 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
+const mockExternalObjectsApi = vi.hoisted(() => ({
+  getIssueSummaries: vi.fn(),
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => companyState,
 }));
 
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => dialogState,
+  useDialogActions: () => dialogState,
+}));
+
+vi.mock("@/lib/router", () => ({
+  Link: ({
+    children,
+    to,
+    state: _state,
+    issuePrefetch: _issuePrefetch,
+    ...props
+  }: AnchorHTMLAttributes<HTMLAnchorElement> & {
+    to: string;
+    state?: unknown;
+    issuePrefetch?: unknown;
+  }) => (
+    <a href={to} {...props}>{children}</a>
+  ),
 }));
 
 vi.mock("../api/issues", () => ({
@@ -70,26 +91,62 @@ vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
+vi.mock("../api/externalObjects", () => ({
+  externalObjectsApi: mockExternalObjectsApi,
+}));
+
 vi.mock("./IssueRow", () => ({
   IssueRow: ({
     issue,
     desktopMetaLeading,
     desktopTrailing,
+    titleClassName,
+    checklistStepNumber,
+    checklistCurrentStep,
+    checklistDependencyChips,
+    checklistRowId,
+    externalObjectSummary,
   }: {
     issue: Issue;
     desktopMetaLeading?: ReactNode;
     desktopTrailing?: ReactNode;
+    titleClassName?: string;
+    checklistStepNumber?: number | string | null;
+    checklistCurrentStep?: boolean;
+    checklistDependencyChips?: ReactNode;
+    checklistRowId?: string;
+    externalObjectSummary?: { total: number } | null;
   }) => (
-    <div data-testid="issue-row">
+    <div
+      data-testid="issue-row"
+      id={checklistRowId}
+      data-step={checklistStepNumber ?? undefined}
+      data-current-step={checklistCurrentStep ? "true" : undefined}
+      data-title-class={titleClassName ?? undefined}
+    >
       <span>{issue.title}</span>
+      {externalObjectSummary ? (
+        <span data-testid="external-object-summary">{externalObjectSummary.total}</span>
+      ) : null}
       {desktopMetaLeading}
       {desktopTrailing}
+      {checklistDependencyChips}
     </div>
   ),
 }));
 
 vi.mock("./KanbanBoard", () => ({
-  KanbanBoard: (props: { issues: Issue[] }) => {
+  KANBAN_BOARD_HIGH_VOLUME_THRESHOLD: 100,
+  KANBAN_COLD_STATUSES: ["backlog", "done", "cancelled"],
+  KANBAN_COLUMN_DEFAULT_PAGE_SIZE: 10,
+  KANBAN_COLUMN_PAGE_SIZE_OPTIONS: [10, 25, 50],
+  KanbanBoard: (props: {
+    issues: Issue[];
+    compactCards?: boolean;
+    collapsedStatuses?: string[];
+    initialVisibleCount?: number;
+    revealIncrement?: number;
+  }) => {
     mockKanbanBoard(props);
     return (
       <div data-testid="kanban-board">
@@ -145,12 +202,13 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastActivityAt: null,
     isUnreadForMe: false,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
 async function flush() {
   await act(async () => {
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
@@ -168,6 +226,38 @@ async function waitForAssertion(assertion: () => void, attempts = 20) {
   }
 
   throw lastError;
+}
+
+async function waitForMicrotaskAssertion(assertion: () => void, attempts = 20) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+  }
+
+  throw lastError;
+}
+
+function setDocumentScrollMetrics({
+  innerHeight,
+  scrollY,
+  scrollHeight,
+}: {
+  innerHeight: number;
+  scrollY: number;
+  scrollHeight: number;
+}) {
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: innerHeight });
+  Object.defineProperty(window, "scrollY", { configurable: true, value: scrollY });
+  Object.defineProperty(document.documentElement, "scrollHeight", { configurable: true, value: scrollHeight });
 }
 
 function renderWithQueryClient(node: ReactNode, container: HTMLDivElement) {
@@ -209,6 +299,7 @@ describe("IssuesList", () => {
     mockExecutionWorkspacesApi.list.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockReset();
     mockInstanceSettingsApi.getExperimental.mockReset();
+    mockExternalObjectsApi.getIssueSummaries.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: null, session: null });
@@ -216,13 +307,142 @@ describe("IssuesList", () => {
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: false,
+    });
+    setDocumentScrollMetrics({ innerHeight: 600, scrollY: 0, scrollHeight: 2400 });
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({ summaries: {} });
     localStorage.clear();
   });
 
   afterEach(() => {
     vi.useRealTimers();
     container.remove();
+  });
+
+  it("forwards external-object summaries into issue rows", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: true,
+    });
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({
+      summaries: {
+        "issue-1": {
+          total: 2,
+          byStatusCategory: { failed: 1, succeeded: 1 },
+          byLiveness: { fresh: 2 },
+          highestSeverity: "danger",
+          staleCount: 0,
+          authRequiredCount: 0,
+          unreachableCount: 0,
+          objects: [],
+        },
+      },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue()]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledWith("company-1", ["issue-1"]);
+      expect(container.querySelector("[data-testid='external-object-summary']")?.textContent).toBe("2");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not load external-object summaries when the experimental flag is disabled", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue()]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled();
+      expect(container.querySelector("[data-testid='issue-row']")).not.toBeNull();
+    });
+    expect(mockExternalObjectsApi.getIssueSummaries).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("filters issue rows by external-object status summaries", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: true,
+    });
+    const failedIssue = createIssue({ id: "issue-failed", identifier: "PAP-10", title: "Failed external object" });
+    const freshIssue = createIssue({ id: "issue-fresh", identifier: "PAP-11", title: "Fresh external object" });
+    const noObjectIssue = createIssue({ id: "issue-none", identifier: "PAP-12", title: "No external object" });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ externalObjectStatuses: ["failed"] }));
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({
+      summaries: {
+        "issue-failed": {
+          total: 1,
+          byStatusCategory: { failed: 1 },
+          byLiveness: { fresh: 1 },
+          highestSeverity: "danger",
+          staleCount: 0,
+          authRequiredCount: 0,
+          unreachableCount: 0,
+          objects: [],
+        },
+        "issue-fresh": {
+          total: 1,
+          byStatusCategory: { succeeded: 1 },
+          byLiveness: { fresh: 1 },
+          highestSeverity: "success",
+          staleCount: 0,
+          authRequiredCount: 0,
+          unreachableCount: 0,
+          objects: [],
+        },
+      },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[failedIssue, freshIssue, noObjectIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledWith(
+        "company-1",
+        ["issue-failed", "issue-fresh", "issue-none"],
+      );
+      expect(container.textContent).toContain("Failed external object");
+      expect(container.textContent).not.toContain("Fresh external object");
+      expect(container.textContent).not.toContain("No external object");
+    });
+
+    act(() => {
+      root.unmount();
+    });
   });
 
   it("renders server search results instead of filtering the full issue list locally", async () => {
@@ -332,6 +552,462 @@ describe("IssuesList", () => {
     });
   });
 
+  it("uses workspace group defaults when creating an issue from a grouped section", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ groupBy: "workspace", sortField: "updated", sortDir: "desc" }),
+    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+      {
+        id: "execution-workspace-1",
+        name: "Feature Branch",
+        mode: "isolated_workspace",
+        projectWorkspaceId: "project-workspace-1",
+      },
+    ]);
+
+    const issue = createIssue({
+      id: "issue-workspace",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-1",
+      executionWorkspaceId: "execution-workspace-1",
+    });
+    const project = {
+      id: "project-1",
+      name: "Paperclip App",
+      color: null,
+      workspaces: [{ id: "project-workspace-1", name: "Primary workspace" }],
+      primaryWorkspace: { id: "project-workspace-1" },
+      executionWorkspacePolicy: { defaultProjectWorkspaceId: "project-workspace-1" },
+    } as Project;
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[issue]}
+        agents={[]}
+        projects={[project]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New task in Feature Branch"]');
+      expect(button).not.toBeNull();
+    });
+
+    await act(async () => {
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New task in Feature Branch"]');
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(dialogState.openNewIssue).toHaveBeenCalledWith({
+      executionWorkspaceId: "execution-workspace-1",
+      executionWorkspaceMode: "reuse_existing",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-1",
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders the opt-in sub-issue progress summary with workflow next-up linking", async () => {
+    const doneIssue = createIssue({
+      id: "issue-done",
+      identifier: "PAP-1",
+      title: "Completed setup",
+      status: "done",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const nextIssue = createIssue({
+      id: "issue-next",
+      identifier: "PAP-2",
+      title: "Implement next slice",
+      status: "todo",
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+      blockedBy: [{
+        id: "issue-done",
+        identifier: "PAP-1",
+        title: "Completed setup",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      }],
+    });
+    const blockedIssue = createIssue({
+      id: "issue-blocked",
+      identifier: "PAP-3",
+      title: "Blocked follow-up",
+      status: "blocked",
+      createdAt: new Date("2026-04-03T00:00:00.000Z"),
+    });
+    const cancelledIssue = createIssue({
+      id: "issue-cancelled",
+      identifier: "PAP-4",
+      title: "Cancelled follow-up",
+      status: "cancelled",
+      createdAt: new Date("2026-04-04T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[cancelledIssue, blockedIssue, nextIssue, doneIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        showProgressSummary
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const progress = container.querySelector('[role="progressbar"]');
+      expect(progress).not.toBeNull();
+      expect(progress?.getAttribute("aria-valuenow")).toBe("1");
+      expect(progress?.getAttribute("aria-valuemax")).toBe("3");
+      expect(container.textContent).toContain("1/3 done");
+      expect(container.textContent).toContain("0 in progress");
+      expect(container.textContent).toContain("1 blocked");
+      expect(container.textContent).not.toContain("Done 1");
+      expect(container.textContent).toContain("Next up");
+      const link = container.querySelector('a[href="/issues/PAP-2"]');
+      expect(link?.textContent).toContain("Implement next slice");
+      expect(container.querySelector('[title="Cancelled: 1"]')).toBeNull();
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("adds checklist affordances for workflow-sorted sub-issue lists", async () => {
+    const issueDone = createIssue({
+      id: "issue-done",
+      identifier: "PAP-1",
+      title: "Done first",
+      status: "done",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const issueBlocked = createIssue({
+      id: "issue-blocked",
+      identifier: "PAP-2",
+      title: "Blocked issue",
+      status: "blocked",
+      blockedBy: [{ id: "issue-active", identifier: "PAP-3", title: "Active blocker", status: "todo", priority: "medium", assigneeAgentId: null, assigneeUserId: null }],
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    const issueActive = createIssue({
+      id: "issue-active",
+      identifier: "PAP-3",
+      title: "Active blocker",
+      status: "todo",
+      createdAt: new Date("2026-04-03T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[issueBlocked, issueActive, issueDone]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultSortField="workflow"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rows = Array.from(container.querySelectorAll('[data-testid="issue-row"]'));
+      expect(rows).toHaveLength(3);
+      expect(rows.map((row) => row.getAttribute("data-step"))).toEqual(["1", "2", "3"]);
+      expect(container.textContent?.replace(/\s+/g, "")).toContain("1.PAP-1");
+      expect(container.textContent?.replace(/\s+/g, "")).toContain("2.PAP-3");
+      expect(rows.filter((row) => row.getAttribute("data-current-step") === "true")).toHaveLength(1);
+      expect(rows.find((row) => row.textContent?.includes("Active blocker"))?.getAttribute("data-current-step")).toBe("true");
+      expect(rows.find((row) => row.textContent?.includes("Done first"))?.getAttribute("data-title-class")).toContain("text-muted-foreground");
+      expect(container.textContent).toContain("blocked by PAP-3 · step 2");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the workflow blocker chip when a sub-issue is blocked only by its previous sibling", async () => {
+    const firstChild = createIssue({
+      id: "issue-first-child",
+      identifier: "PAP-1",
+      parentId: "issue-parent",
+      title: "First child",
+      status: "todo",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const secondChild = createIssue({
+      id: "issue-second-child",
+      identifier: "PAP-2",
+      parentId: "issue-parent",
+      title: "Second child",
+      status: "blocked",
+      blockedBy: [
+        {
+          id: "issue-first-child",
+          identifier: "PAP-1",
+          title: "First child",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[secondChild, firstChild]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultSortField="workflow"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rows = Array.from(container.querySelectorAll('[data-testid="issue-row"]'));
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row) => row.getAttribute("data-step"))).toEqual(["1", "2"]);
+      expect(container.textContent).not.toContain("blocked by PAP-1");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("collapses multiple workflow blocker chips to the first blocker and a count", async () => {
+    const issueDone = createIssue({
+      id: "issue-done",
+      identifier: "PAP-1",
+      title: "Done first",
+      status: "done",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const firstBlocker = createIssue({
+      id: "issue-first-blocker",
+      identifier: "PAP-2",
+      title: "First blocker",
+      status: "todo",
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    const secondBlocker = createIssue({
+      id: "issue-second-blocker",
+      identifier: "PAP-3",
+      title: "Second blocker",
+      status: "todo",
+      createdAt: new Date("2026-04-03T00:00:00.000Z"),
+    });
+    const thirdBlocker = createIssue({
+      id: "issue-third-blocker",
+      identifier: "PAP-4",
+      title: "Third blocker",
+      status: "todo",
+      createdAt: new Date("2026-04-04T00:00:00.000Z"),
+    });
+    const issueBlocked = createIssue({
+      id: "issue-blocked",
+      identifier: "PAP-5",
+      title: "Blocked issue",
+      status: "blocked",
+      blockedBy: [
+        {
+          id: "issue-first-blocker",
+          identifier: "PAP-2",
+          title: "First blocker",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+        {
+          id: "issue-second-blocker",
+          identifier: "PAP-3",
+          title: "Second blocker",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+        {
+          id: "issue-third-blocker",
+          identifier: "PAP-4",
+          title: "Third blocker",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      createdAt: new Date("2026-04-05T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[issueBlocked, thirdBlocker, secondBlocker, firstBlocker, issueDone]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultSortField="workflow"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("blocked by PAP-2");
+      expect(container.textContent).toContain("... and 2 more");
+      expect(container.textContent).not.toContain("blocked by PAP-3");
+      expect(container.textContent).not.toContain("blocked by PAP-4");
+      const blockerButtons = Array.from(container.querySelectorAll("button"))
+        .filter((button) => button.textContent?.includes("blocked by"));
+      expect(blockerButtons).toHaveLength(1);
+      expect(blockerButtons[0]?.textContent).toBe("blocked by PAP-2 · step 2 ... and 2 more");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses hierarchical checklist step numbers when nested rows render inline", async () => {
+    const firstRoot = createIssue({
+      id: "issue-first-root",
+      identifier: "PAP-1",
+      title: "First root",
+      status: "done",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const parent = createIssue({
+      id: "issue-parent",
+      identifier: "PAP-2",
+      title: "Parent slice",
+      status: "todo",
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    const nextRoot = createIssue({
+      id: "issue-next-root",
+      identifier: "PAP-3",
+      title: "Next root",
+      status: "todo",
+      createdAt: new Date("2026-04-03T00:00:00.000Z"),
+    });
+    const grandchild = createIssue({
+      id: "issue-grandchild",
+      identifier: "PAP-4",
+      title: "Nested cancelled cleanup",
+      status: "cancelled",
+      parentId: "issue-parent",
+      createdAt: new Date("2026-04-04T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[grandchild, nextRoot, firstRoot, parent]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultSortField="workflow"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rows = Array.from(container.querySelectorAll('[data-testid="issue-row"]'));
+      expect(rows).toHaveLength(4);
+      expect(rows.map((row) => row.textContent)).toEqual([
+        expect.stringContaining("First root"),
+        expect.stringContaining("Parent slice"),
+        expect.stringContaining("Nested cancelled cleanup"),
+        expect.stringContaining("Next root"),
+      ]);
+      expect(rows.map((row) => row.getAttribute("data-step"))).toEqual(["1", "2", "2.1", "3"]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the sub-issue progress summary unless it is enabled with multiple sub-issues", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue()]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        showProgressSummary
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[role="progressbar"]')).toBeNull();
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows waiting on blockers when every remaining sub-issue is blocked", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({
+            id: "issue-done",
+            identifier: "PAP-1",
+            title: "Completed setup",
+            status: "done",
+            createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          }),
+          createIssue({
+            id: "issue-blocked",
+            identifier: "PAP-2",
+            title: "Blocked follow-up",
+            status: "blocked",
+            createdAt: new Date("2026-04-02T00:00:00.000Z"),
+          }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        showProgressSummary
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Waiting on blockers");
+      const link = container.querySelector('a[href="/issues/PAP-2"]');
+      expect(link?.textContent).toContain("Blocked follow-up");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("debounces search updates so typing does not notify the page on every keystroke", async () => {
     vi.useFakeTimers();
 
@@ -350,7 +1026,7 @@ describe("IssuesList", () => {
       container,
     );
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
     expect(input).not.toBeNull();
     const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
     expect(valueSetter).toBeTypeOf("function");
@@ -393,6 +1069,10 @@ describe("IssuesList", () => {
       }),
     );
 
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ statuses: ["done"] }),
+    );
     mockIssuesApi.list.mockResolvedValue(serverIssues);
 
     const { root } = renderWithQueryClient(
@@ -407,14 +1087,14 @@ describe("IssuesList", () => {
       container,
     );
 
-    await waitForAssertion(() => {
+    await waitForMicrotaskAssertion(() => {
       expect(container.textContent).toContain("Showing up to 200 matches. Refine the search to narrow further.");
     });
 
     act(() => {
       root.unmount();
     });
-  });
+  }, 10_000);
 
   it("loads board issues with a separate result limit for each status column", async () => {
     localStorage.setItem(
@@ -483,6 +1163,110 @@ describe("IssuesList", () => {
     });
   });
 
+  it("uses compact cards and collapsed cold lanes for high-volume boards", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const backlogIssues = Array.from({ length: 101 }, (_, index) =>
+      createIssue({
+        id: `issue-backlog-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Backlog issue ${index + 1}`,
+        status: "backlog",
+      }),
+    );
+
+    mockIssuesApi.list.mockImplementation((_companyId, filters) => {
+      if (filters?.status === "backlog") return Promise.resolve(backlogIssues);
+      return Promise.resolve([]);
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        compactCards: true,
+        collapsedStatuses: expect.arrayContaining(["backlog", "done", "cancelled"]),
+        initialVisibleCount: 10,
+        revealIncrement: 10,
+      }));
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("lets board users choose the per-column page size", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ id: "issue-page-size", title: "Page size issue" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        initialVisibleCount: 10,
+        revealIncrement: 10,
+      }));
+    });
+
+    const pageSizeButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.getAttribute("title") === "Cards per column",
+    );
+    expect(pageSizeButton).toBeTruthy();
+
+    act(() => {
+      pageSizeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    let option25: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      option25 = Array.from(document.body.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("25 per column"),
+      );
+      expect(option25).toBeTruthy();
+    });
+
+    act(() => {
+      option25?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        initialVisibleCount: 25,
+        revealIncrement: 25,
+      }));
+    });
+
+    expect(localStorage.getItem("paperclip:test-issues:company-1")).toContain("\"boardColumnPageSize\":25");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("shows a refinement hint when a board column hits its server cap", async () => {
     localStorage.setItem(
       "paperclip:test-issues:company-1",
@@ -515,7 +1299,7 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Some board columns are showing up to 200 issues. Refine filters or search to reveal the rest.");
+      expect(container.textContent).toContain("Some board columns are showing up to 200 tasks. Refine filters or search to reveal the rest.");
     });
 
     act(() => {
@@ -544,8 +1328,144 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(150);
-      expect(container.textContent).toContain("Rendering 150 of 220 issues");
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
+      expect(container.textContent).toContain("Rendering 100 of 220 tasks");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps rendering local issue batches while the user stays near the bottom", async () => {
+    const manyIssues = Array.from({ length: 420 }, (_, index) =>
+      createIssue({
+        id: `issue-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Issue ${index + 1}`,
+      }),
+    );
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={manyIssues}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
+    });
+
+    act(() => {
+      setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
+      window.dispatchEvent(new Event("scroll"));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(250);
+      expect(container.textContent).toContain("Rendering 250 of 420 tasks");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("waits for the desktop main scroll container before rendering more local rows", async () => {
+    const manyIssues = Array.from({ length: 120 }, (_, index) =>
+      createIssue({
+        id: `issue-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Issue ${index + 1}`,
+      }),
+    );
+    const main = document.createElement("main");
+    main.id = "main-content";
+    main.style.overflowY = "auto";
+    document.body.appendChild(main);
+    main.appendChild(container);
+    Object.defineProperty(main, "clientHeight", { configurable: true, value: 600 });
+    Object.defineProperty(main, "scrollHeight", { configurable: true, value: 2000 });
+    Object.defineProperty(main, "scrollTop", { configurable: true, writable: true, value: 0 });
+    setDocumentScrollMetrics({ innerHeight: 600, scrollY: 0, scrollHeight: 600 });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={manyIssues}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
+    });
+
+    await flush();
+    await flush();
+    expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
+
+    act(() => {
+      main.scrollTop = 1500;
+      main.dispatchEvent(new Event("scroll"));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]').length).toBeGreaterThan(100);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("requests more server issues after scrolling past the rendered rows", async () => {
+    const visibleIssues = Array.from({ length: 100 }, (_, index) =>
+      createIssue({
+        id: `issue-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Issue ${index + 1}`,
+      }),
+    );
+    const onLoadMoreIssues = vi.fn();
+    setDocumentScrollMetrics({ innerHeight: 2000, scrollY: 0, scrollHeight: 1000 });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={visibleIssues}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        hasMoreIssues
+        onLoadMoreIssues={onLoadMoreIssues}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
+    });
+    await flush();
+    expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+    await flush();
+    expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
+      window.dispatchEvent(new Event("scroll"));
+    });
+
+    await waitForAssertion(() => {
+      expect(onLoadMoreIssues).toHaveBeenCalledTimes(2);
     });
 
     act(() => {
@@ -891,13 +1811,13 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+      const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
       expect(input).not.toBeNull();
       input?.focus();
       expect(document.activeElement).toBe(input);
     });
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement;
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Enter",
@@ -927,13 +1847,13 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+      const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
       expect(input).not.toBeNull();
       input?.focus();
       expect(document.activeElement).toBe(input);
     });
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement;
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Escape",

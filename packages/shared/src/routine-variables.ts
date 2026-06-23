@@ -1,25 +1,47 @@
 import type { RoutineVariable } from "./types/routine.js";
 
-const ROUTINE_VARIABLE_MATCHER = /\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g;
+// Tolerate markdown-escaped underscores (`\_`) inside placeholders. WYSIWYG markdown
+// editors (e.g. MDXEditor) serialize `_` between word chars as `\_` to prevent
+// reparse-as-emphasis, so a user-typed `{{pr_url}}` is stored as `{{pr\_url}}`.
+const ROUTINE_VARIABLE_MATCHER = /\{\{\s*([A-Za-z](?:\\_|[A-Za-z0-9_])*)\s*\}\}/g;
+
+function unescapeRoutineVariableName(raw: string): string {
+  return raw.replace(/\\_/g, "_");
+}
+
 type RoutineTemplateInput = string | null | undefined | Array<string | null | undefined>;
 
 /**
  * Built-in variable names that are automatically available in routine templates
  * without needing to be defined in the routine's variables list.
  */
-export const BUILTIN_ROUTINE_VARIABLE_NAMES = new Set(["date"]);
+export const BUILTIN_ROUTINE_VARIABLE_NAMES = new Set(["date", "timestamp"]);
 
 export function isBuiltinRoutineVariable(name: string): boolean {
   return BUILTIN_ROUTINE_VARIABLE_NAMES.has(name);
 }
 
+const HUMAN_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+  timeZone: "UTC",
+  timeZoneName: "short",
+});
+
 /**
  * Returns current values for all built-in routine variables.
  * `date` expands to the current date in YYYY-MM-DD format (UTC).
+ * `timestamp` expands to a human-readable date and time (e.g. "April 28, 2026 at 12:17 PM UTC").
  */
 export function getBuiltinRoutineVariableValues(): Record<string, string> {
+  const now = new Date();
   return {
-    date: new Date().toISOString().slice(0, 10),
+    date: now.toISOString().slice(0, 10),
+    timestamp: HUMAN_TIMESTAMP_FORMATTER.format(now),
   };
 }
 
@@ -36,7 +58,7 @@ export function extractRoutineVariableNames(template: RoutineTemplateInput): str
   const found = new Set<string>();
   for (const source of normalizeRoutineTemplateInput(template)) {
     for (const match of source.matchAll(ROUTINE_VARIABLE_MATCHER)) {
-      const name = match[1];
+      const name = match[1] ? unescapeRoutineVariableName(match[1]) : "";
       if (name && !found.has(name)) {
         found.add(name);
       }
@@ -83,7 +105,8 @@ export function interpolateRoutineTemplate(
   if (template == null) return null;
   if (!values || Object.keys(values).length === 0) return template;
   return template.replace(ROUTINE_VARIABLE_MATCHER, (match, rawName: string) => {
-    if (!(rawName in values)) return match;
-    return stringifyRoutineVariableValue(values[rawName]);
+    const name = unescapeRoutineVariableName(rawName);
+    if (!(name in values)) return match;
+    return stringifyRoutineVariableValue(values[name]);
   });
 }

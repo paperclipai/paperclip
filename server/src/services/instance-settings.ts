@@ -3,20 +3,24 @@ import { companies, instanceSettings } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceGeneralSettings,
   type InstanceSettings,
+  type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";
+const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
+const instanceExperimentalSettingsStorageSchema = instanceExperimentalSettingsSchema.strip();
 
 function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
-  const parsed = instanceGeneralSettingsSchema.safeParse(raw ?? {});
+  const parsed = instanceGeneralSettingsStorageSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
@@ -24,6 +28,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      // Absent => unrestricted; only carry through an explicit policy.
+      ...(parsed.data.executionMode ? { executionMode: parsed.data.executionMode } : {}),
     };
   }
   return {
@@ -34,30 +40,52 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   };
 }
 
-function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettings {
-  const parsed = instanceExperimentalSettingsSchema.safeParse(raw ?? {});
+export function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettings {
+  const parsed = instanceExperimentalSettingsStorageSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
+      enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
+      enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
+      enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
+      enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
+      enableCloudSync: parsed.data.enableCloudSync ?? false,
+      enableExternalObjects: parsed.data.enableExternalObjects ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
+      enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
+      issueGraphLivenessAutoRecoveryLookbackHours:
+        parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
+        DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
     };
   }
   return {
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
+    enableStreamlinedLeftNavigation: true,
+    enableConferenceRoomChat: false,
+    enableTaskWatchdogs: false,
+    enableIssuePlanDecompositions: false,
+    enableExperimentalFileViewer: false,
+    enableCloudSync: false,
+    enableExternalObjects: false,
     autoRestartDevServerWhenIdle: false,
+    enableIssueGraphLivenessAutoRecovery: false,
+    issueGraphLivenessAutoRecoveryLookbackHours:
+      DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   };
 }
 
 function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
   return {
     id: row.id,
+    defaultEnvironmentId: row.defaultEnvironmentId ?? null,
     general: normalizeGeneralSettings(row.general),
     experimental: normalizeExperimentalSettings(row.experimental),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-  };
+  } as InstanceSettings;
 }
 
 export function instanceSettingsService(db: Db) {
@@ -101,6 +129,22 @@ export function instanceSettingsService(db: Db) {
 
   return {
     get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
+
+    update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
+      const current = await getOrCreateRow();
+      const now = new Date();
+      const [updated] = await db
+        .update(instanceSettings)
+        .set({
+          ...(Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId")
+            ? { defaultEnvironmentId: patch.defaultEnvironmentId ?? null }
+            : {}),
+          updatedAt: now,
+        })
+        .where(eq(instanceSettings.id, current.id))
+        .returning();
+      return toInstanceSettings(updated ?? current);
+    },
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
       const row = await getOrCreateRow();

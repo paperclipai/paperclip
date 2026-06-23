@@ -192,6 +192,15 @@ export function buildWorkspaceRuntimeControlItems(input: {
   }));
 }
 
+export function getRunningRuntimeServiceUrl(
+  sections: WorkspaceRuntimeControlSections,
+) {
+  const runningService = [...sections.services, ...sections.otherServices].find(
+    (item) => (item.statusLabel === "running" || item.statusLabel === "starting") && item.url,
+  );
+  return runningService?.url ?? null;
+}
+
 function requestMatchesPending(
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined,
   nextRequest: WorkspaceRuntimeControlRequest,
@@ -217,12 +226,14 @@ function CommandActionButtons({
   pendingRequest,
   onAction,
   square,
+  iconOnly,
 }: {
   item: WorkspaceRuntimeControlItem;
   isPending: boolean;
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined;
   onAction: (request: WorkspaceRuntimeControlRequest) => void;
   square?: boolean;
+  iconOnly?: boolean;
 }) {
   const actions: WorkspaceRuntimeAction[] =
     item.kind === "job"
@@ -232,7 +243,7 @@ function CommandActionButtons({
         : ["start"];
 
   return (
-    <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap">
+    <div className={cn("flex gap-2", iconOnly ? "w-auto flex-row flex-wrap" : "w-full flex-col sm:w-auto sm:flex-row sm:flex-wrap")}>
       {actions.map((action) => {
         const request = buildRequest(item, action);
         const Icon = action === "stop" ? Square : action === "restart" ? RotateCcw : Play;
@@ -252,18 +263,19 @@ function CommandActionButtons({
         return (
           <Button
             key={`${item.key}:${action}`}
-            variant={action === "stop" ? "destructive" : action === "restart" ? "outline" : "default"}
-            size="sm"
+            variant={iconOnly ? "outline" : action === "stop" ? "destructive" : action === "restart" ? "outline" : "default"}
+            size={iconOnly ? "icon-xs" : "sm"}
             className={cn(
-              "h-9 w-full justify-start px-3 shadow-none sm:w-auto",
-              square ? "rounded-none" : "rounded-xl",
-              action === "restart" ? "bg-background" : null,
+              iconOnly ? "shrink-0" : "w-full justify-start sm:w-auto",
+              square ? "rounded-none" : null,
             )}
             disabled={disabled}
             onClick={() => onAction(request)}
+            aria-label={label}
+            title={label}
           >
             {showSpinner ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
-            {label}
+            {iconOnly ? <span className="sr-only">{label}</span> : label}
           </Button>
         );
       })}
@@ -281,6 +293,7 @@ function CommandSection({
   pendingRequest,
   onAction,
   square,
+  iconOnly,
 }: {
   title: string;
   description: string;
@@ -291,6 +304,7 @@ function CommandSection({
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined;
   onAction: (request: WorkspaceRuntimeControlRequest) => void;
   square?: boolean;
+  iconOnly?: boolean;
 }) {
   return (
     <div className="space-y-3">
@@ -322,6 +336,7 @@ function CommandSection({
                     pendingRequest={pendingRequest}
                     onAction={onAction}
                     square={square}
+                    iconOnly={iconOnly}
                   />
                 </div>
                 <div className="space-y-1 text-xs text-muted-foreground">
@@ -447,6 +462,68 @@ export function WorkspaceRuntimeControls({
           onAction={onAction}
           square={square}
         />
+      ) : null}
+    </div>
+  );
+}
+
+export function WorkspaceRuntimeQuickControls({
+  sections,
+  isPending = false,
+  pendingRequest = null,
+  onAction,
+  square,
+  align = "end",
+  iconOnly = false,
+}: {
+  sections: WorkspaceRuntimeControlSections;
+  isPending?: boolean;
+  pendingRequest?: WorkspaceRuntimeControlRequest | null;
+  onAction: (request: WorkspaceRuntimeControlRequest) => void;
+  square?: boolean;
+  align?: "start" | "end";
+  iconOnly?: boolean;
+}) {
+  const controlItems = sections.services.length > 0 ? sections.services : sections.otherServices;
+  const serviceUrl = getRunningRuntimeServiceUrl(sections);
+  const alignEnd = align === "end";
+
+  if (controlItems.length === 0 && !serviceUrl) return null;
+
+  return (
+    <div className={cn("flex min-w-0 flex-col items-stretch gap-2", alignEnd ? "sm:items-end" : "sm:items-start")}>
+      {controlItems.length > 0 ? (
+        <div className={cn("flex max-w-full flex-col gap-2 sm:flex-row sm:flex-wrap", alignEnd ? "sm:justify-end" : "sm:justify-start")}>
+          {controlItems.map((item) => (
+            <div key={item.key} className={cn("flex min-w-0 flex-col gap-1", alignEnd ? "sm:items-end" : "sm:items-start")}>
+              {controlItems.length > 1 ? (
+                <span className="truncate text-xs text-muted-foreground">{item.title}</span>
+              ) : null}
+              <CommandActionButtons
+                item={item}
+                isPending={isPending}
+                pendingRequest={pendingRequest}
+                onAction={onAction}
+                square={square}
+                iconOnly={iconOnly}
+              />
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {serviceUrl ? (
+        <a
+          href={serviceUrl}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(
+            "inline-flex min-w-0 items-center gap-1 self-start break-all text-xs text-muted-foreground hover:text-foreground hover:underline",
+            alignEnd ? "sm:self-end" : "sm:self-start",
+          )}
+        >
+          {serviceUrl}
+          <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+        </a>
       ) : null}
     </div>
   );

@@ -5,7 +5,7 @@ import type {
   EnvironmentLeaseStatus,
   EnvironmentStatus,
 } from "../constants.js";
-import type { EnvSecretRefBinding } from "./secrets.js";
+import type { AgentEnvConfig, EnvSecretRefBinding } from "./secrets.js";
 
 export interface LocalEnvironmentConfig {
   [key: string]: unknown;
@@ -22,6 +22,31 @@ export interface SshEnvironmentConfig {
   strictHostKeyChecking: boolean;
 }
 
+export type SandboxEnvironmentProvider = "fake" | (string & {});
+
+export interface FakeSandboxEnvironmentConfig {
+  provider: "fake";
+  image: string;
+  reuseLease: boolean;
+}
+
+export interface PluginSandboxEnvironmentConfig {
+  provider: SandboxEnvironmentProvider;
+  reuseLease: boolean;
+  timeoutMs?: number;
+  [key: string]: unknown;
+}
+
+export type SandboxEnvironmentConfig =
+  | FakeSandboxEnvironmentConfig
+  | PluginSandboxEnvironmentConfig;
+
+export interface PluginEnvironmentConfig {
+  pluginKey: string;
+  driverKey: string;
+  driverConfig: Record<string, unknown>;
+}
+
 export interface EnvironmentProbeResult {
   ok: boolean;
   driver: EnvironmentDriver;
@@ -31,12 +56,12 @@ export interface EnvironmentProbeResult {
 
 export interface Environment {
   id: string;
-  companyId: string;
   name: string;
   description: string | null;
   driver: EnvironmentDriver;
   status: EnvironmentStatus;
   config: Record<string, unknown>;
+  envVars: AgentEnvConfig;
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;

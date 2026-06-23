@@ -26,6 +26,69 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
+  it("enables Codex fast mode overrides for GPT-5.5", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.5",
+      fastMode: true,
+    });
+
+    expect(result.fastModeRequested).toBe(true);
+    expect(result.fastModeApplied).toBe(true);
+    expect(result.fastModeIgnoredReason).toBeNull();
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--model",
+      "gpt-5.5",
+      "-c",
+      'service_tier="fast"',
+      "-c",
+      "features.fast_mode=true",
+      "-",
+    ]);
+  });
+
+  it("enables Codex fast mode overrides for manual models", () => {
+    const result = buildCodexExecArgs({
+      model: "future-codex-model",
+      fastMode: true,
+    });
+
+    expect(result.fastModeRequested).toBe(true);
+    expect(result.fastModeApplied).toBe(true);
+    expect(result.fastModeIgnoredReason).toBeNull();
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--model",
+      "future-codex-model",
+      "-c",
+      'service_tier="fast"',
+      "-c",
+      "features.fast_mode=true",
+      "-",
+    ]);
+  });
+
+  it("enables Codex fast mode overrides when model is omitted (CLI default)", () => {
+    const result = buildCodexExecArgs({
+      fastMode: true,
+    });
+
+    expect(result.fastModeRequested).toBe(true);
+    expect(result.fastModeApplied).toBe(true);
+    expect(result.fastModeIgnoredReason).toBeNull();
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "-c",
+      'service_tier="fast"',
+      "-c",
+      "features.fast_mode=true",
+      "-",
+    ]);
+  });
+
   it("ignores fast mode for unsupported models", () => {
     const result = buildCodexExecArgs({
       model: "gpt-5.3-codex",
@@ -34,10 +97,30 @@ describe("buildCodexExecArgs", () => {
 
     expect(result.fastModeRequested).toBe(true);
     expect(result.fastModeApplied).toBe(false);
-    expect(result.fastModeIgnoredReason).toContain("currently only supported on gpt-5.4");
+    expect(result.fastModeIgnoredReason).toContain(
+      "currently only supported on gpt-5.5, gpt-5.4 or manually configured model IDs",
+    );
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--model",
+      "gpt-5.3-codex",
+      "-",
+    ]);
+  });
+
+  it("adds --skip-git-repo-check when requested", () => {
+    const result = buildCodexExecArgs(
+      {
+        model: "gpt-5.3-codex",
+      },
+      { skipGitRepoCheck: true },
+    );
+
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
       "--model",
       "gpt-5.3-codex",
       "-",

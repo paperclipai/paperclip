@@ -23,8 +23,8 @@ const inviteRoleOptions = [
   {
     value: "viewer",
     label: "Viewer",
-    description: "Can view company work and follow along without operational permissions.",
-    gets: "No built-in grants.",
+    description: "Can view company work and follow along.",
+    gets: "View-only company membership.",
   },
   {
     value: "operator",
@@ -41,8 +41,8 @@ const inviteRoleOptions = [
   {
     value: "owner",
     label: "Owner",
-    description: "Full company access, including membership and permission management.",
-    gets: "Everything in Admin, plus managing members and permission grants.",
+    description: "Full company access, including membership management.",
+    gets: "Everything in Admin, plus managing members.",
   },
 ] as const;
 
@@ -371,10 +371,10 @@ function AcceptInvitePreview({
         <h3 className="text-lg font-semibold text-zinc-100">Accept company invite</h3>
         <p className="mt-1 text-sm text-zinc-400">
           {autoAccept
-            ? "Submitting your join request for Acme Robotics."
+            ? "Granting your access to Acme Robotics."
             : isCurrentMember
               ? "This account already belongs to Acme Robotics."
-              : "This will submit or complete your join request for Acme Robotics."}
+              : "This will grant or complete your access to Acme Robotics."}
         </p>
       </div>
       {error ? <p className="text-xs text-red-400">{error}</p> : null}
@@ -423,8 +423,8 @@ function InviteResultPreview({
           <>
             <div className="border border-zinc-800 p-3">
               <p className="mb-1 text-xs text-zinc-500">Approval page</p>
-              <a className="text-sm text-zinc-200 underline underline-offset-2" href="/company/settings/access">
-                Company Settings → Access
+              <a className="text-sm text-zinc-200 underline underline-offset-2" href="/company/settings/members">
+                Company Settings → Members
               </a>
             </div>
             <p className="text-xs text-zinc-500">
@@ -572,7 +572,7 @@ function CompanyInvitesPreview() {
           </fieldset>
 
           <div className="rounded-xl border border-border px-4 py-3 text-sm text-muted-foreground">
-            Each invite link is single-use. The first successful use consumes the link and creates or reuses the matching join request before approval.
+            Each invite link is single-use. Human invitees get the selected role immediately after sign-in; agent invites still create a join request for approval.
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -897,7 +897,7 @@ export function InviteUxLab() {
           />
           <InviteResultPreview
             title="Request to join Acme Robotics"
-            description="Ask them to visit Company Settings → Access to approve your request."
+            description="Ask them to visit Company Settings → Members to approve your request."
           />
         </div>
       </LabSection>

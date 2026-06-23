@@ -1,14 +1,22 @@
 import type { ReactNode } from "react";
-import type { Issue } from "@paperclipai/shared";
+import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { X } from "lucide-react";
+import { Eye, Flag, X } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
 import { cn } from "../lib/utils";
+import {
+  deriveActiveRecoveryDisplayState,
+  RECOVERY_CHIP_DEFAULT_TONE,
+  recoveryChipLabel,
+} from "../lib/recovery-display";
 import { StatusIcon } from "./StatusIcon";
+import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
+import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
+import { ExternalObjectStatusSummary } from "./ExternalObjectStatusSummary";
 
 type UnreadState = "hidden" | "visible" | "fading";
 
@@ -21,8 +29,18 @@ interface IssueRowProps {
   desktopLeadingSpacer?: boolean;
   mobileMeta?: ReactNode;
   desktopTrailing?: ReactNode;
+  /**
+   * Optional pre-fetched external-object summary. Renders a compact severity
+   * marker before the rest of `desktopTrailing` on desktop only.
+   */
+  externalObjectSummary?: ExternalObjectSummary | null;
   trailingMeta?: ReactNode;
   titleSuffix?: ReactNode;
+  titleClassName?: string;
+  checklistStepNumber?: number | string | null;
+  checklistCurrentStep?: boolean;
+  checklistDependencyChips?: ReactNode;
+  checklistRowId?: string;
   unreadState?: UnreadState | null;
   onMarkRead?: () => void;
   onArchive?: () => void;
@@ -39,8 +57,14 @@ export function IssueRow({
   desktopLeadingSpacer = false,
   mobileMeta,
   desktopTrailing,
+  externalObjectSummary,
   trailingMeta,
   titleSuffix,
+  titleClassName,
+  checklistStepNumber = null,
+  checklistCurrentStep = false,
+  checklistDependencyChips,
+  checklistRowId,
   unreadState = null,
   onMarkRead,
   onArchive,
@@ -53,6 +77,37 @@ export function IssueRow({
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
   const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
+  const productivityReview = issue.productivityReview ?? null;
+  const productivityReviewIndicator = productivityReview ? (
+    <span
+      className={cn(
+        "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300",
+        selected ? "border-muted-foreground text-muted-foreground" : null,
+      )}
+      title={`Productivity review: ${productivityReviewTriggerLabel(productivityReview.trigger)}`}
+      aria-label="Productivity review open"
+    >
+      <Eye className="h-2.5 w-2.5" aria-hidden />
+    </span>
+  ) : null;
+  const hasChecklistStep = checklistStepNumber !== null;
+  const checklistStep = hasChecklistStep ? (
+    <span className="shrink-0 font-mono text-xs text-muted-foreground" aria-hidden="true">
+      {checklistStepNumber}.
+    </span>
+  ) : null;
+  const recoveryAction = issue.activeRecoveryAction ?? null;
+  const recoveryIndicator = recoveryAction ? renderRecoveryChip(recoveryAction, selected) : null;
+  const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
+    <span
+      data-testid="issue-row-parked-blocker"
+      className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+      title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
+    >
+      <Flag className="h-2.5 w-2.5" aria-hidden />
+      Blocked by parked work
+    </span>
+  ) : null;
 
   return (
     <Link
@@ -61,32 +116,47 @@ export function IssueRow({
       disableIssueQuicklook
       issuePrefetch={issue}
       data-inbox-issue-link
+      id={checklistRowId}
+      aria-current={checklistCurrentStep ? "step" : undefined}
       onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
       className={cn(
         "group flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
         selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+        checklistCurrentStep ? "border-l-2 border-l-primary bg-primary/5 pl-[calc(theme(spacing.2)-2px)] sm:pl-[calc(theme(spacing.1)-2px)]" : null,
         className,
       )}
     >
-      <span className="shrink-0 pt-px sm:hidden">
-        {mobileLeading ?? <StatusIcon status={issue.status} className={selectedStatusClass} />}
+      <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
+        {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />}
+        {productivityReviewIndicator}
+        {parkedBlockerIndicator}
+        {recoveryIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
-        <span className="line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none">
+        <span className={cn("line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none", titleClassName)}>
           {issue.title}{titleSuffix}
         </span>
+        {checklistDependencyChips ? (
+          <span className="flex flex-wrap gap-1 sm:order-3 sm:ml-[calc(theme(spacing.3)+theme(spacing.2))]">
+            {checklistDependencyChips}
+          </span>
+        ) : null}
         <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
           {desktopLeadingSpacer ? (
             <span className="hidden w-3.5 shrink-0 sm:block" />
           ) : null}
           {desktopMetaLeading ?? (
             <>
-              <span className="hidden shrink-0 sm:inline-flex">
-                <StatusIcon status={issue.status} className={selectedStatusClass} />
+              <span className="hidden shrink-0 items-center gap-1 sm:inline-flex">
+                <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />
+                {productivityReviewIndicator}
               </span>
+              {checklistStep}
               <span className="shrink-0 font-mono text-xs text-muted-foreground">
                 {identifier}
               </span>
+              {parkedBlockerIndicator}
+              {recoveryIndicator}
             </>
           )}
           {mobileMeta ? (
@@ -99,8 +169,11 @@ export function IssueRow({
           ) : null}
         </span>
       </span>
-      {(desktopTrailing || trailingMeta) ? (
+      {(desktopTrailing || trailingMeta || externalObjectSummary) ? (
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
+          {externalObjectSummary ? (
+            <ExternalObjectStatusSummary summary={externalObjectSummary} compact />
+          ) : null}
           {desktopTrailing}
           {trailingMeta ? (
             <span className="text-xs text-muted-foreground">{trailingMeta}</span>
@@ -112,6 +185,7 @@ export function IssueRow({
           {showUnreadDot ? (
             <button
               type="button"
+              data-slot="icon-button"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -141,6 +215,7 @@ export function IssueRow({
           ) : onArchive ? (
             <button
               type="button"
+              data-slot="icon-button"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -164,5 +239,31 @@ export function IssueRow({
         </span>
       ) : null}
     </Link>
+  );
+}
+
+function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): ReactNode {
+  const state = deriveActiveRecoveryDisplayState(action);
+  if (!state) return null;
+  const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
+  const Icon = tone.icon;
+  const label = recoveryChipLabel(state, action.kind);
+  return (
+    <span
+      data-testid="issue-row-recovery-indicator"
+      data-recovery-state={state}
+      data-recovery-kind={action.kind}
+      role="status"
+      aria-label={label}
+      className={cn(
+        "ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+        tone.className,
+        selected ? "!border-muted-foreground !text-muted-foreground" : null,
+      )}
+      title={`${label} — open the source task to act.`}
+    >
+      <Icon className="h-2.5 w-2.5" aria-hidden />
+      {label}
+    </span>
   );
 }

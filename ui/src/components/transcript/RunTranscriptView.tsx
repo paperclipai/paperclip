@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptEntry } from "../../adapters";
-import { MarkdownBody } from "../MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "../MarkdownBody";
 import { cn, formatTokens } from "../../lib/utils";
 import {
   Check,
@@ -16,6 +16,11 @@ import {
 export type TranscriptMode = "nice" | "raw";
 export type TranscriptDensity = "comfortable" | "compact";
 
+const RAW_VIRTUALIZATION_THRESHOLD = 300;
+const RAW_OVERSCAN_ROWS = 40;
+const RAW_ESTIMATED_ROW_HEIGHT = 36;
+const RAW_INITIAL_ROWS = 180;
+
 interface RunTranscriptViewProps {
   entries: TranscriptEntry[];
   mode?: TranscriptMode;
@@ -26,6 +31,7 @@ interface RunTranscriptViewProps {
   emptyMessage?: string;
   className?: string;
   thinkingClassName?: string;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 type TranscriptBlock =
@@ -631,9 +637,11 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
 function TranscriptMessageBlock({
   block,
   density,
+  externalReferences,
 }: {
   block: Extract<TranscriptBlock, { type: "message" }>;
   density: TranscriptDensity;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const isAssistant = block.role === "assistant";
   const compact = density === "compact";
@@ -651,6 +659,7 @@ function TranscriptMessageBlock({
           "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
           compact ? "text-xs leading-5 text-foreground/85" : "text-sm",
         )}
+        externalReferences={externalReferences}
       >
         {block.text}
       </MarkdownBody>
@@ -671,10 +680,12 @@ function TranscriptThinkingBlock({
   block,
   density,
   className,
+  externalReferences,
 }: {
   block: Extract<TranscriptBlock, { type: "thinking" }>;
   density: TranscriptDensity;
   className?: string;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   return (
     <MarkdownBody
@@ -683,6 +694,7 @@ function TranscriptThinkingBlock({
         density === "compact" ? "text-[11px] leading-5" : "text-sm leading-6",
         className,
       )}
+      externalReferences={externalReferences}
     >
       {block.text}
     </MarkdownBody>
@@ -1085,9 +1097,11 @@ function TranscriptActivityRow({
 function TranscriptEventRow({
   block,
   density,
+  externalReferences,
 }: {
   block: Extract<TranscriptBlock, { type: "event" }>;
   density: TranscriptDensity;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const compact = density === "compact";
   const toneClasses =
@@ -1116,6 +1130,7 @@ function TranscriptEventRow({
                 "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 text-sky-700 dark:text-sky-300",
                 compact ? "text-[11px] leading-5" : "text-xs leading-5",
               )}
+              externalReferences={externalReferences}
             >
               {block.text}
             </MarkdownBody>
@@ -1347,6 +1362,34 @@ function TranscriptStdoutRow({
   );
 }
 
+function findScrollParent(element: HTMLElement): HTMLElement | Window {
+  let current = element.parentElement;
+  while (current) {
+    const style = window.getComputedStyle(current);
+    if (/(auto|scroll)/.test(style.overflowY) && current.scrollHeight > current.clientHeight) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return window;
+}
+
+function rawEntryContent(entry: TranscriptEntry): string {
+  if (entry.kind === "tool_call") {
+    return `${entry.name}\n${formatToolPayload(entry.input)}`;
+  }
+  if (entry.kind === "tool_result") {
+    return formatToolPayload(entry.content);
+  }
+  if (entry.kind === "result") {
+    return `${entry.text}\n${formatTokens(entry.inputTokens)} / ${formatTokens(entry.outputTokens)} / $${entry.costUsd.toFixed(6)}`;
+  }
+  if (entry.kind === "init") {
+    return `model=${entry.model}${entry.sessionId ? ` session=${entry.sessionId}` : ""}`;
+  }
+  return entry.text;
+}
+
 function RawTranscriptView({
   entries,
   density,
@@ -1355,11 +1398,63 @@ function RawTranscriptView({
   density: TranscriptDensity;
 }) {
   const compact = density === "compact";
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const shouldVirtualize = entries.length > RAW_VIRTUALIZATION_THRESHOLD;
+  const [range, setRange] = useState(() => ({
+    start: 0,
+    end: Math.min(entries.length, shouldVirtualize ? RAW_INITIAL_ROWS : entries.length),
+  }));
+
+  useEffect(() => {
+    if (!shouldVirtualize) {
+      setRange({ start: 0, end: entries.length });
+      return;
+    }
+
+    const list = listRef.current;
+    if (!list) return;
+
+    const scrollParent = findScrollParent(list);
+    const updateRange = () => {
+      const scrollElement: HTMLElement | null = scrollParent === window ? null : (scrollParent as HTMLElement);
+      const scrollerTop = scrollElement ? scrollElement.getBoundingClientRect().top : 0;
+      const scrollerHeight = scrollElement ? scrollElement.clientHeight : window.innerHeight;
+      const listTop = list.getBoundingClientRect().top;
+      const visibleTop = Math.max(0, scrollerTop - listTop);
+      const visibleBottom = Math.max(visibleTop + scrollerHeight, 0);
+      const nextStart = Math.max(0, Math.floor(visibleTop / RAW_ESTIMATED_ROW_HEIGHT) - RAW_OVERSCAN_ROWS);
+      const nextEnd = Math.min(
+        entries.length,
+        Math.ceil(visibleBottom / RAW_ESTIMATED_ROW_HEIGHT) + RAW_OVERSCAN_ROWS,
+      );
+      setRange((current) => (
+        current.start === nextStart && current.end === nextEnd
+          ? current
+          : { start: nextStart, end: nextEnd }
+      ));
+    };
+
+    updateRange();
+    const frame = window.requestAnimationFrame(updateRange);
+    scrollParent.addEventListener("scroll", updateRange, { passive: true });
+    window.addEventListener("resize", updateRange);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      scrollParent.removeEventListener("scroll", updateRange);
+      window.removeEventListener("resize", updateRange);
+    };
+  }, [entries.length, shouldVirtualize]);
+
+  const visibleEntries = shouldVirtualize ? entries.slice(range.start, range.end) : entries;
+  const topSpacer = shouldVirtualize ? range.start * RAW_ESTIMATED_ROW_HEIGHT : 0;
+  const bottomSpacer = shouldVirtualize ? Math.max(0, entries.length - range.end) * RAW_ESTIMATED_ROW_HEIGHT : 0;
+
   return (
-    <div className={cn("font-mono", compact ? "space-y-1 text-[11px]" : "space-y-1.5 text-xs")}>
-      {entries.map((entry, idx) => (
+    <div ref={listRef} className={cn("font-mono", compact ? "space-y-1 text-[11px]" : "space-y-1.5 text-xs")}>
+      {topSpacer > 0 && <div aria-hidden="true" style={{ height: topSpacer }} />}
+      {visibleEntries.map((entry, idx) => (
         <div
-          key={`${entry.kind}-${entry.ts}-${idx}`}
+          key={`${entry.kind}-${entry.ts}-${range.start + idx}`}
           className={cn(
             "grid gap-x-3",
             "grid-cols-[auto_1fr]",
@@ -1369,18 +1464,11 @@ function RawTranscriptView({
             {entry.kind}
           </span>
           <pre className="min-w-0 whitespace-pre-wrap break-words text-foreground/80">
-            {entry.kind === "tool_call"
-              ? `${entry.name}\n${formatToolPayload(entry.input)}`
-              : entry.kind === "tool_result"
-                ? formatToolPayload(entry.content)
-                : entry.kind === "result"
-                  ? `${entry.text}\n${formatTokens(entry.inputTokens)} / ${formatTokens(entry.outputTokens)} / $${entry.costUsd.toFixed(6)}`
-                  : entry.kind === "init"
-                    ? `model=${entry.model}${entry.sessionId ? ` session=${entry.sessionId}` : ""}`
-                    : entry.text}
+            {rawEntryContent(entry)}
           </pre>
         </div>
       ))}
+      {bottomSpacer > 0 && <div aria-hidden="true" style={{ height: bottomSpacer }} />}
     </div>
   );
 }
@@ -1395,8 +1483,12 @@ export function RunTranscriptView({
   emptyMessage = "No transcript yet.",
   className,
   thinkingClassName,
+  externalReferences,
 }: RunTranscriptViewProps) {
-  const blocks = useMemo(() => normalizeTranscript(entries, streaming), [entries, streaming]);
+  const blocks = useMemo(
+    () => (mode === "raw" ? [] : normalizeTranscript(entries, streaming)),
+    [entries, mode, streaming],
+  );
   const visibleBlocks = limit ? blocks.slice(-limit) : blocks;
   const visibleEntries = limit ? entries.slice(-limit) : entries;
 
@@ -1423,9 +1515,20 @@ export function RunTranscriptView({
           key={`${block.type}-${block.ts}-${index}`}
           className={cn(index === visibleBlocks.length - 1 && streaming && "animate-in fade-in slide-in-from-bottom-1 duration-300")}
         >
-          {block.type === "message" && <TranscriptMessageBlock block={block} density={density} />}
+          {block.type === "message" && (
+            <TranscriptMessageBlock
+              block={block}
+              density={density}
+              externalReferences={externalReferences}
+            />
+          )}
           {block.type === "thinking" && (
-            <TranscriptThinkingBlock block={block} density={density} className={thinkingClassName} />
+            <TranscriptThinkingBlock
+              block={block}
+              density={density}
+              className={thinkingClassName}
+              externalReferences={externalReferences}
+            />
           )}
           {block.type === "tool" && <TranscriptToolCard block={block} density={density} />}
           {block.type === "command_group" && <TranscriptCommandGroup block={block} density={density} />}
@@ -1437,7 +1540,13 @@ export function RunTranscriptView({
             <TranscriptStdoutRow block={block} density={density} collapseByDefault={collapseStdout} />
           )}
           {block.type === "activity" && <TranscriptActivityRow block={block} density={density} />}
-          {block.type === "event" && <TranscriptEventRow block={block} density={density} />}
+          {block.type === "event" && (
+            <TranscriptEventRow
+              block={block}
+              density={density}
+              externalReferences={externalReferences}
+            />
+          )}
         </div>
       ))}
     </div>

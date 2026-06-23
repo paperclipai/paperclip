@@ -4,6 +4,7 @@ import type { TranscriptEntry } from "@/adapters";
 import type { LiveRunForIssue } from "@/api/heartbeats";
 import { CommentThread } from "@/components/CommentThread";
 import { IssueChatThread } from "@/components/IssueChatThread";
+import type { MarkdownExternalReferenceMap } from "@/components/MarkdownBody";
 import { RunChatSurface } from "@/components/RunChatSurface";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
@@ -84,6 +85,7 @@ function ScenarioCard({
 
 function createComment(overrides: Partial<StoryComment>): StoryComment {
   const createdAt = overrides.createdAt ?? new Date("2026-04-20T14:00:00.000Z");
+  const authorAgentId = overrides.authorAgentId ?? null;
   return {
     id: "comment-default",
     companyId,
@@ -91,6 +93,9 @@ function createComment(overrides: Partial<StoryComment>): StoryComment {
     authorAgentId: null,
     authorUserId: currentUserId,
     body: "",
+    authorType: authorAgentId ? "agent" : "user",
+    presentation: null,
+    metadata: null,
     createdAt,
     updatedAt: overrides.updatedAt ?? createdAt,
     ...overrides,
@@ -372,17 +377,54 @@ const liveRunTranscript: TranscriptEntry[] = [
 const issueChatComments: IssueChatComment[] = [
   createComment({
     id: "comment-issue-board",
-    body: "Please turn the comment thread into a reviewable chat surface. I need to see operator messages, agent output, system events, and live run progress together.",
+    body: "Please turn the comment thread into a reviewable chat surface. I need to see operator messages, agent output, system events, and live run progress together.\n\nFollow-up tracked in https://github.com/acme/web/pull/241 (merged) and https://github.com/acme/web/pull/243 (review pending).",
     createdAt: new Date("2026-04-20T13:44:00.000Z"),
   }),
   createComment({
     id: "comment-issue-agent",
     authorAgentId: codexAgent.id,
     authorUserId: null,
-    body: "I kept the existing component contracts and added fixtures with realistic Paperclip work: checkout, comments, linked runs, and review feedback.",
+    body: "I kept the existing component contracts and added fixtures with realistic Paperclip work: checkout, comments, linked runs, and review feedback.\n\nFlaky CI lives in https://github.com/acme/web/pull/242 — re-running. Plain control link: https://random.example.com/path stays undecorated.",
     createdAt: new Date("2026-04-20T13:50:00.000Z"),
     runId: "run-issue-chat-01",
     runAgentId: codexAgent.id,
+  }),
+  createComment({
+    id: "comment-issue-system-warning",
+    authorType: "system",
+    authorAgentId: null,
+    authorUserId: null,
+    runId: "run-issue-chat-01",
+    runAgentId: codexAgent.id,
+    body: "Paperclip needs a disposition before this issue can continue.",
+    presentation: {
+      kind: "system_notice",
+      tone: "warning",
+      title: "Missing issue disposition",
+      detailsDefaultOpen: false,
+    },
+    metadata: {
+      version: 1,
+      sourceRunId: "run-issue-chat-01",
+      sections: [
+        {
+          title: "Required action",
+          rows: [
+            { type: "issue_link", label: "Source issue", issueId: issueId, identifier: "PAP-3440", title: "Successful run handoff" },
+            { type: "agent_link", label: "Assignee", agentId: codexAgent.id, name: codexAgent.name },
+            { type: "key_value", label: "Status before", value: "in_progress" },
+          ],
+        },
+        {
+          title: "Run evidence",
+          rows: [
+            { type: "run_link", label: "Successful run", runId: "run-issue-chat-01", title: "succeeded" },
+            { type: "key_value", label: "Normalized cause", value: "Run completed without disposition" },
+          ],
+        },
+      ],
+    },
+    createdAt: new Date("2026-04-20T13:54:00.000Z"),
   }),
   createComment({
     id: "comment-issue-queued",
@@ -415,6 +457,73 @@ const issueTimelineEvents: IssueTimelineEvent[] = [
     assigneeChange: {
       from: { agentId: null, userId: null },
       to: { agentId: codexAgent.id, userId: null },
+    },
+  }),
+];
+
+const issueThreadNoticeReviewComments: IssueChatComment[] = [
+  createComment({
+    id: "comment-notice-board",
+    body: "The issue thread needs to show workspace routing changes and make old missing-disposition warnings feel resolved.",
+    createdAt: new Date("2026-04-20T13:44:00.000Z"),
+  }),
+  createComment({
+    id: "comment-notice-system-warning",
+    authorType: "system",
+    authorAgentId: null,
+    authorUserId: null,
+    runId: "run-notice-source",
+    runAgentId: codexAgent.id,
+    body: "Paperclip needs a disposition before this issue can continue.",
+    presentation: {
+      kind: "system_notice",
+      tone: "warning",
+      title: "Missing issue disposition",
+      detailsDefaultOpen: false,
+    },
+    metadata: {
+      version: 1,
+      sourceRunId: "run-notice-source",
+      sections: [
+        {
+          title: "Required action",
+          rows: [
+            { type: "issue_link", label: "Source issue", issueId, identifier: "PAP-3660", title: "Show issue-thread notices" },
+            { type: "agent_link", label: "Assignee", agentId: codexAgent.id, name: codexAgent.name },
+            { type: "key_value", label: "Missing disposition", value: "clear_next_step" },
+          ],
+        },
+        {
+          title: "Run evidence",
+          rows: [
+            { type: "run_link", label: "Completed run", runId: "run-notice-source", title: "succeeded" },
+            { type: "key_value", label: "Normalized cause", value: "successful_run_missing_state" },
+          ],
+        },
+      ],
+    },
+    createdAt: new Date("2026-04-20T13:48:00.000Z"),
+  }),
+];
+
+const issueThreadNoticeReviewTimelineEvents: IssueTimelineEvent[] = [
+  createSystemEvent({
+    id: "event-notice-workspace-change",
+    createdAt: new Date("2026-04-20T13:46:00.000Z"),
+    statusChange: undefined,
+    workspaceChange: {
+      from: {
+        label: "Project primary workspace",
+        projectWorkspaceId: "workspace-primary",
+        executionWorkspaceId: null,
+        mode: "shared_workspace",
+      },
+      to: {
+        label: "PAP-3660 issue-thread-notices",
+        projectWorkspaceId: null,
+        executionWorkspaceId: "execution-workspace-notices",
+        mode: "isolated_workspace",
+      },
     },
   }),
 ];
@@ -484,10 +593,12 @@ function ThreadProps({
   comments,
   queuedComments = [],
   timelineEvents = [],
+  externalReferences,
 }: {
   comments: StoryComment[];
   queuedComments?: StoryComment[];
   timelineEvents?: IssueTimelineEvent[];
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   return (
     <CommentThread
@@ -507,9 +618,76 @@ function ThreadProps({
       suggestedAssigneeValue={`agent:${codexAgent.id}`}
       mentions={mentionOptions}
       onInterruptQueued={async () => {}}
+      externalReferences={externalReferences}
     />
   );
 }
+
+const externalReferenceComments: StoryComment[] = [
+  createComment({
+    id: "comment-external-board",
+    body: [
+      "Tracking work that just landed:",
+      "",
+      "- Merged PR: https://github.com/acme/web/pull/241",
+      "- Awaiting review: https://github.com/acme/web/pull/243",
+      "- Auth-blocked: https://app.hubspot.com/leads/99",
+      "- Plain control link (no decoration): https://random.example.com/path",
+    ].join("\n"),
+    createdAt: new Date("2026-04-20T14:02:00.000Z"),
+  }),
+  createComment({
+    id: "comment-external-agent",
+    authorAgentId: codexAgent.id,
+    authorUserId: null,
+    body: [
+      "Confirmed handoff updated.",
+      "Failed CI on https://github.com/acme/web/pull/242 needs a rerun.",
+      "",
+      "```",
+      "Code-fenced URLs stay plain: https://github.com/acme/web/pull/241",
+      "```",
+    ].join("\n"),
+    createdAt: new Date("2026-04-20T14:05:00.000Z"),
+    runId: "run-external-01",
+    runAgentId: codexAgent.id,
+  }),
+];
+
+const externalReferences: MarkdownExternalReferenceMap = {
+  "https://github.com/acme/web/pull/241": {
+    providerKey: "github",
+    objectType: "pull_request",
+    statusCategory: "succeeded",
+    liveness: "fresh",
+    statusLabel: "Merged",
+    displayTitle: "Add external refs",
+  },
+  "https://github.com/acme/web/pull/242": {
+    providerKey: "github",
+    objectType: "pull_request",
+    statusCategory: "failed",
+    liveness: "stale",
+    statusLabel: "CI failed",
+    displayTitle: "Flaky tests",
+  },
+  "https://github.com/acme/web/pull/243": {
+    providerKey: "github",
+    objectType: "pull_request",
+    statusCategory: "waiting",
+    liveness: "fresh",
+    statusLabel: "Awaiting review",
+    displayTitle: "Add liveness overlay",
+  },
+  "https://app.hubspot.com/leads/99": {
+    providerKey: "hubspot",
+    objectType: "lead",
+    statusCategory: "auth_required",
+    liveness: "auth_required",
+    statusLabel: "Reconnect",
+    displayTitle: "Acme deal",
+  },
+};
 
 function CommentThreadMatrix() {
   return (
@@ -526,6 +704,15 @@ function CommentThreadMatrix() {
         </ScenarioCard>
         <ScenarioCard title="Markdown, code, mentions, and links" description="Markdown rendering with code fences, @mentions, links, and a queued reply.">
           <ThreadProps comments={markdownComments} queuedComments={[queuedComment]} />
+        </ScenarioCard>
+        <ScenarioCard
+          title="External object decoration"
+          description="Resolved URLs render with the §2 status chip; an unknown URL stays plain. Code-fenced URLs are not decorated."
+        >
+          <ThreadProps
+            comments={externalReferenceComments}
+            externalReferences={externalReferences}
+          />
         </ScenarioCard>
       </div>
     </Section>
@@ -601,6 +788,7 @@ function IssueChatMatrix() {
             includeSucceededRunsWithoutOutput
             onInterruptQueued={async () => {}}
             onCancelQueued={() => undefined}
+            externalReferences={externalReferences}
           />
         </div>
         <div className="space-y-5">
@@ -635,9 +823,66 @@ function IssueChatMatrix() {
               composerDisabledReason="This issue is in review. Request changes or approve it from the review controls."
             />
           </ScenarioCard>
+          <ScenarioCard
+            title="Planning mode composer"
+            description="Issue is in planning mode. The composer turns amber and surfaces a Planning chip next to the paperclip — clicking it stages a Standard submission without immediately changing the issue mode."
+          >
+            <IssueChatThread
+              comments={[]}
+              timelineEvents={[]}
+              linkedRuns={[]}
+              liveRuns={[]}
+              companyId={companyId}
+              projectId={projectId}
+              agentMap={storybookAgentMap}
+              currentUserId={currentUserId}
+              issueWorkMode="planning"
+              onWorkModeChange={() => undefined}
+              onAdd={async () => {}}
+              enableLiveTranscriptPolling={false}
+              emptyMessage="Planning mode reply box example."
+            />
+          </ScenarioCard>
         </div>
       </div>
     </Section>
+  );
+}
+
+function IssueThreadNoticeReview() {
+  return (
+    <div className="paperclip-story">
+      <main className="paperclip-story__inner max-w-4xl">
+        <Section eyebrow="IssueChatThread" title="Workspace changes and stale disposition notices">
+          <div className="rounded-lg border border-border bg-background/70 p-4">
+            <IssueChatThread
+              comments={issueThreadNoticeReviewComments}
+              timelineEvents={issueThreadNoticeReviewTimelineEvents}
+              linkedRuns={[]}
+              liveRuns={[]}
+              companyId={companyId}
+              projectId={projectId}
+              issueStatus="done"
+              successfulRunHandoff={{
+                state: "resolved",
+                required: false,
+                sourceRunId: "run-notice-source",
+                correctiveRunId: "run-notice-corrective",
+                assigneeAgentId: codexAgent.id,
+                detectedProgressSummary: "Captured screenshots for the issue thread notice states.",
+                createdAt: new Date("2026-04-20T13:49:00.000Z"),
+              }}
+              agentMap={storybookAgentMap}
+              currentUserId={currentUserId}
+              userLabelMap={boardUserLabels}
+              onAdd={async () => {}}
+              enableLiveTranscriptPolling={false}
+              showJumpToLatest={false}
+            />
+          </div>
+        </Section>
+      </main>
+    </div>
   );
 }
 
@@ -710,4 +955,8 @@ export const IssueChatWithTimeline: Story = {
       </main>
     </div>
   ),
+};
+
+export const IssueThreadNotices: Story = {
+  render: () => <IssueThreadNoticeReview />,
 };

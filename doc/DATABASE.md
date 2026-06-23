@@ -59,11 +59,11 @@ cp .env.example .env
 # DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
 ```
 
-Run migrations (once the migration generation issue is fixed) or use `drizzle-kit push`:
+Run migrations:
 
 ```sh
 DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
-  npx drizzle-kit push
+  pnpm db:migrate
 ```
 
 Start the server:
@@ -100,37 +100,27 @@ postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:
 
 ### Configure
 
-Set `DATABASE_URL` in your `.env`:
+For the application runtime, use a direct PostgreSQL connection unless the database client has explicit prepared-statement configuration for your pooling mode:
 
 ```sh
-DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
+DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
-For hosted deployments that use a pooled runtime URL, set
-`DATABASE_MIGRATION_URL` to the direct connection URL. Paperclip uses it for
-startup schema checks/migrations and plugin namespace migrations, while the app
-continues to use `DATABASE_URL` for runtime queries:
+If you later run the app with a pooled runtime URL, set `DATABASE_MIGRATION_URL` to the direct connection URL. Paperclip uses it for startup schema checks/migrations and plugin namespace migrations, while the app continues to use `DATABASE_URL` for runtime queries:
 
 ```sh
 DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
 DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
-If using connection pooling (port 6543), the `postgres` client must disable prepared statements. Update `packages/db/src/client.ts`:
-
-```ts
-export function createDb(url: string) {
-  const sql = postgres(url, { prepare: false });
-  return drizzlePg(sql, { schema });
-}
-```
+If your hosted database requires transaction-pooling-only connections, use a direct or session-pooled connection for Paperclip until runtime pooling support is documented in this guide. Do not edit database client source files as part of deployment setup.
 
 ### Push the schema
 
 ```sh
 # Use the direct connection (port 5432) for schema changes
 DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
-  npx drizzle-kit push
+  pnpm db:migrate
 ```
 
 ### Free tier limits
@@ -153,18 +143,51 @@ The database mode is controlled by `DATABASE_URL`:
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
+## Resource membership tables
+
+Paperclip stores current-user sidebar membership state in:
+
+- `project_memberships`
+- `agent_memberships`
+
+These rows are company-scoped and user-scoped. A missing row means the user is joined, so existing users keep seeing projects and agents in the sidebar until they explicitly leave them. Rows only control sidebar visibility; they do not affect project/agent detail access, all-pages, selectors, assignment flows, or existing company permissions.
+
+Both tables use a unique key on `(company_id, user_id, resource_id)` and keep `state` as `joined` or `left`. Join/leave mutations are idempotent board-user `/me` operations and write activity entries when the effective state changes.
+
+## Plugin database namespaces
+
+The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.
+
+## Backups
+
+Paperclip supports automatic and manual logical database backups. These dumps include
+non-system database schemas such as `public`, the Drizzle migration journal, and
+plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
+`paperclipai db:backup` / `pnpm db:backup` commands and backup retention
+configuration.
+
+Database backups do not include non-database instance files such as local-disk
+uploads, workspace files, or the local encrypted secrets master key. Back those paths
+up separately when you need full instance disaster recovery.
+
 ## Secret storage
 
 Paperclip stores secret metadata and versions in:
 
 - `company_secrets`
 - `company_secret_versions`
+- `company_secret_bindings`
+- `secret_access_events`
+
+Secret-aware env bindings are supported by agents, projects, and routines. Routine env lives in `routines.env`, is captured in `routine_revisions.snapshot`, and routine dispatches store `routine_runs.routine_revision_id` so runtime secret resolution uses the env snapshot that existed when the run was created. Routine secret refs bind with `target_type = 'routine'`, `target_id = routines.id`, and `config_path` values under `env.*`.
 
 For local/default installs, the active provider is `local_encrypted`:
 
 - Secret material is encrypted at rest with a local master key.
 - Default key file: `~/.paperclip/instances/default/secrets/master.key` (auto-created if missing).
 - CLI config location: `~/.paperclip/instances/default/config.json` under `secrets.localEncrypted.keyFilePath`.
+- Backup/restore requires both the database metadata and the local master key file; either artifact alone is insufficient.
+- The server best-effort enforces `0600` key file permissions and provider health reports permission warnings.
 
 Optional overrides:
 
@@ -186,5 +209,10 @@ pnpm paperclipai configure --section secrets
 Inline secret migration command:
 
 ```sh
+pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+
+# direct database maintenance fallback
 pnpm secrets:migrate-inline-env --apply
 ```
+
+Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).

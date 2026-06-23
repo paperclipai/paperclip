@@ -5,6 +5,7 @@ import {
   ENVIRONMENT_LEASE_STATUSES,
   ENVIRONMENT_STATUSES,
 } from "../constants.js";
+import { envConfigSchema } from "./secret.js";
 
 export const environmentDriverSchema = z.enum(ENVIRONMENT_DRIVERS);
 export const environmentStatusSchema = z.enum(ENVIRONMENT_STATUSES);
@@ -16,8 +17,9 @@ const environmentFields = {
   description: z.string().optional().nullable(),
   driver: environmentDriverSchema,
   status: environmentStatusSchema.optional().default("active"),
-  config: z.record(z.unknown()).optional().default({}),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  config: z.record(z.string(), z.unknown()).optional().default({}),
+  envVars: envConfigSchema.optional().default({}),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 };
 
 export const createEnvironmentSchema = z.object(environmentFields).strict();
@@ -28,8 +30,9 @@ export const updateEnvironmentSchema = z.object({
   description: z.string().optional().nullable(),
   driver: environmentDriverSchema.optional(),
   status: environmentStatusSchema.optional(),
-  config: z.record(z.unknown()).optional(),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  config: z.record(z.string(), z.unknown()).optional(),
+  envVars: envConfigSchema.optional(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 }).strict();
 export type UpdateEnvironment = z.infer<typeof updateEnvironmentSchema>;
 
@@ -37,7 +40,8 @@ export const probeEnvironmentConfigSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().optional().nullable(),
   driver: environmentDriverSchema,
-  config: z.record(z.unknown()).optional().default({}),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  config: z.record(z.string(), z.unknown()).optional().default({}),
+  envVars: envConfigSchema.optional().default({}),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 }).strict();
 export type ProbeEnvironmentConfig = z.infer<typeof probeEnvironmentConfigSchema>;

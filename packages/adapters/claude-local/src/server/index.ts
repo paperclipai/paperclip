@@ -1,11 +1,16 @@
-export { execute, runClaudeLogin } from "./execute.js";
+export { claudeSessionCwdMatchesExecutionTarget, execute, runClaudeLogin } from "./execute.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
-export { listClaudeModels } from "./models.js";
+export { listClaudeModels, refreshClaudeModels, resetClaudeModelsCacheForTests } from "./models.js";
 export { testEnvironment } from "./test.js";
+export {
+  claudeCommandSupportsEffortFlag,
+  resetClaudeCliCapabilitiesCacheForTests,
+} from "./cli-capabilities.js";
 export {
   parseClaudeStreamJson,
   describeClaudeFailure,
   isClaudeMaxTurnsResult,
+  isClaudeRefusalResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
 export {

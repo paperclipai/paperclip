@@ -46,6 +46,7 @@ const overridingConfigSchemaAdapter: ServerAdapterModule = {
 let registerServerAdapter: typeof import("../adapters/registry.js").registerServerAdapter;
 let unregisterServerAdapter: typeof import("../adapters/registry.js").unregisterServerAdapter;
 let findServerAdapter: typeof import("../adapters/registry.js").findServerAdapter;
+let findActiveServerAdapter: typeof import("../adapters/registry.js").findActiveServerAdapter;
 let setOverridePaused: typeof import("../adapters/registry.js").setOverridePaused;
 let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
@@ -109,6 +110,7 @@ describe("adapter routes", () => {
     registerServerAdapter = registry.registerServerAdapter;
     unregisterServerAdapter = registry.unregisterServerAdapter;
     findServerAdapter = registry.findServerAdapter;
+    findActiveServerAdapter = registry.findActiveServerAdapter;
     setOverridePaused = registry.setOverridePaused;
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;
@@ -174,6 +176,15 @@ describe("adapter routes", () => {
     expect(cursorAdapter.capabilities.requiresMaterializedRuntimeSkills).toBe(true);
     expect(cursorAdapter.capabilities.supportsInstructionsBundle).toBe(true);
 
+    const grokAdapter = res.body.find((a: any) => a.type === "grok_local");
+    expect(grokAdapter).toBeDefined();
+    expect(grokAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: true,
+    });
+
     // hermes_local currently supports skills + local JWT, but not the managed
     // instructions bundle flow because the bundled adapter does not consume
     // instructionsFilePath at runtime.
@@ -202,6 +213,11 @@ describe("adapter routes", () => {
     const codexLocal = res.body.find((a: any) => a.type === "codex_local");
     expect(codexLocal).toBeDefined();
     expect(codexLocal.capabilities.supportsSkills).toBe(true);
+
+    // acpx_local exposes runtime-aware skill snapshots for Claude/Codex/custom ACP agents
+    const acpxLocal = res.body.find((a: any) => a.type === "acpx_local");
+    expect(acpxLocal).toBeDefined();
+    expect(acpxLocal.capabilities.supportsSkills).toBe(true);
   });
 
   it("uses the active adapter when resolving config schema for a paused builtin override", async () => {
@@ -223,6 +239,53 @@ describe("adapter routes", () => {
     expect(builtin.body).not.toMatchObject({
       fields: [{ key: "mode" }],
     });
+  });
+
+  it("serves the built-in acpx_local config schema", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters/acpx_local/config-schema");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "agent",
+          default: "claude",
+          options: expect.arrayContaining([
+            expect.objectContaining({ value: "claude" }),
+            expect.objectContaining({ value: "codex" }),
+            expect.objectContaining({ value: "custom" }),
+          ]),
+        }),
+        expect.objectContaining({
+          key: "fastMode",
+          default: false,
+          meta: { visibleWhen: { key: "agent", values: ["codex"] } },
+        }),
+        expect.objectContaining({
+          key: "warmHandleIdleMs",
+          default: 0,
+        }),
+      ]),
+    );
+    const keys = res.body.fields.map((field: { key: string }) => field.key);
+    expect(keys).not.toContain("mode");
+    expect(keys).not.toContain("permissionMode");
+    expect(keys).not.toContain("instructionsFilePath");
+    expect(keys).not.toContain("promptTemplate");
+    expect(keys).not.toContain("bootstrapPromptTemplate");
+  });
+
+  it("GET /api/adapters includes ACPX model availability", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const acpxLocal = res.body.find((a: any) => a.type === "acpx_local");
+    expect(acpxLocal).toBeDefined();
+    expect(acpxLocal.modelsCount).toBeGreaterThan(0);
   });
 
   it("rejects signed-in users without org access", async () => {
@@ -277,5 +340,55 @@ describe("adapter routes", () => {
     expect(registered?.sessionManagement).toEqual(declaredSessionManagement);
 
     unregisterServerAdapter(HOT_INSTALL_TYPE);
+  });
+
+  it("POST /api/adapters/install allows an external adapter to override a builtin type", async () => {
+    const builtin = findServerAdapter("codex_local");
+    expect(builtin).not.toBeNull();
+
+    const externalModule: ServerAdapterModule = {
+      type: "codex_local",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "codex_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      models: [{ id: "plugin-codex", label: "Plugin Codex" }],
+    };
+    mockPluginLoader.loadExternalAdapterPackage.mockResolvedValue(externalModule);
+
+    const app = createApp({ isInstanceAdmin: true });
+    const res = await request(app)
+      .post("/api/adapters/install")
+      .send({ packageName: "/tmp/fake-codex-override", isLocalPath: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.type).toBe("codex_local");
+    const registeredOverride = findServerAdapter("codex_local");
+    expect(registeredOverride).toMatchObject({
+      type: "codex_local",
+      models: [{ id: "plugin-codex", label: "Plugin Codex" }],
+    });
+
+    setOverridePaused("codex_local", true);
+    expect(findActiveServerAdapter("codex_local")).toBe(builtin);
+
+    mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue({
+      type: "codex_local",
+      packageName: undefined,
+      localPath: "/tmp/fake-codex-override",
+      installedAt: new Date(0).toISOString(),
+    });
+    mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(true);
+
+    const removed = await request(app).delete("/api/adapters/codex_local");
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    expect(removed.body).toMatchObject({ type: "codex_local", removed: true });
+
+    unregisterServerAdapter("codex_local");
+    expect(findServerAdapter("codex_local")).toBe(builtin);
+    setOverridePaused("codex_local", false);
   });
 });
