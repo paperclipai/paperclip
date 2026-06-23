@@ -24,6 +24,8 @@ export interface AgentHealthEntry {
   severity: "info" | "warning" | "critical";
   lastOutputAt: Date | null;
   detail: string;
+  /** Present only when an active (non-terminal) run exists. Must stay in sync with CANCELLABLE_RUN_STATUSES in plans.ts. */
+  runId?: string;
 }
 
 export interface PlanHealthDiagnosis {
@@ -124,6 +126,7 @@ export async function diagnosePlanHealth(
   // Step 4: load latest heartbeat run per agent.
   const runRows = await db
     .select({
+      id: heartbeatRuns.id,
       agentId: heartbeatRuns.agentId,
       status: heartbeatRuns.status,
       lastOutputAt: heartbeatRuns.lastOutputAt,
@@ -185,6 +188,7 @@ export async function diagnosePlanHealth(
       severity: classifySeverity(health),
       lastOutputAt: run?.lastOutputAt ?? null,
       detail: buildDetail(health, run ?? null, now),
+      runId: run && !TERMINAL_RUN_STATUSES.has(run.status) ? run.id : undefined,
     });
   }
 

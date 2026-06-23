@@ -353,4 +353,36 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     const result = await diagnosePlanHealth(rootId, db);
     expect(result.agents[0].health).toBe("working");
   });
+
+  it("sets runId on entry when agent has an active (non-terminal) run", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "running");
+    const rootId = await seedPlanRoot(companyId);
+    await seedSubtreeIssue(companyId, rootId, agentId);
+    const runId = await seedRun(companyId, agentId, { status: "running" });
+
+    const result = await diagnosePlanHealth(rootId, db);
+    expect(result.agents[0].runId).toBe(runId);
+  });
+
+  it("omits runId from entry when agent's latest run is terminal (cancelled)", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "idle");
+    const rootId = await seedPlanRoot(companyId);
+    await seedSubtreeIssue(companyId, rootId, agentId);
+    await seedRun(companyId, agentId, { status: "cancelled" });
+
+    const result = await diagnosePlanHealth(rootId, db);
+    expect(result.agents[0].runId).toBeUndefined();
+  });
+
+  it("omits runId from entry when agent has no run", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "idle");
+    const rootId = await seedPlanRoot(companyId);
+    await seedSubtreeIssue(companyId, rootId, agentId);
+
+    const result = await diagnosePlanHealth(rootId, db);
+    expect(result.agents[0].runId).toBeUndefined();
+  });
 });

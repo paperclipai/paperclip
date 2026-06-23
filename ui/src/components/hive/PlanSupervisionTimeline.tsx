@@ -75,6 +75,16 @@ export function PlanSupervisionTimeline({ planIssueId, planState }: PlanSupervis
     onError: (e) => pushToast({ title: "Re-wake failed", body: errMsg(e), tone: "error" }),
   });
 
+  const cancelRun = useMutation({
+    mutationFn: ({ runId, targetAgentId }: { runId: string; targetAgentId: string }) =>
+      plansApi.takeAction(planIssueId, { action: "cancel", runId, targetAgentId }),
+    onSuccess: () => {
+      pushToast({ title: "Run cancelled", tone: "success" });
+      invalidateSupervision();
+    },
+    onError: (e) => pushToast({ title: "Cancel failed", body: errMsg(e), tone: "error" }),
+  });
+
   const stopEscalate = useMutation({
     mutationFn: (reason: string) =>
       plansApi.takeAction(planIssueId, { action: "stop_escalate", reason }),
@@ -98,7 +108,7 @@ export function PlanSupervisionTimeline({ planIssueId, planState }: PlanSupervis
   const notes = data?.notes ?? [];
   const agents = healthData?.health.agents ?? [];
   const overdue = healthData?.health.overdue ?? false;
-  const actionPending = rewake.isPending || stopEscalate.isPending;
+  const actionPending = rewake.isPending || stopEscalate.isPending || cancelRun.isPending;
 
   return (
     <div className="space-y-3">
@@ -154,6 +164,17 @@ export function PlanSupervisionTimeline({ planIssueId, planState }: PlanSupervis
                   >
                     Re-wake
                   </Button>
+                  {agent.runId && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 shrink-0 px-2 text-[11px] text-red-700 hover:text-red-800 dark:text-red-300"
+                      onClick={() => cancelRun.mutate({ runId: agent.runId!, targetAgentId: agent.agentId })}
+                      disabled={actionPending}
+                    >
+                      Cancel run
+                    </Button>
+                  )}
                 </li>
               ))}
             </ul>

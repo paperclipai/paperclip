@@ -50,6 +50,7 @@ export interface AgentHealthEntry {
   severity: "info" | "warning" | "critical";
   lastOutputAt: string | null;
   detail: string;
+  runId?: string;
 }
 
 export interface PlanHealth {

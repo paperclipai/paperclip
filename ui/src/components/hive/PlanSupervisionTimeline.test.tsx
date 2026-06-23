@@ -132,4 +132,69 @@ describe("PlanSupervisionTimeline", () => {
     // Health endpoint is not queried for inactive plans.
     expect(mockPlansApi.supervisionHealth).not.toHaveBeenCalled();
   });
+
+  it("renders Cancel run button when agent has a runId", async () => {
+    mockPlansApi.supervisionHealth.mockResolvedValue({
+      health: {
+        planIssueId: "plan-1",
+        overdue: false,
+        agents: [
+          {
+            agentId: "agent-9",
+            agentName: "Backend Bot",
+            issueId: "issue-2",
+            health: "working",
+            severity: "info",
+            lastOutputAt: null,
+            detail: "",
+            runId: "run-abc123",
+          },
+        ],
+      },
+    });
+    render("active");
+    await flushReact();
+
+    expect(buttonByText("Cancel run")).toBeTruthy();
+  });
+
+  it("does not render Cancel run button when agent has no runId", async () => {
+    render("active");
+    await flushReact();
+
+    expect(buttonByText("Cancel run")).toBeUndefined();
+  });
+
+  it("Cancel run button dispatches cancel action with runId and targetAgentId", async () => {
+    mockPlansApi.supervisionHealth.mockResolvedValue({
+      health: {
+        planIssueId: "plan-1",
+        overdue: false,
+        agents: [
+          {
+            agentId: "agent-9",
+            agentName: "Backend Bot",
+            issueId: "issue-2",
+            health: "working",
+            severity: "info",
+            lastOutputAt: null,
+            detail: "",
+            runId: "run-abc123",
+          },
+        ],
+      },
+    });
+    mockPlansApi.takeAction.mockResolvedValue({ note: {}, actionTaken: "cancel" });
+    render("active");
+    await flushReact();
+
+    buttonByText("Cancel run")!.click();
+    await flushReact();
+
+    expect(mockPlansApi.takeAction).toHaveBeenCalledWith("plan-1", {
+      action: "cancel",
+      runId: "run-abc123",
+      targetAgentId: "agent-9",
+    });
+  });
 });
