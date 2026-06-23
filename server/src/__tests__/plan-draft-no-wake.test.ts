@@ -46,6 +46,7 @@ vi.mock("../services/index.js", () => ({
   issueService: () => ({ getById: mockIssueGetById }),
   agentService: () => ({ list: mockAgentList }),
   heartbeatService: () => ({ wakeup: mockHeartbeatWakeup, addWakeup: vi.fn() }),
+  issueRecoveryActionService: () => ({}),
   logActivity: mockLogActivity,
 }));
 

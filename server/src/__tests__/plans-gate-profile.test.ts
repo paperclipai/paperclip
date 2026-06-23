@@ -50,6 +50,7 @@ vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   agentService: () => mockAgentService,
   heartbeatService: () => mockHeartbeatService,
+  issueRecoveryActionService: () => ({}),
   logActivity: mockLogActivity,
   ISSUE_LIST_DEFAULT_LIMIT: 500,
 }));
