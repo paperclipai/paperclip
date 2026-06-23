@@ -80,8 +80,14 @@ export async function buildMonitorContext(
     )
     SELECT id FROM tree
   `);
+  // db.execute returns either a { rows } envelope or a bare array depending on
+  // the driver. Guard the shape so a future Drizzle change surfaces loudly
+  // rather than silently yielding an empty subtree (and empty recentActivity).
   const list = (rows as unknown as { rows?: { id: string }[] }).rows ?? (rows as unknown as { id: string }[]);
-  const subtreeIds = list.map((r) => r.id);
+  if (!Array.isArray(list)) {
+    logger.error({ planIssueId }, "plan monitoring: unexpected db.execute result shape for subtree CTE");
+  }
+  const subtreeIds = Array.isArray(list) ? list.map((r) => r.id) : [planIssueId];
 
   let recentActivity: { action: string; entityId: string; actorId: string; createdAt: Date }[] = [];
   if (subtreeIds.length > 0) {
@@ -174,7 +180,10 @@ export async function tickPlanMonitoring(
     const { agent: ctoAgent } = await agents_.resolveByReference(plan.companyId, "cto");
     const wakeTargetId = ctoAgent?.id ?? plan.rootAssigneeAgentId;
 
-    // Window bucket: ISO minute rounded down to nearest INTERVAL boundary
+    // Two-layer dedup against monitor storms: the lastMonitoredAt interval gate
+    // in the SELECT above prevents re-entry across ticks, and this per-window
+    // idempotencyKey de-dups at the wakeup layer if two ticks race before the
+    // lastMonitoredAt UPDATE commits. Window bucket = now floored to the interval.
     const windowBucket = Math.floor(now.getTime() / SUPERVISION_MONITOR_INTERVAL_MS);
 
     if (!wakeTargetId) {
@@ -256,7 +265,9 @@ export async function monitorNow(
   await deps.wakeup(wakeTargetId, {
     source: "on_demand",
     reason: "plan_monitor",
-    idempotencyKey: `plan_monitor_now:${planIssueId}:${now.getTime()}`,
+    // Random suffix so two on-demand triggers in the same millisecond don't
+    // collide on the key (each click is an independent intentional wake).
+    idempotencyKey: `plan_monitor_now:${planIssueId}:${now.getTime()}:${Math.random().toString(36).slice(2, 10)}`,
     payload: {
       planIssueId,
       since: since?.toISOString() ?? null,
