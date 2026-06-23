@@ -112,9 +112,11 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  GENERIC_ATTACHMENT_CONTENT_TYPES,
   isInlineAttachmentContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
+  normalizeUploadAttachmentContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
@@ -309,11 +311,7 @@ function buildAttachmentContentPath(attachmentId: string): string {
   return `/api/attachments/${attachmentId}/content`;
 }
 
-const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
-  "application/octet-stream",
-  "binary/octet-stream",
-  "application/x-binary",
-]);
+const GENERIC_RESPONSE_ATTACHMENT_CONTENT_TYPES = new Set(GENERIC_ATTACHMENT_CONTENT_TYPES);
 
 function inferVideoContentTypeFromFilename(filename: string | null | undefined): string | null {
   const lower = (filename ?? "").toLowerCase();
@@ -329,7 +327,7 @@ function resolveAttachmentResponseContentType(input: {
   originalFilename?: string | null;
 }) {
   const storedContentType = normalizeContentType(input.storedContentType || input.objectContentType);
-  if (!GENERIC_ATTACHMENT_CONTENT_TYPES.has(storedContentType)) return storedContentType;
+  if (!GENERIC_RESPONSE_ATTACHMENT_CONTENT_TYPES.has(storedContentType)) return storedContentType;
   return inferVideoContentTypeFromFilename(input.originalFilename) ?? storedContentType;
 }
 
@@ -8270,7 +8268,10 @@ export function issueRoutes(
       res.status(400).json({ error: "Missing file field 'file'" });
       return;
     }
-    const contentType = normalizeContentType(file.mimetype);
+    const contentType = normalizeUploadAttachmentContentType({
+      contentType: file.mimetype,
+      originalFilename: file.originalname,
+    });
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: "Attachment is empty" });
       return;
