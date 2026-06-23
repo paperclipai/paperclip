@@ -16,7 +16,13 @@
 # fork's GITHUB_TOKEN cannot create PRs ("Resource not accessible by integration"),
 # and App-installation tokens also trigger `pr.yml` on the PR. Requires the
 # CLAWSWEEPER_APP_PRIVATE_KEY repo secret (1Password: Bermont Digital /
-# "GitHub App — bermont-clawsweeper" / pem) and the App installed on this repo.
+# "GitHub App — bermont-clawsweeper" / private_key) and the App installed on this
+# repo.
+#
+# PR detection/creation go through the REST pulls API, not `gh pr create`: gh's
+# create path uses the GraphQL `createPullRequest` mutation, which fails for
+# GitHub App installation tokens with "Resource not accessible by integration"
+# even when the token carries pull_requests:write. The REST endpoint works.
 name: Upstream sync
 
 on:
@@ -43,7 +49,7 @@ jobs:
       - name: Require bermont-clawsweeper key
         if: env.HAS_APP_KEY != 'true'
         run: |
-          echo "::error::CLAWSWEEPER_APP_PRIVATE_KEY is not set. This workflow opens its PR with the bermont-clawsweeper App token (GITHUB_TOKEN cannot create PRs on this fork). Provision the secret from 1Password (Bermont Digital / 'GitHub App — bermont-clawsweeper' / pem) and install the App on this repo."
+          echo "::error::CLAWSWEEPER_APP_PRIVATE_KEY is not set. This workflow opens its PR with the bermont-clawsweeper App token (GITHUB_TOKEN cannot create PRs on this fork). Provision the secret from 1Password (Bermont Digital / 'GitHub App — bermont-clawsweeper' / private_key) and install the App on this repo."
           exit 1
 
       - name: Mint bermont-clawsweeper token (contents + PRs write)
@@ -115,10 +121,20 @@ jobs:
             echo "Review the diff for overlay-relevant changes (migrations, CI, Dockerfile), then merge to ship via the lue-kube image autobump."
           } > "$body_file"
 
-          if gh pr view "$SYNC_BRANCH" --json state --jq '.state' 2>/dev/null | grep -q OPEN; then
-            echo "Existing sync PR updated via force-push."
-          else
-            gh pr create --base bermont --head "$SYNC_BRANCH" \
-              --title "chore: sync upstream/master into bermont" \
-              --body-file "$body_file"
+          # Detect an existing open PR for this head via REST. (gh's GraphQL
+          # lookups can also 403 under an App token; REST is the reliable path.)
+          open_count="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls?base=bermont&state=open&head=${GITHUB_REPOSITORY_OWNER}:${SYNC_BRANCH}" \
+            --jq 'length')"
+          if [ "${open_count:-0}" -gt 0 ]; then
+            echo "Existing sync PR already open for ${SYNC_BRANCH} — updated via force-push."
+            exit 0
           fi
+
+          # Create via REST, not `gh pr create` (GraphQL createPullRequest is not
+          # accessible to App installation tokens). --field body=@file reads the body.
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/pulls" \
+            --raw-field title="chore: sync upstream/master into bermont" \
+            --raw-field head="$SYNC_BRANCH" \
+            --raw-field base="bermont" \
+            --field "body=@${body_file}"
