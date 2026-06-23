@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/hermes-paperclip-adapter",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Paperclip adapter for Hermes Agent — run Hermes as a managed employee in a Paperclip company",
   "type": "module",
   "license": "MIT",
