@@ -2688,6 +2688,21 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               </Link>
             </p>
           ) : null}
+          {detail.builtFromAutomation ? (
+            <p className="mt-1 text-sm text-muted-foreground">
+              Built from{" "}
+              <Link
+                to={detail.builtFromAutomation.stage
+                  ? `/pipelines/${detail.builtFromAutomation.pipeline.id}/settings?stage=${detail.builtFromAutomation.stage.id}`
+                  : `/pipelines/${detail.builtFromAutomation.pipeline.id}/settings`}
+                className="font-medium text-foreground hover:underline"
+                title={detail.builtFromAutomation.routine.title}
+              >
+                {detail.builtFromAutomation.pipeline.name}
+                {detail.builtFromAutomation.stage ? `: ${detail.builtFromAutomation.stage.name} automation` : " automation"}
+              </Link>
+            </p>
+          ) : null}
         </div>
         <div className="flex w-full flex-col gap-5">
           <div className="flex items-center gap-2 lg:justify-end">

@@ -187,6 +187,34 @@ export interface PipelineCaseDetail {
     stage: PipelineStage;
     pipeline: { id: string; key: string; name: string };
   } | null;
+  builtFromAutomation?: {
+    execution: {
+      id: string;
+      automationId: string;
+      status: string;
+    };
+    routine: {
+      id: string;
+      title: string;
+    };
+    pipeline: {
+      id: string;
+      key: string;
+      name: string;
+    };
+    stage: {
+      id: string;
+      key: string;
+      name: string;
+      kind: string;
+    } | null;
+    case: {
+      id: string;
+      caseKey: string | null;
+      title: string;
+      pipelineId: string;
+    };
+  } | null;
   activeWork?: PipelineCaseActiveWork | null;
   liveness?: PipelineCaseLiveness | null;
   conversationSource?: PipelineCaseConversationSource | null;

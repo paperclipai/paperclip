@@ -2287,6 +2287,7 @@ async function getCaseDetail(db: Db, companyId: string, caseId: string) {
     parentCase,
     conversationSource,
     liveness,
+    builtFromAutomation,
   ] = await Promise.all([
     db.select().from(pipelineStages).where(eq(pipelineStages.pipelineId, row.case.pipelineId)).orderBy(asc(pipelineStages.position)),
     db.select().from(pipelineCaseIssueLinks).where(and(eq(pipelineCaseIssueLinks.companyId, companyId), eq(pipelineCaseIssueLinks.caseId, caseId))),
@@ -2298,6 +2299,7 @@ async function getCaseDetail(db: Db, companyId: string, caseId: string) {
     parentCasePromise,
     resolvePipelineCaseConversationSource(db, companyId, caseId),
     derivePipelineCaseLiveness(db, companyId, row),
+    loadBuiltFromAutomation(db, companyId, row.case),
   ]);
   return {
     ...row,
@@ -2318,8 +2320,90 @@ async function getCaseDetail(db: Db, companyId: string, caseId: string) {
     activeWork: activeWorkByCase.get(caseId) ?? null,
     liveness,
     conversationSource,
+    builtFromAutomation,
     parentCase,
     pendingSuggestion: row.case.pendingSuggestion,
+  };
+}
+
+function stageAutomationId(stage: typeof pipelineStages.$inferSelect) {
+  const config = stage.config && typeof stage.config === "object" && !Array.isArray(stage.config)
+    ? stage.config as PipelineStageConfig
+    : null;
+  const onEnter = config?.onEnter;
+  if (!onEnter || onEnter.type !== "run_routine" || !onEnter.routineId) return null;
+  return typeof onEnter.id === "string" ? onEnter.id : `${stage.id}:on_enter`;
+}
+
+async function loadBuiltFromAutomation(
+  db: Db,
+  companyId: string,
+  caseRow: typeof pipelineCases.$inferSelect,
+) {
+  if (!caseRow.automationAttemptId) return null;
+  const row = await db
+    .select({
+      execution: pipelineAutomationExecutions,
+      sourceCase: pipelineCases,
+      sourcePipeline: pipelines,
+      routine: routines,
+    })
+    .from(pipelineAutomationExecutions)
+    .innerJoin(pipelineCases, and(
+      eq(pipelineCases.companyId, companyId),
+      eq(pipelineCases.id, pipelineAutomationExecutions.caseId),
+    ))
+    .innerJoin(pipelines, and(
+      eq(pipelines.companyId, companyId),
+      eq(pipelines.id, pipelineCases.pipelineId),
+    ))
+    .innerJoin(routines, and(
+      eq(routines.companyId, companyId),
+      eq(routines.id, pipelineAutomationExecutions.routineId),
+    ))
+    .where(and(
+      eq(pipelineAutomationExecutions.companyId, companyId),
+      eq(pipelineAutomationExecutions.id, caseRow.automationAttemptId),
+    ))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!row) return null;
+
+  const stages = await db
+    .select()
+    .from(pipelineStages)
+    .where(eq(pipelineStages.pipelineId, row.sourcePipeline.id));
+  const stage = stages.find((candidate) => stageAutomationId(candidate) === row.execution.automationId) ?? null;
+
+  return {
+    execution: {
+      id: row.execution.id,
+      automationId: row.execution.automationId,
+      status: row.execution.status,
+    },
+    routine: {
+      id: row.routine.id,
+      title: row.routine.title,
+    },
+    pipeline: {
+      id: row.sourcePipeline.id,
+      key: row.sourcePipeline.key,
+      name: row.sourcePipeline.name,
+    },
+    stage: stage
+      ? {
+        id: stage.id,
+        key: stage.key,
+        name: stage.name,
+        kind: stage.kind,
+      }
+      : null,
+    case: {
+      id: row.sourceCase.id,
+      caseKey: row.sourceCase.caseKey,
+      title: row.sourceCase.title,
+      pipelineId: row.sourceCase.pipelineId,
+    },
   };
 }
 

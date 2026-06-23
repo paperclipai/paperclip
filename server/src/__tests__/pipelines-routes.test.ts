@@ -310,6 +310,100 @@ describeEmbeddedPostgres("pipeline routes", () => {
     expect(remainingLinks).toHaveLength(0);
   });
 
+  it("includes the source automation metadata for cases built by automation", async () => {
+    const company = await seedCompany();
+    const http = request(app(boardActor));
+    const [routine] = await db.insert(routines).values({
+      companyId: company.id,
+      title: "Break down feature",
+    }).returning();
+    const [sourcePipeline] = await db.insert(pipelines).values({
+      companyId: company.id,
+      key: "features",
+      name: "Features",
+    }).returning();
+    const [sourceStage] = await db.insert(pipelineStages).values({
+      pipelineId: sourcePipeline!.id,
+      key: "plan",
+      name: "Plan",
+      kind: "working",
+      position: 100,
+      config: { onEnter: { type: "run_routine", id: "build-content", routineId: routine!.id } },
+    }).returning();
+    const [targetPipeline] = await db.insert(pipelines).values({
+      companyId: company.id,
+      key: "content",
+      name: "Content",
+    }).returning();
+    const [targetStage] = await db.insert(pipelineStages).values({
+      pipelineId: targetPipeline!.id,
+      key: "draft",
+      name: "Draft",
+      kind: "working",
+      position: 100,
+      config: {},
+    }).returning();
+    const [sourceCase] = await db.insert(pipelineCases).values({
+      companyId: company.id,
+      pipelineId: sourcePipeline!.id,
+      stageId: sourceStage!.id,
+      caseKey: "checkboxes",
+      title: "Checkbox confirmation interactions",
+      fields: {},
+    }).returning();
+    const [execution] = await db.insert(pipelineAutomationExecutions).values({
+      companyId: company.id,
+      caseId: sourceCase!.id,
+      automationId: "build-content",
+      triggeringEventId: randomUUID(),
+      routineId: routine!.id,
+      status: "succeeded",
+    }).returning();
+    const [childCase] = await db.insert(pipelineCases).values({
+      companyId: company.id,
+      pipelineId: targetPipeline!.id,
+      stageId: targetStage!.id,
+      caseKey: "api-how-to",
+      title: "API how-to",
+      fields: {},
+      parentCaseId: sourceCase!.id,
+      parentCaseVersion: sourceCase!.version,
+      requestKey: "article:api-how-to",
+      automationAttemptId: execution!.id,
+    }).returning();
+
+    const detail = await http.get(`/api/cases/${childCase!.id}`).expect(200);
+
+    expect(detail.body.builtFromAutomation).toMatchObject({
+      execution: {
+        id: execution!.id,
+        automationId: "build-content",
+        status: "succeeded",
+      },
+      routine: {
+        id: routine!.id,
+        title: "Break down feature",
+      },
+      pipeline: {
+        id: sourcePipeline!.id,
+        key: "features",
+        name: "Features",
+      },
+      stage: {
+        id: sourceStage!.id,
+        key: "plan",
+        name: "Plan",
+        kind: "working",
+      },
+      case: {
+        id: sourceCase!.id,
+        caseKey: "checkboxes",
+        title: "Checkbox confirmation interactions",
+        pipelineId: sourcePipeline!.id,
+      },
+    });
+  });
+
   it("paginates and caps case event responses", async () => {
     const company = await seedCompany();
     const http = request(app(boardActor));
