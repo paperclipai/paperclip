@@ -99,8 +99,8 @@ export function approvalRoutes(
       if (!plan || plan.gateEnforcement !== "strict") return;
 
       const tiers = Array.isArray(plan.tiers) ? (plan.tiers as { childIssueIds?: unknown[] }[]) : [];
-      const firstTierChildIds = tiers
-        .flatMap((t) => (Array.isArray(t.childIssueIds) ? t.childIssueIds : []))
+      const firstTier = tiers[0];
+      const firstTierChildIds = (Array.isArray(firstTier?.childIssueIds) ? firstTier.childIssueIds : [])
         .filter((id): id is string => typeof id === "string");
 
       if (firstTierChildIds.length === 0) return;
