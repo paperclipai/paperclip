@@ -221,6 +221,28 @@ describeEmbeddedPostgres("agentMemoryService (per-agent long-term memory)", () =
     expect(md).toContain("## Lessons");
     expect(md).toContain("Fact one");
   });
+
+  it("builds a run-context summary of active memories (injected into agent runs, issue #6)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent(db);
+    // Empty when the agent has no memories: nothing to inject.
+    expect(await svc.buildContextSummary(companyId, agentId)).toBe("");
+
+    await svc.write(
+      companyId,
+      agentId,
+      { type: "lesson", title: "Rollback on 5xx spike", body: "Roll back within 5 min", confidence: 90 },
+      boardActor,
+    );
+    const summary = await svc.buildContextSummary(companyId, agentId);
+    expect(summary).toContain("Long-term memory");
+    expect(summary).toContain("[lesson]");
+    expect(summary).toContain("Rollback on 5xx spike");
+
+    // Forgotten memories must not be surfaced into runs.
+    const all = await svc.list(companyId, agentId);
+    await svc.forget(companyId, agentId, all[0].id, boardActor);
+    expect(await svc.buildContextSummary(companyId, agentId)).toBe("");
+  });
 });
 
 describe("redactSecrets", () => {

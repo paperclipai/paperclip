@@ -104,6 +104,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { agentMemoryService } from "./agent-memories.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -8584,6 +8585,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context.paperclipTaskMarkdown = taskMarkdown;
     } else {
       delete context.paperclipTaskMarkdown;
+    }
+    // Long-term memory (issue #6): surface the agent's consolidated memories so they
+    // are re-read inside the run, not just written. Always injected; the adapter
+    // renders it into the prompt.
+    const memorySummary = await agentMemoryService(db)
+      .buildContextSummary(agent.companyId, agent.id)
+      .catch(() => "");
+    if (memorySummary) {
+      context.paperclipMemorySummary = memorySummary;
+    } else {
+      delete context.paperclipMemorySummary;
     }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
