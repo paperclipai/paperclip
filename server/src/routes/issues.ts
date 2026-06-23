@@ -7,9 +7,11 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  approvals,
   documents,
   executionWorkspaces,
   heartbeatRuns,
+  issueApprovals,
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
@@ -21,6 +23,7 @@ import {
 } from "@paperclipai/db";
 import {
   GATE_APPROVAL_TYPES,
+  GATE_APPROVAL_TYPE_ORDER,
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
   attachmentArtifactWorkProductMetadataSchema,
@@ -58,6 +61,9 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type GateApprovalStatus,
+  type GateApprovalType,
+  type IssueGateSummary,
   type IssueRelationIssueSummary,
   type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
@@ -513,6 +519,61 @@ async function listSuccessfulRunHandoffStates(
     if (state) states.set(row.entityId, state);
   }
   return states;
+}
+
+const GATE_APPROVAL_TYPE_SET = new Set<string>(GATE_APPROVAL_TYPE_ORDER);
+
+// Per-issue gate breakdown for the board, computed with ONE grouped query over
+// the whole page's issueIds (mirrors listSuccessfulRunHandoffStates). Only issues
+// with at least one linked gate approval appear in the map; each gate type keeps
+// its latest approval's status, ordered per GATE_APPROVAL_TYPE_ORDER. Fail-soft:
+// callers wrap this so a gate-summary error degrades to no-badge, never a broken
+// board list. Exported for direct testing of the grouping/ordering logic.
+export async function listGateSummariesForIssues(
+  db: Db,
+  companyId: string,
+  issueIds: string[],
+): Promise<Map<string, IssueGateSummary>> {
+  if (issueIds.length === 0) return new Map();
+  const rows = await db
+    .select({
+      issueId: issueApprovals.issueId,
+      type: approvals.type,
+      status: approvals.status,
+      createdAt: approvals.createdAt,
+    })
+    .from(issueApprovals)
+    .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+    .where(and(
+      eq(approvals.companyId, companyId),
+      inArray(issueApprovals.issueId, issueIds),
+      inArray(approvals.type, [...GATE_APPROVAL_TYPE_ORDER]),
+    ))
+    .orderBy(issueApprovals.issueId, desc(approvals.createdAt), desc(approvals.id));
+
+  // latest status per (issueId, gate type)
+  const latestByIssueType = new Map<string, Map<GateApprovalType, GateApprovalStatus>>();
+  for (const row of rows) {
+    if (!GATE_APPROVAL_TYPE_SET.has(row.type)) continue;
+    let byType = latestByIssueType.get(row.issueId);
+    if (!byType) {
+      byType = new Map();
+      latestByIssueType.set(row.issueId, byType);
+    }
+    const gateType = row.type as GateApprovalType;
+    if (byType.has(gateType)) continue; // rows are desc by createdAt → first seen is latest
+    byType.set(gateType, row.status as GateApprovalStatus);
+  }
+
+  const summaries = new Map<string, IssueGateSummary>();
+  for (const [issueId, byType] of latestByIssueType) {
+    const gates = GATE_APPROVAL_TYPE_ORDER.filter((t) => byType.has(t)).map((t) => ({
+      type: t,
+      status: byType.get(t)!,
+    }));
+    if (gates.length > 0) summaries.set(issueId, { gates });
+  }
+  return summaries;
 }
 
 type RecoveryActionsLister = {
@@ -2537,9 +2598,14 @@ export function issueRoutes(
       ? rawResult
       : await filterIssuesForActor(req, rawResult);
     const issueIds = result.map((issue) => issue.id);
-    const [handoffStates, recoveryActionByIssue] = await Promise.all([
+    const [handoffStates, recoveryActionByIssue, gateSummaryByIssue] = await Promise.all([
       listSuccessfulRunHandoffStates(db, companyId, issueIds),
       recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
+      // Fail-soft: a gate-summary error degrades to no-badge, never breaks the board.
+      listGateSummariesForIssues(db, companyId, issueIds).catch((err) => {
+        logger.warn({ err, companyId }, "gate summary enrichment failed; omitting gate badges");
+        return new Map<string, IssueGateSummary>();
+      }),
     ]);
     const actor = getActorInfo(req);
     await Promise.all(result.map(async (issue) => {
@@ -2558,6 +2624,7 @@ export function issueRoutes(
       ...issue,
       successfulRunHandoff: handoffStates.get(issue.id) ?? null,
       activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+      gateSummary: gateSummaryByIssue.get(issue.id) ?? null,
     })));
   });
 

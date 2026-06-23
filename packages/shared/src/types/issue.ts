@@ -283,6 +283,29 @@ export const GATE_APPROVAL_TYPES = {
 export type GateApprovalType =
   (typeof GATE_APPROVAL_TYPES)[keyof typeof GATE_APPROVAL_TYPES];
 
+// Fixed display order for a gate breakdown: plan → code → wiring → completeness.
+export const GATE_APPROVAL_TYPE_ORDER: GateApprovalType[] = [
+  GATE_APPROVAL_TYPES.planApproval,
+  GATE_APPROVAL_TYPES.codeReview,
+  GATE_APPROVAL_TYPES.wiringReview,
+  GATE_APPROVAL_TYPES.completenessReview,
+];
+
+export type GateApprovalStatus = "pending" | "approved" | "rejected" | "revision_requested";
+
+// One gate's current state for an issue (latest approval of that type).
+export interface IssueGateState {
+  type: GateApprovalType;
+  status: GateApprovalStatus;
+}
+
+// Compact per-issue gate breakdown surfaced on board cards. Present only on
+// issues that actually have gate approvals linked; ordered per
+// GATE_APPROVAL_TYPE_ORDER.
+export interface IssueGateSummary {
+  gates: IssueGateState[];
+}
+
 export type IssueBlockedInboxOwnerType = "agent" | "user" | "board" | "external" | "unknown";
 
 export interface IssueBlockedInboxIssueRef {
@@ -582,6 +605,7 @@ export interface Issue {
   productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  gateSummary?: IssueGateSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];

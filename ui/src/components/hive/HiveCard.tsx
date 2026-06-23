@@ -12,6 +12,7 @@ import { heartbeatsApi } from "../../api/heartbeats";
 import { useToastActions } from "../../context/ToastContext";
 import { queryKeys } from "../../lib/queryKeys";
 import { ConfirmActionDialog } from "./ConfirmActionDialog";
+import { GateBadgeRow } from "./GateBadgeRow";
 
 interface HiveCardProps {
   issue: Issue;
@@ -133,7 +134,9 @@ export function HiveCard({
         <p className="mb-2 line-clamp-2 text-sm leading-snug">{issue.title}</p>
       </Link>
 
-      <div className="flex items-center gap-2">
+      {issue.gateSummary ? <GateBadgeRow summary={issue.gateSummary} /> : null}
+
+      <div className="mt-1.5 flex items-center gap-2">
         <PriorityIcon priority={issue.priority} />
         {assigneeName ? (
           <Identity name={assigneeName} size="xs" />

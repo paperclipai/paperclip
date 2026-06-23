@@ -525,6 +525,9 @@ export type {
   IssueBlockedInboxState,
   PlanGateProfile,
   GateApprovalType,
+  GateApprovalStatus,
+  IssueGateState,
+  IssueGateSummary,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRecoveryAction,
@@ -788,7 +791,7 @@ export type {
   ProviderQuotaResult,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
-export { GATE_APPROVAL_TYPES } from "./types/index.js";
+export { GATE_APPROVAL_TYPES, GATE_APPROVAL_TYPE_ORDER } from "./types/index.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,
