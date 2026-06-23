@@ -51,6 +51,23 @@ diagnostics/
 # Doc maintenance cursor
 .doc-review-cursor
 
+# Agent scratch files belong under .paperclip-local/scratch/<issue-id>/.
+# Keep root-level helper/output files out of future status and PR scopes.
+/.ful*.cjs
+/.ful*.json
+/.ful*.txt
+/.ful*.md
+/.health*.cjs
+/.health*.json
+/.health*.txt
+/.health*.md
+/.health*.sh
+/.post-health*.cjs
+/.help2day*.cjs
+/.comment-response.json
+/.create-disk*
+/.disk-ticket*
+
 # Playwright
 tests/e2e/test-results/
 tests/e2e/playwright-report/

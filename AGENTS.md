@@ -87,6 +87,12 @@ When you are creating a plan file in the repository itself, new plan documents b
 6. Attach inspectable generated artifacts.
 When your task produces a user-inspectable deliverable file, follow the Paperclip skill's "Generated Artifacts and Work Products" workflow before final disposition. In this repo, prefer the self-contained skill helper at `skills/paperclip/scripts/paperclip-upload-artifact.sh` so the file is available through the Paperclip API, create/update an artifact work product when the file is the deliverable, link the uploaded artifact in the final issue comment, and then set status. Do not rely on local filesystem paths as the only access path. If an important file intentionally remains workspace-only, create/update a work product with `metadata.resourceRef.kind: "workspace_file"` and a workspace-relative path, then name that work product and path in the final comment. Treat browse/search as a fallback for recovering workspace files, not the preferred deliverable path. See `doc/AGENT-ARTIFACTS.md` for details and `.mp4`/`.webm` examples.
 
+7. Publish PRs only from clean, scoped branches.
+When a task asks you to publish reviewed local changes, do not push from a shared project-primary checkout or a branch that contains unrelated ahead-of-base commits. Follow `doc/PR-PUBLICATION-HANDOFF.md`: identify the exact source workspace, intended base, dependency commits, and file list; create a clean branch/worktree; apply only the reviewed diff; run `scripts/check-pr-publication-readiness.sh` before pushing.
+
+8. Keep workspace scratch files out of repo roots.
+Do not write issue helper scripts, command outputs, API responses, or temporary evidence as root-level `.ful*`, `.health*`, `.tmp*`, or ad hoc JSON/TXT files. Put transient files under `.paperclip-local/scratch/<issue-id>/` and durable evidence under the Paperclip issue as an attachment/work product. If a workspace-local file must stay, document it in `doc/WORKSPACE-HYGIENE.md` or the issue work product.
+
 ## 6. Database Change Workflow
 
 When changing data model:
