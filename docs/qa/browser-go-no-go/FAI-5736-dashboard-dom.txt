@@ -1,0 +1,311 @@
+Skip to Main Content
+F
+FAIRSQUARE TECHNOLOGY
+New Task
+Dashboard
+5 live
+Inbox
+97
+WORK
+Tasks
+Routines
+Goals
+Artifacts
+PROJECTS
+Onboarding
+Product
+RatiqMultiModal.io
+Sales
+OnDemand LinkedIn
+Web Design
+Pricing Strategies
+AGENTS
+CEO
+1 live
+DevOps Engineer
+2 live
+Founding Engineer
+QA Engineer
+2 live
+Sales Manager
+SecurityEngineer
+WebDesignEngineer
+Graphic Designer
+COMPANY
+Org
+Skills
+Costs
+Activity
+Settings
+BO
+Board
+DASHBOARD
+AGENTS
+CE
+CEO
+Live now
+CE
+CEO
+RUNNING
+
+FAI-5731's direct GET reveals it actually has 4 unresolved blockers + 1 attention blocker (FAI-5735) — the parent-list None was misleading. FAI-5708 has 0 blockers but a pending board card. Let me verify both unblock paths are real (memory warns of phantom cards) — check FAI-5731's attention child FAI-5735 and FAI-5708's interactions.
+
+Working
+for 2 minutes
+· called 1 tool
+Tool
+
+FAI-5708's Rev-2 card is answered, rev3 confirmation was rejected at 08:31 today, but a stale Rev-1 card (5f944efb) is still pending. FAI-5731 was just delegated (0.3h ago) and tracks blockers via blockedByIssueIds, not children. Let me pull the blocker details and the rejection payload.
+
+Working
+for 1 minute
+· called 1 tool
+Tool
+
+FAI-5708 is correctly held — the board's rejection said "I will revert with the changes shortly in a separate message, do not act until then." That's an explicit board hold; no action needed, and adding another comment would risk the fragmentation anti-pattern. Leaving it blocked is correct.
+
+FAI-5731's attention blocker is FAI-5735. Let me inspect it.
+
+Working
+for 55 seconds
+· called 1 tool
+Tool
+
+Found a likely issue: FAI-5735 (todo) and FAI-5736 (in_progress) have identical titles and the same assignee — looks like a double-create during delegation, with FAI-5735 the orphan duplicate driving the parent's needs_attention. Let me confirm before acting.
+
+4m ago
+DE
+DevOps Engineer
+Live now
+DE
+DevOps Engineer
+RUNNING
+Queued...
+5m ago
+QE
+QA Engineer
+Live now
+FAI-5735 - Author browser-testing skill + Browser GO/NO-GO verdict record
+QE
+QA Engineer
+RUNNING
+Queued...
+14m ago
+QE
+QA Engineer
+Live now
+FAI-5736 - Author browser-testing skill + Browser GO/NO-GO verdict record
+QE
+QA Engineer
+RUNNING
+Working
+for 6 minutes
+· ran 3 commands
+Executing command
+
+The DOM extraction has real Paperclip navigation text, but the full-page screenshot came out blank. I’m re-running with a stricter visible text wait and a viewport screenshot so the evidence reflects what a human would actually see.
+
+Working
+for 6 minutes
+· ran 1 command
+Executing command
+
+The stricter visual run failed without printing a PowerShell summary, so I’m checking the bridge logs and the presence of the viewport screenshot to find the exact failure point.
+
+Working
+for 4 minutes
+· ran 3 commands
+Executing command
+
+The stricter run timed out before taking the viewport screenshot, likely because the text locator did not become visible even though it exists in extracted body text. I’m checking the existing seeded browser screenshot from the unblocked setup task as a reference point and then I’ll capture evidence from a route with a visible selector. The seeded setup evidence is a valid dashboard screenshot, while my fresh profile rendered DOM text but captured blank. That points to session/profile setup, so I’m reusing the seeded isolated profile from 
+FAI-5734 for the dry-run rather than inventing a new auth state.
+
+Working
+for 4 minutes
+· ran 1 command
+Executing command
+
+The profile tree is large, so I’m switching to top-level profile discovery only and then I’ll run the dry-run with the seeded profile that produced the known-good screenshot.
+
+Working
+for 3 minutes
+· ran 1 command
+Executing command
+
+I’m using the default seeded profile path (.paperclip/qa-browser/profile-3320), which is the profile the bridge creates by default and matches the setup evidence naming. First I’m checking no active bridge is holding it.
+
+Working
+for 3 minutes
+· ran 1 command
+Executing command
+
+There is already a live QA browser bridge on port 3320 from the isolated context setup. I’m going to use that live seeded context for the dry-run evidence instead of starting a competing browser profile.
+
+Working
+for 2 minutes
+· ran 1 command
+Executing command
+
+The seeded context is live, but text=Dashboard matched multiple visible elements, so the deterministic wait failed correctly. I’m narrowing the wait to the page heading and re-running the capture.
+
+Working
+for 1 minute
+· ran 1 command
+Executing command
+14m ago
+1 more active/recent run
+
+8
+
+Agents Enabled
+
+3 running, 0 paused, 0 errors
+
+1
+
+Tasks In Progress
+
+211 open, 13 blocked
+
+$0.00
+
+Month Spend
+
+Unlimited budget
+
+56
+
+Pending Approvals
+
+Awaiting board review
+Run Activity
+Last 14 days
+6/10
+6/16
+6/23
+Tasks by Priority
+Last 14 days
+6/10
+6/16
+6/23
+Critical
+High
+Medium
+Low
+Tasks by Status
+Last 14 days
+6/10
+6/16
+6/23
+In Review
+Done
+Blocked
+Cancelled
+Success Rate
+Last 14 days
+6/10
+6/16
+6/23
+RECENT ACTIVITY
+CE
+
+CEO environment lease acquired
+
+3m ago
+QE
+
+QA Engineer environment lease acquired
+
+14m ago
+DE
+
+DevOps Engineer commented on
+
+14m ago
+Added references
+FAI-5735
+DE
+
+DevOps Engineer changed status from in progress to done on
+
+14m ago
+DE
+
+DevOps Engineer issue work product created
+
+15m ago
+DE
+
+DevOps Engineer attached file to
+
+15m ago
+SM
+
+Sales Manager environment lease released
+
+16m ago
+SM
+
+Sales Manager environment lease acquired
+
+18m ago
+SM
+
+Sales Manager environment lease released
+
+18m ago
+SM
+
+Sales Manager commented on
+
+18m ago
+RECENT TASKS
+Post approved Wed Jun 25 LinkedIn post: P2+P1 automation numbers (Hormozi)
+FAI-5729
+SM
+Sales Manager
+1h ago
+Draft & approve post: Mon Jun 23 - P1 freight desk problem (P2 reset)
+FAI-5726
+SM
+Sales Manager
+1h ago
+Post approved comments from [Comment Batch] 2026-06-23
+FAI-5723
+SM
+Sales Manager
+3h ago
+Post approved comment: Craig Fuller - DOT selects SONAR
+FAI-5597
+SM
+Sales Manager
+19h ago
+[Action Needed] 6 LinkedIn comment batches awaiting approval (Jun 17–20)
+FAI-5696
+20h ago
+Re-probe Live SeaRates Auto-Rates after vendor quota restoration
+FAI-5568
+DE
+DevOps Engineer
+21h ago
+Fix clarification next-iteration send lock after reply
+FAI-528
+FE
+Founding Engineer
+21h ago
+Post approved reply: Vitali Marychenka - workaround economy
+FAI-510
+SM
+Sales Manager
+21h ago
+DevOps Engineer Spinning Without Results
+FAI-417
+21h ago
+Post approved reply: Shaheer 4th exchange — Hormuz thread
+FAI-335
+SM
+Sales Manager
+21h ago
+Command Palette
+
+Search for a command to run...
