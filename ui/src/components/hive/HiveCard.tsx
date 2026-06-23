@@ -103,11 +103,6 @@ export function HiveCard({
         <span className="shrink-0 font-mono text-xs text-muted-foreground">
           {issue.identifier ?? issue.id.slice(0, 8)}
         </span>
-        {issue.status === "blocked" && (
-          <span className="rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300">
-            Blocked
-          </span>
-        )}
         {issue.status === "in_review" && issue.executionState?.returnAssignee ? (
           <span
             className="inline-flex items-center gap-1 rounded-full border border-violet-400/45 bg-violet-50/60 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:border-violet-300/35 dark:bg-violet-400/10 dark:text-violet-300"

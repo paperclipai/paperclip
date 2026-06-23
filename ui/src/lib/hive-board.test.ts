@@ -24,42 +24,47 @@ describe("columnForIssue", () => {
     expect(columnForIssue(issue({ workMode: "planning", status: "in_progress" }))).toBe("plans");
   });
 
-  it("maps the 7 statuses into the 4 work columns", () => {
+  it("maps each of the 7 statuses to its own column", () => {
     expect(columnForIssue(issue({ status: "backlog" }))).toBe("open");
     expect(columnForIssue(issue({ status: "todo" }))).toBe("open");
     expect(columnForIssue(issue({ status: "in_progress" }))).toBe("in_development");
-    expect(columnForIssue(issue({ status: "blocked" }))).toBe("in_development");
+    expect(columnForIssue(issue({ status: "blocked" }))).toBe("blocked");
     expect(columnForIssue(issue({ status: "in_review" }))).toBe("in_review");
     expect(columnForIssue(issue({ status: "done" }))).toBe("done");
-    expect(columnForIssue(issue({ status: "cancelled" }))).toBe("done");
+    expect(columnForIssue(issue({ status: "cancelled" }))).toBe("cancelled");
   });
 });
 
 describe("projectIssuesToHiveColumns", () => {
-  it("splits a plan root from its activated children", () => {
+  it("splits a plan root from its activated children across all lanes", () => {
     const cols = projectIssuesToHiveColumns([
       issue({ id: "plan", workMode: "planning", status: "backlog" }),
       issue({ id: "t1", status: "todo" }),
       issue({ id: "t2", status: "in_progress" }),
       issue({ id: "t3", status: "in_review" }),
+      issue({ id: "t4", status: "blocked" }),
+      issue({ id: "t5", status: "cancelled" }),
+      issue({ id: "t6", status: "done" }),
     ]);
     expect(cols.plans.map((i) => i.id)).toEqual(["plan"]);
     expect(cols.open.map((i) => i.id)).toEqual(["t1"]);
     expect(cols.in_development.map((i) => i.id)).toEqual(["t2"]);
     expect(cols.in_review.map((i) => i.id)).toEqual(["t3"]);
-    expect(cols.done).toEqual([]);
+    expect(cols.blocked.map((i) => i.id)).toEqual(["t4"]);
+    expect(cols.cancelled.map((i) => i.id)).toEqual(["t5"]);
+    expect(cols.done.map((i) => i.id)).toEqual(["t6"]);
   });
 });
 
 describe("canDropOnColumn", () => {
-  it("allows strictly-forward moves", () => {
+  it("allows strictly-forward moves in the pipeline", () => {
     expect(canDropOnColumn("open", "in_development")).toBe(true);
     expect(canDropOnColumn("in_development", "in_review")).toBe(true);
     expect(canDropOnColumn("in_review", "done")).toBe(true);
     expect(canDropOnColumn("open", "done")).toBe(true);
   });
 
-  it("rejects backward and same-column moves", () => {
+  it("rejects backward and same-column pipeline moves", () => {
     expect(canDropOnColumn("in_review", "in_development")).toBe(false);
     expect(canDropOnColumn("done", "open")).toBe(false);
     expect(canDropOnColumn("open", "open")).toBe(false);
@@ -69,14 +74,39 @@ describe("canDropOnColumn", () => {
     expect(canDropOnColumn("plans", "open")).toBe(false);
     expect(canDropOnColumn("open", "plans")).toBe(false);
   });
+
+  it("treats Blocked as a bidirectional side-lane bound to In Development", () => {
+    // mark blocked only from in-development
+    expect(canDropOnColumn("in_development", "blocked")).toBe(true);
+    expect(canDropOnColumn("open", "blocked")).toBe(false);
+    expect(canDropOnColumn("in_review", "blocked")).toBe(false);
+    // unblock back to in-development, or advance to review
+    expect(canDropOnColumn("blocked", "in_development")).toBe(true);
+    expect(canDropOnColumn("blocked", "in_review")).toBe(true);
+    expect(canDropOnColumn("blocked", "open")).toBe(false);
+  });
+
+  it("treats Cancelled as a terminal sink (in from any live lane, never out)", () => {
+    expect(canDropOnColumn("open", "cancelled")).toBe(true);
+    expect(canDropOnColumn("in_development", "cancelled")).toBe(true);
+    expect(canDropOnColumn("blocked", "cancelled")).toBe(true);
+    expect(canDropOnColumn("in_review", "cancelled")).toBe(true);
+    // done is already terminal-complete — not cancellable by drag
+    expect(canDropOnColumn("done", "cancelled")).toBe(false);
+    // nothing drags out of cancelled
+    expect(canDropOnColumn("cancelled", "open")).toBe(false);
+    expect(canDropOnColumn("cancelled", "in_development")).toBe(false);
+  });
 });
 
 describe("targetStatusForColumn", () => {
   it("returns the drop-target status per column", () => {
     expect(targetStatusForColumn("open")).toBe("todo");
     expect(targetStatusForColumn("in_development")).toBe("in_progress");
+    expect(targetStatusForColumn("blocked")).toBe("blocked");
     expect(targetStatusForColumn("in_review")).toBe("in_review");
     expect(targetStatusForColumn("done")).toBe("done");
+    expect(targetStatusForColumn("cancelled")).toBe("cancelled");
     expect(targetStatusForColumn("plans")).toBeNull();
   });
 });

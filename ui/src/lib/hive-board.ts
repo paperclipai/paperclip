@@ -1,8 +1,19 @@
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 
-// MyHive 5-column board. Plans column holds plan-root issues (workMode='planning');
-// the other four project the 7 backend statuses into the operator's mental model.
-export type HiveColumnId = "plans" | "open" | "in_development" | "in_review" | "done";
+// MyHive board. Plans column holds plan-root issues (workMode='planning'); the
+// rest project the 7 backend statuses. Blocked and Cancelled are split into their
+// own lanes: Blocked is an orthogonal side-lane (a task is blocked *while* in
+// development, and returns there when unblocked), Cancelled is a terminal archive
+// lane (droppable into, never out). The four pipeline lanes (Open → In Dev → In
+// Review → Done) keep strict forward-only drag.
+export type HiveColumnId =
+  | "plans"
+  | "open"
+  | "in_development"
+  | "blocked"
+  | "in_review"
+  | "done"
+  | "cancelled";
 
 export interface HiveColumnDef {
   id: HiveColumnId;
@@ -19,16 +30,19 @@ export const HIVE_COLUMNS: HiveColumnDef[] = [
   {
     id: "in_development",
     label: "In Development",
-    statuses: ["in_progress", "blocked"],
+    statuses: ["in_progress"],
     dropTarget: "in_progress",
   },
+  { id: "blocked", label: "Blocked", statuses: ["blocked"], dropTarget: "blocked" },
   { id: "in_review", label: "In Review", statuses: ["in_review"], dropTarget: "in_review" },
-  { id: "done", label: "Done", statuses: ["done", "cancelled"], dropTarget: "done" },
+  { id: "done", label: "Done", statuses: ["done"], dropTarget: "done" },
+  { id: "cancelled", label: "Cancelled", statuses: ["cancelled"], dropTarget: "cancelled" },
 ];
 
-// Forward-only ordering index for drag rules. Plans is -1 (never a drop target).
-const COLUMN_ORDER: Record<HiveColumnId, number> = {
-  plans: -1,
+// Forward-only ordering index for the linear pipeline lanes only. Plans (-1),
+// Blocked, and Cancelled are NOT linear stages — their drag rules are special-cased
+// in canDropOnColumn, so they are deliberately absent here.
+const PIPELINE_ORDER: Partial<Record<HiveColumnId, number>> = {
   open: 0,
   in_development: 1,
   in_review: 2,
@@ -39,10 +53,10 @@ const STATUS_TO_COLUMN: Record<IssueStatus, HiveColumnId> = {
   backlog: "open",
   todo: "open",
   in_progress: "in_development",
-  blocked: "in_development",
+  blocked: "blocked",
   in_review: "in_review",
   done: "done",
-  cancelled: "done",
+  cancelled: "cancelled",
 };
 
 export function columnForIssue(issue: Pick<Issue, "status" | "workMode">): HiveColumnId {
@@ -54,8 +68,10 @@ export interface HiveColumns {
   plans: Issue[];
   open: Issue[];
   in_development: Issue[];
+  blocked: Issue[];
   in_review: Issue[];
   done: Issue[];
+  cancelled: Issue[];
 }
 
 // Project issues into columns. Plan-root issues go to Plans; everything else by
@@ -66,8 +82,10 @@ export function projectIssuesToHiveColumns(issues: Issue[]): HiveColumns {
     plans: [],
     open: [],
     in_development: [],
+    blocked: [],
     in_review: [],
     done: [],
+    cancelled: [],
   };
   for (const issue of issues) {
     columns[columnForIssue(issue)].push(issue);
@@ -75,14 +93,31 @@ export function projectIssuesToHiveColumns(issues: Issue[]): HiveColumns {
   return columns;
 }
 
-// Drag rules: forward-only across Open → In Development → In Review → Done.
-// Plans column is locked (cards never drop in or out via drag). Backward moves
-// are rejected here so the UI never even fires a doomed transition; the server
-// stage machine is the backstop.
+// Drag rules:
+//  - Pipeline lanes (Open → In Dev → In Review → Done): forward-only.
+//  - Blocked: a side-lane off In Development. You can mark an in-dev task blocked,
+//    and drag a blocked task back to In Development (unblock) or on to In Review.
+//  - Cancelled: terminal. Any live lane can drop into it; nothing drags out.
+//  - Plans: locked (use Activate).
+// Backward/illegal moves are rejected here so the UI never fires a doomed
+// transition; the server stage machine is the backstop.
 export function canDropOnColumn(from: HiveColumnId, to: HiveColumnId): boolean {
   if (from === "plans" || to === "plans") return false;
   if (from === to) return false;
-  return COLUMN_ORDER[to] > COLUMN_ORDER[from];
+
+  // Cancelled is a terminal sink: droppable into from any live lane, never out.
+  if (to === "cancelled") return from !== "done";
+  if (from === "cancelled") return false;
+
+  // Blocked is a side-lane bound to In Development.
+  if (to === "blocked") return from === "in_development";
+  if (from === "blocked") return to === "in_development" || to === "in_review";
+
+  // Remaining moves are within the linear pipeline.
+  const fromOrder = PIPELINE_ORDER[from];
+  const toOrder = PIPELINE_ORDER[to];
+  if (fromOrder === undefined || toOrder === undefined) return false;
+  return toOrder > fromOrder;
 }
 
 export function targetStatusForColumn(to: HiveColumnId): IssueStatus | null {
