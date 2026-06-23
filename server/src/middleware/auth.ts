@@ -4,7 +4,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import type { DeploymentMode } from "@paperclipai/shared";
+import { isUuidLike, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
@@ -22,7 +22,17 @@ interface ActorMiddlewareOptions {
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
-  return async (req, _res, next) => {
+  return async (req, res, next) => {
+    const rawRunIdHeader = req.header("x-paperclip-run-id");
+    if (rawRunIdHeader !== undefined && rawRunIdHeader.trim() !== "" && !isUuidLike(rawRunIdHeader)) {
+      // The run id is used as a UUID-typed primary key in `heartbeat_runs`
+      // queries throughout the actor authorization path. Forwarding a
+      // non-UUID value to Postgres raises an invalid_text_representation
+      // error and surfaces as an opaque 500 (RES-1349). Reject early.
+      res.status(422).json({ error: "X-Paperclip-Run-Id must be a UUID" });
+      return;
+    }
+
     if (opts.deploymentMode === "local_trusted") {
       // The board UI runs in a real browser at a known host/port, so its
       // mutating requests always carry a matching Origin or Referer.
@@ -46,7 +56,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       req.actor = { type: "none", source: "none" };
     }
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeader = rawRunIdHeader && rawRunIdHeader.trim() !== "" ? rawRunIdHeader : undefined;
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
@@ -171,12 +181,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      const jwtRunId = isUuidLike(claims.run_id) ? claims.run_id : undefined;
       req.actor = {
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
+        runId: runIdHeader || jwtRunId || undefined,
         source: "agent_jwt",
       };
       next();
