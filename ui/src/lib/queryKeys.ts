@@ -57,6 +57,7 @@ export const queryKeys = {
     listByExecutionWorkspace: (companyId: string, executionWorkspaceId: string) =>
       ["issues", companyId, "execution-workspace", executionWorkspaceId] as const,
     detail: (id: string) => ["issues", "detail", id] as const,
+    projectSuggestions: (issueId: string) => ["issues", "project-suggestions", issueId] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
     acceptedPlanDecompositions: (issueId: string) =>

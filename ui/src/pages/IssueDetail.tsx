@@ -65,6 +65,7 @@ import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
+import { IssueProjectSuggestionChip } from "../components/IssueProjectSuggestionChip";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuePlanDecompositionsSection } from "../components/IssuePlanDecompositionsSection";
@@ -3421,10 +3422,11 @@ export function IssueDetail() {
               <span className="truncate">{resolvedProject?.name ?? issue.project?.name ?? issue.projectId.slice(0, 8)}</span>
             </Link>
           ) : (
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
-              <Hexagon className="h-3 w-3 shrink-0" />
-              No project
-            </span>
+            <IssueProjectSuggestionChip
+              issueId={issue.id}
+              isApplying={updateIssue.isPending}
+              onApply={(projectId) => updateIssue.mutate({ projectId })}
+            />
           )}
 
           {(issue.labels ?? []).length > 0 && (
