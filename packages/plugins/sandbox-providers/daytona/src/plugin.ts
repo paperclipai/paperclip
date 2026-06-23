@@ -50,6 +50,15 @@ type WorkspaceSentinelResult = {
   result: "written" | "matched" | "missing" | "mismatch" | "skipped";
 };
 
+// The installed @daytonaio/sdk's TS type for snapshot-based creation omits
+// `resources`, but its JS implementation forwards `cpu/gpu/memory/disk` to the
+// API whenever a `resources` field is present, independent of snapshot vs
+// image. Extend the upstream type locally so we can pass resources for snapshot
+// creation without relying on the upstream type being complete.
+type CreateSandboxFromSnapshotParamsWithResources = CreateSandboxFromSnapshotParams & {
+  resources?: Resources;
+};
+
 const WORKSPACE_SENTINEL_RELATIVE_PATH = ".paperclip-runtime/reusable-sandbox-lease.json";
 
 function parseOptionalString(value: unknown): string | null {
@@ -124,7 +133,7 @@ function buildResources(config: DaytonaDriverConfig): Resources | undefined {
 function buildCreateParams(
   config: DaytonaDriverConfig,
   labels: Record<string, string>,
-): CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams {
+): CreateSandboxFromImageParams | CreateSandboxFromSnapshotParamsWithResources {
   const base: CreateSandboxBaseParams = {
     labels,
     language: config.language ?? undefined,
@@ -142,6 +151,7 @@ function buildCreateParams(
   return {
     ...base,
     snapshot: config.snapshot ?? undefined,
+    resources: buildResources(config),
   };
 }
 
@@ -250,6 +260,13 @@ function workspaceSentinelToken(input: {
       image: input.config.image,
       snapshot: input.config.snapshot,
       target: input.config.target,
+      // Include resource-shaping inputs so changing the requested allocation
+      // expires old reusable leases and forces a fresh sandbox instead of
+      // reusing a previously provisioned (e.g. one-CPU) sandbox.
+      cpu: input.config.cpu,
+      memory: input.config.memory,
+      disk: input.config.disk,
+      gpu: input.config.gpu,
     }))
     .digest("hex");
 }
@@ -349,6 +366,12 @@ function leaseMetadata(input: {
     reuseLease: input.config.reuseLease,
     remoteCwd: input.remoteCwd,
     resumedLease: input.resumedLease,
+    // Record the resources Paperclip attempted to request so future diagnosis
+    // can compare requested allocation against what Daytona provisioned.
+    ...(input.config.cpu != null ? { cpu: input.config.cpu } : {}),
+    ...(input.config.memory != null ? { memory: input.config.memory } : {}),
+    ...(input.config.disk != null ? { disk: input.config.disk } : {}),
+    ...(input.config.gpu != null ? { gpu: input.config.gpu } : {}),
     ...(input.workspaceSentinel ? { workspaceSentinel: input.workspaceSentinel } : {}),
   };
 }
