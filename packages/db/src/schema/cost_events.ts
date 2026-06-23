@@ -24,7 +24,10 @@ export const costEvents = pgTable(
     inputTokens: integer("input_tokens").notNull().default(0),
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
+    // actual billed spend; zero for subscription-included usage
     costCents: integer("cost_cents").notNull(),
+    // market-value estimate for subscription-billed runs; null for API-metered events
+    estimatedMarketValueCents: integer("estimated_market_value_cents"),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
