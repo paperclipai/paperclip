@@ -94,6 +94,18 @@ export function ApprovalDetail() {
     onError: (err) => setError(err instanceof Error ? err.message : "Approve failed"),
   });
 
+  const [credentialValue, setCredentialValue] = useState("");
+  const provideCredentialMutation = useMutation({
+    mutationFn: (value: string) => approvalsApi.provideCredential(approvalId!, value),
+    onSuccess: () => {
+      setError(null);
+      setCredentialValue("");
+      refresh();
+      navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Failed to provide credential"),
+  });
+
   const rejectMutation = useMutation({
     mutationFn: () => approvalsApi.reject(approvalId!),
     onSuccess: () => {
@@ -148,6 +160,10 @@ export function ApprovalDetail() {
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
+  const isCredentialRequest = approval.type === "request_credential";
+  // Credentials are resolved by providing the value (even if a plain approve already
+  // marked it approved without provisioning), so offer the field unless rejected.
+  const canProvideCredential = isCredentialRequest && approval.status !== "rejected";
   const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
   const primaryLinkedIssue = linkedIssues?.[0] ?? null;
@@ -260,8 +276,39 @@ export function ApprovalDetail() {
             </p>
           </div>
         )}
+        {canProvideCredential && (
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <input
+              type="password"
+              value={credentialValue}
+              onChange={(e) => setCredentialValue(e.target.value)}
+              placeholder={`Paste the value for $${String(payload.envKey ?? "ENV")}`}
+              autoComplete="off"
+              className="h-9 w-64 rounded-md border border-border/70 bg-background px-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              disabled={provideCredentialMutation.isPending}
+            />
+            <Button
+              size="sm"
+              className="bg-green-700 hover:bg-green-600 text-white"
+              onClick={() => provideCredentialMutation.mutate(credentialValue.trim())}
+              disabled={provideCredentialMutation.isPending || credentialValue.trim().length === 0}
+            >
+              {provideCredentialMutation.isPending ? "Providing..." : "Provide & approve"}
+            </Button>
+            {isActionable && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => rejectMutation.mutate()}
+                disabled={rejectMutation.isPending}
+              >
+                Reject
+              </Button>
+            )}
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
-          {isActionable && !isBudgetApproval && (
+          {isActionable && !isBudgetApproval && !isCredentialRequest && (
             <>
               <Button
                 size="sm"

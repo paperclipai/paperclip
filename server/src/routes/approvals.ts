@@ -220,6 +220,15 @@ export function approvalRoutes(
     // Plugins are instance-scoped and privileged: only an instance admin may approve.
     const preApproval = await svc.getById(id);
     if (preApproval?.type === "request_plugin_install") assertInstanceAdmin(req);
+    // Credential requests must carry the secret value: a plain approve would mark the
+    // request resolved without ever provisioning the credential. Force the dedicated
+    // provide-credential endpoint instead.
+    if (preApproval?.type === "request_credential") {
+      res.status(422).json({
+        error: "This is a credential request: use Provide & approve to supply the value, not plain approve.",
+      });
+      return;
+    }
     const decidedByUserId = req.actor.userId ?? "board";
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
