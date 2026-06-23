@@ -1202,6 +1202,11 @@ function RequestConfirmationCard({
   const trimmedRejectReason = rejectReason.trim();
   const canReject = !rejectRequiresReason || trimmedRejectReason.length > 0 || shots.length > 0;
   const declineReasonInvalid = rejectRequiresReason && !canReject;
+  const target = interaction.payload.target ?? null;
+  const targetHref = target ? requestConfirmationTargetHref({ interaction, target }) : null;
+  const wakesAssignee = interaction.continuationPolicy === "wake_assignee"
+    || interaction.continuationPolicy === "wake_assignee_on_accept";
+  const canDecline = Boolean(onRejectInteraction);
   const declineReasonPlaceholder =
     interaction.payload.declineReasonPlaceholder
     ?? (interaction.payload.acceptLabel === "Approve plan"
@@ -1277,19 +1282,82 @@ function RequestConfirmationCard({
   return (
     <div className="space-y-4">
       {interaction.status === "pending" ? (
-        <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
-          <div className="text-sm leading-6 text-foreground">
-            {interaction.payload.prompt}
+        <div className="space-y-4 rounded-lg border border-amber-500/60 bg-amber-500/10 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-800 dark:text-amber-200">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                Decision needed
+              </div>
+              <div className="mt-2 text-sm leading-6 text-foreground">
+                {interaction.payload.prompt}
+              </div>
+            </div>
+            {target ? (
+              <div className="min-w-[12rem] rounded-md border border-amber-500/40 bg-background/80 px-3 py-2">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                  Review target
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <RequestConfirmationTargetChip interaction={interaction} target={target} />
+                  {targetHref ? (
+                    /^https?:\/\//i.test(targetHref) ? (
+                      <a
+                        href={targetHref}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs font-medium text-foreground underline underline-offset-4"
+                      >
+                        Open target
+                      </a>
+                    ) : (
+                      <Link to={targetHref} className="text-xs font-medium text-foreground underline underline-offset-4">
+                        Open target
+                      </Link>
+                    )
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
           </div>
+
+          <div className={cn("space-y-3", wakesAssignee && "md:grid md:grid-cols-2 md:gap-3 md:space-y-0")}>
+            <div className="rounded-md border border-border/70 bg-background/80 px-3 py-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                Next action
+              </div>
+              <div className="mt-1 text-sm font-medium text-foreground">
+                {interaction.payload.acceptLabel ?? "Confirm"}
+              </div>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                This request is holding the thread until someone {canDecline ? "confirms or declines" : "confirms"} it.
+              </p>
+            </div>
+            {wakesAssignee ? (
+              <div className="rounded-md border border-border/70 bg-background/80 px-3 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                  Continuation
+                </div>
+                <div className="mt-1 text-sm font-medium text-foreground">
+                  Assignee resumes after confirmation
+                </div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Accepting this request wakes the assignee so work can continue without another manual nudge.
+                </p>
+              </div>
+            ) : null}
+          </div>
+
           {interaction.payload.detailsMarkdown ? (
-            <div className="border-t border-border/60 pt-3 text-sm">
-              <MarkdownBody>{interaction.payload.detailsMarkdown}</MarkdownBody>
+            <div className="rounded-md border border-border/70 bg-background/75 px-3 py-3">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                Review context
+              </div>
+              <div className="text-sm">
+                <MarkdownBody>{interaction.payload.detailsMarkdown}</MarkdownBody>
+              </div>
             </div>
           ) : null}
-          <RequestConfirmationTargetChip
-            interaction={interaction}
-            target={interaction.payload.target}
-          />
         </div>
       ) : null}
 
