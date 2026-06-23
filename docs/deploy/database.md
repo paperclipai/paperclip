@@ -75,3 +75,51 @@ export function createDb(url: string) {
 | `postgres://...supabase.com...` | Hosted Supabase |
 
 The Drizzle schema (`packages/db/src/schema/`) is the same regardless of mode.
+
+## High-Volume Log Tables: Partitioning and Retention
+
+Three tables receive the bulk of write traffic and historically accumulated
+significant bloat under heavy autovacuum pressure:
+
+| Table | Default retention | Env override |
+|-------|-------------------|--------------|
+| `activity_log` | 30 days | `PAPERCLIP_ACTIVITY_LOG_RETENTION_DAYS` |
+| `heartbeat_run_events` | 14 days | `PAPERCLIP_HEARTBEAT_EVENTS_RETENTION_DAYS` |
+| `agent_wakeup_requests` | 14 days | `PAPERCLIP_WAKEUP_REQUESTS_RETENTION_DAYS` |
+
+The server runs a retention sweeper hourly (configurable via
+`PAPERCLIP_LOG_RETENTION_INTERVAL_MS`; disable with
+`PAPERCLIP_LOG_RETENTION_ENABLED=false`).
+
+By default the sweeper uses bounded batched `DELETE` (5 000 rows per
+statement) so legacy installs cap their growth without surprise.
+
+### Converting to monthly range partitions (recommended for busy instances)
+
+For instances where these tables grow into millions of rows, convert them to
+monthly range partitions on `created_at`. Retention then becomes a cheap
+`DROP PARTITION` instead of `DELETE` + autovacuum.
+
+1. Apply the latest migrations (`0106_log_partition_helpers` installs the
+   `paperclip_ensure_log_partition` / `paperclip_drop_old_log_partitions`
+   helpers).
+2. During a maintenance window, run the operator cutover script:
+
+   ```sh
+   # Embedded postgres
+   psql "$(paperclipai postgres connection-string)" \
+     -v ON_ERROR_STOP=1 -f server/scripts/partition-log-tables.sql
+
+   # External postgres
+   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f server/scripts/partition-log-tables.sql
+   ```
+
+   Each table is converted inside one transaction. The transaction holds
+   `ACCESS EXCLUSIVE` while it runs (sub-second on small tables, longer on
+   multi-million-row tables — schedule accordingly). The script drops the
+   `heartbeat_runs.wakeup_request_id` foreign key because PostgreSQL does not
+   permit FKs to a partitioned table unless the partition key participates in
+   the referenced UNIQUE constraint.
+3. After cutover the retention sweeper auto-detects the partitioned layout,
+   ensures the next two months of partitions exist, and drops partitions
+   whose upper bound is older than the configured retention window.

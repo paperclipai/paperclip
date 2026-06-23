@@ -86,6 +86,11 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     feedbackExportBackendToken: "telemetry-token",
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
+    logRetentionEnabled: false,
+    logRetentionIntervalMs: 60 * 60 * 1000,
+    activityLogRetentionDays: 30,
+    heartbeatRunEventsRetentionDays: 14,
+    agentWakeupRequestsRetentionDays: 14,
     companyDeletionEnabled: false,
     ...overrides,
   };
