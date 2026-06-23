@@ -47,31 +47,33 @@ npm install @paperclipai/hermes-paperclip-adapter
 
 ## Quick Start
 
-### 1. Register the adapter in your Paperclip server
+### 1. Install the adapter in Paperclip
 
-Add to your Paperclip server's adapter registry (`server/src/adapters/registry.ts`):
+Install through **Board -> Adapter manager**:
 
-```typescript
-import * as hermesLocal from "@paperclipai/hermes-paperclip-adapter";
-import {
-  execute,
-  testEnvironment,
-  detectModel,
-  listSkills,
-  syncSkills,
-  sessionCodec,
-} from "@paperclipai/hermes-paperclip-adapter/server";
-
-registry.set("hermes_local", {
-  ...hermesLocal,
-  execute,
-  testEnvironment,
-  detectModel,
-  listSkills,
-  syncSkills,
-  sessionCodec,
-});
+```text
+@paperclipai/hermes-paperclip-adapter
 ```
+
+For local adapter development, install the package from a local path in Adapter
+manager, or add an entry to `~/.paperclip/adapter-plugins.json` and restart
+Paperclip:
+
+```json
+[
+  {
+    "packageName": "@paperclipai/hermes-paperclip-adapter",
+    "localPath": "/absolute/path/to/paperclip/packages/adapters/hermes-local",
+    "type": "hermes_local",
+    "installedAt": "2026-06-23T00:00:00.000Z"
+  }
+]
+```
+
+The adapter package exports `createServerAdapter()` for the server, a
+declarative config schema for the generic agent form, and `./ui-parser` for run
+transcript parsing. Paperclip core does not require source edits or a built-in
+`hermes_local` registration.
 
 ### 2. Create a Hermes agent in Paperclip
 
@@ -90,6 +92,21 @@ In the Paperclip UI or via API, create an agent with adapter type `hermes_local`
   }
 }
 ```
+
+### Runtime API guidance
+
+Hermes receives Paperclip runtime identity through environment variables:
+
+- `PAPERCLIP_API_URL`
+- `PAPERCLIP_API_KEY`
+- `PAPERCLIP_RUN_ID`
+
+Prompts should reference those variables directly. Command output may redact
+secret values, so do not copy printed tokens into comments or config. Use
+`Authorization: Bearer $PAPERCLIP_API_KEY` on Paperclip API requests and
+`X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` on mutating issue requests. For
+multiline comments or status updates, preserve newlines with a heredoc plus
+`jq --arg`.
 
 ### 3. Assign work
 

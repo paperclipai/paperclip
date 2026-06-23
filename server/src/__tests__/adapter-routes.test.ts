@@ -115,12 +115,14 @@ describe("adapter routes", () => {
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;
     setOverridePaused("claude_local", false);
+    unregisterServerAdapter("hermes_local");
     unregisterServerAdapter("claude_local");
     registerServerAdapter(overridingConfigSchemaAdapter);
   });
 
   afterEach(() => {
     setOverridePaused("claude_local", false);
+    unregisterServerAdapter("hermes_local");
     unregisterServerAdapter("claude_local");
   });
 
@@ -185,17 +187,9 @@ describe("adapter routes", () => {
       requiresMaterializedRuntimeSkills: true,
     });
 
-    // hermes_local currently supports skills + local JWT, but not the managed
-    // instructions bundle flow because the bundled adapter does not consume
-    // instructionsFilePath at runtime.
-    const hermesAdapter = res.body.find((a: any) => a.type === "hermes_local");
-    expect(hermesAdapter).toBeDefined();
-    expect(hermesAdapter.capabilities).toMatchObject({
-      supportsInstructionsBundle: false,
-      supportsSkills: true,
-      supportsLocalAgentJwt: true,
-      requiresMaterializedRuntimeSkills: false,
-    });
+    // Hermes is external-only on this branch and must not appear until the
+    // Adapter Manager loads @paperclipai/hermes-paperclip-adapter.
+    expect(res.body.find((a: any) => a.type === "hermes_local")).toBeUndefined();
   });
 
   it("GET /api/adapters derives supportsSkills from listSkills/syncSkills presence", async () => {
