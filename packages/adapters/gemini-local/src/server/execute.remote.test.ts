@@ -162,7 +162,7 @@ describe("Gemini remote execution", () => {
     });
 
     expect(result.sessionParams).toMatchObject({
-      sessionId: "Gemini-session-1",
+      sessionId: "test-session",
       cwd: managedRemoteWorkspace,
       remoteExecution: {
         transport: "ssh",
@@ -318,5 +318,69 @@ describe("Gemini remote execution", () => {
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
     expect(runChildProcess).not.toHaveBeenCalled();
+  });
+
+  it("isolates agy auth credentials in the sandbox environment", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-sandbox-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const runnerExecute = vi.fn(async (input: any) => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: 321,
+      startedAt: new Date().toISOString(),
+    }));
+
+    await execute({
+      runId: "run-sandbox-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Gemini Builder",
+        adapterType: "gemini_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "agy",
+        env: { GEMINI_API_KEY: "test-key" },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "kubernetes",
+        remoteCwd: "/remote/workspace",
+        runner: { execute: runnerExecute },
+      },
+      onLog: async () => {},
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const agyCall = runnerExecute.mock.calls.find((call: any) => call[0].command === "agy");
+    expect(agyCall).toBeDefined();
+    // Verify the env passed to the sandbox runner contains the credential
+    expect(agyCall![0].env).toMatchObject({
+      GEMINI_API_KEY: "test-key",
+    });
+    // Ensure the API key is not leaked into the command args
+    const argsString = (agyCall![0].args ?? []).join(" ");
+    expect(argsString).not.toContain("test-key");
   });
 });

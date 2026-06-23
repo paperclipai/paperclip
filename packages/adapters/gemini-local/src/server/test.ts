@@ -176,9 +176,9 @@ export async function testEnvironment(
       })();
 
       const args = ["--print", "Respond with hello."];
-      // Note: --model and --approval-mode are not passed to the hello probe because
-      // the agy Go binary does not support these flags. The probe only checks that
-      // the CLI is reachable and authenticated; model/approvalMode are used at runtime.
+      // Note: --model and --dangerously-skip-permissions are not passed to the hello probe
+      // because they are only used at runtime. The probe just checks that the CLI is
+      // reachable and authenticated.
       if (sandbox) {
         args.push("--sandbox");
       } else {
