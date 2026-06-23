@@ -7104,7 +7104,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return row;
     });
 
-    if (cancelled?.status === "cancelled") {
+    if (cancelled) {
       await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
         eventType: "lifecycle",
         stream: "system",
