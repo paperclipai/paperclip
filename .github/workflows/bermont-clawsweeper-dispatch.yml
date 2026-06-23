@@ -6,7 +6,7 @@
 # Setup (per target repo — paperclip is done as of this PR except the App install):
 #   1. Install the bermont-clawsweeper App on valkyriweb/paperclip (Only select repositories).
 #   2. Set repo secret CLAWSWEEPER_APP_PRIVATE_KEY from 1Password vault
-#      "Bermont Digital" item "GitHub App — bermont-clawsweeper" / pem field.
+#      "Bermont Digital" item "GitHub App — bermont-clawsweeper" / private_key field.
 #   3. This file lives on BOTH master (default branch — so issues/issue_comment/
 #      pull_request_review command events resolve here) and bermont (so push +
 #      pull_request_target base=bermont events resolve here).
