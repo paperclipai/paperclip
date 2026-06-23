@@ -43,6 +43,7 @@ import {
   ROUTINE_SECTION_KEYS,
   SECTION_FIELD_KEYS,
   RoutineDetailContext,
+  createDefaultNewTrigger,
   type RoutineDetailContextValue,
   type RoutineEditDraft,
   type RoutineSectionKey,
@@ -154,12 +155,7 @@ export function RoutineDetail() {
   const [secretMessage, setSecretMessage] = useState<SecretMessage | null>(null);
   const [saveConflict, setSaveConflict] = useState(false);
   const [runVariablesOpen, setRunVariablesOpen] = useState(false);
-  const [newTrigger, setNewTrigger] = useState({
-    kind: "schedule",
-    cronExpression: "0 10 * * *",
-    signingMode: "bearer",
-    replayWindowSec: "300",
-  });
+  const [newTrigger, setNewTrigger] = useState(createDefaultNewTrigger);
   const [editDraft, setEditDraft] = useState<RoutineEditDraft>({
     title: "",
     description: "",
@@ -782,12 +778,13 @@ export function RoutineDetail() {
       </a>
 
       <div className="-m-4 flex min-h-full flex-col md:-m-6">
-        {/* Slim page header */}
-        <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-6">
+        {/* Slim page header — scrolls with the page (not sticky) */}
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-6">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <textarea
               ref={titleInputRef}
-              className="min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-base font-semibold outline-none placeholder:text-muted-foreground/50"
+              data-autosize-title
+              className="min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-base font-semibold leading-7 outline-none placeholder:text-muted-foreground/50"
               placeholder="Routine title"
               rows={1}
               value={editDraft.title}
@@ -848,7 +845,7 @@ export function RoutineDetail() {
           <main
             id="routine-section"
             role="main"
-            className="min-w-0 flex-1 px-4 py-6 md:px-8"
+            className="min-w-0 flex-1 px-4 pb-6 pt-10 md:px-8"
           >
             <section
               aria-labelledby="routine-section-title"

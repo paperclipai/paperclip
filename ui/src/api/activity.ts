@@ -12,6 +12,7 @@ export interface RunForIssue {
   finishedAt: string | null;
   createdAt: string;
   invocationSource: string;
+  errorCode?: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
   logBytes?: number | null;

@@ -140,6 +140,7 @@ export interface AvailableBundledPlugin {
   localPath: string;
   tag: "example" | "first-party";
   experimental: boolean;
+  hasBuiltEntrypoints: boolean;
 }
 
 export interface PluginLocalFolderProblem {

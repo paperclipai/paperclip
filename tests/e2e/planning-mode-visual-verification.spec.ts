@@ -10,6 +10,14 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const companyName = `PAP-3413-${timestamp}`;
   const screenshotDir = "test-results/planning-mode";
 
+  // This spec captures the CLASSIC (flag-off) wizard + composer; pin the
+  // experimental flag off in case an earlier spec on this shared instance
+  // turned it on (the NUX specs do).
+  const flagRes = await page.request.patch("/api/instance/settings/experimental", {
+    data: { enableConferenceRoomChat: false },
+  });
+  expect(flagRes.ok()).toBe(true);
+
   await page.goto("/onboarding");
   await expect(page.locator("h3", { hasText: "Name your company" })).toBeVisible({ timeout: 5_000 });
 
@@ -127,8 +135,10 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   await page.goto(issuePath);
   await page.getByTestId("issue-chat-composer-work-mode-toggle").click();
+  await page.getByTestId("issue-chat-composer-work-mode-menu-standard").click();
   await expect(page.getByTestId("issue-chat-composer")).toHaveAttribute("data-pending-work-mode", "standard");
-  await expect(page.getByTestId("issue-chat-composer-work-mode-toggle")).toBeHidden();
+  await expect(page.getByTestId("issue-chat-composer-work-mode-toggle")).toHaveAttribute("data-pending-work-mode", "standard");
+  await expect(page.getByTestId("issue-chat-composer-work-mode-toggle")).toHaveAttribute("aria-pressed", "false");
   await page.screenshot({
     path: `${screenshotDir}/desktop-standard-toggle-${timestamp}.png`,
     fullPage: true,

@@ -110,7 +110,7 @@ export function RoutineSubSidebar({
   return (
     <nav
       aria-label="Routine sections"
-      className="sticky top-14 hidden max-h-[calc(100dvh-3.5rem)] w-52 shrink-0 flex-col gap-4 self-start overflow-y-auto border-r border-border bg-sidebar/30 px-3 py-4 md:flex"
+      className="sticky top-0 hidden max-h-[100dvh] w-52 shrink-0 flex-col gap-4 self-start overflow-y-auto border-r border-border bg-sidebar/30 px-3 py-4 md:flex"
     >
       {NAV_GROUPS.map((group) => (
         <div key={group.label} className="flex flex-col gap-0.5">
@@ -174,7 +174,7 @@ export function RoutineSectionPicker({
   isSectionDirty: (section: RoutineSectionKey) => boolean;
 }) {
   return (
-    <div className="sticky top-14 z-10 border-b border-border bg-background px-4 py-2 md:hidden">
+    <div className="sticky top-0 z-10 border-b border-border bg-background px-4 py-2 md:hidden">
       <Select
         value={activeSection}
         onValueChange={(value) => {

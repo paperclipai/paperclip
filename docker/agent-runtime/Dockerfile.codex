@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1.6
+ARG BASE_TAG=dev
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+USER root
+RUN npm install -g @openai/codex@latest \
+    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
+
+USER 1000:1000
+
+# Verify the CLI is on PATH for the shim's exec.LookPath
+RUN command -v codex >/dev/null 2>&1 || (echo "codex not on PATH"; exit 1)
