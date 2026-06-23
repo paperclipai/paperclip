@@ -16,6 +16,7 @@ import type {
   CancelIssueThreadInteraction,
   CreateIssueThreadInteraction,
   IssueThreadInteraction,
+  RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   RequestConfirmationTarget,
   RejectIssueThreadInteraction,
@@ -30,6 +31,8 @@ import {
   cancelIssueThreadInteractionSchema,
   createIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
+  requestCheckboxConfirmationPayloadSchema,
+  requestCheckboxConfirmationResultSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
   suggestTasksPayloadSchema,
@@ -69,6 +72,19 @@ type IssueResolutionContext = {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
 };
+
+const REQUEST_CONFIRMATION_INTERACTION_KINDS = [
+  "request_confirmation",
+  "request_checkbox_confirmation",
+] as const;
+type RequestConfirmationLikeKind = (typeof REQUEST_CONFIRMATION_INTERACTION_KINDS)[number];
+type RequestConfirmationLikeInteraction =
+  | RequestConfirmationInteraction
+  | RequestCheckboxConfirmationInteraction;
+
+function isRequestConfirmationLikeKind(kind: string): kind is RequestConfirmationLikeKind {
+  return (REQUEST_CONFIRMATION_INTERACTION_KINDS as readonly string[]).includes(kind);
+}
 
 function isIssueThreadInteractionIdempotencyConflict(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
@@ -128,6 +144,13 @@ function hydrateInteraction(
         payload: requestConfirmationPayloadSchema.parse(row.payload),
         result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
       } satisfies RequestConfirmationInteraction;
+    case "request_checkbox_confirmation":
+      return {
+        ...base,
+        kind: "request_checkbox_confirmation",
+        payload: requestCheckboxConfirmationPayloadSchema.parse(row.payload),
+        result: row.result ? requestCheckboxConfirmationResultSchema.parse(row.result) : null,
+      } satisfies RequestCheckboxConfirmationInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
   }
@@ -149,7 +172,7 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   current: IssueThreadInteractionRow;
   actor: InteractionActor;
 }) {
-  if (args.current.kind !== "request_confirmation") return false;
+  if (!isRequestConfirmationLikeKind(args.current.kind)) return false;
   if (!args.current.createdByAgentId) return false;
   if (!args.actor.userId) return false;
   if (!args.issue.assigneeUserId) return false;
@@ -158,8 +181,31 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   return true;
 }
 
-function shouldSupersedeRequestConfirmationOnUserComment(interaction: RequestConfirmationInteraction) {
+function shouldSupersedeRequestConfirmationOnUserComment(interaction: RequestConfirmationLikeInteraction) {
   return interaction.payload.supersedeOnUserComment === true;
+}
+
+function normalizeCreateInteractionInput(input: CreateIssueThreadInteraction): CreateIssueThreadInteraction {
+  switch (input.kind) {
+    case "request_confirmation":
+      return {
+        ...input,
+        payload: {
+          ...input.payload,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+        },
+      };
+    case "request_checkbox_confirmation":
+      return {
+        ...input,
+        payload: {
+          ...input.payload,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+        },
+      };
+    default:
+      return input;
+  }
 }
 
 function isCommentAtOrAfterInteraction(args: {
@@ -244,6 +290,36 @@ function resolveSelectedSuggestedTasks(args: {
   };
 }
 
+function resolveSelectedCheckboxConfirmationOptions(args: {
+  interaction: RequestCheckboxConfirmationInteraction;
+  selectedOptionIds?: AcceptIssueThreadInteraction["selectedOptionIds"];
+}) {
+  const optionIds = new Set(args.interaction.payload.options.map((option) => option.id));
+  const selectedOptionIds = args.selectedOptionIds ?? args.interaction.payload.defaultSelectedOptionIds ?? [];
+  const selectedOptionIdSet = new Set<string>();
+
+  for (const optionId of selectedOptionIds) {
+    if (!optionIds.has(optionId)) {
+      throw unprocessable(`Unknown checkbox confirmation optionId: ${optionId}`);
+    }
+    selectedOptionIdSet.add(optionId);
+  }
+
+  const selectedCount = selectedOptionIdSet.size;
+  const minSelected = args.interaction.payload.minSelected ?? 0;
+  const maxSelected = args.interaction.payload.maxSelected ?? null;
+  if (selectedCount < minSelected) {
+    throw unprocessable(`Select at least ${minSelected} checkbox confirmation option(s)`);
+  }
+  if (maxSelected != null && selectedCount > maxSelected) {
+    throw unprocessable(`Select no more than ${maxSelected} checkbox confirmation option(s)`);
+  }
+
+  return args.interaction.payload.options
+    .filter((option) => selectedOptionIdSet.has(option.id))
+    .map((option) => option.id);
+}
+
 function normalizeQuestionAnswers(args: {
   questions: AskUserQuestionsInteraction["payload"]["questions"];
   answers: RespondIssueThreadInteraction["answers"];
@@ -272,15 +348,20 @@ function normalizeQuestionAnswers(args: {
       throw unprocessable(`Question ${answer.questionId} only allows one answer`);
     }
 
+    const otherText = answer.otherText?.trim() ?? "";
     answerByQuestionId.set(answer.questionId, {
       questionId: answer.questionId,
       optionIds: uniqueOptionIds,
+      ...(otherText ? { otherText } : {}),
     });
   }
 
   for (const question of args.questions) {
     const answer = answerByQuestionId.get(question.id);
-    if (question.required && (!answer || answer.optionIds.length === 0)) {
+    if (
+      question.required
+      && (!answer || (answer.optionIds.length === 0 && !answer.otherText))
+    ) {
       throw unprocessable(`Question ${question.id} requires an answer`);
     }
   }
@@ -385,8 +466,8 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
   row: IssueThreadInteractionRow;
   actor: InteractionActor;
 }): Promise<IssueThreadInteraction | null> {
-  if (args.row.kind !== "request_confirmation" || args.row.status !== "pending") return null;
-  const interaction = hydrateInteraction(args.row) as RequestConfirmationInteraction;
+  if (!isRequestConfirmationLikeKind(args.row.kind) || args.row.status !== "pending") return null;
+  const interaction = hydrateInteraction(args.row) as RequestConfirmationLikeInteraction;
   const target = interaction.payload.target ?? null;
   if (!target) return null;
   if (target.type !== "issue_document") return null;
@@ -506,6 +587,7 @@ export function issueThreadInteractionService(db: Db) {
   async function acceptRequestConfirmation(args: {
     issue: { id: string; companyId: string };
     current: IssueThreadInteractionRow;
+    input: AcceptIssueThreadInteraction;
     actor: InteractionActor;
   }): Promise<{
     interaction: IssueThreadInteraction;
@@ -519,6 +601,15 @@ export function issueThreadInteractionService(db: Db) {
       return { interaction: expired, continuationIssue: null };
     }
 
+    const interaction = hydrateInteraction(args.current);
+    const selectedOptionIds =
+      interaction.kind === "request_checkbox_confirmation"
+        ? resolveSelectedCheckboxConfirmationOptions({
+            interaction,
+            selectedOptionIds: args.input.selectedOptionIds,
+          })
+        : undefined;
+
     const now = new Date();
     return db.transaction(async (tx) => {
       const [updated] = await tx
@@ -528,6 +619,7 @@ export function issueThreadInteractionService(db: Db) {
           result: {
             version: 1,
             outcome: "accepted",
+            ...(selectedOptionIds ? { selectedOptionIds } : {}),
           },
           resolvedByAgentId: args.actor.agentId ?? null,
           resolvedByUserId: args.actor.userId ?? null,
@@ -608,7 +700,7 @@ export function issueThreadInteractionService(db: Db) {
       return expired;
     }
 
-    const interaction = hydrateInteraction(args.current) as RequestConfirmationInteraction;
+    const interaction = hydrateInteraction(args.current) as RequestConfirmationLikeInteraction;
     const reason = args.input.reason?.trim() ?? "";
     if (interaction.payload.rejectRequiresReason === true && reason.length === 0) {
       throw unprocessable("A decline reason is required for this confirmation");
@@ -668,7 +760,7 @@ export function issueThreadInteractionService(db: Db) {
       input: CreateIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      const data = createIssueThreadInteractionSchema.parse(input);
+      const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
 
       if (data.idempotencyKey) {
         const existing = await getIdempotentInteraction({
@@ -713,7 +805,7 @@ export function issueThreadInteractionService(db: Db) {
         }
       }
 
-      if (data.kind === "request_confirmation") {
+      if (data.kind === "request_confirmation" || data.kind === "request_checkbox_confirmation") {
         await assertRequestConfirmationTargetIsCurrent(db, {
           companyId: issue.companyId,
           issueId: issue.id,
@@ -782,6 +874,21 @@ export function issueThreadInteractionService(db: Db) {
           const accepted = await acceptRequestConfirmation({
             issue,
             current,
+            input: data,
+            actor,
+          });
+          return {
+            interaction: accepted.interaction,
+            continuationIssue: accepted.continuationIssue,
+            createdIssues: [],
+          };
+        }
+        case "request_checkbox_confirmation": {
+          await assertIssueWorkspaceFinalizedForAccept({ db, issue });
+          const accepted = await acceptRequestConfirmation({
+            issue,
+            current,
+            input: data,
             actor,
           });
           return {
@@ -954,6 +1061,7 @@ export function issueThreadInteractionService(db: Db) {
         case "suggest_tasks":
           return issueThreadInteractionService(db).rejectSuggestedTasks(issue, interactionId, data, actor, current);
         case "request_confirmation":
+        case "request_checkbox_confirmation":
           return rejectRequestConfirmation({
             issue,
             current,
@@ -1022,12 +1130,12 @@ export function issueThreadInteractionService(db: Db) {
         .where(and(
           eq(issueThreadInteractions.companyId, issue.companyId),
           eq(issueThreadInteractions.issueId, issue.id),
-          eq(issueThreadInteractions.kind, "request_confirmation"),
+          inArray(issueThreadInteractions.kind, [...REQUEST_CONFIRMATION_INTERACTION_KINDS]),
           eq(issueThreadInteractions.status, "pending"),
         ));
 
       const superseded = rows.filter((row) => {
-        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+        const interaction = hydrateInteraction(row) as RequestConfirmationLikeInteraction;
         return (
           shouldSupersedeRequestConfirmationOnUserComment(interaction)
           && isCommentAtOrAfterInteraction({
@@ -1080,7 +1188,7 @@ export function issueThreadInteractionService(db: Db) {
           .where(and(
             eq(issueThreadInteractions.companyId, issue.companyId),
             eq(issueThreadInteractions.issueId, issue.id),
-            eq(issueThreadInteractions.kind, "request_confirmation"),
+            inArray(issueThreadInteractions.kind, [...REQUEST_CONFIRMATION_INTERACTION_KINDS]),
             eq(issueThreadInteractions.status, "pending"),
           )),
         db
@@ -1106,7 +1214,7 @@ export function issueThreadInteractionService(db: Db) {
         }
       >();
       for (const row of rows) {
-        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+        const interaction = hydrateInteraction(row) as RequestConfirmationLikeInteraction;
         if (!shouldSupersedeRequestConfirmationOnUserComment(interaction)) continue;
 
         const supersedingComment = comments.find((comment) => isCommentAtOrAfterInteraction({
@@ -1166,12 +1274,12 @@ export function issueThreadInteractionService(db: Db) {
         .where(and(
           eq(issueThreadInteractions.companyId, issue.companyId),
           eq(issueThreadInteractions.issueId, issue.id),
-          eq(issueThreadInteractions.kind, "request_confirmation"),
+          inArray(issueThreadInteractions.kind, [...REQUEST_CONFIRMATION_INTERACTION_KINDS]),
           eq(issueThreadInteractions.status, "pending"),
         ));
 
       const staleRows = rows.filter((row) => {
-        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+        const interaction = hydrateInteraction(row) as RequestConfirmationLikeInteraction;
         const target = interaction.payload.target;
         if (!target || target.type !== "issue_document") return false;
         const targetIssueId = target.issueId ?? issue.id;
@@ -1190,7 +1298,7 @@ export function issueThreadInteractionService(db: Db) {
       const now = new Date();
       const expired: IssueThreadInteraction[] = [];
       for (const row of staleRows) {
-        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+        const interaction = hydrateInteraction(row) as RequestConfirmationLikeInteraction;
         const target = interaction.payload.target ?? null;
         const currentTarget = buildIssueDocumentTargetFromDocument({
           issueId: issue.id,

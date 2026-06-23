@@ -296,17 +296,16 @@ export function adapterRoutes() {
       // Load and register the adapter (use canonicalName for path resolution)
       const adapterModule = await loadExternalAdapterPackage(canonicalName, moduleLocalPath);
 
-      // Check if this type conflicts with a built-in adapter
-      if (BUILTIN_ADAPTER_TYPES.has(adapterModule.type)) {
-        res.status(409).json({
-          error: `Adapter type "${adapterModule.type}" is a built-in adapter and cannot be overwritten.`,
-        });
-        return;
-      }
+      // External adapters may intentionally override built-in adapter types.
+      // registerServerAdapter preserves the built-in as a fallback so pausing or
+      // removing the override restores the original implementation.
 
-      // Check if already registered (indicates a reinstall/update)
+      // Check if already registered (indicates a reinstall/update).
+      // For built-in types the registry always returns the built-in, so we
+      // additionally require an existing external plugin record to
+      // distinguish a true reinstall from a first-time override.
       const existing = findServerAdapter(adapterModule.type);
-      const isReinstall = existing !== null;
+      const isReinstall = existing !== null && !!getAdapterPluginByType(adapterModule.type);
       if (existing) {
         unregisterServerAdapter(adapterModule.type);
         logger.info({ type: adapterModule.type }, "Unregistered existing adapter for replacement");
@@ -446,8 +445,9 @@ export function adapterRoutes() {
       return;
     }
 
-    // Prevent removal of built-in adapters
-    if (BUILTIN_ADAPTER_TYPES.has(adapterType)) {
+    // Prevent removal of built-in adapters, unless this built-in type is
+    // currently backed by an external adapter plugin override.
+    if (BUILTIN_ADAPTER_TYPES.has(adapterType) && !getAdapterPluginByType(adapterType)) {
       res.status(403).json({
         error: `Cannot remove built-in adapter "${adapterType}".`,
       });

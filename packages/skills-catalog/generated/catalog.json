@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-05-31T18:06:11.126Z",
+  "generatedAt": "2026-06-04T19:57:14.020Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -352,6 +352,527 @@
         }
       ],
       "contentHash": "sha256:429f94df398a0697042b5bbe4755b1ff1a230aa5f41d99118ad37493ac65d21c"
+    },
+    {
+      "id": "paperclipai:optional:research:last30days",
+      "key": "paperclipai/optional/research/last30days",
+      "kind": "optional",
+      "category": "research",
+      "slug": "last30days",
+      "name": "last30days",
+      "description": "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web.",
+      "path": "catalog/optional/research/last30days",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "scripts_executables",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "researcher",
+        "marketer",
+        "product-manager",
+        "analyst"
+      ],
+      "requires": [
+        "node",
+        "python3"
+      ],
+      "tags": [
+        "research",
+        "last-30-days",
+        "social-media",
+        "trends",
+        "citations",
+        "reddit",
+        "x",
+        "youtube"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 130813,
+          "sha256": "534f0347f304ec51254a7d3a210e07c86cc252175cc6a588e97d32ce94f0f745"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "kind": "other",
+          "sizeBytes": 448,
+          "sha256": "f46e7f09d3118dee7324ac165391ccb7ffe55323d1d75304e34062017913939c"
+        },
+        {
+          "path": "references/save-html-brief.md",
+          "kind": "reference",
+          "sizeBytes": 5940,
+          "sha256": "ca15e03bf63a3af1cfa0347df36b0aee999c6c6c631f31b4171a5df09e765d43"
+        },
+        {
+          "path": "scripts/briefing.py",
+          "kind": "script",
+          "sizeBytes": 8342,
+          "sha256": "d4881d16493f5504c5a947f31ced861d674e2423e5fc668305beaf5e849420b7"
+        },
+        {
+          "path": "scripts/compare.sh",
+          "kind": "script",
+          "sizeBytes": 2291,
+          "sha256": "cdb2538522a60c803aeebc3336673c8702380a902604ad85770206382996a6f5"
+        },
+        {
+          "path": "scripts/last30days.py",
+          "kind": "script",
+          "sizeBytes": 44282,
+          "sha256": "818d6b839eb04417a5d0acf3bee24258fbc70543df968619fd3573597dc88e8e"
+        },
+        {
+          "path": "scripts/lib/__init__.py",
+          "kind": "script",
+          "sizeBytes": 29,
+          "sha256": "3fb925405f898201188f9b5eea04e214ea8c8a64643397fd727f08ffeea234d9"
+        },
+        {
+          "path": "scripts/lib/bird_x.py",
+          "kind": "script",
+          "sizeBytes": 17960,
+          "sha256": "c7cbd33a5b4c317b07eeca7c7e3c1aa57369487cd4cd3602abbe9b6acb019e6a"
+        },
+        {
+          "path": "scripts/lib/bluesky.py",
+          "kind": "script",
+          "sizeBytes": 12343,
+          "sha256": "af7bbaa68f6944a50089447992b95881e15c085de829426360f50740a35cba89"
+        },
+        {
+          "path": "scripts/lib/categories.py",
+          "kind": "script",
+          "sizeBytes": 7635,
+          "sha256": "e4ab8435e09c371f2475751fdc1c58150799b3746afcc7e38d5dad30adb210d5"
+        },
+        {
+          "path": "scripts/lib/chrome_cookies.py",
+          "kind": "script",
+          "sizeBytes": 10911,
+          "sha256": "eeb8f99b92cfc9aa65b20b6dbedfcfd321166f3fa771a95299ffb0b950b1cedc"
+        },
+        {
+          "path": "scripts/lib/cluster.py",
+          "kind": "script",
+          "sizeBytes": 11018,
+          "sha256": "fa9fb8905552e7bb5a2a2854f8b3c620a464054238a008d74ba89d0c247a776e"
+        },
+        {
+          "path": "scripts/lib/competitors.py",
+          "kind": "script",
+          "sizeBytes": 7332,
+          "sha256": "a76c5d679b7f3c93a07e389811f79526f11e1e03411cecd4d9569e3aca32a77d"
+        },
+        {
+          "path": "scripts/lib/cookie_extract.py",
+          "kind": "script",
+          "sizeBytes": 14450,
+          "sha256": "9d34ea3a8565eae8b67f72e8b625c22a29d41274c3b8d6c8b6aa171c18ebad5b"
+        },
+        {
+          "path": "scripts/lib/dates.py",
+          "kind": "script",
+          "sizeBytes": 3201,
+          "sha256": "ae4ec6455021c82ef3321ef5dde6f7ba41e6b91a3e6ff601174ac9aa20e5c8f9"
+        },
+        {
+          "path": "scripts/lib/dedupe.py",
+          "kind": "script",
+          "sizeBytes": 3315,
+          "sha256": "b9acabf496e0743189fbeed43d447280fee17e10a40931f9083d2a1f2894d863"
+        },
+        {
+          "path": "scripts/lib/digg.py",
+          "kind": "script",
+          "sizeBytes": 13305,
+          "sha256": "95a2845d4751efb5738d2a69c7246f8269447395a7da324e0d6ae0feefd7c9d8"
+        },
+        {
+          "path": "scripts/lib/entity_extract.py",
+          "kind": "script",
+          "sizeBytes": 4211,
+          "sha256": "b04103103981915557fd410305f3a8031d5e71d687491ca89976be25d9bc84a4"
+        },
+        {
+          "path": "scripts/lib/env.py",
+          "kind": "script",
+          "sizeBytes": 25940,
+          "sha256": "9ca2e2341565a6c933d51800a510d07b84707825d19234d991eb472454b46933"
+        },
+        {
+          "path": "scripts/lib/fanout.py",
+          "kind": "script",
+          "sizeBytes": 3155,
+          "sha256": "43f21244f9bd1bf143d2f4c478cc2fcc9ffc4e403539e8c08e86e106ed5f0b83"
+        },
+        {
+          "path": "scripts/lib/fusion.py",
+          "kind": "script",
+          "sizeBytes": 8553,
+          "sha256": "c764709a7d4576121c193ae75ded057dd177b6bea512ca57dd72680d74030b41"
+        },
+        {
+          "path": "scripts/lib/github.py",
+          "kind": "script",
+          "sizeBytes": 34879,
+          "sha256": "0f8eb97c20463b975b3bb752d0e3afec98ef853430e495f21fc06f01c27d2baf"
+        },
+        {
+          "path": "scripts/lib/grounding.py",
+          "kind": "script",
+          "sizeBytes": 11723,
+          "sha256": "440386c32afb3c01678fe5dfab197449a9a910018a40cbbc1e9e10ecb9d4843a"
+        },
+        {
+          "path": "scripts/lib/hackernews.py",
+          "kind": "script",
+          "sizeBytes": 11619,
+          "sha256": "95db30a3bf441ee73fb49a04fa8974440e381e56c7d70e87b48e3b69ae0cdfa5"
+        },
+        {
+          "path": "scripts/lib/html_render.py",
+          "kind": "script",
+          "sizeBytes": 17791,
+          "sha256": "5070f6a58d6fcae44a20ecd9108fd204b042bea1d47f8a67efce6d3831aa87ad"
+        },
+        {
+          "path": "scripts/lib/http.py",
+          "kind": "script",
+          "sizeBytes": 10191,
+          "sha256": "760308aa8b8e3abbaa3273a4ca4df5b0bc8cc71ba8864b5740aaac545972731e"
+        },
+        {
+          "path": "scripts/lib/instagram.py",
+          "kind": "script",
+          "sizeBytes": 18874,
+          "sha256": "cda8c8558e6cdc9b4bf3f7bb470c2e223db927acc6a77f139a83ec7987488bb1"
+        },
+        {
+          "path": "scripts/lib/log.py",
+          "kind": "script",
+          "sizeBytes": 831,
+          "sha256": "11c4d61cdb5b1ff91919dcd28ec62ce88e555def30eed62a8071973b5ffe8317"
+        },
+        {
+          "path": "scripts/lib/normalize.py",
+          "kind": "script",
+          "sizeBytes": 19870,
+          "sha256": "e79e294e4ff8ebfa34f7561c63e0846af0380b8be299d484cc8a2f490e82b474"
+        },
+        {
+          "path": "scripts/lib/perplexity.py",
+          "kind": "script",
+          "sizeBytes": 4789,
+          "sha256": "70859e7296035936ae0da441119edfe381158d5d0de06afee87a3504007f91c7"
+        },
+        {
+          "path": "scripts/lib/pinterest.py",
+          "kind": "script",
+          "sizeBytes": 5366,
+          "sha256": "a6ac5085c900072b84930fafab8c81c9e5a792a718c21801d3fa0bd293d279f6"
+        },
+        {
+          "path": "scripts/lib/pipeline.py",
+          "kind": "script",
+          "sizeBytes": 45491,
+          "sha256": "9641f56faff2d685b0c5c483b2113721d151174a2eef265afe644e131c554454"
+        },
+        {
+          "path": "scripts/lib/planner.py",
+          "kind": "script",
+          "sizeBytes": 30490,
+          "sha256": "c0953abea402454a88c2573aa0c97bb6bba4c87e529d9f157a881e15c4123154"
+        },
+        {
+          "path": "scripts/lib/polymarket.py",
+          "kind": "script",
+          "sizeBytes": 30318,
+          "sha256": "cbd54a66988b4ebc4aebf2db6c637d4e516065518c333cd0495332458c2d9080"
+        },
+        {
+          "path": "scripts/lib/preflight.py",
+          "kind": "script",
+          "sizeBytes": 4541,
+          "sha256": "0fafa53bc63a44ad4525d99d6bb37080b0693e2d45265ce36af09b4a0e9b2c9b"
+        },
+        {
+          "path": "scripts/lib/providers.py",
+          "kind": "script",
+          "sizeBytes": 15817,
+          "sha256": "7460004a2e8df0f8c94d764c0eb01f8d782bb160ce2e157105fadd0dd2953a5d"
+        },
+        {
+          "path": "scripts/lib/quality_nudge.py",
+          "kind": "script",
+          "sizeBytes": 13438,
+          "sha256": "69b6d58abea8171c895f105ee62b2db6f7ea35cebbe08d7e6e8884d810891fef"
+        },
+        {
+          "path": "scripts/lib/query.py",
+          "kind": "script",
+          "sizeBytes": 4018,
+          "sha256": "6bc2e0649034cdb28471346a66e2448ba58762cb7774c4fce45c055ab160912a"
+        },
+        {
+          "path": "scripts/lib/reddit_enrich.py",
+          "kind": "script",
+          "sizeBytes": 9535,
+          "sha256": "652a9c5abecf22f3c26ff6d6b732a43703113a559ce31acab7af012eb25d4e7a"
+        },
+        {
+          "path": "scripts/lib/reddit_public.py",
+          "kind": "script",
+          "sizeBytes": 13066,
+          "sha256": "ea25034726aa895c123216e356c03856a8116efedd29620bb2ebc0d01ff4c420"
+        },
+        {
+          "path": "scripts/lib/reddit.py",
+          "kind": "script",
+          "sizeBytes": 24701,
+          "sha256": "dba1019f67f677c869f14a1f892b1562dd10b6f96bffc75ffad37eb4d3bc9877"
+        },
+        {
+          "path": "scripts/lib/relevance.py",
+          "kind": "script",
+          "sizeBytes": 5941,
+          "sha256": "b9f776f9f8e5d4fbf1fcc86f6604bc0c391c988153d3264b8dc431ff34783382"
+        },
+        {
+          "path": "scripts/lib/render.py",
+          "kind": "script",
+          "sizeBytes": 71577,
+          "sha256": "189ffa786428515a3b02f680e71069b7907eaa24c7aadd315e9abaecb0a6a9fc"
+        },
+        {
+          "path": "scripts/lib/rerank.py",
+          "kind": "script",
+          "sizeBytes": 17106,
+          "sha256": "419c52fc08144c41e08f7574093c5b6cd21271900b51680b6393e61441ffea3c"
+        },
+        {
+          "path": "scripts/lib/resolve.py",
+          "kind": "script",
+          "sizeBytes": 12448,
+          "sha256": "b23f3dd54d6ede0986219aacdda81ece72f1a0a629d72a9ec56b24bc645ccb7c"
+        },
+        {
+          "path": "scripts/lib/safari_cookies.py",
+          "kind": "script",
+          "sizeBytes": 5698,
+          "sha256": "4d66c27cbf5725cc7cb815ca42191e70261c52196c2823bab9c6050ca32ccf71"
+        },
+        {
+          "path": "scripts/lib/schema.py",
+          "kind": "script",
+          "sizeBytes": 11206,
+          "sha256": "8d815d3daee8d469e504bb1264fc174af4abc179dd7d1fa87d7313ed01d914c6"
+        },
+        {
+          "path": "scripts/lib/setup_wizard.py",
+          "kind": "script",
+          "sizeBytes": 18688,
+          "sha256": "be0f867e96d15f7458faac2194c444dc0ec9ec4f3c9fe4d74459e083b80c1a73"
+        },
+        {
+          "path": "scripts/lib/signals.py",
+          "kind": "script",
+          "sizeBytes": 9715,
+          "sha256": "4071cf5fa4c99b0ee51d949ca69ec4594d7e1986ec6a8019b55bb877e219d49a"
+        },
+        {
+          "path": "scripts/lib/skill_meta.py",
+          "kind": "script",
+          "sizeBytes": 1207,
+          "sha256": "e922e6ecdb19fa3daf9c6673acb13a9b23f97362eac1cb11211c998dea0fdbd1"
+        },
+        {
+          "path": "scripts/lib/snippet.py",
+          "kind": "script",
+          "sizeBytes": 1560,
+          "sha256": "6bd2143a4264fe11d5be1b805742336ab82397ae0293c13e8b5b3084bfa2612d"
+        },
+        {
+          "path": "scripts/lib/subproc.py",
+          "kind": "script",
+          "sizeBytes": 2807,
+          "sha256": "cf7bf3dcaf79375c5bd014718a8eb5f6565275294eeaa0059fef93d8e4b6452d"
+        },
+        {
+          "path": "scripts/lib/threads.py",
+          "kind": "script",
+          "sizeBytes": 6728,
+          "sha256": "7508629028c3b4a187699797ab0d9e7b179cbae3c53b9fabdaf9d905b1fc2c1d"
+        },
+        {
+          "path": "scripts/lib/tiktok.py",
+          "kind": "script",
+          "sizeBytes": 20993,
+          "sha256": "f0074737c4bbf176118382ad4c0c9e8c8d6f4544bd9fc42d224f7c1da13a8d73"
+        },
+        {
+          "path": "scripts/lib/truthsocial.py",
+          "kind": "script",
+          "sizeBytes": 5196,
+          "sha256": "fd745d0a61b1c69bea813832f3e2c5923b08d476766a378c07f0963b0be2f330"
+        },
+        {
+          "path": "scripts/lib/ui.py",
+          "kind": "script",
+          "sizeBytes": 25907,
+          "sha256": "cdc0ea376fc4ee017449f2aa87a7513add3fa5306f27d4663fb6f7203f12974e"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/bird-search.mjs",
+          "kind": "script",
+          "sizeBytes": 3998,
+          "sha256": "584482e894c38bbde7a915013f741974fa8ea722ac34c56704dccf184f7c3d56"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/cookies.js",
+          "kind": "script",
+          "sizeBytes": 8153,
+          "sha256": "66044440cef3d3b3e3136091b6e224051e8ff97fb1d156f40ccf2d4f3cf203ae"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/features.json",
+          "kind": "script",
+          "sizeBytes": 523,
+          "sha256": "36361f4cae0040255f84709459ebb1f0131566a567269ed7b99d073cad930f66"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/paginate-cursor.js",
+          "kind": "script",
+          "sizeBytes": 1225,
+          "sha256": "5f20227de1d68250ad59b7ad593db4bfb1d0f1a21694963eab3ed413c2d0d5c0"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/query-ids.json",
+          "kind": "script",
+          "sizeBytes": 815,
+          "sha256": "eba47a9d26f87d0b4eb8a4f554833ed8d11b3d8728e363deeae702d09f87fc02"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/runtime-features.js",
+          "kind": "script",
+          "sizeBytes": 5036,
+          "sha256": "f41614d62b6c91dfc85fc4af389e6f49435324bf26460b715a991486609579d8"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/runtime-query-ids.js",
+          "kind": "script",
+          "sizeBytes": 9424,
+          "sha256": "0f5c61dbaad3de7fb44a14c57ed005228e51f9fc361472eff59bff4cb2a1199e"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/twitter-client-base.js",
+          "kind": "script",
+          "sizeBytes": 4853,
+          "sha256": "ea972b7894458e78edd1927d102a052ae45726a7c967b376ac7f5544f5b65499"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/twitter-client-constants.js",
+          "kind": "script",
+          "sizeBytes": 2535,
+          "sha256": "27bd1416ff1f5d4f4516d784a8fb9ee08a87413f07b375752821a32e5b0cd6e3"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/twitter-client-features.js",
+          "kind": "script",
+          "sizeBytes": 18400,
+          "sha256": "4b4f2048069f751a821777cb2084f3b9126d99a958494fef71f0699d8145c4dd"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/twitter-client-search.js",
+          "kind": "script",
+          "sizeBytes": 7310,
+          "sha256": "3dfbe18ea54215d9a6393ff0884d9977dd9ddf0884a06486bdaee8a4e30d4616"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/twitter-client-types.js",
+          "kind": "script",
+          "sizeBytes": 59,
+          "sha256": "6450f74c664db958d703e09288184ef1ca5f622782f9e11a5a9bfa3d3c78c534"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/lib/twitter-client-utils.js",
+          "kind": "script",
+          "sizeBytes": 19169,
+          "sha256": "b230db5583760ccd0b5b5fb1592f449a7d0bc92f6184808e8ffb6f8968df20e9"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/LICENSE",
+          "kind": "script",
+          "sizeBytes": 1074,
+          "sha256": "62316704df7426e5a79d2827ff8aca36e9abb3a73b8e68557030749ebefec667"
+        },
+        {
+          "path": "scripts/lib/vendor/bird-search/package.json",
+          "kind": "script",
+          "sizeBytes": 331,
+          "sha256": "96b65305969a179ee7a7735f1b475599d6035f32fda1fd030ea57ee09380cdb5"
+        },
+        {
+          "path": "scripts/lib/xai_x.py",
+          "kind": "script",
+          "sizeBytes": 7509,
+          "sha256": "6cc244293ed6ea3b0f78a6515b583ff36da96ad30acf1d5457278ab020f1bd47"
+        },
+        {
+          "path": "scripts/lib/xiaohongshu_api.py",
+          "kind": "script",
+          "sizeBytes": 5321,
+          "sha256": "c7a29dfa03f871993dc13a8ad528beed8a648102404b658242ca57878077ef60"
+        },
+        {
+          "path": "scripts/lib/xquik.py",
+          "kind": "script",
+          "sizeBytes": 6839,
+          "sha256": "7c487cb2ba543ff12e38ec6466a2de6ff6762ccd415c1f07093620b49137681a"
+        },
+        {
+          "path": "scripts/lib/xurl_x.py",
+          "kind": "script",
+          "sizeBytes": 5302,
+          "sha256": "8cf6bb235cfc7f39386b282a922487816089fa6ebf4fa49a4d562d95f9686e78"
+        },
+        {
+          "path": "scripts/lib/youtube_yt.py",
+          "kind": "script",
+          "sizeBytes": 37339,
+          "sha256": "787908d06a845ad70654c4939ebabc856311a95b34444f0987ff7ee3db4c0a49"
+        },
+        {
+          "path": "scripts/setup-keychain.sh",
+          "kind": "script",
+          "sizeBytes": 3229,
+          "sha256": "5d2a6b678c905eefe537fbcb98063db3e471c22b7ab4b06d51615d99b14556db"
+        },
+        {
+          "path": "scripts/store.py",
+          "kind": "script",
+          "sizeBytes": 28534,
+          "sha256": "c1e95a00132768e6c38170bee85161a59b5bce3feaa6297a85f1a49d1bfc9fd3"
+        },
+        {
+          "path": "scripts/watchlist.py",
+          "kind": "script",
+          "sizeBytes": 8929,
+          "sha256": "c06378f70f9145f3bd957170dec2549a31463a41b400bbf1ce722911aa2150a1"
+        }
+      ],
+      "contentHash": "sha256:9e11e9d2ed3d2062273d131a826cdeedea39bdd269063e2f73ca7f218770c769",
+      "source": {
+        "type": "github",
+        "hostname": "github.com",
+        "owner": "mvanhorn",
+        "repo": "last30days-skill",
+        "ref": "v3.3.0",
+        "commit": "daca71f89eb71d0d56d01a43ed7627aa919dba4f",
+        "path": "skills/last30days",
+        "url": "https://github.com/mvanhorn/last30days-skill/tree/v3.3.0/skills/last30days"
+      }
     }
   ]
 }

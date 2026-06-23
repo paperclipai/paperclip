@@ -156,7 +156,7 @@ function resolveIssueToastContext(
     readString(details?.identifier) ??
     readString(details?.issueIdentifier) ??
     cachedIssue?.identifier ??
-    `Issue ${shortId(issueId)}`;
+    `Task ${shortId(issueId)}`;
   const title =
     readString(details?.title) ??
     readString(details?.issueTitle) ??

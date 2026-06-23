@@ -124,6 +124,7 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   kind: z.enum(["environment_driver", "sandbox_provider"]).optional(),
   displayName: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
+  supportsReusableLeases: z.boolean().optional(),
   configSchema: jsonSchemaSchema,
 });
 

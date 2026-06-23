@@ -1,3 +1,5 @@
+import type { TrustAuthorizationPolicy } from "../trust-policy.js";
+
 export type ExecutionWorkspaceStrategyType =
   | "project_primary"
   | "git_worktree"
@@ -155,6 +157,7 @@ export interface ProjectExecutionWorkspacePolicy {
   pullRequestPolicy?: Record<string, unknown> | null;
   runtimePolicy?: Record<string, unknown> | null;
   cleanupPolicy?: Record<string, unknown> | null;
+  authorizationPolicy?: TrustAuthorizationPolicy | null;
 }
 
 export interface IssueExecutionWorkspaceSettings {

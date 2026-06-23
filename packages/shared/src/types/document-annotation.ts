@@ -93,6 +93,7 @@ export interface DocumentAnnotationComment {
   authorAgentId: string | null;
   authorUserId: string | null;
   createdByRunId: string | null;
+  issueCommentId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -123,10 +124,12 @@ export interface CreateDocumentAnnotationThreadRequest {
   baseRevisionNumber: number;
   selector: DocumentAnnotationAnchorSelector;
   body: string;
+  issueCommentId?: string | null;
 }
 
 export interface CreateDocumentAnnotationCommentRequest {
   body: string;
+  issueCommentId?: string | null;
 }
 
 export interface UpdateDocumentAnnotationThreadRequest {

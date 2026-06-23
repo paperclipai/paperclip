@@ -6,6 +6,8 @@ import path, { dirname } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { linkSdkInto } from "./link-plugin-dev-sdk.mjs";
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const workspacePath = path.join(repoRoot, "pnpm-workspace.yaml");
@@ -132,6 +134,11 @@ function main() {
       ];
 
     run("pnpm", installArgs, pkgDir);
+
+    // The fresh install above wipes node_modules and no longer fires a
+    // per-plugin postinstall (removed for supply-chain safety), so link the
+    // in-repo @paperclipai/plugin-sdk that the build's tsc resolves against.
+    linkSdkInto(pkgDir);
 
     if (pkgJson.scripts?.build) {
       run("pnpm", ["run", "build"], pkgDir);

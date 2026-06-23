@@ -27,6 +27,7 @@ import type {
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
+  RequestCheckboxConfirmationInteraction,
   CreateIssueThreadInteraction,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
@@ -122,6 +123,7 @@ export type {
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
+  RequestCheckboxConfirmationInteraction,
   CreateIssueThreadInteraction,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
@@ -1321,7 +1323,7 @@ export interface PluginIssueSummariesClient {
  * - `issues.orchestration.read` for orchestration summaries
  * - `issue.comments.read` for `listComments`
  * - `issue.comments.create` for `createComment`
- * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, and `requestConfirmation`
+ * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, `requestConfirmation`, and `requestCheckboxConfirmation`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -1454,6 +1456,12 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<RequestConfirmationInteraction>;
+  requestCheckboxConfirmation(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "request_checkbox_confirmation" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<RequestCheckboxConfirmationInteraction>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */

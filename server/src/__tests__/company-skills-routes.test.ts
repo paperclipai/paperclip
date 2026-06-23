@@ -12,13 +12,26 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockCompanySkillService = vi.hoisted(() => ({
+  list: vi.fn(),
+  categoryCounts: vi.fn(),
+  detail: vi.fn(),
+  listVersions: vi.fn(),
+  getVersion: vi.fn(),
+  createVersion: vi.fn(),
+  starSkill: vi.fn(),
+  unstarSkill: vi.fn(),
+  forkSkill: vi.fn(),
+  listComments: vi.fn(),
+  createComment: vi.fn(),
+  updateComment: vi.fn(),
+  deleteComment: vi.fn(),
   importFromSource: vi.fn(),
   installFromCatalog: vi.fn(),
   deleteSkill: vi.fn(),
 }));
 
 const mockCatalogService = vi.hoisted(() => ({
-  listCatalogSkills: vi.fn(),
+  listCatalogSkillsOrEmpty: vi.fn(),
   getCatalogSkillOrThrow: vi.fn(),
   readCatalogSkillFile: vi.fn(),
 }));
@@ -102,6 +115,102 @@ describe("company skill mutation permissions", () => {
       imported: [],
       warnings: [],
     });
+    mockCatalogService.listCatalogSkillsOrEmpty.mockReturnValue([]);
+    mockCompanySkillService.list.mockResolvedValue([]);
+    mockCompanySkillService.categoryCounts.mockResolvedValue([]);
+    mockCompanySkillService.detail.mockResolvedValue(null);
+    mockCompanySkillService.listVersions.mockResolvedValue([]);
+    mockCompanySkillService.getVersion.mockResolvedValue(null);
+    mockCompanySkillService.createVersion.mockResolvedValue({
+      id: "version-1",
+      companyId: "company-1",
+      companySkillId: "skill-1",
+      revisionNumber: 1,
+      label: "v1",
+      fileInventory: [{ path: "SKILL.md", kind: "skill", content: "# Skill" }],
+      authorAgentId: null,
+      authorUserId: "board",
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+    });
+    mockCompanySkillService.starSkill.mockResolvedValue({
+      skillId: "skill-1",
+      starred: true,
+      starCount: 1,
+    });
+    mockCompanySkillService.unstarSkill.mockResolvedValue({
+      skillId: "skill-1",
+      starred: false,
+      starCount: 0,
+    });
+    mockCompanySkillService.forkSkill.mockResolvedValue({
+      id: "skill-fork",
+      companyId: "company-1",
+      key: "company/company-1/review-fork",
+      slug: "review-fork",
+      name: "Review Fork",
+      description: null,
+      markdown: "# Review",
+      sourceType: "local_path",
+      sourceLocator: "/tmp/review-fork",
+      sourceRef: null,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      iconUrl: null,
+      color: null,
+      tagline: null,
+      authorName: null,
+      homepageUrl: null,
+      categories: [],
+      sharingScope: "company",
+      publicShareToken: null,
+      forkedFromSkillId: "skill-1",
+      forkedFromCompanyId: "company-1",
+      starCount: 0,
+      installCount: 1,
+      forkCount: 0,
+      currentVersionId: null,
+      metadata: null,
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-26T00:00:00.000Z"),
+    });
+    mockCompanySkillService.listComments.mockResolvedValue([]);
+    mockCompanySkillService.createComment.mockResolvedValue({
+      id: "comment-1",
+      companyId: "company-1",
+      companySkillId: "skill-1",
+      parentCommentId: null,
+      authorAgentId: null,
+      authorUserId: "board",
+      body: "Looks good",
+      deletedAt: null,
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-26T00:00:00.000Z"),
+    });
+    mockCompanySkillService.updateComment.mockResolvedValue({
+      id: "comment-1",
+      companyId: "company-1",
+      companySkillId: "skill-1",
+      parentCommentId: null,
+      authorAgentId: null,
+      authorUserId: "board",
+      body: "Updated",
+      deletedAt: null,
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-26T00:00:00.000Z"),
+    });
+    mockCompanySkillService.deleteComment.mockResolvedValue({
+      id: "comment-1",
+      companyId: "company-1",
+      companySkillId: "skill-1",
+      parentCommentId: null,
+      authorAgentId: null,
+      authorUserId: "board",
+      body: "Updated",
+      deletedAt: new Date("2026-05-26T00:01:00.000Z"),
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-26T00:01:00.000Z"),
+    });
     mockCompanySkillService.installFromCatalog.mockResolvedValue({
       action: "created",
       skill: {
@@ -152,7 +261,7 @@ describe("company skill mutation permissions", () => {
       slug: "find-skills",
       name: "Find Skills",
     });
-    mockCatalogService.listCatalogSkills.mockReturnValue([]);
+    mockCatalogService.listCatalogSkillsOrEmpty.mockReturnValue([]);
     mockCatalogService.getCatalogSkillOrThrow.mockReturnValue({
       id: "paperclipai:bundled:software-development:review",
       key: "paperclipai/bundled/software-development/review",
@@ -204,7 +313,7 @@ describe("company skill mutation permissions", () => {
   });
 
   it("serves catalog listing without mutating company skills", async () => {
-    mockCatalogService.listCatalogSkills.mockReturnValue([
+    mockCatalogService.listCatalogSkillsOrEmpty.mockReturnValue([
       {
         id: "paperclipai:bundled:software-development:review",
         key: "paperclipai/bundled/software-development/review",
@@ -236,7 +345,7 @@ describe("company skill mutation permissions", () => {
       .get("/api/skills/catalog?kind=bundled&q=review");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCatalogService.listCatalogSkills).toHaveBeenCalledWith({ kind: "bundled", q: "review" });
+    expect(mockCatalogService.listCatalogSkillsOrEmpty).toHaveBeenCalledWith({ kind: "bundled", q: "review" });
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
     expect(mockCompanySkillService.installFromCatalog).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -252,7 +361,7 @@ describe("company skill mutation permissions", () => {
     expect(list.status, JSON.stringify(list.body)).toBe(401);
     expect(detail.status, JSON.stringify(detail.body)).toBe(401);
     expect(file.status, JSON.stringify(file.body)).toBe(401);
-    expect(mockCatalogService.listCatalogSkills).not.toHaveBeenCalled();
+    expect(mockCatalogService.listCatalogSkillsOrEmpty).not.toHaveBeenCalled();
     expect(mockCatalogService.getCatalogSkillOrThrow).not.toHaveBeenCalled();
     expect(mockCatalogService.readCatalogSkillFile).not.toHaveBeenCalled();
   });
@@ -482,6 +591,88 @@ describe("company skill mutation permissions", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(mockCompanySkillService.installFromCatalog).not.toHaveBeenCalled();
+  });
+
+  it("passes store list filters and category count requests to the service", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit" });
+
+    await request(app)
+      .get("/api/companies/company-1/skills?sort=stars&categories[]=memory&category=git&scope=company&q=review")
+      .expect(200);
+    expect(mockCompanySkillService.list).toHaveBeenCalledWith("company-1", {
+      q: "review",
+      sort: "stars",
+      categories: ["git", "memory"],
+      scope: "company",
+    });
+
+    await request(app).get("/api/companies/company-1/skills/categories").expect(200);
+    expect(mockCompanySkillService.categoryCounts).toHaveBeenCalledWith("company-1");
+  });
+
+  it("creates skill versions and logs the mutation", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    await request(app)
+      .post("/api/companies/company-1/skills/skill-1/versions")
+      .send({ label: "v1" })
+      .expect(201);
+
+    expect(mockCompanySkillService.createVersion).toHaveBeenCalledWith("company-1", "skill-1", { label: "v1" }, {
+      type: "user",
+      userId: "user-1",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_version_created",
+      entityType: "company_skill_version",
+      entityId: "version-1",
+    }));
+  });
+
+  it("stars, forks, and comments on skills through company-scoped endpoints", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    await request(app).post("/api/companies/company-1/skills/skill-1/star").send({}).expect(200);
+    expect(mockCompanySkillService.starSkill).toHaveBeenCalledWith("company-1", "skill-1", {
+      type: "user",
+      userId: "user-1",
+    });
+
+    await request(app).post("/api/companies/company-1/skills/skill-1/fork").send({ slug: "review-fork" }).expect(201);
+    expect(mockCompanySkillService.forkSkill).toHaveBeenCalledWith("company-1", "skill-1", { slug: "review-fork" }, {
+      type: "user",
+      userId: "user-1",
+    });
+
+    await request(app).post("/api/companies/company-1/skills/skill-1/comments").send({ body: "Looks good" }).expect(201);
+    expect(mockCompanySkillService.createComment).toHaveBeenCalledWith("company-1", "skill-1", { body: "Looks good" }, {
+      type: "user",
+      userId: "user-1",
+    });
+
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_starred",
+      entityId: "skill-1",
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_forked",
+      entityId: "skill-fork",
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_comment_created",
+      entityId: "comment-1",
+    }));
+  });
+
+  it("does not synthesize a shared board user id for board actors without user ids", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit" });
+
+    await request(app).post("/api/companies/company-1/skills/skill-1/star").send({}).expect(200);
+
+    expect(mockCompanySkillService.starSkill).toHaveBeenCalledWith("company-1", "skill-1", {
+      type: "user",
+      userId: null,
+    });
   });
 
   it("allows agents with canCreateAgents to mutate company skills", async () => {

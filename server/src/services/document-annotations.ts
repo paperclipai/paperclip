@@ -1,10 +1,11 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documentAnnotationAnchorSnapshots,
   documentAnnotationComments,
   documentAnnotationThreads,
   documents,
+  issueComments,
   issueDocuments,
 } from "@paperclipai/db";
 import {
@@ -80,6 +81,7 @@ const commentSelect = {
   authorAgentId: documentAnnotationComments.authorAgentId,
   authorUserId: documentAnnotationComments.authorUserId,
   createdByRunId: documentAnnotationComments.createdByRunId,
+  issueCommentId: documentAnnotationComments.issueCommentId,
   createdAt: documentAnnotationComments.createdAt,
   updatedAt: documentAnnotationComments.updatedAt,
 };
@@ -138,6 +140,27 @@ export function documentAnnotationService(db: Db) {
       .from(documentAnnotationComments)
       .where(inArray(documentAnnotationComments.threadId, threadIds))
       .orderBy(asc(documentAnnotationComments.createdAt), asc(documentAnnotationComments.id));
+  }
+
+  async function assertLinkedIssueComment(
+    issueId: string,
+    commentId: string | null | undefined,
+    dbOrTx: any = db,
+  ) {
+    if (!commentId) return null;
+    const comment = await dbOrTx
+      .select({
+        id: issueComments.id,
+        companyId: issueComments.companyId,
+        issueId: issueComments.issueId,
+      })
+      .from(issueComments)
+      .where(and(eq(issueComments.id, commentId), isNull(issueComments.deletedAt)))
+      .then((rows: Array<{ id: string; companyId: string; issueId: string }>) => rows[0] ?? null);
+    if (!comment || comment.issueId !== issueId) {
+      throw unprocessable("Linked issue comment must belong to this issue");
+    }
+    return comment;
   }
 
   return {
@@ -217,6 +240,7 @@ export function documentAnnotationService(db: Db) {
       }
 
       const now = new Date();
+      const linkedIssueComment = await assertLinkedIssueComment(issueId, input.issueCommentId, tx);
       const [thread] = await tx
         .insert(documentAnnotationThreads)
         .values({
@@ -258,6 +282,7 @@ export function documentAnnotationService(db: Db) {
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
           createdByRunId: actor.runId ?? null,
+          issueCommentId: linkedIssueComment?.id ?? null,
           createdAt: now,
           updatedAt: now,
         })
@@ -276,6 +301,7 @@ export function documentAnnotationService(db: Db) {
       const thread = await getThreadForIssue(issueId, key, threadId, tx);
       if (!thread) throw notFound("Annotation thread not found");
       const now = new Date();
+      const linkedIssueComment = await assertLinkedIssueComment(issueId, input.issueCommentId, tx);
       const [comment] = await tx
         .insert(documentAnnotationComments)
         .values({
@@ -288,6 +314,7 @@ export function documentAnnotationService(db: Db) {
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
           createdByRunId: actor.runId ?? null,
+          issueCommentId: linkedIssueComment?.id ?? null,
           createdAt: now,
           updatedAt: now,
         })
@@ -298,6 +325,71 @@ export function documentAnnotationService(db: Db) {
         .where(eq(documentAnnotationThreads.id, thread.id));
       return comment;
     }),
+
+    cleanupForIssueCommentDeletion: async (
+      issueId: string,
+      issueCommentId: string,
+      actor: ActorInput,
+      dbOrTx: any = db,
+    ) => {
+      const runCleanup = async (tx: any) => {
+        const linkedComments: Array<Pick<DocumentAnnotationComment, "id" | "threadId">> = await tx
+          .select({
+            id: documentAnnotationComments.id,
+            threadId: documentAnnotationComments.threadId,
+          })
+          .from(documentAnnotationComments)
+          .where(and(
+            eq(documentAnnotationComments.issueId, issueId),
+            eq(documentAnnotationComments.issueCommentId, issueCommentId),
+          ));
+        if (linkedComments.length === 0) {
+          return { deletedCommentIds: [], resolvedThreadIds: [] };
+        }
+
+        const deletedCommentIds = linkedComments.map((comment) => comment.id);
+        const threadIds = [...new Set(linkedComments.map((comment) => comment.threadId))];
+        const now = new Date();
+
+        await tx
+          .delete(documentAnnotationComments)
+          .where(inArray(documentAnnotationComments.id, deletedCommentIds));
+
+        const remainingRows: Array<{ threadId: string; count: number }> = await tx
+          .select({
+            threadId: documentAnnotationComments.threadId,
+            count: sql<number>`count(*)::int`,
+          })
+          .from(documentAnnotationComments)
+          .where(inArray(documentAnnotationComments.threadId, threadIds))
+          .groupBy(documentAnnotationComments.threadId);
+        const remainingByThreadId = new Map(remainingRows.map((row) => [row.threadId, Number(row.count)]));
+        const emptyThreadIds = threadIds.filter((threadId) => (remainingByThreadId.get(threadId) ?? 0) === 0);
+
+        if (emptyThreadIds.length > 0) {
+          const resolvedRows: Array<{ id: string }> = await tx
+            .update(documentAnnotationThreads)
+            .set({
+              status: "resolved",
+              resolvedByAgentId: actor.actorType === "agent" ? actor.agentId ?? null : null,
+              resolvedByUserId: actor.actorType === "user" ? actor.userId ?? null : null,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              inArray(documentAnnotationThreads.id, emptyThreadIds),
+              eq(documentAnnotationThreads.status, "open"),
+            ))
+            .returning({ id: documentAnnotationThreads.id });
+
+          return { deletedCommentIds, resolvedThreadIds: resolvedRows.map((row) => row.id) };
+        }
+
+        return { deletedCommentIds, resolvedThreadIds: [] };
+      };
+
+      return dbOrTx === db ? db.transaction(runCleanup) : runCleanup(dbOrTx);
+    },
 
     updateThread: async (
       issueId: string,

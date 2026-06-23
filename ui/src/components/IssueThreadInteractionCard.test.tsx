@@ -89,6 +89,70 @@ describe("IssueThreadInteractionCard", () => {
       "interaction-questions-default-post-submit-summary-prompt",
     );
     expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(3);
+
+    const otherLink = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent === "Other",
+    );
+    expect(otherLink?.getAttribute("role")).toBeNull();
+    expect(otherLink?.className).toContain("underline");
+  });
+
+  it("submits written Other answers for pending questions", async () => {
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingAskUserQuestionsInteraction,
+      onSubmitInteractionAnswers,
+    });
+
+    const otherButtons = Array.from(host.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Other"),
+    );
+    expect(otherButtons.length).toBeGreaterThan(0);
+
+    await act(async () => {
+      otherButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const textarea = host.querySelector("textarea") as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "Keep only the root item open");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const summaryCheckbox = Array.from(host.querySelectorAll('[role="checkbox"]')).find((button) =>
+      button.textContent?.includes("Inline answer pills"),
+    );
+    await act(async () => {
+      summaryCheckbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const submitButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send answers"),
+    );
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "ask_user_questions" }),
+      [
+        {
+          questionId: "collapse-depth",
+          optionIds: [],
+          otherText: "Keep only the root item open",
+        },
+        {
+          questionId: "post-submit-summary",
+          optionIds: ["answers-inline"],
+        },
+      ],
+    );
   });
 
   it("only shows question cancellation when a cancel handler is wired", () => {
@@ -272,6 +336,100 @@ describe("IssueThreadInteractionCard", () => {
 
     expect(host.textContent).toContain(
       "This request could not be resolved. Try again or create a new request.",
+    );
+  });
+
+  it("renders a plan confirmation as a distinct state-coloured plan card", () => {
+    const pending = renderCard({ interaction: pendingRequestConfirmationInteraction });
+    const pendingShell = pending.firstElementChild as HTMLElement;
+    expect(pendingShell.className).toContain("border-violet-500/80");
+    expect(pendingShell.className).not.toContain("border-l-");
+    expect(pending.textContent).toContain("Plan");
+    expect(pending.textContent).toContain("In review");
+    // Approve is a neutral CTA (foreground/background), not the blue primary.
+    const approve = Array.from(pending.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve plan"),
+    );
+    expect(approve?.className).toContain("bg-foreground");
+    expect(approve?.className).not.toContain("bg-primary");
+
+    act(() => root?.unmount());
+    pending.remove();
+    root = null;
+
+    const accepted = renderCard({
+      interaction: { ...pendingRequestConfirmationInteraction, status: "accepted" },
+    });
+    expect((accepted.firstElementChild as HTMLElement).className).toContain("border-green-500/80");
+    expect(accepted.textContent).toContain("Approved");
+
+    act(() => root?.unmount());
+    accepted.remove();
+    root = null;
+
+    const rejected = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        status: "rejected",
+        result: { version: 1, outcome: "rejected", reason: "Tighten the spacing" },
+      },
+    });
+    expect((rejected.firstElementChild as HTMLElement).className).toContain("border-red-500/80");
+    expect(rejected.textContent).toContain("Changes requested");
+  });
+
+  it("attaches screenshots to a plan request-changes reason as markdown images", async () => {
+    const onRejectInteraction = vi.fn(async () => undefined);
+    const onUploadImage = vi.fn(async () => "https://cdn.example/shot.png");
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        payload: {
+          ...pendingRequestConfirmationInteraction.payload,
+          rejectRequiresReason: false,
+        },
+      },
+      onRejectInteraction,
+      onUploadImage,
+    });
+
+    const declineButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Request revisions"),
+    );
+    await act(async () => {
+      declineButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const attachButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Attach screenshots"),
+    );
+    expect(attachButton).toBeTruthy();
+
+    const fileInput = host.querySelector('input[type="file"]') as HTMLInputElement | null;
+    expect(fileInput).toBeTruthy();
+    const file = new File(["x"], "bug.png", { type: "image/png" });
+    Object.defineProperty(fileInput!, "files", { value: [file], configurable: true });
+    Object.defineProperty(fileInput!, "value", {
+      value: "C:/fake/bug.png",
+      writable: true,
+      configurable: true,
+    });
+
+    await act(async () => {
+      fileInput!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onUploadImage).toHaveBeenCalledTimes(1);
+
+    const saveButton = Array.from(host.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Request revisions"),
+    ).at(-1);
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onRejectInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "request_confirmation" }),
+      "![bug.png](https://cdn.example/shot.png)",
     );
   });
 });

@@ -168,6 +168,26 @@ describe("buildPluginWorkerEnv", () => {
     });
   });
 
+  it("passes in-cluster Kubernetes service-discovery vars to environment driver plugins", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: ["environment.drivers.register"] },
+      instanceInfo,
+      processEnv: {
+        KUBERNETES_SERVICE_HOST: "10.0.0.1",
+        KUBERNETES_SERVICE_PORT: "443",
+        KUBERNETES_SERVICE_PORT_HTTPS: " ",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      KUBERNETES_SERVICE_HOST: "10.0.0.1",
+      KUBERNETES_SERVICE_PORT: "443",
+    });
+  });
+
   it("does not pass provider keys to non-environment plugins", () => {
     const env = buildPluginWorkerEnv({
       manifest: { capabilities: ["ui.slots.register"] },

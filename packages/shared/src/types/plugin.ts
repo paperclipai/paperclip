@@ -138,6 +138,12 @@ export interface PluginEnvironmentDriverDeclaration {
   displayName: string;
   /** Optional description for operator-facing docs or UI affordances. */
   description?: string;
+  /**
+   * Sandbox providers must opt in before the host retains and resumes provider
+   * leases across runs. Providers without this flag keep per-run acquire/release
+   * behavior even if their config schema exposes a reuse-like setting.
+   */
+  supportsReusableLeases?: boolean;
   /** JSON Schema describing the driver's provider-specific configuration. */
   configSchema: JsonSchema;
 }

@@ -9,18 +9,6 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
-    groups:
-      # Bundle all patch/minor updates of the same dependency type into one
-      # weekly PR. Prevents partial bumps of sibling packages that share
-      # peer dependencies (e.g. lexical + @lexical/*), which otherwise
-      # install two copies of the core package and break type-checking.
-      # Majors stay as individual PRs (and are ignored below anyway).
-      production-dependencies:
-        dependency-type: "production"
-        update-types: ["patch", "minor"]
-      development-dependencies:
-        dependency-type: "development"
-        update-types: ["patch", "minor"]
     ignore:
       # Ignore major version bumps — review those manually
       - dependency-name: "*"

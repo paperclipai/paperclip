@@ -1,5 +1,7 @@
 import type {
   Agent,
+  AgentDesiredSkillEntry,
+  AgentPermissions,
   AgentDetail,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
@@ -12,6 +14,7 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  ClearAgentErrorResponse,
 } from "@paperclipai/shared";
 import type {
   AdapterModelProfileDefinition,
@@ -67,6 +70,8 @@ export interface AgentHireResponse {
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
   canAssignTasks: boolean;
+  trustPreset?: AgentPermissions["trustPreset"];
+  authorizationPolicy?: AgentPermissions["authorizationPolicy"];
 }
 
 export interface AgentWakeRequest {
@@ -162,13 +167,15 @@ export const agentsApi = {
     ),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
   resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
+  clearError: (id: string, companyId?: string) =>
+    api.post<ClearAgentErrorResponse>(agentPath(id, companyId, "/clear-error"), {}),
   approve: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/approve"), {}),
   terminate: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/terminate"), {}),
   remove: (id: string, companyId?: string) => api.delete<{ ok: true }>(agentPath(id, companyId)),
   listKeys: (id: string, companyId?: string) => api.get<AgentKey[]>(agentPath(id, companyId, "/keys")),
   skills: (id: string, companyId?: string) =>
     api.get<AgentSkillSnapshot>(agentPath(id, companyId, "/skills")),
-  syncSkills: (id: string, desiredSkills: string[], companyId?: string) =>
+  syncSkills: (id: string, desiredSkills: Array<string | AgentDesiredSkillEntry>, companyId?: string) =>
     api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), { desiredSkills }),
   createKey: (id: string, name: string, companyId?: string) =>
     api.post<AgentKeyCreated>(agentPath(id, companyId, "/keys"), { name }),

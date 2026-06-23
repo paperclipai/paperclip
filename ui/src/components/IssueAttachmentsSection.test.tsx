@@ -60,8 +60,6 @@ function makeAttachment(overrides: Partial<IssueAttachment> = {}): IssueAttachme
     createdAt: new Date("2026-06-01T00:00:00.000Z"),
     updatedAt: new Date("2026-06-01T00:00:00.000Z"),
     contentPath: "/api/attachments/attachment-1/content",
-    openPath: "/api/attachments/attachment-1/content",
-    downloadPath: "/api/attachments/attachment-1/content?download=1",
     ...overrides,
   };
 }
@@ -271,8 +269,6 @@ describe("IssueAttachmentsSection", () => {
       originalFilename: "report.pdf",
       contentType: "application/pdf",
       contentPath: "/api/attachments/pdf-attachment/content",
-      openPath: "/api/attachments/pdf-attachment/content",
-      downloadPath: "/api/attachments/pdf-attachment/content?download=1",
     });
 
     await act(async () => {

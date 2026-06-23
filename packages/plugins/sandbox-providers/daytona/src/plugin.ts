@@ -1,5 +1,5 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Daytona, DaytonaNotFoundError, DaytonaTimeoutError } from "@daytonaio/sdk";
 import type {
   CreateSandboxBaseParams,
@@ -43,6 +43,14 @@ interface DaytonaDriverConfig {
   autoDeleteInterval: number | null;
   reuseLease: boolean;
 }
+
+type WorkspaceSentinelResult = {
+  path: string;
+  token: string | null;
+  result: "written" | "matched" | "missing" | "mismatch" | "skipped";
+};
+
+const WORKSPACE_SENTINEL_RELATIVE_PATH = ".paperclip-runtime/reusable-sandbox-lease.json";
 
 function parseOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -166,6 +174,20 @@ function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 function isValidUrl(value: string): boolean {
   try {
     new URL(value);
@@ -210,12 +232,109 @@ async function detectSandboxShellCommand(sandbox: Sandbox, timeoutSeconds: numbe
   }
 }
 
+function workspaceSentinelToken(input: {
+  params: Pick<PluginEnvironmentAcquireLeaseParams, "companyId" | "environmentId" | "agentId" | "executionWorkspaceId" | "adapterType">;
+  config: DaytonaDriverConfig;
+}): string | null {
+  if (!input.config.reuseLease || !input.params.agentId || !input.params.executionWorkspaceId) {
+    return null;
+  }
+  return createHash("sha256")
+    .update(stableStringify({
+      provider: "daytona",
+      companyId: input.params.companyId,
+      environmentId: input.params.environmentId,
+      agentId: input.params.agentId,
+      executionWorkspaceId: input.params.executionWorkspaceId,
+      adapterType: input.params.adapterType ?? null,
+      image: input.config.image,
+      snapshot: input.config.snapshot,
+      target: input.config.target,
+    }))
+    .digest("hex");
+}
+
+function workspaceSentinelPath(remoteCwd: string): string {
+  return path.posix.join(remoteCwd, WORKSPACE_SENTINEL_RELATIVE_PATH);
+}
+
+async function writeWorkspaceSentinel(input: {
+  sandbox: Sandbox;
+  remoteCwd: string;
+  params: PluginEnvironmentAcquireLeaseParams;
+  config: DaytonaDriverConfig;
+  timeoutSeconds: number;
+}): Promise<WorkspaceSentinelResult> {
+  const sentinelPath = workspaceSentinelPath(input.remoteCwd);
+  const token = workspaceSentinelToken({ params: input.params, config: input.config });
+  if (!token) {
+    return { path: sentinelPath, token: null, result: "skipped" };
+  }
+  await input.sandbox.fs.createFolder(path.posix.dirname(sentinelPath), "755");
+  await input.sandbox.fs.uploadFile(
+    Buffer.from(JSON.stringify({
+      version: 1,
+      token,
+      companyId: input.params.companyId,
+      environmentId: input.params.environmentId,
+      agentId: input.params.agentId,
+      executionWorkspaceId: input.params.executionWorkspaceId,
+      adapterType: input.params.adapterType ?? null,
+      provider: "daytona",
+      writtenAt: new Date().toISOString(),
+    }, null, 2), "utf8"),
+    sentinelPath,
+    input.timeoutSeconds,
+  );
+  return { path: sentinelPath, token, result: "written" };
+}
+
+async function verifyWorkspaceSentinel(input: {
+  sandbox: Sandbox;
+  remoteCwd: string;
+  leaseMetadata?: Record<string, unknown>;
+  timeoutSeconds: number;
+}): Promise<WorkspaceSentinelResult> {
+  const metadataSentinel = isRecord(input.leaseMetadata?.workspaceSentinel)
+    ? input.leaseMetadata.workspaceSentinel
+    : null;
+  const sentinelPath = typeof metadataSentinel?.path === "string"
+    ? metadataSentinel.path
+    : workspaceSentinelPath(input.remoteCwd);
+  const expectedToken = typeof metadataSentinel?.token === "string" ? metadataSentinel.token : null;
+  if (!expectedToken) {
+    return { path: sentinelPath, token: null, result: "missing" };
+  }
+
+  const result = await input.sandbox.process.executeCommand(
+    `cat ${shellQuote(sentinelPath)}`,
+    undefined,
+    undefined,
+    input.timeoutSeconds,
+  );
+  if (result.exitCode !== 0) {
+    return { path: sentinelPath, token: expectedToken, result: "missing" };
+  }
+  try {
+    const parsed = JSON.parse(result.result ?? result.artifacts?.stdout ?? "") as unknown;
+    const actualToken = isRecord(parsed) && typeof parsed.token === "string" ? parsed.token : null;
+    return {
+      path: sentinelPath,
+      token: expectedToken,
+      result: actualToken === expectedToken ? "matched" : "mismatch",
+    };
+  } catch {
+    return { path: sentinelPath, token: expectedToken, result: "mismatch" };
+  }
+}
+
 function leaseMetadata(input: {
   config: DaytonaDriverConfig;
   sandbox: Sandbox;
   shellCommand: "bash" | "sh";
   remoteCwd: string;
   resumedLease: boolean;
+  workspaceSentinel?: WorkspaceSentinelResult;
 }) {
   return {
     provider: "daytona",
@@ -230,6 +349,7 @@ function leaseMetadata(input: {
     reuseLease: input.config.reuseLease,
     remoteCwd: input.remoteCwd,
     resumedLease: input.resumedLease,
+    ...(input.workspaceSentinel ? { workspaceSentinel: input.workspaceSentinel } : {}),
   };
 }
 
@@ -499,9 +619,16 @@ const plugin = definePlugin({
     try {
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
       const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
+      const workspaceSentinel = await writeWorkspaceSentinel({
+        sandbox,
+        remoteCwd,
+        params,
+        config,
+        timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
+      });
       return {
         providerLeaseId: sandbox.id,
-        metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: false }),
+        metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: false, workspaceSentinel }),
       };
     } catch (error) {
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
@@ -521,10 +648,19 @@ const plugin = definePlugin({
     await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
     try {
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+      const workspaceSentinel = await verifyWorkspaceSentinel({
+        sandbox,
+        remoteCwd,
+        leaseMetadata: params.leaseMetadata,
+        timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
+      });
+      if (workspaceSentinel.result !== "matched") {
+        return { providerLeaseId: null, metadata: { expired: true, workspaceSentinel } };
+      }
       const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
       return {
         providerLeaseId: sandbox.id,
-        metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: true }),
+        metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: true, workspaceSentinel }),
       };
     } catch (error) {
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);

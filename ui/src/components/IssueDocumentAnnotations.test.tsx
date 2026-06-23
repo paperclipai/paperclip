@@ -282,6 +282,7 @@ describe("IssueDocumentAnnotations", () => {
     const anchor = container.querySelector('[data-testid="document-annotation-panel-anchor"]');
     expect(anchor).not.toBeNull();
     expect(anchor?.className).toContain("fixed");
+    expect(anchor?.className).toContain("z-[60]");
   });
 
   it("keeps the desktop annotation panel inside the issue content area when properties are visible", async () => {
@@ -712,6 +713,8 @@ describe("IssueDocumentAnnotations", () => {
       expect(sheet).not.toBeNull();
       expect(sheet?.getAttribute("data-side")).toBe("bottom");
       expect(sheet?.className).toContain("paperclip-doc-annotation-sheet");
+      expect(sheet?.className).toContain("z-[60]");
+      expect(sheet?.className).toContain("bg-popover");
     } finally {
       Object.defineProperty(window, "matchMedia", {
         configurable: true,

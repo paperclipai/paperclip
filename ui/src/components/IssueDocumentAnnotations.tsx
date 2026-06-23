@@ -310,7 +310,7 @@ export function IssueDocumentAnnotations({
       {panelOpen && !isMobile && desktopPanelFrame ? (
         <div
           data-testid="document-annotation-panel-anchor"
-          className="pointer-events-auto fixed hidden lg:block"
+          className="pointer-events-auto fixed z-[60] hidden lg:block"
           style={{
             left: desktopPanelFrame.left,
             maxHeight: desktopPanelFrame.maxHeight,

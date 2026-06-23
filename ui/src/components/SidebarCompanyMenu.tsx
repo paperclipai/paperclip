@@ -33,10 +33,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useCompany } from "@/context/CompanyContext";
+import { useConferenceRoomChatEnabled } from "@/hooks/useConferenceRoomChatEnabled";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { queryKeys } from "@/lib/queryKeys";
-import { cn } from "@/lib/utils";
+import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 
@@ -133,8 +134,12 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
   const [isEditingOrder, setIsEditingOrder] = useState(false);
   const queryClient = useQueryClient();
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
+  // Team-centric copy (PAP-67) ships behind the Conference Room Chat flag
+  // (PAP-139); OFF keeps master's "Add company...".
+  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
   const { openOnboarding } = useDialogActions();
-  const { isMobile, setSidebarOpen } = useSidebar();
+  const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
+  const rail = collapsed && !peeking;
   const location = useLocation();
   const navigate = useNavigate();
   const open = controlledOpen ?? internalOpen;
@@ -224,16 +229,21 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          className="h-9 flex-1 justify-start gap-2 px-2 text-left"
+          // `px-3` (not px-2) so the logo's left edge lines up with the nav icon
+          // column (nav px-3 + item px-3) and, crucially, stays put between states:
+          // the Button's default size adds `has-[>svg]:px-3`, so with the chevron
+          // svg present (expanded) it was already 12px but without it (rail) it fell
+          // back to 8px — a 4px horizontal jump on collapse (PAP-10676).
+          className="h-9 flex-1 justify-start gap-2 px-3 text-left"
           aria-label={selectedCompany ? `Open ${selectedCompany.name} workspace switcher` : "Open workspace switcher"}
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
-            <span className="truncate text-sm font-bold text-foreground">
+            <span className={cn("truncate text-sm font-bold text-foreground", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>
               {selectedCompany?.name ?? "Select workspace"}
             </span>
           </span>
-          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
+          {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
@@ -285,7 +295,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           disabled={isEditingOrder}
         >
           <Plus className="size-4" />
-          <span>Add company...</span>
+          <span>{conferenceRoomChatEnabled ? "Create new team..." : "Add company..."}</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild disabled={isEditingOrder}>

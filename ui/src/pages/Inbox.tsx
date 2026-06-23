@@ -30,7 +30,7 @@ import {
   countActiveIssueFilters,
   type IssueFilterState,
 } from "../lib/issue-filters";
-import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { collectLiveIssueIds, collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import {
@@ -1293,6 +1293,26 @@ export function Inbox() {
   const flatNavItems = useMemo((): NavEntry[] => {
     return buildInboxKeyboardNavEntries(groupedSections, collapsedGroupKeys, collapsedInboxParents);
   }, [collapsedGroupKeys, collapsedInboxParents, groupedSections]);
+  // Roll live descendant runs up to their ancestors across the loaded inbox tree
+  // so a parent that is not itself live can still surface "n live below".
+  const subtreeLiveCounts = useMemo(() => {
+    const nodes: { id: string; parentId: string | null }[] = [];
+    const seen = new Set<string>();
+    const pushIssue = (issue: Issue) => {
+      if (seen.has(issue.id)) return;
+      seen.add(issue.id);
+      nodes.push({ id: issue.id, parentId: issue.parentId });
+    };
+    for (const group of groupedSections) {
+      for (const item of group.displayItems) {
+        if (item.kind === "issue") pushIssue(item.issue);
+      }
+      for (const children of group.childrenByIssueId.values()) {
+        for (const child of children) pushIssue(child);
+      }
+    }
+    return collectSubtreeLiveCounts(nodes, liveIssueIds);
+  }, [groupedSections, liveIssueIds]);
   const topFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
@@ -1495,7 +1515,7 @@ export function Inbox() {
       return { previousData };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to archive issue");
+      setActionError(err instanceof Error ? err.message : "Failed to archive task");
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
@@ -2208,7 +2228,7 @@ export function Inbox() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="everything">All categories</SelectItem>
-              <SelectItem value="issues_i_touched">My recent issues</SelectItem>
+              <SelectItem value="issues_i_touched">My recent tasks</SelectItem>
               <SelectItem value="join_requests">Join requests</SelectItem>
               <SelectItem value="approvals">Approvals</SelectItem>
               <SelectItem value="failed_runs">Failed runs</SelectItem>
@@ -2344,6 +2364,7 @@ export function Inbox() {
                           <InboxIssueMetaLeading
                             issue={issue}
                             isLive={liveIssueIds.has(issue.id)}
+                            subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
                             showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
                             showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
                           />
@@ -2454,8 +2475,8 @@ export function Inbox() {
                               variant="ghost"
                               size="icon-xs"
                               className="-mr-2 text-muted-foreground"
-                              title={`New issue in ${group.label}`}
-                              aria-label={`New issue in ${group.label}`}
+                              title={`New task in ${group.label}`}
+                              aria-label={`New task in ${group.label}`}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 openCreateIssueForGroup(group);

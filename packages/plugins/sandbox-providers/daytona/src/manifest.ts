@@ -23,6 +23,7 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Daytona Sandbox",
       description:
         "Provisions Daytona sandboxes with configurable image or snapshot selection, startup timeouts, and lease reuse.",
+      supportsReusableLeases: true,
       configSchema: {
         type: "object",
         properties: {
@@ -56,20 +57,25 @@ const manifest: PaperclipPluginManifestV1 = {
               "Optional Daytona language hint for direct code execution. If omitted, Daytona uses its default runtime.",
           },
           cpu: {
-            type: "number",
+            type: "integer",
             description: "Optional CPU allocation in cores.",
+            minimum: 1,
           },
           memory: {
-            type: "number",
-            description: "Optional memory allocation in GiB.",
+            type: "integer",
+            description:
+              "Optional memory allocation in GiB. Leave unset to use Daytona defaults; supported sandbox sizes are 1, 2, 4, and 8 GiB.",
+            enum: [1, 2, 4, 8],
           },
           disk: {
-            type: "number",
+            type: "integer",
             description: "Optional disk allocation in GiB.",
+            minimum: 1,
           },
           gpu: {
-            type: "number",
+            type: "integer",
             description: "Optional GPU allocation in units.",
+            minimum: 1,
           },
           timeoutMs: {
             type: "number",

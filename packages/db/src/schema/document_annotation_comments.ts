@@ -5,6 +5,7 @@ import { companies } from "./companies.js";
 import { documentAnnotationThreads } from "./document_annotation_threads.js";
 import { documents } from "./documents.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { issueComments } from "./issue_comments.js";
 import { issues } from "./issues.js";
 
 export const documentAnnotationComments = pgTable(
@@ -20,6 +21,7 @@ export const documentAnnotationComments = pgTable(
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     authorUserId: text("author_user_id"),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    issueCommentId: uuid("issue_comment_id").references(() => issueComments.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -39,6 +41,7 @@ export const documentAnnotationComments = pgTable(
       table.documentId,
       table.createdAt,
     ),
+    issueCommentIdx: index("document_annotation_comments_issue_comment_idx").on(table.issueCommentId),
     bodySearchIdx: index("document_annotation_comments_body_search_idx").using("gin", table.body.op("gin_trgm_ops")),
   }),
 );
