@@ -40,6 +40,7 @@ function createMockSandbox(overrides: {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     recover: vi.fn().mockResolvedValue(undefined),
+    resize: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
     fs: {
       createFolder: vi.fn().mockResolvedValue(undefined),
@@ -207,6 +208,149 @@ describe("Daytona sandbox provider plugin", () => {
       "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
       300,
     );
+  });
+
+  it("passes configured resources to Daytona for image-based creation", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      agentId: "agent-1",
+      executionWorkspaceId: "workspace-1",
+      adapterType: "codex_local",
+      config: {
+        image: "node:20",
+        cpu: 4,
+        memory: 8,
+        disk: 20,
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const [createParams] = mockCreate.mock.calls[0] as [Record<string, unknown>];
+    expect(createParams).toMatchObject({
+      image: "node:20",
+      resources: { cpu: 4, memory: 8, disk: 20, gpu: undefined },
+    });
+    expect(createParams).not.toHaveProperty("snapshot");
+    expect(sandbox.resize).not.toHaveBeenCalled();
+  });
+
+  it("rejects resource settings for snapshot-backed creation", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const result = await plugin.definition.onEnvironmentValidateConfig?.({
+      driverKey: "daytona",
+      config: {
+        snapshot: "base-snapshot",
+        cpu: 4,
+        memory: 8,
+        disk: 20,
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      errors: [
+        "Daytona resource settings require image-backed sandbox creation; snapshot/default sandbox creation cannot override CPU, memory, disk, or GPU.",
+      ],
+    });
+  });
+
+  it("rejects resource settings for default snapshot creation before creating a sandbox", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+
+    await expect(plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      agentId: "agent-1",
+      executionWorkspaceId: "workspace-1",
+      adapterType: "codex_local",
+      config: {
+        cpu: 4,
+        memory: 4,
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+    })).rejects.toThrow(
+      "Daytona resource settings require image-backed sandbox creation; snapshot/default sandbox creation cannot override CPU, memory, disk, or GPU.",
+    );
+
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("records requested resources in lease metadata", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      agentId: "agent-1",
+      executionWorkspaceId: "workspace-1",
+      adapterType: "codex_local",
+      config: {
+        image: "daytonaio/sandbox:0.8.0",
+        cpu: 4,
+        memory: 8,
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+
+    expect(lease?.metadata).toMatchObject({ cpu: 4, memory: 8 });
+    expect(lease?.metadata).not.toHaveProperty("disk");
+    expect(lease?.metadata).not.toHaveProperty("gpu");
+  });
+
+  it("changes reusable-lease sentinel identity when resources change", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+
+    const acquireWithCpu = async (cpu: number): Promise<string> => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockResolvedValueOnce(sandbox);
+      await plugin.definition.onEnvironmentAcquireLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        runId: "run-1",
+        agentId: "agent-1",
+        executionWorkspaceId: "workspace-1",
+        adapterType: "codex_local",
+        config: {
+          image: "daytonaio/sandbox:0.8.0",
+          cpu,
+          timeoutMs: 300000,
+          reuseLease: true,
+        },
+      });
+      const uploadCall = sandbox.fs.uploadFile.mock.calls.find(
+        (call) => typeof call[1] === "string" && call[1].endsWith("reusable-sandbox-lease.json"),
+      ) as [Buffer, string, number] | undefined;
+      expect(uploadCall).toBeTruthy();
+      const parsed = JSON.parse((uploadCall as [Buffer, string, number])[0].toString("utf8")) as { token: string };
+      return parsed.token;
+    };
+
+    const tokenCpu1 = await acquireWithCpu(1);
+    const tokenCpu4 = await acquireWithCpu(4);
+
+    expect(tokenCpu1).toBeTruthy();
+    expect(tokenCpu4).toBeTruthy();
+    expect(tokenCpu1).not.toEqual(tokenCpu4);
   });
 
   it("deletes the sandbox if lease setup throws after sandbox creation", async () => {

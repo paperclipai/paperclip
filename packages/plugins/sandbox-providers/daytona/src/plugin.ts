@@ -145,6 +145,15 @@ function buildCreateParams(
   };
 }
 
+function hasResourceRequest(config: DaytonaDriverConfig): boolean {
+  return config.cpu != null || config.memory != null || config.disk != null || config.gpu != null;
+}
+
+function validateResourceRequest(config: DaytonaDriverConfig): string | null {
+  if (!hasResourceRequest(config) || config.image) return null;
+  return "Daytona resource settings require image-backed sandbox creation; snapshot/default sandbox creation cannot override CPU, memory, disk, or GPU.";
+}
+
 function buildSandboxLabels(input: {
   companyId: string;
   environmentId: string;
@@ -250,6 +259,13 @@ function workspaceSentinelToken(input: {
       image: input.config.image,
       snapshot: input.config.snapshot,
       target: input.config.target,
+      // Include resource-shaping inputs so changing the requested allocation
+      // expires old reusable leases and forces a fresh sandbox instead of
+      // reusing a previously provisioned (e.g. one-CPU) sandbox.
+      cpu: input.config.cpu,
+      memory: input.config.memory,
+      disk: input.config.disk,
+      gpu: input.config.gpu,
     }))
     .digest("hex");
 }
@@ -349,6 +365,12 @@ function leaseMetadata(input: {
     reuseLease: input.config.reuseLease,
     remoteCwd: input.remoteCwd,
     resumedLease: input.resumedLease,
+    // Record the resources Paperclip attempted to request so future diagnosis
+    // can compare requested allocation against what Daytona provisioned.
+    ...(input.config.cpu != null ? { cpu: input.config.cpu } : {}),
+    ...(input.config.memory != null ? { memory: input.config.memory } : {}),
+    ...(input.config.disk != null ? { disk: input.config.disk } : {}),
+    ...(input.config.gpu != null ? { gpu: input.config.gpu } : {}),
     ...(input.workspaceSentinel ? { workspaceSentinel: input.workspaceSentinel } : {}),
   };
 }
@@ -414,6 +436,10 @@ async function createSandbox(
   params: PluginEnvironmentAcquireLeaseParams | PluginEnvironmentProbeParams,
   config: DaytonaDriverConfig,
 ): Promise<Sandbox> {
+  const resourceRequestError = validateResourceRequest(config);
+  if (resourceRequestError) {
+    throw new Error(resourceRequestError);
+  }
   const client = createDaytonaClient(config);
   const createParams = buildCreateParams(config, buildSandboxLabels({
     companyId: params.companyId,
@@ -421,9 +447,10 @@ async function createSandbox(
     runId: "runId" in params ? params.runId : undefined,
     reuseLease: config.reuseLease,
   }));
-  return await client.create(createParams, {
+  const sandbox = await client.create(createParams, {
     timeout: toTimeoutSeconds(config.timeoutMs),
   });
+  return sandbox;
 }
 
 async function getSandbox(config: DaytonaDriverConfig, sandboxId: string): Promise<Sandbox> {
@@ -545,6 +572,10 @@ const plugin = definePlugin({
     }
     if (!config.apiKey && !(process.env.DAYTONA_API_KEY?.trim())) {
       errors.push("Daytona sandbox environments require an API key in config or DAYTONA_API_KEY.");
+    }
+    const resourceRequestError = validateResourceRequest(config);
+    if (resourceRequestError) {
+      errors.push(resourceRequestError);
     }
     for (const [key, value] of Object.entries({
       cpu: config.cpu,
