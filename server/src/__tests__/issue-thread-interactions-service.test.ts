@@ -986,6 +986,254 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it("returns agent-authored request confirmations to the creating agent when a board user rejects", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Reject a request",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Senior Product Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Review the plan",
+      status: "in_review",
+      priority: "medium",
+      assigneeUserId: "local-board",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        acceptLabel: "Approve plan",
+        rejectLabel: "Ask for changes",
+      },
+    }, {
+      agentId,
+    });
+
+    const rejected = await interactionsSvc.rejectInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, { reason: "Needs more detail" }, {
+      userId: "local-board",
+    });
+
+    if (!("continuationIssue" in rejected)) {
+      throw new Error("request_confirmation reject should return a continuationIssue field");
+    }
+    expect(rejected.interaction).toMatchObject({
+      kind: "request_confirmation",
+      status: "rejected",
+      result: {
+        version: 1,
+        outcome: "rejected",
+        reason: "Needs more detail",
+      },
+      resolvedByUserId: "local-board",
+    });
+    expect(rejected.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      status: "todo",
+    });
+
+    const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(updatedIssue).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+  });
+
+  it("returns agent-authored request_checkbox_confirmation to the creating agent when a board user rejects", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Reject a checkbox request",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Senior Product Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Pick files to delete",
+      status: "in_review",
+      priority: "medium",
+      assigneeUserId: "local-board",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_checkbox_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Pick files to delete",
+        options: [
+          { id: "draft", label: "Old draft report" },
+          { id: "tmp", label: "tmp/export.csv" },
+        ],
+      },
+    }, {
+      agentId,
+    });
+
+    const rejected = await interactionsSvc.rejectInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, { reason: "Hold off" }, {
+      userId: "local-board",
+    });
+
+    if (!("continuationIssue" in rejected)) {
+      throw new Error("request_checkbox_confirmation reject should return a continuationIssue field");
+    }
+    expect(rejected.interaction.kind).toBe("request_checkbox_confirmation");
+    expect(rejected.interaction.status).toBe("rejected");
+    expect(rejected.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      status: "todo",
+    });
+  });
+
+  it("does not reassign on reject when the issue is still agent-assigned at decision time", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Agent-assigned reject",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Senior Product Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Pending review",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+      },
+    }, {
+      agentId,
+    });
+
+    const rejected = await interactionsSvc.rejectInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, { reason: "Needs changes" }, {
+      userId: "local-board",
+    });
+
+    if (!("continuationIssue" in rejected)) {
+      throw new Error("request_confirmation reject should return a continuationIssue field");
+    }
+    expect(rejected.continuationIssue).toBeNull();
+
+    const issueRow = (await db.select().from(issues)).find((row) => row.id === issueId);
+    expect(issueRow).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+  });
+
   it("expires request confirmations by default when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue();
     const commentId = randomUUID();

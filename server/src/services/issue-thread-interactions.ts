@@ -62,6 +62,10 @@ type ResolvedInteractionResult = {
   continuationIssue?: IssueWakeTarget | null;
 };
 
+type RejectInteractionResult =
+  | IssueThreadInteraction
+  | { interaction: IssueThreadInteraction; continuationIssue: IssueWakeTarget | null };
+
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type IssueTouchDb = Pick<Db, "update">;
 
@@ -167,7 +171,7 @@ function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
 }
 
-function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
+function shouldReturnResolvedConfirmationToCreatorAgent(args: {
   issue: IssueResolutionContext;
   current: IssueThreadInteractionRow;
   actor: InteractionActor;
@@ -653,7 +657,7 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       let continuationIssue: IssueWakeTarget | null = null;
-      if (shouldReturnAcceptedConfirmationToCreatorAgent({
+      if (shouldReturnResolvedConfirmationToCreatorAgent({
         issue: issueContext,
         current: args.current,
         actor: args.actor,
@@ -691,13 +695,16 @@ export function issueThreadInteractionService(db: Db) {
     current: IssueThreadInteractionRow;
     input: RejectIssueThreadInteraction;
     actor: InteractionActor;
-  }): Promise<IssueThreadInteraction> {
+  }): Promise<{
+    interaction: IssueThreadInteraction;
+    continuationIssue: IssueWakeTarget | null;
+  }> {
     const expired = await expireStaleRequestConfirmationTarget(db, {
       row: args.current,
       actor: args.actor,
     });
     if (expired) {
-      return expired;
+      return { interaction: expired, continuationIssue: null };
     }
 
     const interaction = hydrateInteraction(args.current) as RequestConfirmationLikeInteraction;
@@ -707,31 +714,79 @@ export function issueThreadInteractionService(db: Db) {
     }
 
     const now = new Date();
-    const [updated] = await db
-      .update(issueThreadInteractions)
-      .set({
-        status: "rejected",
-        result: {
-          version: 1,
-          outcome: "rejected",
-          reason: reason || null,
-        },
-        resolvedByAgentId: args.actor.agentId ?? null,
-        resolvedByUserId: args.actor.userId ?? null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
-      .where(and(
-        eq(issueThreadInteractions.id, args.current.id),
-        eq(issueThreadInteractions.status, "pending"),
-      ))
-      .returning();
+    return db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(issueThreadInteractions)
+        .set({
+          status: "rejected",
+          result: {
+            version: 1,
+            outcome: "rejected",
+            reason: reason || null,
+          },
+          resolvedByAgentId: args.actor.agentId ?? null,
+          resolvedByUserId: args.actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, args.current.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
 
-    if (!updated) {
-      throw conflict("Interaction has already been resolved");
-    }
-    await touchIssue(db, args.issue.id);
-    return hydrateInteraction(updated);
+      if (!updated) {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      const issueContext = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issues)
+        .where(eq(issues.id, args.issue.id))
+        .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+
+      if (!issueContext || issueContext.companyId !== args.issue.companyId) {
+        throw notFound("Issue not found");
+      }
+
+      let continuationIssue: IssueWakeTarget | null = null;
+      if (shouldReturnResolvedConfirmationToCreatorAgent({
+        issue: issueContext,
+        current: args.current,
+        actor: args.actor,
+      })) {
+        const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
+        const returnedIssue = await issueService(db).update(args.issue.id, {
+          status: returnStatus,
+          assigneeAgentId: args.current.createdByAgentId,
+          assigneeUserId: null,
+          actorAgentId: args.actor.agentId ?? null,
+          actorUserId: args.actor.userId ?? null,
+        }, tx);
+
+        if (returnedIssue) {
+          continuationIssue = {
+            id: returnedIssue.id,
+            assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
+            assigneeUserId: returnedIssue.assigneeUserId ?? null,
+            status: returnedIssue.status,
+          };
+        }
+      } else {
+        await touchIssue(tx, args.issue.id);
+      }
+
+      return {
+        interaction: hydrateInteraction(updated),
+        continuationIssue,
+      };
+    });
   }
 
   return {
@@ -1054,7 +1109,7 @@ export function issueThreadInteractionService(db: Db) {
       interactionId: string,
       input: RejectIssueThreadInteraction,
       actor: InteractionActor,
-    ) => {
+    ): Promise<RejectInteractionResult> => {
       const data = rejectIssueThreadInteractionSchema.parse(input);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
       switch (current.kind) {
