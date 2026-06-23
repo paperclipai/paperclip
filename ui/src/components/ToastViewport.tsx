@@ -89,7 +89,7 @@ export function ToastViewport() {
     <aside
       aria-live="polite"
       aria-atomic="false"
-      className="pointer-events-none fixed bottom-3 left-3 z-[120] w-full max-w-sm px-1"
+      className="pointer-events-none fixed bottom-3 right-3 z-[120] w-full max-w-sm px-1"
     >
       <ol className="flex w-full flex-col-reverse gap-2">
         {toasts.map((toast) => (
