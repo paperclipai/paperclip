@@ -392,6 +392,40 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     });
   });
 
+  it("does not report historical non-board cancellations as duplicate cancel", async () => {
+    const { companyId, issueId, retryRunId } = await seedIssueWithRetry();
+    const now = new Date("2026-05-06T18:30:00.000Z");
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        error: "Agent is paused",
+        errorCode: "agent_not_invokable",
+        updatedAt: now,
+      })
+      .where(eq(heartbeatRuns.id, retryRunId));
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(eq(issues.id, issueId));
+
+    const res = await request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/scheduled-retry/cancel`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      outcome: "no_scheduled_retry",
+      scheduledRetry: null,
+    });
+  });
+
   it("reports already-promoted retries without creating another run", async () => {
     const { companyId, issueId, retryRunId } = await seedIssueWithRetry({ retryStatus: "queued" });
 

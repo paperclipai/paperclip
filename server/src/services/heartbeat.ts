@@ -6887,6 +6887,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  function isBoardCancelledScheduledRetry(row: { run: typeof heartbeatRuns.$inferSelect }) {
+    return row.run.errorCode === "scheduled_retry_cancelled";
+  }
+
   async function retryScheduledRetryNow(input: {
     issueId: string;
     actor?: { actorType?: "user" | "agent" | "system"; actorId?: string | null };
@@ -7042,7 +7046,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
       const alreadyCancelled = await getIssueRetryRun(issue.companyId, issue.id, ["cancelled"]);
-      if (alreadyCancelled) {
+      if (alreadyCancelled && isBoardCancelledScheduledRetry(alreadyCancelled)) {
         return {
           outcome: "already_cancelled" as const,
           message: "Scheduled retry was already cancelled",
@@ -7141,7 +7145,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
     const alreadyCancelled = await getIssueRetryRun(issue.companyId, issue.id, ["cancelled"]);
-    if (alreadyCancelled) {
+    if (alreadyCancelled && isBoardCancelledScheduledRetry(alreadyCancelled)) {
       return {
         outcome: "already_cancelled" as const,
         message: "Scheduled retry was already cancelled",
