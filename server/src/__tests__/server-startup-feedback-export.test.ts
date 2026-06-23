@@ -5,6 +5,37 @@ const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const primaryRuntimeControls = {
+  role: "primary",
+  heartbeatSchedulerEnabled: false,
+  routineSchedulerEnabled: false,
+  pluginSchedulerEnabled: true,
+  pluginWorkersEnabled: true,
+  pluginAutoInstallEnabled: true,
+  startupRecoveryEnabled: false,
+  startupReconciliationEnabled: true,
+  databaseBackupSchedulerEnabled: false,
+  feedbackExporterEnabled: true,
+  migrationsApplyAllowed: true,
+  migrationMode: "apply",
+  disabledSystems: [],
+};
+
+const passiveRuntimeControls = {
+  role: "staged",
+  heartbeatSchedulerEnabled: false,
+  routineSchedulerEnabled: false,
+  pluginSchedulerEnabled: false,
+  pluginWorkersEnabled: false,
+  pluginAutoInstallEnabled: false,
+  startupRecoveryEnabled: false,
+  startupReconciliationEnabled: false,
+  databaseBackupSchedulerEnabled: false,
+  feedbackExporterEnabled: false,
+  migrationsApplyAllowed: false,
+  migrationMode: "refuse",
+  disabledSystems: [],
+};
 
 const {
   createAppMock,
@@ -15,7 +46,15 @@ const {
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
+  applyPendingMigrationsMock,
+  backfillPrincipalAccessCompatibilityMock,
+  bootstrapExecutionPolicyFromEnvMock,
+  heartbeatServiceMock,
   loadConfigMock,
+  inspectMigrationsMock,
+  reconcileCloudUpstreamRunsOnStartupMock,
+  reconcilePersistedRuntimeServicesOnStartupMock,
+  routineServiceMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
@@ -35,6 +74,35 @@ const {
     }),
     close: vi.fn(),
   };
+  const inspectMigrationsMock = vi.fn(async () => ({ status: "upToDate" }));
+  const applyPendingMigrationsMock = vi.fn();
+  const backfillPrincipalAccessCompatibilityMock = vi.fn(async () => ({
+    agentMembershipsInserted: 0,
+    humanGrantsInserted: 0,
+  }));
+  const bootstrapExecutionPolicyFromEnvMock = vi.fn(async () => null);
+  const heartbeatServiceMock = vi.fn(() => ({
+    reapOrphanedRuns: vi.fn(async () => undefined),
+    promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
+    resumeQueuedRuns: vi.fn(async () => undefined),
+    reconcileStrandedAssignedIssues: vi.fn(async () => ({
+      dispatchRequeued: 0,
+      continuationRequeued: 0,
+      successfulRunHandoffEscalated: 0,
+      escalated: 0,
+      skipped: 0,
+      issueIds: [],
+    })),
+    reconcileIssueGraphLiveness: vi.fn(async () => ({ escalationsCreated: 0 })),
+    scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
+    reconcileProductivityReviews: vi.fn(async () => ({ created: 0, updated: 0, failed: 0 })),
+    tickTimers: vi.fn(async () => ({ enqueued: 0 })),
+  }));
+  const routineServiceMock = vi.fn(() => ({
+    tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
+  }));
+  const reconcileCloudUpstreamRunsOnStartupMock = vi.fn(async () => ({ reconciled: 0 }));
+  const reconcilePersistedRuntimeServicesOnStartupMock = vi.fn(async () => ({ reconciled: 0 }));
   const loadConfigMock = vi.fn();
 
   return {
@@ -46,12 +114,22 @@ const {
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
     fakeServer,
+    applyPendingMigrationsMock,
+    backfillPrincipalAccessCompatibilityMock,
+    bootstrapExecutionPolicyFromEnvMock,
+    heartbeatServiceMock,
     loadConfigMock,
+    inspectMigrationsMock,
+    reconcileCloudUpstreamRunsOnStartupMock,
+    reconcilePersistedRuntimeServicesOnStartupMock,
+    routineServiceMock,
   };
 });
 
 function buildTestConfig(overrides: Record<string, unknown> = {}) {
   return {
+    runtimeRole: "primary",
+    runtimeControls: primaryRuntimeControls,
     deploymentMode: "authenticated",
     deploymentExposure: "private",
     bind: "loopback",
@@ -103,8 +181,8 @@ vi.mock("@paperclipai/db", () => ({
   createDb: createDbMock,
   ensurePostgresDatabase: vi.fn(),
   getPostgresDataDirectory: vi.fn(),
-  inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
-  applyPendingMigrations: vi.fn(),
+  inspectMigrations: inspectMigrationsMock,
+  applyPendingMigrations: applyPendingMigrationsMock,
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
   runDatabaseBackup: vi.fn(),
@@ -138,26 +216,10 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
-  backfillPrincipalAccessCompatibility: vi.fn(async () => ({
-    agentMembershipsInserted: 0,
-    humanGrantsInserted: 0,
-  })),
+  backfillPrincipalAccessCompatibility: backfillPrincipalAccessCompatibilityMock,
   feedbackService: feedbackServiceFactoryMock,
-  bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
-  heartbeatService: vi.fn(() => ({
-    reapOrphanedRuns: vi.fn(async () => undefined),
-    promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
-    resumeQueuedRuns: vi.fn(async () => undefined),
-    reconcileStrandedAssignedIssues: vi.fn(async () => ({
-      dispatchRequeued: 0,
-      continuationRequeued: 0,
-      successfulRunHandoffEscalated: 0,
-      escalated: 0,
-      skipped: 0,
-      issueIds: [],
-    })),
-    tickTimers: vi.fn(async () => ({ enqueued: 0 })),
-  })),
+  bootstrapExecutionPolicyFromEnv: bootstrapExecutionPolicyFromEnvMock,
+  heartbeatService: heartbeatServiceMock,
   instanceSettingsService: vi.fn(() => ({
     getGeneral: vi.fn(async () => ({
       backupRetention: {
@@ -167,11 +229,9 @@ vi.mock("../services/index.js", () => ({
       },
     })),
   })),
-  reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
-  reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
-  routineService: vi.fn(() => ({
-    tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
-  })),
+  reconcileCloudUpstreamRunsOnStartup: reconcileCloudUpstreamRunsOnStartupMock,
+  reconcilePersistedRuntimeServicesOnStartup: reconcilePersistedRuntimeServicesOnStartupMock,
+  routineService: routineServiceMock,
 }));
 
 vi.mock("../storage/index.js", () => ({
@@ -204,6 +264,7 @@ import { startServer } from "../index.ts";
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    inspectMigrationsMock.mockResolvedValue({ status: "upToDate" });
     loadConfigMock.mockReturnValue(buildTestConfig());
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
@@ -253,9 +314,86 @@ describe("startServer feedback export wiring", () => {
   });
 });
 
+describe("startServer runtime role guardrails", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    inspectMigrationsMock.mockResolvedValue({ status: "upToDate" });
+    loadConfigMock.mockReturnValue(buildTestConfig());
+    process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("passes runtime controls into createApp for health and plugin startup decisions", async () => {
+    await startServer();
+
+    expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
+      runtimeControls: primaryRuntimeControls,
+    });
+  });
+
+  it("does not call startup reconciliation, execution bootstrap, or heartbeat factories in staged", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      runtimeRole: "staged",
+      runtimeControls: passiveRuntimeControls,
+      heartbeatSchedulerEnabled: false,
+      databaseBackupEnabled: false,
+    }));
+
+    await startServer();
+
+    expect(backfillPrincipalAccessCompatibilityMock).not.toHaveBeenCalled();
+    expect(reconcilePersistedRuntimeServicesOnStartupMock).not.toHaveBeenCalled();
+    expect(reconcileCloudUpstreamRunsOnStartupMock).not.toHaveBeenCalled();
+    expect(bootstrapExecutionPolicyFromEnvMock).not.toHaveBeenCalled();
+    expect(heartbeatServiceMock).not.toHaveBeenCalled();
+    expect(routineServiceMock).not.toHaveBeenCalled();
+    expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
+      runtimeControls: passiveRuntimeControls,
+    });
+  });
+
+  it("does not call startup reconciliation, execution bootstrap, or heartbeat factories in api-only", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      runtimeRole: "api-only",
+      runtimeControls: { ...passiveRuntimeControls, role: "api-only" },
+      heartbeatSchedulerEnabled: false,
+      databaseBackupEnabled: false,
+    }));
+
+    await startServer();
+
+    expect(backfillPrincipalAccessCompatibilityMock).not.toHaveBeenCalled();
+    expect(reconcilePersistedRuntimeServicesOnStartupMock).not.toHaveBeenCalled();
+    expect(reconcileCloudUpstreamRunsOnStartupMock).not.toHaveBeenCalled();
+    expect(bootstrapExecutionPolicyFromEnvMock).not.toHaveBeenCalled();
+    expect(heartbeatServiceMock).not.toHaveBeenCalled();
+    expect(routineServiceMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses pending migration apply in staged", async () => {
+    inspectMigrationsMock.mockResolvedValue({
+      status: "needsMigrations",
+      reason: "pending-migrations",
+      pendingMigrations: ["0002_runtime_role_test"],
+    });
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      runtimeRole: "staged",
+      runtimeControls: passiveRuntimeControls,
+      heartbeatSchedulerEnabled: false,
+      databaseBackupEnabled: false,
+    }));
+
+    await expect(startServer()).rejects.toThrow(
+      "PAPERCLIP_RUNTIME_ROLE=staged refuses migration apply",
+    );
+    expect(applyPendingMigrationsMock).not.toHaveBeenCalled();
+    expect(createDbMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("startServer authenticated auth origin setup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    inspectMigrationsMock.mockResolvedValue({ status: "upToDate" });
     loadConfigMock.mockReturnValue(buildTestConfig());
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
@@ -302,6 +440,7 @@ describe("startServer authenticated auth origin setup", () => {
 describe("startServer PAPERCLIP_API_URL handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    inspectMigrationsMock.mockResolvedValue({ status: "upToDate" });
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;

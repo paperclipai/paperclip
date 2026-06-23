@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 import type { BindMode, DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { RuntimeControls } from "./runtime-roles.js";
 
 import { parse as parseEnvFileContents } from "dotenv";
 
@@ -28,6 +29,7 @@ type StartupBannerOptions = {
   uiMode: UiMode;
   db: ExternalPostgresInfo | EmbeddedPostgresInfo;
   migrationSummary: string;
+  runtimeControls: RuntimeControls;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   databaseBackupEnabled: boolean;
@@ -149,6 +151,7 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
     color("  ───────────────────────────────────────────────────────", "blue"),
     row("Mode", `${dbMode}  |  ${uiMode}`),
     row("Deploy", `${opts.deploymentMode} (${opts.deploymentExposure})`),
+    row("Runtime Role", opts.runtimeControls.role),
     row("Bind", `${opts.bind} ${color(`(${opts.host})`, "dim")}`),
     row("Auth", opts.authReady ? color("ready", "green") : color("not-ready", "yellow")),
     row("Server", portValue),
@@ -163,6 +166,12 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
         : color(agentJwtSecret.message, "yellow"),
     ),
     row("Heartbeat", heartbeat),
+    row(
+      "Plugin Runtime",
+      opts.runtimeControls.pluginSchedulerEnabled || opts.runtimeControls.pluginWorkersEnabled
+        ? `scheduler=${opts.runtimeControls.pluginSchedulerEnabled ? "enabled" : "disabled"} workers=${opts.runtimeControls.pluginWorkersEnabled ? "enabled" : "disabled"}`
+        : color("disabled", "yellow"),
+    ),
     row("DB Backup", dbBackup),
     row("Backup Dir", opts.databaseBackupDir),
     row("Config", configPath),

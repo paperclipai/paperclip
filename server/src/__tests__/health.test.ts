@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
 import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
+import { deriveRuntimeControls } from "../runtime-roles.js";
 
 const mockReadPersistedDevServerStatus = vi.hoisted(() => vi.fn());
 
@@ -32,7 +33,16 @@ describe("GET /health", () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion });
+    expect(res.body).toMatchObject({
+      status: "ok",
+      version: serverVersion,
+      runtime: {
+        runtimeRole: "primary",
+        heartbeatSchedulerEnabled: true,
+        pluginSchedulerEnabled: true,
+        pluginWorkersEnabled: true,
+      },
+    });
   }, 15_000);
 
   it("returns 200 when the database probe succeeds", async () => {
@@ -57,9 +67,21 @@ describe("GET /health", () => {
     const res = await request(app).get("/health");
 
     expect(res.status).toBe(503);
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       status: "unhealthy",
       version: serverVersion,
+      runtime: {
+        runtimeRole: "primary",
+        heartbeatSchedulerEnabled: true,
+        routineSchedulerEnabled: true,
+        pluginSchedulerEnabled: true,
+        pluginWorkersEnabled: true,
+        pluginAutoInstallEnabled: true,
+        databaseBackupSchedulerEnabled: true,
+        startupRecoveryEnabled: true,
+        startupReconciliationEnabled: true,
+        migrationMode: "apply",
+      },
       error: "database_unreachable"
     });
   });
@@ -88,6 +110,11 @@ describe("GET /health", () => {
         deploymentExposure: "public",
         authReady: true,
         companyDeletionEnabled: false,
+        runtimeControls: deriveRuntimeControls({
+          role: "api-only",
+          databaseBackupEnabled: true,
+          feedbackExporterConfigured: true,
+        }),
       }),
     );
 
@@ -98,6 +125,13 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      runtime: expect.objectContaining({
+        runtimeRole: "api-only",
+        heartbeatSchedulerEnabled: false,
+        pluginSchedulerEnabled: false,
+        pluginWorkersEnabled: false,
+        databaseBackupSchedulerEnabled: false,
+      }),
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -123,6 +157,11 @@ describe("GET /health", () => {
         deploymentExposure: "public",
         authReady: true,
         companyDeletionEnabled: false,
+        runtimeControls: deriveRuntimeControls({
+          role: "staged",
+          databaseBackupEnabled: true,
+          feedbackExporterConfigured: true,
+        }),
       }),
     );
 
@@ -133,6 +172,13 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      runtime: expect.objectContaining({
+        runtimeRole: "staged",
+        heartbeatSchedulerEnabled: false,
+        pluginSchedulerEnabled: false,
+        pluginWorkersEnabled: false,
+        databaseBackupSchedulerEnabled: false,
+      }),
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -162,6 +208,11 @@ describe("GET /health", () => {
         deploymentExposure: "public",
         authReady: true,
         companyDeletionEnabled: false,
+        runtimeControls: deriveRuntimeControls({
+          role: "primary",
+          databaseBackupEnabled: true,
+          feedbackExporterConfigured: false,
+        }),
       }),
     );
 
@@ -173,6 +224,13 @@ describe("GET /health", () => {
       version: serverVersion,
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      runtime: expect.objectContaining({
+        runtimeRole: "primary",
+        heartbeatSchedulerEnabled: true,
+        pluginSchedulerEnabled: true,
+        pluginWorkersEnabled: true,
+        databaseBackupSchedulerEnabled: true,
+      }),
       authReady: true,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,

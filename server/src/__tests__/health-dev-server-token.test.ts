@@ -97,6 +97,18 @@ describe("GET /health dev-server supervisor access", () => {
         status: "ok",
         deploymentMode: "authenticated",
         deploymentExposure: "private",
+        runtime: {
+          runtimeRole: "primary",
+          heartbeatSchedulerEnabled: true,
+          routineSchedulerEnabled: true,
+          pluginSchedulerEnabled: true,
+          pluginWorkersEnabled: true,
+          pluginAutoInstallEnabled: true,
+          databaseBackupSchedulerEnabled: true,
+          startupRecoveryEnabled: true,
+          startupReconciliationEnabled: true,
+          migrationMode: "apply",
+        },
         bootstrapStatus: "ready",
         bootstrapInviteActive: false,
         devServer: {

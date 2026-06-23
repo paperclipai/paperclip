@@ -29,6 +29,7 @@ import {
   resolveDefaultStorageDir,
   resolveHomeAwarePath,
 } from "./home-paths.js";
+import { deriveRuntimeControls, type RuntimeControls, type RuntimeRole } from "./runtime-roles.js";
 
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
 if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
@@ -50,6 +51,8 @@ const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 type DatabaseMode = "embedded-postgres" | "postgres";
 
 export interface Config {
+  runtimeRole: RuntimeRole;
+  runtimeControls: RuntimeControls;
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
   bind: BindMode;
@@ -248,6 +251,14 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
       ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
       : (fileDatabaseBackup?.enabled ?? true);
+  const runtimeControls = deriveRuntimeControls({
+    role: process.env.PAPERCLIP_RUNTIME_ROLE,
+    heartbeatSchedulerEnv: process.env.HEARTBEAT_SCHEDULER_ENABLED,
+    databaseBackupEnabled,
+    feedbackExporterConfigured: Boolean(feedbackExportBackendUrl && feedbackExportBackendToken),
+    migrationAutoApplyEnv: process.env.PAPERCLIP_MIGRATION_AUTO_APPLY,
+    migrationPromptEnv: process.env.PAPERCLIP_MIGRATION_PROMPT,
+  });
   const databaseBackupIntervalMinutes = Math.max(
     1,
     Number(process.env.PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES) ||
@@ -286,6 +297,8 @@ export function loadConfig(): Config {
   }
 
   return {
+    runtimeRole: runtimeControls.role,
+    runtimeControls,
     deploymentMode,
     deploymentExposure,
     bind: resolvedBind.bind,
@@ -303,7 +316,7 @@ export function loadConfig(): Config {
       fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
     ),
     embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54329,
-    databaseBackupEnabled,
+    databaseBackupEnabled: runtimeControls.databaseBackupSchedulerEnabled,
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,
     databaseBackupDir,
@@ -329,7 +342,7 @@ export function loadConfig(): Config {
     storageS3ForcePathStyle,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
-    heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
+    heartbeatSchedulerEnabled: runtimeControls.heartbeatSchedulerEnabled,
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
