@@ -243,6 +243,29 @@ describeEmbeddedPostgres("agentMemoryService (per-agent long-term memory)", () =
     await svc.forget(companyId, agentId, all[0].id, boardActor);
     expect(await svc.buildContextSummary(companyId, agentId)).toBe("");
   });
+
+  it("always injects a write guide so agents can capitalize memories (issue #6)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent(db);
+    // With no memories, the run section is still non-empty: it teaches the agent
+    // how to write, otherwise it can read but never store anything.
+    const empty = await svc.buildRunMemorySection(companyId, agentId);
+    expect(empty).not.toBe("");
+    expect(empty).not.toContain("Long-term memory (most relevant)"); // no recall yet
+    expect(empty).toContain(`/api/agents/${agentId}/memories`);
+    expect(empty).toContain("$PAPERCLIP_API_KEY");
+
+    await svc.write(
+      companyId,
+      agentId,
+      { type: "lesson", title: "Rollback on 5xx spike", body: "Roll back within 5 min", confidence: 90 },
+      boardActor,
+    );
+    const populated = await svc.buildRunMemorySection(companyId, agentId);
+    // Now it carries both the recall summary and the write guide.
+    expect(populated).toContain("Long-term memory (most relevant)");
+    expect(populated).toContain("Rollback on 5xx spike");
+    expect(populated).toContain(`/api/agents/${agentId}/memories`);
+  });
 });
 
 describe("redactSecrets", () => {

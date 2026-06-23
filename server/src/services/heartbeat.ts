@@ -8587,13 +8587,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       delete context.paperclipTaskMarkdown;
     }
     // Long-term memory (issue #6): surface the agent's consolidated memories so they
-    // are re-read inside the run, not just written. Always injected; the adapter
-    // renders it into the prompt.
-    const memorySummary = await agentMemoryService(db)
-      .buildContextSummary(agent.companyId, agent.id)
+    // are re-read inside the run (not just written), plus an always-on guide telling
+    // the agent how to write new memories. The adapter renders it into the prompt.
+    const memorySection = await agentMemoryService(db)
+      .buildRunMemorySection(agent.companyId, agent.id)
       .catch(() => "");
-    if (memorySummary) {
-      context.paperclipMemorySummary = memorySummary;
+    if (memorySection) {
+      context.paperclipMemorySummary = memorySection;
     } else {
       delete context.paperclipMemorySummary;
     }

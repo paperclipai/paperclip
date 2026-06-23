@@ -290,6 +290,17 @@ export function agentMemoryService(db: Db) {
     return ["Long-term memory (most relevant):", ...lines].join("\n");
   }
 
+  /**
+   * Full memory section injected into every run (issue #6): the recall summary
+   * (when the agent has memories) plus an always-present guide telling the agent
+   * how to write durable memories. Without the write guide, agents are never told
+   * that the control-plane memory exists, so they can read but never capitalize.
+   */
+  async function buildRunMemorySection(companyId: string, agentId: string, limit = 30): Promise<string> {
+    const summary = await buildContextSummary(companyId, agentId, limit);
+    return [summary, renderMemoryUsageGuide(agentId)].filter((part) => part.length > 0).join("\n\n");
+  }
+
   return {
     write,
     recall,
@@ -298,7 +309,25 @@ export function agentMemoryService(db: Db) {
     correct,
     renderMarkdown,
     buildContextSummary,
+    buildRunMemorySection,
     assertProvenanceInScope,
     redactSecrets,
   };
+}
+
+/**
+ * Always-on instruction block teaching an agent to write to its durable,
+ * cross-run long-term memory. The agent already calls the control-plane API with
+ * `$PAPERCLIP_API_URL` and `Authorization: Bearer $PAPERCLIP_API_KEY`; this just
+ * documents the memory endpoint and bakes in the agent's own id.
+ */
+export function renderMemoryUsageGuide(agentId: string): string {
+  return [
+    "Your long-term memory (durable, private to you, re-surfaced at the start of future runs):",
+    `- To remember a fact, decision, or lesson, POST $PAPERCLIP_API_URL/api/agents/${agentId}/memories`,
+    '  with your usual `Authorization: Bearer $PAPERCLIP_API_KEY` header and JSON body',
+    '  {"type":"semantic|episodic|procedural|lesson","title":"...","body":"...","tags":["..."],"confidence":0-100}.',
+    "- Capture durable knowledge proactively; it resurfaces automatically in later runs (no need to re-read issues).",
+    "- Secrets are redacted on write. To revise a memory, POST .../memories/:id/correct; to drop one, .../memories/:id/forget.",
+  ].join("\n");
 }
