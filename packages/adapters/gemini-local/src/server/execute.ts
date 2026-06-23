@@ -575,8 +575,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         command: resolvedCommand,
         cwd: effectiveExecutionCwd,
         commandNotes,
-        commandArgs: args.map((value, index) => (
-          index === 1 ? `<prompt ${prompt.length} chars>` : value
+        commandArgs: args.map((value) => (
+          value === prompt ? `<prompt ${prompt.length} chars>` : value
         )),
         env: loggedEnv,
         prompt,
