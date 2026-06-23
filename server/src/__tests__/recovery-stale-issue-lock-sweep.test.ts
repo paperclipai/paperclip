@@ -223,4 +223,90 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(first.cleared).toBe(1);
     expect(second.cleared).toBe(0);
   });
+
+  it("reaps a process_detached run silent past the critical threshold, then clears its stranded lock", async () => {
+    const { companyId, agentId } = await seed();
+    const detachedRunId = randomUUID();
+    const silentSince = new Date(Date.now() - 5 * 60 * 60 * 1000); // 5h > 4h critical threshold
+    await db.insert(heartbeatRuns).values({
+      id: detachedRunId,
+      companyId,
+      agentId,
+      status: "running",
+      errorCode: "process_detached",
+      invocationSource: "manual",
+      startedAt: silentSince,
+      lastOutputAt: silentSince,
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stranded lock — detached zombie run",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: detachedRunId,
+      executionRunId: detachedRunId,
+      executionLockedAt: silentSince,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result.cleared).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issueRow = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(issueRow).toEqual({ checkoutRunId: null, executionRunId: null });
+
+    // The dead zombie is reaped to a terminal status so the silence-detector stops re-flagging it.
+    const runRow = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, detachedRunId))
+      .then((rows) => rows[0]);
+    expect(runRow?.status).toBe("timed_out");
+  });
+
+  it("does not reap a process_detached run still within the critical threshold", async () => {
+    const { companyId, agentId } = await seed();
+    const detachedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: detachedRunId,
+      companyId,
+      agentId,
+      status: "running",
+      errorCode: "process_detached",
+      invocationSource: "manual",
+      startedAt: new Date(),
+      lastOutputAt: new Date(Date.now() - 10 * 60 * 1000), // 10 min < 4h — may still be alive
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Recently-detached run — preserve",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: detachedRunId,
+      executionRunId: null,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result.cleared).toBe(0);
+    const runRow = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, detachedRunId))
+      .then((rows) => rows[0]);
+    expect(runRow?.status).toBe("running");
+  });
 });
