@@ -12,6 +12,21 @@ import type { MarkdownExternalReferenceMap } from "../components/MarkdownBody";
 import type { ExternalObjectPillData } from "../components/ExternalObjectPill";
 import { instanceSettingsApi } from "../api/instanceSettings";
 
+export const EXTERNAL_OBJECT_SUMMARY_BATCH_SIZE = 500;
+
+export async function fetchIssueExternalObjectSummariesInBatches(
+  companyId: string,
+  issueIds: readonly string[],
+) {
+  const summaries: Record<string, ExternalObjectSummary> = {};
+  for (let index = 0; index < issueIds.length; index += EXTERNAL_OBJECT_SUMMARY_BATCH_SIZE) {
+    const batch = issueIds.slice(index, index + EXTERNAL_OBJECT_SUMMARY_BATCH_SIZE);
+    const response = await externalObjectsApi.getIssueSummaries(companyId, batch);
+    Object.assign(summaries, response.summaries);
+  }
+  return { summaries };
+}
+
 /**
  * Browser-side mention-source label. Keep in sync with the shared formatter
  * without coupling this hook to the server-only URL canonicalization helpers.
@@ -201,7 +216,7 @@ export function useIssueExternalObjectSummaries(
   const enabled = externalObjectsFeature.isEnabled && Boolean(companyId) && normalizedIssueIds.length > 0;
   const query = useQuery({
     queryKey: queryKeys.externalObjects.issueSummaries(companyId ?? "__none__", normalizedIssueIds),
-    queryFn: () => externalObjectsApi.getIssueSummaries(companyId!, normalizedIssueIds),
+    queryFn: () => fetchIssueExternalObjectSummariesInBatches(companyId!, normalizedIssueIds),
     enabled,
     staleTime: 60_000,
   });
