@@ -196,7 +196,14 @@ ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98
 # kkroo/paperclip-adapter-opencode-k8s#33; 54426c9's parent is b5b99fd (no
 # regress). Local adapter verification: job-manifest.test.ts (new chunkTimeout
 # tests, red->green), full suite 494/494, and typecheck passed.
-ARG OPENCODE_K8S_REF=54426c9e821d5504bf8db86bf85549d880496592
+# Bumped 2026-06-23 to b405f5b: enforce the BLO-3494 monthly budget cap before
+# creating opencode_k8s Kubernetes Jobs. Over-cap agents now fail fast with
+# errorCode=budget_exceeded, best-effort pause metadata, and an escalation
+# comment instead of continuing to spend past the cap. PR
+# kkroo/paperclip-adapter-opencode-k8s#34; local adapter verification passed
+# focused budget test, execute.test.ts (104/104), full suite 495/495,
+# typecheck, and git diff --check.
+ARG OPENCODE_K8S_REF=b405f5b52d827ded4829df6665a35b73cadcda77
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
