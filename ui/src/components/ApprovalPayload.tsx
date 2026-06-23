@@ -1,5 +1,24 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, Plug, BookOpen, Puzzle, KeyRound } from "lucide-react";
+import { useState } from "react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, Plug, BookOpen, Puzzle, KeyRound, Copy, Check } from "lucide-react";
 import { formatCents } from "../lib/utils";
+
+function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void navigator.clipboard?.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+    >
+      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+      {copied ? "Copied" : label}
+    </button>
+  );
+}
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -323,7 +342,33 @@ function PluginInstallPayload({ payload }: { payload: Record<string, unknown> })
   );
 }
 
+function LinkifiedText({ text }: { text: string }) {
+  const parts = text.split(/(https?:\/\/[^\s)]+)/g);
+  return (
+    <>
+      {parts.map((part, i) =>
+        /^https?:\/\//.test(part) ? (
+          <a
+            key={i}
+            href={part}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="text-blue-600 underline underline-offset-2 break-all dark:text-blue-400"
+          >
+            {part}
+          </a>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 function CredentialRequestPayload({ payload }: { payload: Record<string, unknown> }) {
+  const howToObtain = typeof payload.howToObtain === "string" ? payload.howToObtain.trim() : "";
+  const browserAgentPrompt =
+    typeof payload.browserAgentPrompt === "string" ? payload.browserAgentPrompt.trim() : "";
   return (
     <div className="mt-3 space-y-1.5 text-sm">
       <PayloadField label="Service" value={payload.service} />
@@ -336,6 +381,30 @@ function CredentialRequestPayload({ payload }: { payload: Record<string, unknown
         <div className="flex items-start gap-2">
           <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Reason</span>
           <span className="text-muted-foreground">{String(payload.reason)}</span>
+        </div>
+      )}
+      {howToObtain && (
+        <div className="mt-2 rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">How to obtain it</p>
+          <p className="mt-1 whitespace-pre-wrap leading-6 text-foreground/90">
+            <LinkifiedText text={howToObtain} />
+          </p>
+        </div>
+      )}
+      {browserAgentPrompt && (
+        <div className="mt-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-3.5 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-blue-700 dark:text-blue-300">
+              For your browser agent (e.g. Claude for Chrome)
+            </p>
+            <CopyButton text={browserAgentPrompt} label="Copy prompt" />
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Paste this into a browser-driving agent to fetch the value, then paste the result below.
+          </p>
+          <pre className="mt-1.5 max-h-48 overflow-auto rounded-md border border-border/60 bg-muted/40 px-3 py-2 font-mono text-[11px] leading-5 text-muted-foreground whitespace-pre-wrap">
+            {browserAgentPrompt}
+          </pre>
         </div>
       )}
       <div className="mt-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-muted-foreground">

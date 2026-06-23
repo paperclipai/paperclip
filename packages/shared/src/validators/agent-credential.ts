@@ -19,6 +19,15 @@ export const requestCredentialSchema = z.object({
   // Optional access scope the agent needs (e.g. "read+write payments").
   scope: z.string().trim().max(300).optional(),
   reason: z.string().trim().min(1).max(2000),
+  // Exact steps + direct links for the board to obtain this credential, so the human
+  // does not have to go hunting (e.g. "Go to https://dashboard.stripe.com/apikeys,
+  // create a restricted key with ...; paste it here"). URLs are made clickable in the UI.
+  howToObtain: z.string().trim().max(4000).optional(),
+  // A self-contained prompt the board can hand to a browser-driving agent (e.g. Claude
+  // for Chrome) so IT performs the acquisition in the browser and returns the value.
+  // The human is just the courier: copy prompt -> paste into the browser agent -> paste
+  // the returned value back into Provide & approve.
+  browserAgentPrompt: z.string().trim().max(6000).optional(),
 });
 export type RequestCredential = z.infer<typeof requestCredentialSchema>;
 
