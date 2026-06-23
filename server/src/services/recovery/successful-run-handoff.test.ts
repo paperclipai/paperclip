@@ -52,6 +52,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasExplicitBlockerPath: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
+    isRoutineReceiverParent: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
     ...overrides,
@@ -201,6 +202,13 @@ describe("successful run handoff decision", () => {
     })).toEqual({
       kind: "skip",
       reason: "issue monitor run owns its own recovery path",
+    });
+  });
+
+  it("does not queue for a routine receiver-parent issue", () => {
+    expect(decide({ isRoutineReceiverParent: true })).toEqual({
+      kind: "skip",
+      reason: "issue is a routine receiver parent",
     });
   });
 
