@@ -1,4 +1,4 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, Plug, BookOpen, Puzzle } from "lucide-react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, Plug, BookOpen, Puzzle, KeyRound } from "lucide-react";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -9,6 +9,7 @@ export const typeLabel: Record<string, string> = {
   request_mcp_install: "MCP Server",
   request_skill_install: "Skill Install",
   request_plugin_install: "Plugin Install",
+  request_credential: "Credential Request",
 };
 
 function firstNonEmptyString(...values: unknown[]): string | null {
@@ -26,6 +27,7 @@ export function approvalSubject(payload?: Record<string, unknown> | null): strin
     payload?.name,
     payload?.packageName,
     payload?.catalogSkillId,
+    payload?.service,
     payload?.summary,
     payload?.recommendedAction,
   );
@@ -49,6 +51,7 @@ export const typeIcon: Record<string, typeof UserPlus> = {
   request_mcp_install: Plug,
   request_skill_install: BookOpen,
   request_plugin_install: Puzzle,
+  request_credential: KeyRound,
 };
 
 export const defaultTypeIcon = ShieldCheck;
@@ -320,6 +323,29 @@ function PluginInstallPayload({ payload }: { payload: Record<string, unknown> })
   );
 }
 
+function CredentialRequestPayload({ payload }: { payload: Record<string, unknown> }) {
+  return (
+    <div className="mt-3 space-y-1.5 text-sm">
+      <PayloadField label="Service" value={payload.service} />
+      <div className="flex items-center gap-2">
+        <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">Env var</span>
+        <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">{String(payload.envKey ?? "—")}</code>
+      </div>
+      <PayloadField label="Scope" value={payload.scope} />
+      {!!payload.reason && (
+        <div className="flex items-start gap-2">
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Reason</span>
+          <span className="text-muted-foreground">{String(payload.reason)}</span>
+        </div>
+      )}
+      <div className="mt-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-muted-foreground">
+        Provide the secret value below. It is stored encrypted and injected into the agent's run environment as
+        {" "}<code className="font-mono">${String(payload.envKey ?? "ENV")}</code>. The value never appears in the request, logs, or activity.
+      </div>
+    </div>
+  );
+}
+
 export function ApprovalPayloadRenderer({
   type,
   payload,
@@ -334,6 +360,7 @@ export function ApprovalPayloadRenderer({
   if (type === "request_mcp_install") return <McpInstallPayload payload={payload} />;
   if (type === "request_skill_install") return <SkillInstallPayload payload={payload} />;
   if (type === "request_plugin_install") return <PluginInstallPayload payload={payload} />;
+  if (type === "request_credential") return <CredentialRequestPayload payload={payload} />;
   if (type === "request_board_approval") {
     return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
   }

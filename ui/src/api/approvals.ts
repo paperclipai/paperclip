@@ -13,6 +13,8 @@ export const approvalsApi = {
     api.post<Approval>(`/approvals/${id}/approve`, { decisionNote }),
   reject: (id: string, decisionNote?: string) =>
     api.post<Approval>(`/approvals/${id}/reject`, { decisionNote }),
+  provideCredential: (id: string, value: string, decisionNote?: string) =>
+    api.post<Approval>(`/approvals/${id}/provide-credential`, { value, decisionNote }),
   requestRevision: (id: string, decisionNote?: string) =>
     api.post<Approval>(`/approvals/${id}/request-revision`, { decisionNote }),
   resubmit: (id: string, payload?: Record<string, unknown>) =>

@@ -37,11 +37,16 @@ const mockAgentMcpServerService = vi.hoisted(() => ({
 const mockCompanySkillService = vi.hoisted(() => ({
   installFromCatalog: vi.fn(),
 }));
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  update: vi.fn(),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentMcpServerService: () => mockAgentMcpServerService,
+    agentService: () => mockAgentService,
     approvalService: () => mockApprovalService,
     companySkillService: () => mockCompanySkillService,
     heartbeatService: () => mockHeartbeatService,

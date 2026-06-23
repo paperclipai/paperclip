@@ -7,6 +7,7 @@ import {
   requestMcpInstallSchema,
   requestSkillInstallSchema,
   requestPluginInstallSchema,
+  requestCredentialSchema,
   createIssueInputSchema,
   issueThreadInteractionContinuationPolicySchema,
   requestCheckboxConfirmationPayloadSchema,
@@ -475,6 +476,19 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       async ({ companyId, issueIds, request }) =>
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
           body: { type: "request_plugin_install", payload: request, issueIds },
+        }),
+    ),
+    makeTool(
+      "paperclipRequestCredential",
+      "Request a credential or account access you cannot self-provision (e.g. a Stripe API key). Declare the env var name, service, and reason, never a value. On board approval the value is stored encrypted and injected into your run environment as $envKey; read it from your shell.",
+      z.object({
+        companyId: companyIdOptional,
+        issueIds: z.array(z.string().uuid()).optional(),
+        request: requestCredentialSchema,
+      }),
+      async ({ companyId, issueIds, request }) =>
+        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
+          body: { type: "request_credential", payload: request, issueIds },
         }),
     ),
     makeTool(

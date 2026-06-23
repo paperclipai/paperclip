@@ -476,6 +476,13 @@ export {
 } from "./agent-mcp.js";
 
 export {
+  requestCredentialSchema,
+  provideCredentialSchema,
+  type RequestCredential,
+  type ProvideCredential,
+} from "./agent-credential.js";
+
+export {
   createRoutineSchema,
   updateRoutineSchema,
   createRoutineTriggerSchema,

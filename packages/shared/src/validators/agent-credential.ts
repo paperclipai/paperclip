@@ -1,0 +1,30 @@
+import { z } from "zod";
+
+/**
+ * Payload an agent submits to request a credential (`request_credential`, issue #4).
+ * Describes WHAT it needs by name and reason only. The secret value is never in the
+ * payload: the board provides it at approval time via the provide-credential endpoint,
+ * which stores it encrypted in company_secrets and binds it to the agent's run env.
+ */
+export const requestCredentialSchema = z.object({
+  // The environment variable the agent will read at run time (e.g. STRIPE_SECRET_KEY).
+  envKey: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .regex(/^[A-Z][A-Z0-9_]*$/, "envKey must be an UPPER_SNAKE_CASE environment variable name"),
+  // The service/provider this credential is for (e.g. "stripe", "github").
+  service: z.string().trim().min(1).max(120),
+  // Optional access scope the agent needs (e.g. "read+write payments").
+  scope: z.string().trim().max(300).optional(),
+  reason: z.string().trim().min(1).max(2000),
+});
+export type RequestCredential = z.infer<typeof requestCredentialSchema>;
+
+/** The board-supplied secret value, posted to the provide-credential endpoint. */
+export const provideCredentialSchema = z.object({
+  value: z.string().min(1).max(8000),
+  decisionNote: z.string().trim().max(2000).optional(),
+});
+export type ProvideCredential = z.infer<typeof provideCredentialSchema>;

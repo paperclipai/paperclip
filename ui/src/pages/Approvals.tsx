@@ -64,6 +64,18 @@ export function Approvals() {
     },
   });
 
+  const provideCredentialMutation = useMutation({
+    mutationFn: ({ id, value }: { id: string; value: string }) => approvalsApi.provideCredential(id, value),
+    onSuccess: (_approval, { id }) => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+      navigate(`/approvals/${id}?resolved=approved`);
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to provide credential");
+    },
+  });
+
   const filtered = (data ?? [])
     .filter(
       (a) => statusFilter === "all" || a.status === "pending" || a.status === "revision_requested",
@@ -121,10 +133,15 @@ export function Approvals() {
               requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
               onApprove={() => approveMutation.mutate(approval.id)}
               onReject={() => rejectMutation.mutate(approval.id)}
+              onProvideCredential={(value) => provideCredentialMutation.mutate({ id: approval.id, value })}
               detailLink={`/approvals/${approval.id}`}
-              isPending={approveMutation.isPending || rejectMutation.isPending}
+              isPending={approveMutation.isPending || rejectMutation.isPending || provideCredentialMutation.isPending}
               pendingAction={
-                approveMutation.isPending ? "approve" : rejectMutation.isPending ? "reject" : null
+                approveMutation.isPending || provideCredentialMutation.isPending
+                  ? "approve"
+                  : rejectMutation.isPending
+                    ? "reject"
+                    : null
               }
             />
           ))}

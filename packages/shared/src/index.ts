@@ -946,6 +946,10 @@ export {
   type CreateAgentMcpServer,
   type RequestSkillInstall,
   type RequestPluginInstall,
+  requestCredentialSchema,
+  provideCredentialSchema,
+  type RequestCredential,
+  type ProvideCredential,
 } from "./validators/index.js";
 
 export {

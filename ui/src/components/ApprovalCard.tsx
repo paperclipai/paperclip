@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { CheckCircle2, XCircle, Clock } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +29,7 @@ export function ApprovalCard({
   onApprove,
   onReject,
   onOpen,
+  onProvideCredential,
   detailLink,
   isPending = false,
   pendingAction = null,
@@ -37,10 +39,13 @@ export function ApprovalCard({
   onApprove?: () => void;
   onReject?: () => void;
   onOpen?: () => void;
+  onProvideCredential?: (value: string) => void;
   detailLink?: string;
   isPending?: boolean;
   pendingAction?: "approve" | "reject" | null;
 }) {
+  const [credentialValue, setCredentialValue] = useState("");
+  const isCredentialRequest = approval.type === "request_credential";
   const payload = approval.payload as Record<string, unknown> | null;
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
@@ -111,24 +116,49 @@ export function ApprovalCard({
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
           <div className="flex flex-wrap items-center gap-2">
             {showResolutionButtons && (
-              <>
-                <Button
-                  size="sm"
-                  className="bg-green-700 hover:bg-green-600 text-white"
-                  onClick={onApprove}
-                  disabled={isPending}
-                >
-                  {pendingAction === "approve" ? "Approving..." : "Approve"}
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={onReject}
-                  disabled={isPending}
-                >
-                  {pendingAction === "reject" ? "Rejecting..." : "Reject"}
-                </Button>
-              </>
+              isCredentialRequest && onProvideCredential ? (
+                <>
+                  <input
+                    type="password"
+                    value={credentialValue}
+                    onChange={(e) => setCredentialValue(e.target.value)}
+                    placeholder="Paste the secret value"
+                    autoComplete="off"
+                    className="h-8 w-56 rounded-md border border-border/70 bg-background px-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    disabled={isPending}
+                  />
+                  <Button
+                    size="sm"
+                    className="bg-green-700 hover:bg-green-600 text-white"
+                    onClick={() => onProvideCredential(credentialValue.trim())}
+                    disabled={isPending || credentialValue.trim().length === 0}
+                  >
+                    {pendingAction === "approve" ? "Providing..." : "Provide & approve"}
+                  </Button>
+                  <Button variant="destructive" size="sm" onClick={onReject} disabled={isPending}>
+                    {pendingAction === "reject" ? "Rejecting..." : "Reject"}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    className="bg-green-700 hover:bg-green-600 text-white"
+                    onClick={onApprove}
+                    disabled={isPending}
+                  >
+                    {pendingAction === "approve" ? "Approving..." : "Approve"}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={onReject}
+                    disabled={isPending}
+                  >
+                    {pendingAction === "reject" ? "Rejecting..." : "Reject"}
+                  </Button>
+                </>
+              )
             )}
           </div>
           {(detailLink || onOpen) ? (

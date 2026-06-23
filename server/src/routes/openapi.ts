@@ -135,6 +135,7 @@ import {
   correctAgentMemorySchema,
   createAgentMcpServerSchema,
   setAgentMcpServerStatusSchema,
+  provideCredentialSchema,
 } from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
@@ -2163,6 +2164,18 @@ registry.registerPath({
     body: jsonBody(resolveApprovalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/approvals/{id}/provide-credential",
+  tags: ["approvals"],
+  summary: "Provide the secret value for a credential request (stored encrypted, bound to the agent)",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(provideCredentialSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({

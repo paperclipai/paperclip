@@ -497,14 +497,16 @@ export const APPROVAL_TYPES = [
   "request_mcp_install",
   "request_skill_install",
   "request_plugin_install",
+  "request_credential",
 ] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
-/** Capability-request approval types an agent can raise to self-provision tools (issues #2, #5). */
+/** Capability-request approval types an agent can raise to self-provision tools (issues #2, #4, #5). */
 export const CAPABILITY_REQUEST_APPROVAL_TYPES = [
   "request_mcp_install",
   "request_skill_install",
   "request_plugin_install",
+  "request_credential",
 ] as const;
 
 /** Transports an installed MCP server can use (issue #2). */

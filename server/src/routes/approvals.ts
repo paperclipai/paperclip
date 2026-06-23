@@ -8,6 +8,8 @@ import {
   requestMcpInstallSchema,
   requestSkillInstallSchema,
   requestPluginInstallSchema,
+  requestCredentialSchema,
+  provideCredentialSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
 } from "@paperclipai/shared";
@@ -15,6 +17,7 @@ import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
   agentMcpServerService,
+  agentService,
   approvalService,
   accessService,
   companySkillService,
@@ -63,6 +66,7 @@ export function approvalRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const mcpServersSvc = agentMcpServerService(db);
   const skillsSvc = companySkillService(db);
+  const agentsSvc = agentService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
@@ -405,6 +409,105 @@ export function approvalRoutes(
 
     res.json(redactApprovalPayload(approval));
   });
+
+  // Credential requests (issue #4): the board provides the secret value here. It is
+  // stored encrypted in company_secrets and bound to the requesting agent's run env
+  // (adapterConfig.env secret ref). The value never enters the approval payload,
+  // activity log, or any other plaintext sink.
+  router.post(
+    "/approvals/:id/provide-credential",
+    validate(provideCredentialSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const id = req.params.id as string;
+      if (!(await requireApprovalAccess(req, id))) {
+        res.status(404).json({ error: "Approval not found" });
+        return;
+      }
+      const approval = await svc.getById(id);
+      if (!approval || approval.type !== "request_credential") {
+        res.status(422).json({ error: "Approval is not a credential request" });
+        return;
+      }
+      if (!approval.requestedByAgentId) {
+        res.status(422).json({ error: "Credential request has no requesting agent" });
+        return;
+      }
+      const parsed = requestCredentialSchema.parse(approval.payload);
+      const companyId = approval.companyId;
+      const agentId = approval.requestedByAgentId;
+      const decidedByUserId = req.actor.userId ?? "board";
+      const actorRef = { userId: decidedByUserId, agentId: null };
+
+      // Store (or rotate) the board-supplied value under the requested env key.
+      const existingSecret = await secretsSvc.getByName(companyId, parsed.envKey);
+      let secretId: string;
+      if (existingSecret) {
+        await secretsSvc.rotate(existingSecret.id, { value: req.body.value }, actorRef);
+        secretId = existingSecret.id;
+      } else {
+        const created = await secretsSvc.create(
+          companyId,
+          { name: parsed.envKey, provider: "local_encrypted", value: req.body.value },
+          actorRef,
+        );
+        secretId = created.id;
+      }
+
+      // Bind it to the agent's run env as a secret ref (resolved into the process env
+      // each run; updateAgent also syncs the company_secret_bindings for the agent).
+      const agent = await agentsSvc.getById(agentId);
+      if (!agent) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      const adapterConfig =
+        typeof agent.adapterConfig === "object" && agent.adapterConfig !== null
+          ? { ...(agent.adapterConfig as Record<string, unknown>) }
+          : {};
+      const env =
+        typeof adapterConfig.env === "object" && adapterConfig.env !== null
+          ? { ...(adapterConfig.env as Record<string, unknown>) }
+          : {};
+      env[parsed.envKey] = { type: "secret_ref", secretId, version: "latest" };
+      adapterConfig.env = env;
+      await agentsSvc.update(agentId, { adapterConfig });
+
+      const { approval: updated } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: decidedByUserId,
+        action: "agent_credential_granted",
+        entityType: "approval",
+        entityId: approval.id,
+        agentId,
+        details: { envKey: parsed.envKey, service: parsed.service, approvalId: approval.id },
+      });
+
+      try {
+        await heartbeat.wakeup(agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "approval_approved",
+          payload: { approvalId: approval.id, approvalStatus: "approved" },
+          requestedByActorType: "user",
+          requestedByActorId: decidedByUserId,
+          contextSnapshot: {
+            source: "approval.approved",
+            approvalId: approval.id,
+            approvalStatus: "approved",
+            wakeReason: "approval_approved",
+          },
+        });
+      } catch (err) {
+        logger.warn({ err, approvalId: approval.id }, "failed to wake agent after credential grant");
+      }
+
+      res.json(redactApprovalPayload(updated));
+    },
+  );
 
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);

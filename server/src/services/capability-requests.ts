@@ -19,6 +19,7 @@ export function renderCapabilityRequestGuide(companyId: string): string {
     '- Tool / MCP server (e.g. a browser, an integration): {"type":"request_mcp_install","payload":{"name":"<slug>","transport":"http"|"stdio","url":"<https url for http>","command":"<cmd for stdio>","args":["..."],"reason":"<why>","env":[{"key":"TOKEN","secretName":"<secret-name>"}]}}',
     '- Skill (a how-to from the catalog): {"type":"request_skill_install","payload":{"catalogSkillId":"<id>","reason":"<why>"}}',
     '- Plugin (server-side, instance-wide; an instance admin must approve): {"type":"request_plugin_install","payload":{"packageName":"<pkg>","version":"<optional>","reason":"<why>"}}',
+    '- Credential / account access you cannot self-provision (e.g. a Stripe key, a paid account): {"type":"request_credential","payload":{"envKey":"STRIPE_SECRET_KEY","service":"stripe","scope":"<optional>","reason":"<why>"}}. The board provides the value; on approval it is injected into your run environment as $envKey (read it from your shell), never returned in plaintext.',
     "Declare any secret by NAME only (never paste secret values); the board supplies them. Prefer http-transport MCP servers (no local browser/binary to install in your sandbox).",
   ].join("\n");
 }

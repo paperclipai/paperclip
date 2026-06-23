@@ -9,6 +9,7 @@ describe("renderCapabilityRequestGuide (issue #2)", () => {
     expect(guide).toContain("request_mcp_install");
     expect(guide).toContain("request_skill_install");
     expect(guide).toContain("request_plugin_install");
+    expect(guide).toContain("request_credential");
     // secrets-by-name discipline is surfaced
     expect(guide).toContain("secretName");
   });
