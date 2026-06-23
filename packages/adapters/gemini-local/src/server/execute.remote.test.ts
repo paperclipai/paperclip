@@ -12,6 +12,17 @@ const {
   runSshCommand,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
+} = vi.hoisted(() => ({
+  runChildProcess: vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout: [
+      JSON.stringify({ type: "init", session_id: "test-session" }),
+      JSON.stringify({ type: "message", role: "assistant", content: "hello from mock", delta: false }),
+      JSON.stringify({
+        type: "result",
+        status: "success",
         stats: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
       }),
     ].join("\n"),
