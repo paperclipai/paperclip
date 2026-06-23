@@ -1,0 +1,80 @@
+{
+  "name": "@paperclipai/hermes-paperclip-adapter",
+  "version": "0.3.0",
+  "description": "Paperclip adapter for Hermes Agent — run Hermes as a managed employee in a Paperclip company",
+  "type": "module",
+  "license": "MIT",
+  "author": "Paperclip",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/adapters/hermes-local"
+  },
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "homepage": "https://github.com/paperclipai/paperclip/tree/master/packages/adapters/hermes-local#readme",
+  "keywords": [
+    "paperclip",
+    "hermes",
+    "hermes-agent",
+    "ai-agent",
+    "adapter",
+    "orchestration"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server/index.ts",
+    "./ui": "./src/ui/index.ts",
+    "./cli": "./src/cli/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./server": {
+        "types": "./dist/server/index.d.ts",
+        "import": "./dist/server/index.js"
+      },
+      "./ui": {
+        "types": "./dist/ui/index.d.ts",
+        "import": "./dist/ui/index.js"
+      },
+      "./cli": {
+        "types": "./dist/cli/index.d.ts",
+        "import": "./dist/cli/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "provenance": true
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:command-resolution": "vitest run src/server/command-resolution.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "workspace:*",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.21",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

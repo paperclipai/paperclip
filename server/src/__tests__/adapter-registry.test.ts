@@ -10,7 +10,7 @@ const hermesExecuteMock = vi.hoisted(() =>
   })),
 );
 
-vi.mock("hermes-paperclip-adapter/server", () => ({
+vi.mock("@paperclipai/hermes-paperclip-adapter/server", () => ({
   execute: hermesExecuteMock,
   testEnvironment: async () => ({
     adapterType: "hermes_local",
