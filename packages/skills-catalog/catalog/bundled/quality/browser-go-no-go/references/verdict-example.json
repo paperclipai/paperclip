@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "qaIssueId": "FAI-5736",
+  "featureIssueIds": ["FAI-5734"],
+  "environment": {
+    "name": "local",
+    "baseUrl": "http://127.0.0.1:3100",
+    "commit": null
+  },
+  "browserContext": {
+    "tool": "scripts/qa-browser-bridge.mjs",
+    "isolated": true,
+    "profileRef": ".paperclip/qa-browser/profile-3320",
+    "viewport": {
+      "width": 1440,
+      "height": 1000
+    }
+  },
+  "journeys": [
+    {
+      "id": "home-load",
+      "name": "Load Paperclip home",
+      "required": true,
+      "status": "pass",
+      "steps": [
+        "Navigate to the app base URL.",
+        "Wait for the document body to render.",
+        "Capture a full-page screenshot and body text evidence."
+      ],
+      "assertions": [
+        {
+          "description": "The page renders visible body text for a human reviewer.",
+          "result": "pass",
+          "observed": "Body text was present after deterministic body wait."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "ref": "screenshots/qa-browser/FAI-5736-home.png",
+          "sha256": null,
+          "description": "Full-page screenshot after load."
+        },
+        {
+          "kind": "dom",
+          "ref": "docs/qa/browser-go-no-go/FAI-5736-home-dom.txt",
+          "sha256": null,
+          "description": "Extracted body text after load."
+        }
+      ],
+      "retryCount": 0,
+      "quarantine": null
+    }
+  ],
+  "overallVerdict": "go",
+  "approver": {
+    "type": "agent",
+    "id": "7d4d0562-48dd-40be-8ad2-f9b3d8fa6899",
+    "name": "QA Engineer"
+  },
+  "generatedAt": "2026-06-23T00:00:00.000Z"
+}
+
