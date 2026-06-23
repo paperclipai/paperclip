@@ -300,22 +300,13 @@ npx paperclipai onboard --yes
 > npx --registry https://registry.npmjs.org paperclipai onboard --yes
 > ```
 
-The server starts at `http://localhost:3100` with an embedded database — no setup needed. It runs in your terminal until you stop it (Ctrl+C).
+That's it. The server starts at `http://localhost:3100` with an embedded database — no setup needed.
 
-That quickstart path defaults to trusted local loopback mode for the fastest first run.
-
-**To start again later:**
-
-```bash
-npx paperclipai run
-```
-
-To access from other devices or keep it running in the background:
+That quickstart path defaults to trusted local loopback mode for the fastest first run. To access from other devices, restart with `--bind lan` or `--bind tailnet` for Tailscale:
 
 ```bash
 npx paperclipai configure   # change bind preset (loopback/lan/tailnet)
-npx paperclipai run          # start server
-# or run in background with: npx paperclipai run &
+npx paperclipai run          # restart with new settings
 ```
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
