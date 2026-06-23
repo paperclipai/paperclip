@@ -705,6 +705,10 @@ async function shutdown(signal: NodeJS.Signals, explicitExitCode?: number) {
     console.log("[paperclip] killing process tree...");
     if (child.pid) {
       spawn("taskkill", ["/pid", child.pid.toString(), "/f", "/t"], { stdio: "ignore" });
+    } else {
+      // child.pid is undefined (possible per Node's ChildProcess type).
+      // Fall back to child.kill() so waitForChildExit() can still resolve.
+      child.kill(signal);
     }
   } else {
     child.kill(signal);
