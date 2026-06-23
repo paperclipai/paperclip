@@ -5,6 +5,16 @@
  * with esbuild or rollup without re-implementing host contract defaults.
  */
 
+/**
+ * Two-line shim added to every node-platform ESM worker bundle.
+ * esbuild's __require stub checks `typeof require !== "undefined"` first,
+ * so this transparently covers any CJS transitive dep that calls require().
+ */
+const NODE_WORKER_CREATE_REQUIRE_BANNER = [
+  "import { createRequire as __pcCreateRequire } from 'module';",
+  "const require = __pcCreateRequire(import.meta.url);",
+].join("\n");
+
 export interface PluginBundlerPresetInput {
   pluginRoot?: string;
   manifestEntry?: string;
@@ -13,6 +23,11 @@ export interface PluginBundlerPresetInput {
   outdir?: string;
   sourcemap?: boolean;
   minify?: boolean;
+  /**
+   * Custom JS banner injected at the top of the node-platform worker ESM bundle.
+   * Set to `false` to opt out of the default createRequire shim entirely.
+   */
+  nodeWorkerBanner?: string | false;
 }
 
 export interface EsbuildLikeOptions {
@@ -25,6 +40,7 @@ export interface EsbuildLikeOptions {
   sourcemap?: boolean;
   minify?: boolean;
   external?: string[];
+  banner?: { js?: string };
 }
 
 export interface RollupLikeConfig {
@@ -34,6 +50,7 @@ export interface RollupLikeConfig {
     format: "es";
     sourcemap?: boolean;
     entryFileNames?: string;
+    banner?: string;
   };
   external?: string[];
   plugins?: unknown[];
@@ -74,6 +91,10 @@ export function createPluginBundlerPresets(input: PluginBundlerPresetInput = {})
   const sourcemap = input.sourcemap ?? true;
   const minify = input.minify ?? false;
 
+  const workerBannerJs = input.nodeWorkerBanner === false
+    ? undefined
+    : (input.nodeWorkerBanner ?? NODE_WORKER_CREATE_REQUIRE_BANNER);
+
   const esbuildWorker: EsbuildLikeOptions = {
     entryPoints: [workerEntry],
     outdir,
@@ -84,6 +105,7 @@ export function createPluginBundlerPresets(input: PluginBundlerPresetInput = {})
     sourcemap,
     minify,
     external: ["react", "react-dom"],
+    ...(workerBannerJs !== undefined ? { banner: { js: workerBannerJs } } : {}),
   };
 
   const esbuildManifest: EsbuildLikeOptions = {
@@ -118,6 +140,7 @@ export function createPluginBundlerPresets(input: PluginBundlerPresetInput = {})
       format: "es",
       sourcemap,
       entryFileNames: "worker.js",
+      ...(workerBannerJs !== undefined ? { banner: workerBannerJs } : {}),
     },
     external: ["react", "react-dom"],
   };
