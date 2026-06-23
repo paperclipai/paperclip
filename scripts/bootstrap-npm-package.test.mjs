@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseArgs, resolveTargetPackage } from "./bootstrap-npm-package.mjs";
+import { buildPublishArgs, parseArgs, resolveTargetPackage } from "./bootstrap-npm-package.mjs";
 
 test("parseArgs recognizes publish and skip-build flags", () => {
   assert.deepEqual(parseArgs(["@paperclipai/adapter-acpx-local", "--publish", "--skip-build"]), {
@@ -57,4 +57,31 @@ test("resolveTargetPackage includes the workspace diff plugin bootstrap package"
   const pkg = resolveTargetPackage("@paperclipai/plugin-workspace-diff");
 
   assert.equal(pkg.dir, "packages/plugins/plugin-workspace-diff");
+});
+
+test("buildPublishArgs publishes from the repo root through pnpm", () => {
+  const pkg = { dir: "packages/adapters/hermes-local", name: "@paperclipai/hermes-paperclip-adapter" };
+
+  assert.deepEqual(buildPublishArgs(pkg), [
+    "publish",
+    "packages/adapters/hermes-local",
+    "--no-git-checks",
+    "--access",
+    "public",
+  ]);
+});
+
+test("buildPublishArgs includes dry-run and otp flags when requested", () => {
+  const pkg = { dir: "packages/adapters/hermes-local", name: "@paperclipai/hermes-paperclip-adapter" };
+
+  assert.deepEqual(buildPublishArgs(pkg, { dryRun: true, otp: "123456" }), [
+    "publish",
+    "packages/adapters/hermes-local",
+    "--no-git-checks",
+    "--access",
+    "public",
+    "--dry-run",
+    "--otp",
+    "123456",
+  ]);
 });
