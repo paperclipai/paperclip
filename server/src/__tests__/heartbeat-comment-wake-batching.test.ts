@@ -19,6 +19,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.ts";
+import { parseWakePayloadFromMessage } from "./helpers/wake-message.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -40,19 +41,6 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
 
 async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
-}
-
-// Wake context is embedded in the gateway message as a fenced ```json block (the
-// gateway rejects unknown root params, so there is no top-level `paperclip` field).
-// Parse it back out and assert against the structure rather than against raw JSON
-// substrings, so the tests stay robust to serialization formatting/key-order changes.
-function parseWakePayloadFromMessage(message: unknown): Record<string, unknown> {
-  const text = String(message ?? "");
-  const match = text.match(/```json\n([\s\S]*?)\n```/);
-  if (!match) {
-    throw new Error(`Expected a wake JSON block in gateway message, got: ${text}`);
-  }
-  return JSON.parse(match[1]) as Record<string, unknown>;
 }
 
 async function createControlledGatewayServer() {
@@ -828,7 +816,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         commentIds: [comment2.id],
         latestCommentId: comment2.id,
         issue: {
+          id: issueId,
           identifier: `${issuePrefix}-1`,
+          title: "Reopen after deferred comment",
+          status: "in_progress",
+          priority: "medium",
         },
       });
       expect(String(secondPayload.message ?? "")).toContain("Please handle this follow-up after you finish");
