@@ -23,10 +23,38 @@ export interface PlanDetails {
   activatedAt: string | null;
   stoppedAt: string | null;
   stopReason: string | null;
+  estimatedCompletionAt: string | null;
+  estimatorAgentId: string | null;
+  etaOverrunNotifiedAt: string | null;
+  lastMonitoredAt: string | null;
   createdByUserId: string | null;
   createdByAgentId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type AgentHealth =
+  | "working"
+  | "stuck"
+  | "stuck_critical"
+  | "looping"
+  | "needs_rewake"
+  | "paused";
+
+export interface AgentHealthEntry {
+  agentId: string;
+  agentName: string | null;
+  issueId: string;
+  health: AgentHealth;
+  severity: "info" | "warning" | "critical";
+  lastOutputAt: string | null;
+  detail: string;
+}
+
+export interface PlanHealth {
+  planIssueId: string;
+  overdue: boolean;
+  agents: AgentHealthEntry[];
 }
 
 export interface PlanDetailResponse {
@@ -113,6 +141,10 @@ export const plansApi = {
     ),
   stop: (issueId: string, reason?: string) =>
     api.post<PlanStopResult>(`/plans/${issueId}/stop`, reason ? { reason } : {}),
+  setEstimate: (
+    issueId: string,
+    body: { estimatedCompletionAt: string | null; estimatorAgentId?: string | null },
+  ) => api.patch<{ planDetails: PlanDetails }>(`/plans/${issueId}/estimate`, body),
   remove: (issueId: string) =>
     api.delete<{ deleted: true; deletedIssueIds: string[] }>(`/plans/${issueId}`),
 
@@ -127,6 +159,8 @@ export const plansApi = {
   reactivateCompany: (companyId: string) =>
     api.post<{ reactivated: true; alreadyActive?: boolean }>(`/companies/${companyId}/reactivate`, {}),
 
+  supervisionHealth: (issueId: string) =>
+    api.get<{ health: PlanHealth }>(`/plans/${issueId}/supervision/health`),
   supervisionNotes: (issueId: string) =>
     api.get<{ notes: SupervisionNote[] }>(`/plans/${issueId}/supervision-notes`),
   addSupervisionNote: (issueId: string, body: AddSupervisionNoteInput) =>

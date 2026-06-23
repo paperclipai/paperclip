@@ -860,6 +860,7 @@ function handleLiveEvent(
     const planIssueId = readString(payload.planIssueId);
     if (planIssueId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.hive.planSupervision(planIssueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.hive.planHealth(planIssueId) });
     }
     return;
   }
