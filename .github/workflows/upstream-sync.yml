@@ -12,11 +12,11 @@
 # early with no branch and no PR. On merge conflicts it aborts cleanly and fails
 # the run (conflicts need a human) rather than pushing a broken tree.
 #
-# NOTE: the PR is opened with GITHUB_TOKEN, so `pr.yml` does NOT auto-run on it
-# (GitHub suppresses workflow triggers from GITHUB_TOKEN to prevent loops). Re-run
-# the suite by closing+reopening the PR or pushing a commit. To make CI fire
-# automatically, provision the bermont-clawsweeper App in this repo and swap the
-# token (see the lue-kube paperclip-image-bump workflow for the pattern).
+# The PR is opened with a bermont-clawsweeper App token (NOT GITHUB_TOKEN): the
+# fork's GITHUB_TOKEN cannot create PRs ("Resource not accessible by integration"),
+# and App-installation tokens also trigger `pr.yml` on the PR. Requires the
+# CLAWSWEEPER_APP_PRIVATE_KEY repo secret (1Password: Bermont Digital /
+# "GitHub App — bermont-clawsweeper" / pem) and the App installed on this repo.
 name: Upstream sync
 
 on:
@@ -25,8 +25,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read # the job mints a scoped App token for its own writes
 
 concurrency:
   group: upstream-sync
@@ -39,20 +38,37 @@ jobs:
     env:
       SYNC_BRANCH: automation/upstream-sync
       UPSTREAM_URL: https://github.com/paperclipai/paperclip.git
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HAS_APP_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY != '' }}
     steps:
+      - name: Require bermont-clawsweeper key
+        if: env.HAS_APP_KEY != 'true'
+        run: |
+          echo "::error::CLAWSWEEPER_APP_PRIVATE_KEY is not set. This workflow opens its PR with the bermont-clawsweeper App token (GITHUB_TOKEN cannot create PRs on this fork). Provision the secret from 1Password (Bermont Digital / 'GitHub App — bermont-clawsweeper' / pem) and install the App on this repo."
+          exit 1
+
+      - name: Mint bermont-clawsweeper token (contents + PRs write)
+        id: app_token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: Iv23liwPWAIcc4PAk2Dt
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: valkyriweb
+          repositories: paperclip
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Checkout bermont (full history)
         uses: actions/checkout@v6
         with:
           ref: bermont
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app_token.outputs.token }}
 
       - name: Fetch upstream + bermont
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "bermont-clawsweeper[bot]"
+          git config user.email "bermont-clawsweeper[bot]@users.noreply.github.com"
           git remote add upstream "$UPSTREAM_URL" 2>/dev/null || git remote set-url upstream "$UPSTREAM_URL"
           git fetch --no-tags upstream master
           git fetch --no-tags origin bermont
@@ -85,6 +101,8 @@ jobs:
 
       - name: Open / update sync PR
         if: steps.gate.outputs.synced == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
           ahead="$(git rev-list --count origin/bermont..upstream/master)"
@@ -95,8 +113,6 @@ jobs:
             echo "- Upstream commits not yet in bermont: **${ahead}**"
             echo
             echo "Review the diff for overlay-relevant changes (migrations, CI, Dockerfile), then merge to ship via the lue-kube image autobump."
-            echo
-            echo "> CI note: this PR was opened by \`GITHUB_TOKEN\`, so \`pr.yml\` did not auto-run. Push a commit or close+reopen to trigger the full suite."
           } > "$body_file"
 
           if gh pr view "$SYNC_BRANCH" --json state --jq '.state' 2>/dev/null | grep -q OPEN; then
