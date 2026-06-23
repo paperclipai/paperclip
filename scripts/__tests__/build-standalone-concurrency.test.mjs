@@ -101,6 +101,7 @@ test("resolveConcurrency honors a valid env override, capped by package count", 
     process.env.STANDALONE_BUILD_CONCURRENCY = "2";
     assert.equal(resolveConcurrency(7), 2);
     assert.equal(resolveConcurrency(1), 1);
+    assert.equal(resolveConcurrency(0), 1);
 
     process.env.STANDALONE_BUILD_CONCURRENCY = "0";
     assert.ok(resolveConcurrency(7) >= 1);

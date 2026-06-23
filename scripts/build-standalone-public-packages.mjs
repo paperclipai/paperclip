@@ -168,7 +168,7 @@ export function resolveConcurrency(packageCount) {
   if (raw !== undefined && raw !== "") {
     const parsed = Number.parseInt(raw, 10);
     if (Number.isFinite(parsed) && parsed > 0) {
-      return Math.min(parsed, packageCount);
+      return Math.max(1, Math.min(parsed, packageCount));
     }
   }
 
