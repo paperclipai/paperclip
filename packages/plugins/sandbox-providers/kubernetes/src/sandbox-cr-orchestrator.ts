@@ -152,8 +152,29 @@ export async function findPodForSandbox(
     return podName;
   }
 
-  // Fallback: list pods by the controller's sandbox-name label, which uniquely
-  // identifies the pod for THIS sandbox. A broader managed-by selector plus
+  // Secondary: the agent-sandbox controller (v0.4.x) names the backing pod
+  // EXACTLY after the Sandbox CR and labels it only with
+  // agents.x-k8s.io/sandbox-name-hash (a hash, not the full name), so the
+  // full-name label selector below matches nothing on that controller. An
+  // exact-name GET is collision-free (unlike name-prefix matching, which
+  // could hit a concurrent sandbox sharing a prefix) and resolves the pod on
+  // every controller version that keeps pod name == sandbox name.
+  try {
+    const pod = (await clients.core.readNamespacedPod({ namespace, name })) as {
+      metadata?: { name?: string };
+    };
+    if (pod?.metadata?.name) {
+      return pod.metadata.name;
+    }
+  } catch (err) {
+    const code =
+      (err as { code?: number; statusCode?: number }).code ??
+      (err as { code?: number; statusCode?: number }).statusCode;
+    if (code !== 404) throw err;
+  }
+
+  // Fallback: list pods by a full-name sandbox label, for controller versions
+  // that label pods with the sandbox name. A broader managed-by selector plus
   // name-prefix narrowing could match a concurrent sandbox whose generated
   // name shares a prefix, and exec would target the wrong lease's pod.
   const result = await clients.core.listNamespacedPod({

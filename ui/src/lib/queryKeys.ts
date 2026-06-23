@@ -7,6 +7,8 @@ export const queryKeys = {
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
     detail: (companyId: string, skillId: string) => ["company-skills", companyId, skillId] as const,
+    versions: (companyId: string, skillId: string) => ["company-skills", companyId, skillId, "versions"] as const,
+    comments: (companyId: string, skillId: string) => ["company-skills", companyId, skillId, "comments"] as const,
     updateStatus: (companyId: string, skillId: string) =>
       ["company-skills", companyId, skillId, "update-status"] as const,
     file: (companyId: string, skillId: string, relativePath: string) =>
@@ -45,6 +47,7 @@ export const queryKeys = {
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
+    mentionPool: (companyId: string) => ["issues", companyId, "mention-pool"] as const,
     search: (companyId: string, q: string, projectId?: string, limit?: number) =>
       ["issues", companyId, "search", q, projectId ?? "__all-projects__", limit ?? "__no-limit__"] as const,
     listAssignedToMe: (companyId: string) => ["issues", companyId, "assigned-to-me"] as const,
@@ -191,6 +194,7 @@ export const queryKeys = {
     mine: (companyId: string) => ["resource-memberships", companyId, "me"] as const,
   },
   instance: {
+    settings: ["instance", "settings"] as const,
     generalSettings: ["instance", "general-settings"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,

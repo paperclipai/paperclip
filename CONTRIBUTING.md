@@ -36,7 +36,6 @@ These almost always get merged quickly when they're clean.
   → Share rough ideas / approach
 - Once there's rough agreement, build it
 - In your PR include:
-  - Before / After screenshots (or short video if UI/behavior change)
   - Clear description of what & why
   - Proof it works (manual testing notes)
   - All tests passing and CI green
@@ -61,7 +60,39 @@ We do not gate PRs on a pre-existing issue. Two acceptable paths:
    - **Feature:** problem/motivation, proposed solution, alternatives considered, roadmap alignment. See [`feature_request.yml`](.github/ISSUE_TEMPLATE/feature_request.yml).
    - **New adapter:** agent or provider, why it's useful, how it's invoked. See [`adapter_request.yml`](.github/ISSUE_TEMPLATE/adapter_request.yml).
 
-Either way, a reviewer should be able to understand the underlying issue without leaving the PR. Commitperclip may check that one of these two paths is satisfied.
+Either way, a reviewer should be able to understand the underlying issue without leaving the PR. Commitperclip may check that one of these two paths is satisfied. Only link **public** GitHub issues — see [No Internal Issue References](#no-internal-issue-references) for what to leave out.
+
+### No Internal Issue References
+
+Many contributors run their own Paperclip instance to manage their work. Issue ids and links from *your* instance are private — reviewers and other contributors cannot open them, so they show up as clutter or broken links.
+
+In your PR title, description, commits, and comments, **only reference public GitHub issues and PRs** — `#123`, `Fixes #123` / `Closes #123` / `Refs #123`, or full `https://github.com/paperclipai/paperclip/...` URLs.
+
+Do **not** include references to internal/instance-local Paperclip work, such as:
+
+- Internal ticket ids like `PAPA-123`, `PAP-224`, or any `{PREFIX}-{NUMBER}` identifier that isn't a public GitHub issue number.
+- Instance UI links such as `/PAP/issues/...`, `/PAP/agents/...`, `agent://...`, or document deep links.
+- `localhost`, private IP, or tailnet URLs pointing at your own instance.
+
+If an internal issue captured useful context, restate that context in plain English in the PR body instead of linking to it.
+
+### Branch Naming
+
+Tooling (including Paperclip) often names a working branch after an internal issue and task — e.g. `PAPA-42-why-did-this-break`. That name leaks instance-local context, isn't meaningful to reviewers, and ends up as the public branch on your PR.
+
+Before you push, **rename the branch to something descriptive of the change itself**, not of your instance:
+
+- Use short, kebab-case names scoped to the change, optionally with a conventional prefix: `docs/no-internal-issue-references`, `fix/sandbox-secret-resolution`, `feat/adapter-retry-backoff`.
+- Do **not** include internal Paperclip ticket ids (`PAPA-123`, `PAP-224`), instance task slugs, or other instance-derived details in the branch name.
+
+To rename and push under the new name:
+
+```bash
+git branch -m <descriptive-name>
+git push -u origin <descriptive-name>
+# If your tooling already pushed the old branch, delete it from origin:
+git push origin --delete <old-name>
+```
 
 ### Model Used (Required)
 
@@ -147,8 +178,6 @@ Your PR description must follow the [PR template](.github/PULL_REQUEST_TEMPLATE.
 Then have the rest of your normal PR message after the Thinking Path.
 
 This should include details about what you did, why you did it, why it matters & the benefits, how we can verify it works, and any risks.
-
-Please include screenshots if possible if you have a visible change. (use something like the [agent-browser skill](https://github.com/vercel-labs/agent-browser/blob/main/skills/agent-browser/SKILL.md) or similar to take screenshots). Ideally, you include before and after screenshots.
 
 Questions? Just ask in #dev — we're happy to help.
 

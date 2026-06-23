@@ -207,6 +207,22 @@ describe("Sidebar", () => {
     });
   });
 
+  it("defaults to streamlined navigation while experimental settings are loading", async () => {
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const root = await renderSidebar();
+
+    const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
+    expect(navLabels).toContain("Projects");
+    expect(container.querySelector('[data-testid="sidebar-projects"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
+    ).toBe("true");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("classic (flag OFF): New Task button, Tasks label, per-project collapsible, no top-level Projects link", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -280,6 +296,48 @@ describe("Sidebar", () => {
     expect(navText).toContain("Goals");
     expect(navText).toContain("Artifacts");
     expect(navText.indexOf("Goals")).toBeLessThan(navText.indexOf("Artifacts"));
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows the Conference Room nav item when conference room chat is enabled (PAP-137)", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableConferenceRoomChat: true,
+    });
+    const root = await renderSidebar();
+
+    const link = [...container.querySelectorAll("nav a")].find(
+      (anchor) => anchor.textContent?.trim() === "Conference Room",
+    );
+    expect(link?.getAttribute("href")).toBe("/board-chat");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the Conference Room nav item when conference room chat is off (PAP-137)", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableConferenceRoomChat: false,
+    });
+    const root = await renderSidebar();
+
+    expect(container.textContent).not.toContain("Conference Room");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not flash the Conference Room item while experimental settings are loading (PAP-137)", async () => {
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const root = await renderSidebar();
+
+    expect(container.textContent).not.toContain("Conference Room");
 
     flushSync(() => {
       root.unmount();

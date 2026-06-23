@@ -26,6 +26,7 @@ import {
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
   upsertIssueFeedbackVoteSchema,
+  upsertIssueWatchdogSchema,
   // Project
   createProjectSchema,
   updateProjectSchema,
@@ -109,6 +110,7 @@ import {
   // Instance settings
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
   updateResourceMembershipSchema,
@@ -1382,6 +1384,36 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/issues/{id}/watchdog",
+  tags: ["issues"],
+  summary: "Get active issue watchdog",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/issues/{id}/watchdog",
+  tags: ["issues"],
+  summary: "Create or update an issue watchdog",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(upsertIssueWatchdogSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/issues/{id}/watchdog",
+  tags: ["issues"],
+  summary: "Disable an issue watchdog",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/issues/{id}/work-products",
   tags: ["issues"],
   summary: "List issue work products",
@@ -2429,6 +2461,23 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/instance/settings",
+  tags: ["instance"],
+  summary: "Get instance settings",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/instance/settings",
+  tags: ["instance"],
+  summary: "Update instance settings",
+  request: { body: jsonBody(patchInstanceSettingsSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/instance/settings/general",
   tags: ["instance"],
   summary: "Get general instance settings",
@@ -2459,6 +2508,25 @@ registry.registerPath({
   summary: "Update experimental instance settings",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
+
+registry.registerPath({
+  method: "post",
+  path: "/api/board/chat/stream",
+  tags: ["instance"],
+  summary: "Stream a board-level chat response (requires enableConferenceRoomChat)",
+  request: {
+    body: jsonBody(
+      z.object({
+        companyId: z.string(),
+        message: z.string(),
+        taskId: z.string().optional(),
+      }),
+    ),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Access / invites / members ───────────────────────────────────────────────
@@ -4268,7 +4336,19 @@ for (const route of [
   ["get", "/api/skills/catalog/{catalogId}", "Get a catalog skill"],
   ["get", "/api/skills/catalog/{catalogId}/files", "List catalog skill files"],
   ["post", "/api/companies/{companyId}/skills/install-catalog", "Install a catalog skill"],
+  ["get", "/api/companies/{companyId}/skills/categories", "List company skill categories"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/audit", "Audit a company skill"],
+  ["patch", "/api/companies/{companyId}/skills/{skillId}", "Update a company skill"],
+  ["get", "/api/companies/{companyId}/skills/{skillId}/versions", "List skill versions"],
+  ["post", "/api/companies/{companyId}/skills/{skillId}/versions", "Create a skill version"],
+  ["get", "/api/companies/{companyId}/skills/{skillId}/versions/{versionId}", "Get a skill version"],
+  ["post", "/api/companies/{companyId}/skills/{skillId}/star", "Star a company skill"],
+  ["delete", "/api/companies/{companyId}/skills/{skillId}/star", "Unstar a company skill"],
+  ["post", "/api/companies/{companyId}/skills/{skillId}/fork", "Fork a company skill"],
+  ["get", "/api/companies/{companyId}/skills/{skillId}/comments", "List skill comments"],
+  ["post", "/api/companies/{companyId}/skills/{skillId}/comments", "Create a skill comment"],
+  ["patch", "/api/companies/{companyId}/skills/{skillId}/comments/{commentId}", "Update a skill comment"],
+  ["delete", "/api/companies/{companyId}/skills/{skillId}/comments/{commentId}", "Delete a skill comment"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/reset", "Reset a company skill"],
 ] as const) {
   registerCurrentRoute({

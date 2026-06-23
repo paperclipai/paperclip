@@ -30,7 +30,7 @@ import {
   countActiveIssueFilters,
   type IssueFilterState,
 } from "../lib/issue-filters";
-import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { collectLiveIssueIds, collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import {
@@ -1293,6 +1293,26 @@ export function Inbox() {
   const flatNavItems = useMemo((): NavEntry[] => {
     return buildInboxKeyboardNavEntries(groupedSections, collapsedGroupKeys, collapsedInboxParents);
   }, [collapsedGroupKeys, collapsedInboxParents, groupedSections]);
+  // Roll live descendant runs up to their ancestors across the loaded inbox tree
+  // so a parent that is not itself live can still surface "n live below".
+  const subtreeLiveCounts = useMemo(() => {
+    const nodes: { id: string; parentId: string | null }[] = [];
+    const seen = new Set<string>();
+    const pushIssue = (issue: Issue) => {
+      if (seen.has(issue.id)) return;
+      seen.add(issue.id);
+      nodes.push({ id: issue.id, parentId: issue.parentId });
+    };
+    for (const group of groupedSections) {
+      for (const item of group.displayItems) {
+        if (item.kind === "issue") pushIssue(item.issue);
+      }
+      for (const children of group.childrenByIssueId.values()) {
+        for (const child of children) pushIssue(child);
+      }
+    }
+    return collectSubtreeLiveCounts(nodes, liveIssueIds);
+  }, [groupedSections, liveIssueIds]);
   const topFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
@@ -2344,6 +2364,7 @@ export function Inbox() {
                           <InboxIssueMetaLeading
                             issue={issue}
                             isLive={liveIssueIds.has(issue.id)}
+                            subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
                             showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
                             showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
                           />
