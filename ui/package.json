@@ -52,10 +52,10 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
-    "hermes-paperclip-adapter": "^0.2.0",
+    "hermes-paperclip-adapter": "^0.3.0",
     "i18next": "^26.3.1",
     "lexical": "0.35.0",
-    "lucide-react": "^0.574.0",
+    "lucide-react": "^0.577.0",
     "mermaid": "^11.12.0",
     "radix-ui": "^1.6.0",
     "react": "^19.0.0",
@@ -64,7 +64,7 @@
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.16.0",
     "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.4.1"
+    "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",

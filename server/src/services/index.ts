@@ -33,6 +33,15 @@ export {
   resolveTaskWatchdogMutationScope,
   taskWatchdogScopeAllowsIssueMutation,
 } from "./task-watchdog-scope.js";
+export {
+  createExternalObjectDetectorRegistry,
+  createExternalObjectResolverRegistry,
+  externalObjectService,
+  type ExternalObjectDetector,
+  type ExternalObjectResolver,
+  type ExternalObjectResolveResult,
+  type ExternalObjectResolverSnapshot,
+} from "./external-objects.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";

@@ -53,6 +53,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableConferenceRoomChat: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
+    enableExternalObjects: false,
     enableTaskWatchdogs: false,
     enableCloudSync: false,
     autoRestartDevServerWhenIdle: false,

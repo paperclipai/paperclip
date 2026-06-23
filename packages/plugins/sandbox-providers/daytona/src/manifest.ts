@@ -23,6 +23,7 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Daytona Sandbox",
       description:
         "Provisions Daytona sandboxes with configurable image or snapshot selection, startup timeouts, and lease reuse.",
+      supportsReusableLeases: true,
       configSchema: {
         type: "object",
         properties: {

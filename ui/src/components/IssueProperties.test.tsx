@@ -26,6 +26,10 @@ const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockExecutionWorkspacesApi = vi.hoisted(() => ({
+  controlRuntimeCommands: vi.fn(),
+}));
+
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
   listLabels: vi.fn(),
@@ -54,6 +58,10 @@ vi.mock("../api/agents", () => ({
 
 vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
+}));
+
+vi.mock("../api/execution-workspaces", () => ({
+  executionWorkspacesApi: mockExecutionWorkspacesApi,
 }));
 
 vi.mock("../api/issues", () => ({
@@ -389,6 +397,7 @@ describe("IssueProperties", () => {
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
+    mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockIssuesApi.createLabel.mockResolvedValue(createLabel({
@@ -637,6 +646,11 @@ describe("IssueProperties", () => {
     expect(blockerLink).not.toBeNull();
     expect(blockerLink?.textContent).toContain("PAP-2");
     expect(blockerLink?.closest("button")).toBeNull();
+    expect(blockerLink?.className).toContain("px-2");
+    expect(blockerLink?.className).toContain("py-0.5");
+    expect(blockerLink?.className).toContain("text-xs");
+    const removeButton = container.querySelector('button[aria-label="Remove PAP-2 as blocker"]');
+    expect(removeButton?.className).toContain("absolute");
     expect(container.textContent).toContain("Add blocker");
     expect(container.querySelector('input[placeholder="Search tasks..."]')).toBeNull();
 
@@ -917,6 +931,14 @@ describe("IssueProperties", () => {
   it("shows a green service link above the workspace row for a live non-main workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const serviceUrl = "http://127.0.0.1:62475";
+    const updatedWorkspace = createExecutionWorkspace({
+      mode: "isolated_workspace",
+      runtimeServices: [createRuntimeService({ url: serviceUrl, status: "stopped", stoppedAt: new Date("2026-04-06T12:06:00.000Z") })],
+    });
+    mockExecutionWorkspacesApi.controlRuntimeCommands.mockResolvedValue({
+      workspace: updatedWorkspace,
+      operation: {},
+    });
     const root = renderProperties(container, {
       issue: createIssue({
         projectId: "project-1",
@@ -924,7 +946,17 @@ describe("IssueProperties", () => {
         executionWorkspaceId: "workspace-1",
         currentExecutionWorkspace: createExecutionWorkspace({
           mode: "isolated_workspace",
-          runtimeServices: [createRuntimeService({ url: serviceUrl, status: "running" })],
+          config: {
+            environmentId: null,
+            provisionCommand: null,
+            teardownCommand: null,
+            cleanupCommand: null,
+            desiredState: null,
+            workspaceRuntime: {
+              services: [{ name: "web", command: "pnpm dev" }],
+            },
+          },
+          runtimeServices: [createRuntimeService({ url: serviceUrl, status: "running", configIndex: 0 })],
         }),
       }),
       childIssues: [],
@@ -934,11 +966,27 @@ describe("IssueProperties", () => {
 
     const serviceLink = container.querySelector(`a[href="${serviceUrl}"]`);
     expect(serviceLink).not.toBeNull();
-    expect(serviceLink?.getAttribute("target")).toBe("_blank");
-    expect(serviceLink?.className).toContain("text-emerald");
-    expect((container.textContent ?? "").indexOf("Service")).toBeLessThan(
-      (container.textContent ?? "").indexOf("Workspace"),
+    expect(serviceLink?.className).toContain("sm:self-start");
+    expect(serviceLink?.className).not.toContain("sm:self-end");
+    expect((container.textContent ?? "").indexOf("Workspace")).toBeLessThan(
+      (container.textContent ?? "").indexOf("Service"),
     );
+    const stopButton = container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]');
+    expect(stopButton).not.toBeUndefined();
+    expect(stopButton?.getAttribute("data-size")).toBe("icon-xs");
+    expect(stopButton?.getAttribute("data-variant")).toBe("outline");
+
+    await act(async () => {
+      stopButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockExecutionWorkspacesApi.controlRuntimeCommands).toHaveBeenCalledWith(
+      "workspace-1",
+      "stop",
+      expect.objectContaining({ action: "stop", runtimeServiceId: "service-1" }),
+    );
+    expect(container.textContent).toContain("Workspace service stopped.");
 
     act(() => root.unmount());
   });
@@ -985,6 +1033,41 @@ describe("IssueProperties", () => {
     expect(container.textContent).not.toContain("View workspace tasks");
     expect(workspaceLink).not.toBeUndefined();
     expect(workspaceLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1");
+
+    act(() => root.unmount());
+  });
+
+  it("copies branch and folder values with visible feedback", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const root = renderProperties(container, {
+      issue: createIssue({
+        executionWorkspaceId: "workspace-1",
+        currentExecutionWorkspace: createExecutionWorkspace({
+          branchName: "pap-1-workspace",
+          cwd: "/tmp/paperclip/PAP-1",
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    const branchCopyButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Copy pap-1-workspace to clipboard"]',
+    );
+    expect(branchCopyButton).not.toBeNull();
+
+    await act(async () => {
+      branchCopyButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(writeText).toHaveBeenCalledWith("pap-1-workspace");
+    expect(container.textContent).toContain("Copied");
 
     act(() => root.unmount());
   });
@@ -1794,6 +1877,83 @@ describe("IssueProperties", () => {
       expect(link).toBeTruthy();
       expect(link!.textContent).toContain("PAP-42");
     });
+
+    act(() => root.unmount());
+  });
+
+  it("renders each external object as its own properties row using display metadata", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+      externalObjects: [
+        {
+          mentionCount: 1,
+          sourceLabels: ["Description"],
+          pill: {
+            providerKey: "github",
+            objectType: "pull_request",
+            displayKey: null,
+            iconKey: "github",
+            statusCategory: "succeeded",
+            statusIconKey: null,
+            statusLabel: "Merged",
+            liveness: "fresh",
+            displayTitle: "acme/web#241: Add rich object presentation metadata",
+            url: "https://github.com/acme/web/pull/241",
+          },
+          group: {
+            object: null,
+            mentions: [],
+            mentionCount: 1,
+            sourceLabels: ["Description"],
+          },
+        },
+        {
+          mentionCount: 1,
+          sourceLabels: ["Comment"],
+          pill: {
+            providerKey: "github",
+            objectType: "issue",
+            displayKey: "Github Issue",
+            iconKey: "github",
+            statusCategory: "open",
+            statusIconKey: "circle-dot",
+            statusLabel: "Open",
+            liveness: "fresh",
+            displayTitle: "acme/web#12: Follow-up",
+            url: "https://github.com/acme/web/issues/12",
+          },
+          group: {
+            object: null,
+            mentions: [],
+            mentionCount: 1,
+            sourceLabels: ["Comment"],
+          },
+        },
+      ],
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Github Pull Request");
+    expect(container.textContent).toContain("Github Issue");
+    expect(container.textContent).toContain("PR 241 - Merged");
+    expect(container.textContent).toContain("Merged");
+    expect(container.textContent).toContain("Open");
+    expect(container.textContent).not.toContain("External objects");
+    const label = Array.from(container.querySelectorAll("span"))
+      .find((span) => span.textContent === "Github Pull Request");
+    expect(label?.querySelector("svg")).toBeTruthy();
+    const pullRequestLink = Array.from(container.querySelectorAll("a"))
+      .find((anchor) => anchor.getAttribute("href") === "https://github.com/acme/web/pull/241");
+    expect(pullRequestLink?.textContent).toContain("PR 241 - Merged");
+    expect(pullRequestLink?.textContent).not.toContain("acme/web#241");
+    expect(pullRequestLink?.textContent).not.toContain("Github Pull Request");
+    expect(pullRequestLink?.querySelectorAll("svg")).toHaveLength(1);
+    expect(pullRequestLink?.className).not.toContain("paperclip-mention-chip");
+    expect(pullRequestLink?.className).not.toContain("rounded-full");
+    expect(pullRequestLink?.className).not.toContain("border");
 
     act(() => root.unmount());
   });

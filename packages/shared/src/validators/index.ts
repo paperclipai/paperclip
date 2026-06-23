@@ -59,6 +59,22 @@ export {
   updateResourceMembershipSchema,
   type UpdateResourceMembership,
 } from "./resource-memberships.js";
+
+export {
+  externalObjectStatusCategorySchema,
+  externalObjectStatusToneSchema,
+  externalObjectLivenessStateSchema,
+  externalObjectMentionSourceKindSchema,
+  externalObjectMentionConfidenceSchema,
+  externalObjectProviderKeySchema,
+  externalObjectTypeSchema,
+  externalObjectCanonicalIdentitySchema,
+  externalObjectMentionSourceSchema,
+  type ExternalObjectCanonicalIdentityInput,
+  type ExternalObjectMentionSourceInput,
+  type ExternalObjectProviderKeyInput,
+  type ExternalObjectTypeInput,
+} from "./external-object.js";
 export {
   companySkillSourceTypeSchema,
   companySkillTrustLevelSchema,

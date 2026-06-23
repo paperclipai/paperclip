@@ -499,7 +499,7 @@ export function environmentService(db: Db) {
 
     releaseLease: async (
       id: string,
-      status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed" | "retained"> = "released",
+      status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed" | "retained" | "pending_cleanup"> = "released",
       options?: {
         failureReason?: string;
         cleanupStatus?: EnvironmentLeaseCleanupStatus;

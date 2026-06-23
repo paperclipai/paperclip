@@ -4,19 +4,22 @@ import type {
   DocumentAnnotationAnchorState,
   DocumentAnnotationThreadStatus,
 } from "@paperclipai/shared";
-import { index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { check, index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { documentRevisions } from "./document_revisions.js";
 import { documents } from "./documents.js";
 import { issues } from "./issues.js";
+import { routines } from "./routines.js";
 
 export const documentAnnotationThreads = pgTable(
   "document_annotation_threads",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
-    issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
+    issueId: uuid("issue_id").references(() => issues.id, { onDelete: "cascade" }),
+    routineId: uuid("routine_id").references(() => routines.id, { onDelete: "cascade" }),
     documentId: uuid("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
     documentKey: text("document_key").notNull(),
     status: text("status").$type<DocumentAnnotationThreadStatus>().notNull().default("open"),
@@ -56,6 +59,11 @@ export const documentAnnotationThreads = pgTable(
       table.issueId,
       table.status,
     ),
+    companyRoutineStatusIdx: index("document_annotation_threads_company_routine_status_idx").on(
+      table.companyId,
+      table.routineId,
+      table.status,
+    ),
     companyCurrentRevisionOpenIdx: index("document_annotation_threads_company_current_revision_open_idx").on(
       table.companyId,
       table.documentId,
@@ -65,6 +73,10 @@ export const documentAnnotationThreads = pgTable(
     companyAnchorStateIdx: index("document_annotation_threads_company_anchor_state_idx").on(
       table.companyId,
       table.anchorState,
+    ),
+    exactlyOneOwnerChk: check(
+      "document_annotation_threads_exactly_one_owner_chk",
+      sql`num_nonnulls(${table.issueId}, ${table.routineId}) = 1`,
     ),
   }),
 );

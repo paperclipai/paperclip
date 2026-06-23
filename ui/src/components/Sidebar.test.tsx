@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -202,7 +202,7 @@ describe("Sidebar", () => {
       container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
     ).toBe("true");
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -245,7 +245,7 @@ describe("Sidebar", () => {
       container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
     ).toBe("false");
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -283,7 +283,7 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows an Artifacts nav item directly below Goals", async () => {
+  it("shows Skills directly below Artifacts in Work", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
@@ -295,7 +295,15 @@ describe("Sidebar", () => {
     const navText = container.querySelector("nav")?.textContent ?? "";
     expect(navText).toContain("Goals");
     expect(navText).toContain("Artifacts");
+    expect(navText).toContain("Skills");
     expect(navText.indexOf("Goals")).toBeLessThan(navText.indexOf("Artifacts"));
+    expect(navText.indexOf("Artifacts")).toBeLessThan(navText.indexOf("Skills"));
+
+    const sections = [...container.querySelectorAll("nav > div")];
+    const workSection = sections.find((section) => section.textContent?.startsWith("Work"));
+    const companySection = sections.find((section) => section.textContent?.startsWith("Company"));
+    expect(workSection?.textContent).toContain("Skills");
+    expect(companySection?.textContent).not.toContain("Skills");
 
     flushSync(() => {
       root.unmount();
@@ -364,7 +372,7 @@ describe("Sidebar", () => {
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute("aria-expanded")).toBe("true");
 
-    act(() => {
+    flushSync(() => {
       toggle?.click();
     });
     expect(mockSidebar.toggleCollapsed).toHaveBeenCalledTimes(1);
@@ -421,7 +429,7 @@ describe("Sidebar", () => {
     const pin = container.querySelector<HTMLButtonElement>('button[aria-label="Keep sidebar expanded"]');
     expect(pin).not.toBeNull();
 
-    act(() => {
+    flushSync(() => {
       pin?.click();
     });
     expect(mockSidebar.setCollapsed).toHaveBeenCalledWith(false);

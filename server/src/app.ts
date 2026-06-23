@@ -235,7 +235,7 @@ export async function createApp(
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(pipelineRoutes(db));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(executionWorkspaceRoutes(db));
+  api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));

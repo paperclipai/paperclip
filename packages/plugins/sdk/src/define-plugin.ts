@@ -62,6 +62,12 @@ import type {
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
+  DetectExternalObjectsParams,
+  DetectExternalObjectsResult,
+  ResolveExternalObjectParams,
+  PluginExternalObjectResolveResult,
+  RefreshExternalObjectsParams,
+  RefreshExternalObjectsResult,
 } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
@@ -243,6 +249,39 @@ export interface PluginDefinition {
    * access, capabilities, and checkout policy.
    */
   onApiRequest?(input: PluginApiRequestInput): Promise<PluginApiResponse>;
+
+  /**
+   * Called when Paperclip scans issue/comment/document content and asks this
+   * plugin whether any sanitized URL candidates belong to its external object
+   * providers. The host has already stripped URL userinfo, query strings, and
+   * fragments unless provider-safe identity components were explicitly hashed.
+   *
+   * Requires `external.objects.detect`.
+   */
+  onDetectExternalObjects?(
+    params: DetectExternalObjectsParams,
+  ): Promise<DetectExternalObjectsResult>;
+
+  /**
+   * Called when Paperclip needs the current normalized status for one external
+   * object owned by a manifest-declared provider.
+   *
+   * Requires `external.objects.read`.
+   */
+  onResolveExternalObject?(
+    params: ResolveExternalObjectParams,
+  ): Promise<PluginExternalObjectResolveResult>;
+
+  /**
+   * Optional batch resolver used by providers that can refresh many objects
+   * more efficiently than individual `onResolveExternalObject` calls.
+   *
+   * Requires `external.objects.refresh`.
+   */
+  onRefreshExternalObjects?(
+    params: RefreshExternalObjectsParams,
+  ): Promise<RefreshExternalObjectsResult>;
+
   /**
    * Called to validate provider-specific configuration for a plugin-hosted
    * environment driver.

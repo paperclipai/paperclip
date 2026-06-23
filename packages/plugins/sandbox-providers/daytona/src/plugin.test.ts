@@ -174,6 +174,9 @@ describe("Daytona sandbox provider plugin", () => {
       companyId: "company-1",
       environmentId: "env-1",
       runId: "run-1",
+      agentId: "agent-1",
+      executionWorkspaceId: "workspace-1",
+      adapterType: "codex_local",
       config: {
         image: "node:20",
         timeoutMs: 300000,
@@ -189,8 +192,21 @@ describe("Daytona sandbox provider plugin", () => {
         sandboxId: "sandbox-123",
         remoteCwd: "/home/daytona/paperclip-workspace",
         reuseLease: true,
+        workspaceSentinel: {
+          path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+          result: "written",
+        },
       },
     });
+    expect(sandbox.fs.createFolder).toHaveBeenCalledWith(
+      "/home/daytona/paperclip-workspace/.paperclip-runtime",
+      "755",
+    );
+    expect(sandbox.fs.uploadFile).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+      300,
+    );
   });
 
   it("deletes the sandbox if lease setup throws after sandbox creation", async () => {
@@ -285,6 +301,94 @@ describe("Daytona sandbox provider plugin", () => {
       providerLeaseId: null,
       metadata: { expired: true },
     });
+  });
+
+  it("resumes a reusable lease when the workspace sentinel matches", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-reuse", state: "stopped" });
+    sandbox.process.executeCommand
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        result: JSON.stringify({ token: "sentinel-token" }),
+        artifacts: { stdout: JSON.stringify({ token: "sentinel-token" }) },
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        result: "bash",
+        artifacts: { stdout: "bash" },
+      });
+    mockGet.mockResolvedValue(sandbox);
+
+    const lease = await plugin.definition.onEnvironmentResumeLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      providerLeaseId: "sandbox-reuse",
+      config: {
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+      leaseMetadata: {
+        workspaceSentinel: {
+          path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+          token: "sentinel-token",
+          result: "written",
+        },
+      },
+    });
+
+    expect(sandbox.start).toHaveBeenCalledWith(300);
+    expect(lease).toMatchObject({
+      providerLeaseId: "sandbox-reuse",
+      metadata: {
+        resumedLease: true,
+        workspaceSentinel: {
+          result: "matched",
+          token: "sentinel-token",
+        },
+      },
+    });
+  });
+
+  it("expires a reusable lease when the workspace sentinel does not match", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-reuse", state: "stopped" });
+    sandbox.process.executeCommand.mockResolvedValueOnce({
+      exitCode: 0,
+      result: JSON.stringify({ token: "other-token" }),
+      artifacts: { stdout: JSON.stringify({ token: "other-token" }) },
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(plugin.definition.onEnvironmentResumeLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      providerLeaseId: "sandbox-reuse",
+      config: {
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+      leaseMetadata: {
+        workspaceSentinel: {
+          path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+          token: "sentinel-token",
+          result: "written",
+        },
+      },
+    })).resolves.toEqual({
+      providerLeaseId: null,
+      metadata: {
+        expired: true,
+        workspaceSentinel: {
+          path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+          token: "sentinel-token",
+          result: "mismatch",
+        },
+      },
+    });
+
+    expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
   });
 
   it("stops reusable leases and deletes ephemeral leases on release", async () => {
