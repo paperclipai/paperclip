@@ -16,6 +16,7 @@ export default defineConfig({
       "packages/adapters/grok-local",
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",
+      "packages/adapters/openclaw-gateway",
       "packages/plugins/sdk",
       "packages/plugins/create-paperclip-plugin",
       "server",
