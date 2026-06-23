@@ -77,6 +77,7 @@ export const queryKeys = {
   workflows: {
     list: (companyId: string) => ["workflows", companyId] as const,
     detail: (id: string) => ["workflows", "detail", id] as const,
+    schedules: (id: string) => ["workflows", "detail", id, "schedules"] as const,
     run: (id: string) => ["workflow-runs", id] as const,
     activity: (companyId: string, id: string) => ["workflows", "activity", companyId, id] as const,
   },

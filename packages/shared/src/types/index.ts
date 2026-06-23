@@ -139,6 +139,7 @@ export type {
   WorkflowPhase,
   WorkflowHandoff,
   WorkflowDeliverableSummary,
+  WorkflowSchedule,
   WorkflowRunDetail,
   WorkflowListItem,
   WorkflowDetail,

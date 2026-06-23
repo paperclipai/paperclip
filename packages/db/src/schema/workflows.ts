@@ -124,3 +124,28 @@ export const workflowDeliverables = pgTable(
     runCreatedIdx: index("workflow_deliverables_run_created_idx").on(table.workflowRunId, table.createdAt),
   }),
 );
+
+export const workflowSchedules = pgTable(
+  "workflow_schedules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    workflowId: uuid("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    status: text("status").notNull().default("active"),
+    cronExpression: text("cron_expression").notNull(),
+    timezone: text("timezone").notNull().default("UTC"),
+    templateMarkdown: text("template_markdown").notNull(),
+    lastFiredAt: timestamp("last_fired_at", { withTimezone: true }),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+    createdByUserId: text("created_by_user_id"),
+    updatedByUserId: text("updated_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyStatusIdx: index("workflow_schedules_company_status_idx").on(table.companyId, table.status),
+    workflowNextRunIdx: index("workflow_schedules_workflow_next_run_idx").on(table.workflowId, table.nextRunAt),
+    companyNextRunIdx: index("workflow_schedules_company_next_run_idx").on(table.companyId, table.nextRunAt),
+  }),
+);

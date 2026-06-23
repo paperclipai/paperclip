@@ -561,6 +561,13 @@
       "when": 1780560000000,
       "tag": "0079_workflow_handoff_bridges_fix",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1780646400000,
+      "tag": "0080_workflow_schedules",
+      "breakpoints": true
     }
   ]
 }

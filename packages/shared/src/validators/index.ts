@@ -257,6 +257,7 @@ export {
   workflowRunnerConfigSchema,
   workflowRunnerTypeSchema,
   workflowStatusSchema,
+  workflowScheduleStatusSchema,
   workflowRunStatusSchema,
   workflowPhaseStatusSchema,
   workflowHandoffKindSchema,
@@ -264,7 +265,9 @@ export {
   workflowPipelinePhaseSchema,
   workflowPipelineDefinitionSchema,
   createWorkflowSchema,
+  createWorkflowScheduleSchema,
   updateWorkflowSchema,
+  updateWorkflowScheduleSchema,
   runWorkflowSchema,
   workflowCallbackAuthSchema,
   workflowPhaseEventSchema,
@@ -278,6 +281,8 @@ export {
   type CreateWorkflowHandoff,
   type ResolveWorkflowHandoff,
   type CreateWorkflowDeliverable,
+  type CreateWorkflowSchedule,
+  type UpdateWorkflowSchedule,
   type WorkflowPromptTemplate,
 } from "./workflow.js";
 

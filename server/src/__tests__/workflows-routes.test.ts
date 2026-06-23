@@ -22,9 +22,18 @@ const mockWorkflowService = vi.hoisted(() => ({
   applyPhaseEvent: vi.fn(),
   createRuntimeHandoff: vi.fn(),
 }));
+const mockWorkflowScheduleService = vi.hoisted(() => ({
+  listForWorkflow: vi.fn(),
+  get: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+  delete: vi.fn(),
+  tickScheduledRuns: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   workflowService: () => mockWorkflowService,
+  workflowScheduleService: () => mockWorkflowScheduleService,
   logActivity: mockLogActivity,
 }));
 
@@ -118,5 +127,63 @@ describe("workflow routes", () => {
     expect(res.body).toEqual({ error: "Workflow run is already in a terminal state" });
     expect(mockWorkflowService.cancelRun).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("creates a workflow schedule", async () => {
+    mockWorkflowService.get.mockResolvedValue({
+      id: "workflow-1",
+      companyId,
+    });
+    mockWorkflowScheduleService.create.mockResolvedValue({
+      id: "schedule-1",
+      companyId,
+      workflowId: "workflow-1",
+      title: "Daily brief",
+      status: "active",
+      cronExpression: "0 9 * * *",
+      timezone: "UTC",
+      templateMarkdown: "Send the brief.",
+      lastFiredAt: null,
+      nextRunAt: new Date("2026-06-10T09:00:00.000Z"),
+      createdByUserId: "board-user",
+      updatedByUserId: "board-user",
+      createdAt: new Date("2026-06-10T08:00:00.000Z"),
+      updatedAt: new Date("2026-06-10T08:00:00.000Z"),
+    });
+
+    const res = await request(createApp())
+      .post(`/api/workflows/workflow-1/schedules`)
+      .send({
+        title: "Daily brief",
+        cronExpression: "0 9 * * *",
+        templateMarkdown: "Send the brief.",
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      id: "schedule-1",
+      title: "Daily brief",
+      cronExpression: "0 9 * * *",
+      templateMarkdown: "Send the brief.",
+      timezone: "UTC",
+    });
+    expect(mockWorkflowScheduleService.create).toHaveBeenCalledWith(
+      "workflow-1",
+      {
+        title: "Daily brief",
+        cronExpression: "0 9 * * *",
+        templateMarkdown: "Send the brief.",
+        status: "active",
+      },
+      { userId: "board-user" },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "workflow.schedule_created",
+        entityType: "workflow_schedule",
+        entityId: "schedule-1",
+      }),
+    );
   });
 });
