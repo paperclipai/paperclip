@@ -51,6 +51,7 @@ import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
+  detectGeminiQuotaExhausted,
   isGeminiTransientNetworkError,
   isGeminiTurnLimitResult,
   isGeminiSessionUnrecoverableError,
@@ -206,7 +207,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
-  const command = asString(config.command, "gemini");
+  const command = asString(config.command, "agy");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
   const sandbox = asBoolean(config.sandbox, false);
 
@@ -546,17 +547,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const buildArgs = (resumeSessionId: string | null) => {
-    const args = ["--output-format", "stream-json"];
+    const args = ["--print", prompt];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-    args.push("--approval-mode", "yolo");
+    args.push("--dangerously-skip-permissions");
     if (sandbox) {
       args.push("--sandbox");
     } else {
-      args.push("--sandbox=none");
+      args.push("--sandbox=false");
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
-    args.push("--prompt", prompt);
     return args;
   };
 
@@ -585,6 +585,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
+    const command = "agy";
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
       env: invocationEnv,
@@ -618,6 +619,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
     });
+    const quotaMeta = detectGeminiQuotaExhausted({
+      parsed: attempt.parsed.resultEvent,
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+    });
     const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
 
     if (attempt.proc.timedOut) {
@@ -628,9 +634,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: authMeta.requiresAuth
           ? "gemini_auth_required"
-          : networkUnavailable
-            ? "gemini_network_unavailable"
-            : null,
+          : quotaMeta.exhausted
+            ? "gemini_quota_exhausted"
+            : networkUnavailable
+              ? "gemini_network_unavailable"
+              : null,
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -664,8 +672,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
         ...(executionTargetIsRemote
           ? {
-              remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
-            }
+            remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+          }
           : {}),
       } as Record<string, unknown>)
       : null;
@@ -684,11 +692,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage: failed ? fallbackErrorMessage : null,
       errorCode: failed && authMeta.requiresAuth
         ? "gemini_auth_required"
-        : failed && clearSessionForTurnLimit
-        ? "max_turns_exhausted"
-        : failed && networkUnavailable
-        ? "gemini_network_unavailable"
-        : null,
+        : failed && quotaMeta.exhausted
+          ? "gemini_quota_exhausted"
+          : failed && clearSessionForTurnLimit
+            ? "max_turns_exhausted"
+            : failed && networkUnavailable
+              ? "gemini_network_unavailable"
+              : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
