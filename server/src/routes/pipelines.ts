@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1471,10 +1472,34 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const terminal = req.query.terminal === "true" ? true : req.query.terminal === "false" ? false : undefined;
     const includeRetired = req.query.includeRetired === "true";
     const parentCaseId = typeof req.query.parentCaseId === "string" ? req.query.parentCaseId : undefined;
+    const parentCase = alias(pipelineCases, "parent_case");
+    const parentPipeline = alias(pipelines, "parent_pipeline");
     const rows = await db
-      .select({ case: pipelineCases, stage: pipelineStages })
+      .select({
+        case: pipelineCases,
+        stage: pipelineStages,
+        parentCase: {
+          id: parentCase.id,
+          caseKey: parentCase.caseKey,
+          title: parentCase.title,
+          pipelineId: parentCase.pipelineId,
+        },
+        parentPipeline: {
+          id: parentPipeline.id,
+          key: parentPipeline.key,
+          name: parentPipeline.name,
+        },
+      })
       .from(pipelineCases)
       .innerJoin(pipelineStages, eq(pipelineCases.stageId, pipelineStages.id))
+      .leftJoin(parentCase, and(
+        eq(parentCase.companyId, companyId),
+        eq(parentCase.id, pipelineCases.parentCaseId),
+      ))
+      .leftJoin(parentPipeline, and(
+        eq(parentPipeline.companyId, companyId),
+        eq(parentPipeline.id, parentCase.pipelineId),
+      ))
       .where(and(
         eq(pipelineCases.companyId, companyId),
         eq(pipelineCases.pipelineId, pipelineId),
@@ -1491,7 +1516,14 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       loadDescendantActiveWorkCountsForCases(db, companyId, caseIds),
     ]);
     res.json(rows.map((row) => ({
-      ...row,
+      case: row.case,
+      stage: row.stage,
+      parentCase: row.parentCase?.id && row.parentPipeline?.id
+        ? {
+            case: row.parentCase,
+            pipeline: row.parentPipeline,
+          }
+        : null,
       activeWork: activeWork.get(row.case.id) ?? null,
       descendantActiveWorkCount: descendantActiveWorkCounts.get(row.case.id) ?? 0,
     })));

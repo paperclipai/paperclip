@@ -65,6 +65,7 @@ import {
   type PipelineCaseActiveWork,
   type PipelineCaseDetail,
   type PipelineCaseEvent,
+  type PipelineCaseParentSummary,
   type PipelineConnectionRef,
   type PipelineConnections,
   type PipelineIntakeField,
@@ -981,9 +982,13 @@ const UNASSIGNED_STAGE_NAME = "Unassigned";
 type BoardCase = PipelineCase & {
   activeWork?: PipelineCaseActiveWork | null;
   descendantActiveWorkCount?: number | null;
+  parentCase?: PipelineCaseParentSummary | null;
 };
 
 type PipelineTransitionEdge = { fromStageId: string; toStageId: string; label?: string | null };
+type PipelineBoardGroupBy = "none" | "builtFor";
+
+const PIPELINE_BOARD_UNGROUPED_KEY = "__ungrouped";
 
 function asText(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -1112,6 +1117,30 @@ export function resolvePipelineTargetStageId(
   return caseToColumnId.get(overId) ?? null;
 }
 
+export function groupCasesByBuiltFor(cases: BoardCase[]) {
+  const groups = new Map<string, {
+    key: string;
+    label: string;
+    href: string | null;
+    cases: BoardCase[];
+  }>();
+
+  for (const caseItem of cases) {
+    const parent = caseItem.parentCase;
+    const key = parent?.case.id ?? PIPELINE_BOARD_UNGROUPED_KEY;
+    const group = groups.get(key) ?? {
+      key,
+      label: parent ? `${parent.pipeline.name}: ${parent.case.title}` : "No built-for item",
+      href: parent ? `/pipelines/${parent.case.pipelineId}/items/${parent.case.id}` : null,
+      cases: [],
+    };
+    group.cases.push(caseItem);
+    groups.set(key, group);
+  }
+
+  return [...groups.values()];
+}
+
 function PipelineCaseCard({
   caseItem,
   isOverlay = false,
@@ -1195,6 +1224,7 @@ function PipelineCaseCard({
 function PipelineBoardColumn({
   stage,
   cases,
+  groupBy,
   settingsHref,
   warningCount,
   breakdownTarget,
@@ -1204,6 +1234,7 @@ function PipelineBoardColumn({
 }: {
   stage: PipelineStage;
   cases: BoardCase[];
+  groupBy: PipelineBoardGroupBy;
   settingsHref?: string | null;
   warningCount?: number;
   breakdownTarget?: { pipelineId: string; name: string } | null;
@@ -1214,6 +1245,10 @@ function PipelineBoardColumn({
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
 
   const isBlockedDropTarget = !!isDragTargeted && !!isDragBlocked;
+  const caseGroups = groupBy === "builtFor"
+    ? groupCasesByBuiltFor(cases)
+    : [{ key: "all", label: "", href: null, cases }];
+  const sortableCaseIds = caseGroups.flatMap((group) => group.cases.map((entry) => entry.id));
 
   return (
     <div
@@ -1268,9 +1303,25 @@ function PipelineBoardColumn({
             This move skips the normal flow
           </p>
         ) : null}
-        <SortableContext items={cases.map((entry) => entry.id)} strategy={verticalListSortingStrategy}>
+        <SortableContext items={sortableCaseIds} strategy={verticalListSortingStrategy}>
           {cases.length > 0 ? (
-            cases.map((item) => <PipelineCaseCard key={item.id} caseItem={item} />)
+            caseGroups.map((group) => (
+              <div key={group.key} className="space-y-2">
+                {groupBy === "builtFor" ? (
+                  <div className="flex items-center justify-between gap-2 px-1 pt-1 text-[11px] font-medium text-muted-foreground">
+                    {group.href ? (
+                      <Link to={group.href} className="min-w-0 truncate hover:text-foreground hover:underline">
+                        {group.label}
+                      </Link>
+                    ) : (
+                      <span className="min-w-0 truncate">{group.label}</span>
+                    )}
+                    <span className="shrink-0">{group.cases.length} item{group.cases.length === 1 ? "" : "s"}</span>
+                  </div>
+                ) : null}
+                {group.cases.map((item) => <PipelineCaseCard key={item.id} caseItem={item} />)}
+              </div>
+            ))
           ) : (
             <div className="rounded-md border border-dashed border-border px-3 py-8 text-center text-xs text-muted-foreground">
               {onColumnEmpty ? onColumnEmpty(stage) : "Empty"}
@@ -1290,6 +1341,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
   const navigate = useNavigate();
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
   const [activeOverId, setActiveOverId] = useState<string | null>(null);
+  const [groupBy, setGroupBy] = useState<PipelineBoardGroupBy>("none");
   const [pendingMove, setPendingMove] = useState<{
     caseId: string;
     caseVersion: number;
@@ -1329,6 +1381,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
   const cases = useMemo<BoardCase[]>(
     () => (casesQuery.data ?? []).map((row) => ({
       ...row.case,
+      parentCase: row.parentCase ?? null,
       activeWork: row.activeWork ?? null,
       descendantActiveWorkCount: row.descendantActiveWorkCount ?? 0,
     })),
@@ -1585,17 +1638,31 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
           ) : null}
         </div>
         <div className="flex shrink-0 flex-col items-stretch gap-2 sm:items-end">
-          <Button asChild>
-            <Link to={`/pipelines/${pipelineId}/add`}>
-              <Plus className="mr-2 h-4 w-4" />
-              Add items
-            </Link>
-          </Button>
-          <Button variant="outline" size="icon" asChild>
-            <Link to={`/pipelines/${pipelineId}/settings`} aria-label="Pipeline settings" title="Pipeline settings">
-              <Settings className="h-4 w-4" />
-            </Link>
-          </Button>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">Group by</span>
+            <Select value={groupBy} onValueChange={(value) => setGroupBy(value as PipelineBoardGroupBy)}>
+              <SelectTrigger className="h-9 w-[140px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None</SelectItem>
+                <SelectItem value="builtFor">Built for</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button asChild>
+              <Link to={`/pipelines/${pipelineId}/add`}>
+                <Plus className="mr-2 h-4 w-4" />
+                Add items
+              </Link>
+            </Button>
+            <Button variant="outline" size="icon" asChild>
+              <Link to={`/pipelines/${pipelineId}/settings`} aria-label="Pipeline settings" title="Pipeline settings">
+                <Settings className="h-4 w-4" />
+              </Link>
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -1627,6 +1694,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
                   key={stage.id}
                   stage={stage}
                   cases={items}
+                  groupBy={groupBy}
                   settingsHref={
                     stage.id === UNASSIGNED_STAGE_ID ? null : `/pipelines/${pipelineId}/settings?stage=${stage.id}`
                   }

@@ -395,9 +395,20 @@ export interface PipelineCaseChildrenTree {
   totalNodes?: number;
 }
 
+export interface PipelineCaseParentSummary {
+  case: {
+    id: string;
+    caseKey?: string | null;
+    title: string;
+    pipelineId: string;
+  };
+  pipeline: { id: string; key: string; name: string };
+}
+
 export interface PipelineCaseChildRow {
   case: PipelineCase;
   stage: PipelineStage;
+  parentCase?: PipelineCaseParentSummary | null;
   activeWork?: PipelineCaseActiveWork | null;
   descendantActiveWorkCount?: number;
 }
