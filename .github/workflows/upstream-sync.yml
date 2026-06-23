@@ -1,0 +1,108 @@
+# Upstream sync — paperclipai/paperclip master -> our bermont overlay
+#
+# Weekly job that merges upstream/master into the production `bermont` branch and
+# opens a PR for review. bermont carries the Bermont overlay (migration renumbering,
+# CI hardenings) on top of upstream; this keeps the divergence small and reviewable
+# instead of letting upstream drift for months.
+#
+# Lives on `master` because GitHub only runs `schedule:` triggers from the default
+# branch — the job itself operates on `bermont`, not master.
+#
+# Idempotent: if upstream/master is already contained in bermont, the run exits
+# early with no branch and no PR. On merge conflicts it aborts cleanly and fails
+# the run (conflicts need a human) rather than pushing a broken tree.
+#
+# NOTE: the PR is opened with GITHUB_TOKEN, so `pr.yml` does NOT auto-run on it
+# (GitHub suppresses workflow triggers from GITHUB_TOKEN to prevent loops). Re-run
+# the suite by closing+reopening the PR or pushing a commit. To make CI fire
+# automatically, provision the bermont-clawsweeper App in this repo and swap the
+# token (see the lue-kube paperclip-image-bump workflow for the pattern).
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream/master into bermont
+    runs-on: ubuntu-latest
+    env:
+      SYNC_BRANCH: automation/upstream-sync
+      UPSTREAM_URL: https://github.com/paperclipai/paperclip.git
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout bermont (full history)
+        uses: actions/checkout@v6
+        with:
+          ref: bermont
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch upstream + bermont
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_URL" 2>/dev/null || git remote set-url upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream master
+          git fetch --no-tags origin bermont
+
+      - name: Skip if already in sync
+        id: gate
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor upstream/master origin/bermont; then
+            echo "bermont already contains upstream/master — nothing to sync."
+            echo "synced=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "synced=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream/master onto bermont
+        id: merge
+        if: steps.gate.outputs.synced == 'false'
+        run: |
+          set -euo pipefail
+          git checkout -B "$SYNC_BRANCH" origin/bermont
+          if git merge --no-edit --no-ff upstream/master; then
+            echo "Merge clean."
+          else
+            echo "::error::Merge conflict syncing upstream/master into bermont — needs manual resolution."
+            git merge --abort
+            exit 1
+          fi
+          git push --force-with-lease origin "$SYNC_BRANCH"
+
+      - name: Open / update sync PR
+        if: steps.gate.outputs.synced == 'false'
+        run: |
+          set -euo pipefail
+          ahead="$(git rev-list --count origin/bermont..upstream/master)"
+          body_file="$RUNNER_TEMP/sync-pr-body.md"
+          {
+            echo "Automated weekly merge of \`upstream/master\` (paperclipai/paperclip) into the \`bermont\` production overlay."
+            echo
+            echo "- Upstream commits not yet in bermont: **${ahead}**"
+            echo
+            echo "Review the diff for overlay-relevant changes (migrations, CI, Dockerfile), then merge to ship via the lue-kube image autobump."
+            echo
+            echo "> CI note: this PR was opened by \`GITHUB_TOKEN\`, so \`pr.yml\` did not auto-run. Push a commit or close+reopen to trigger the full suite."
+          } > "$body_file"
+
+          if gh pr view "$SYNC_BRANCH" --json state --jq '.state' 2>/dev/null | grep -q OPEN; then
+            echo "Existing sync PR updated via force-push."
+          else
+            gh pr create --base bermont --head "$SYNC_BRANCH" \
+              --title "chore: sync upstream/master into bermont" \
+              --body-file "$body_file"
+          fi
