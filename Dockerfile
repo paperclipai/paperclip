@@ -186,7 +186,17 @@ ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98
 # issue-scoped runs keep durable DBs. Also resets DB/WAL/SHM when combined
 # size exceeds 500 MiB. PR kkroo/paperclip-adapter-opencode-k8s#32; local
 # adapter verification passed focused tests, typecheck, build, and full tests.
-ARG OPENCODE_K8S_REF=b5b99fdb419695e47403374679a7bf6a547e64af
+# Bumped 2026-06-23 to 54426c9: set provider.openai.options.chunkTimeout=240s on
+# both opencode config paths so slow gpt-5.5 reasoning streams aren't aborted
+# mid-chunk. The default inter-chunk idle guard fired on long reasoning gaps as
+# `API Error: Stream idle timeout - partial response`, persisting TRUNCATED
+# assistant turns (issue descriptions cut mid-sentence) that then mirrored to
+# Linear and read as a "sync clipped my body" bug. 240s sits just under the
+# /responses shim's 255s Bun socket idle. PR
+# kkroo/paperclip-adapter-opencode-k8s#33; 54426c9's parent is b5b99fd (no
+# regress). Local adapter verification: job-manifest.test.ts (new chunkTimeout
+# tests, red->green), full suite 494/494, and typecheck passed.
+ARG OPENCODE_K8S_REF=54426c9e821d5504bf8db86bf85549d880496592
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
