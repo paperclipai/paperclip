@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useTranslation } from "@/i18n";
 import { cn } from "../lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
@@ -48,7 +49,7 @@ export function InlineEditor({
   onSave,
   as: Tag = "span",
   className,
-  placeholder = "Click to edit...",
+  placeholder: placeholderProp,
   multiline = false,
   nullable = false,
   imageUploadHandler,
@@ -56,6 +57,10 @@ export function InlineEditor({
   mentions,
   foldable = false,
 }: InlineEditorProps) {
+  const { t } = useTranslation();
+  const placeholder =
+    placeholderProp ??
+    t("components.inlineEditor.placeholder", { defaultValue: "Click to edit..." });
   const [editing, setEditing] = useState(false);
   const [multilineEditing, setMultilineEditing] = useState(false);
   const [multilineFocused, setMultilineFocused] = useState(false);
@@ -350,12 +355,12 @@ export function InlineEditor({
             )}
           >
             {autosaveState === "saving"
-              ? "Autosaving..."
+              ? t("components.inlineEditor.autosaving", { defaultValue: "Autosaving..." })
               : autosaveState === "saved"
-                ? "Saved"
+                ? t("components.inlineEditor.saved", { defaultValue: "Saved" })
                 : autosaveState === "error"
-                  ? "Could not save"
-                  : "Idle"}
+                  ? t("components.inlineEditor.couldNotSave", { defaultValue: "Could not save" })
+                  : t("components.inlineEditor.idle", { defaultValue: "Idle" })}
           </span>
         </div>
       </div>

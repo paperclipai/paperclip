@@ -60,3 +60,6 @@ tests/release-smoke/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+
+# Transient working dir for scripts/merge-zh-staging.mjs (i18n localization)
+.i18n-zh-staging/

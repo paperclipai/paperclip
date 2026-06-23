@@ -1,4 +1,5 @@
 import { Link } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { AgentIcon } from "./AgentIconPicker";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
@@ -42,85 +43,105 @@ function formatVerb(
 ): string {
   switch (action) {
     case "issue.created":
-      return "opened";
+      return t("components.feedCard.verbOpened", { defaultValue: "opened" });
     case "issue.updated": {
       const status = details?.status;
-      if (typeof status === "string") return `moved to ${humanize(status)}`;
+      if (typeof status === "string")
+        return t("components.feedCard.verbMovedTo", {
+          status: humanize(status),
+          defaultValue: "moved to {{status}}",
+        });
       const priority = details?.priority;
-      if (typeof priority === "string") return `set priority to ${humanize(priority)} on`;
-      return "updated";
+      if (typeof priority === "string")
+        return t("components.feedCard.verbSetPriorityTo", {
+          priority: humanize(priority),
+          defaultValue: "set priority to {{priority}} on",
+        });
+      return t("components.feedCard.verbUpdated", { defaultValue: "updated" });
     }
     case "issue.document_created":
-      return "wrote doc on";
+      return t("components.feedCard.verbWroteDocOn", { defaultValue: "wrote doc on" });
     case "issue.document_updated":
-      return "edited doc on";
+      return t("components.feedCard.verbEditedDocOn", { defaultValue: "edited doc on" });
     case "issue.document_deleted":
-      return "deleted doc from";
+      return t("components.feedCard.verbDeletedDocFrom", { defaultValue: "deleted doc from" });
     case "issue.work_product_created":
-      return "delivered work on";
+      return t("components.feedCard.verbDeliveredWorkOn", { defaultValue: "delivered work on" });
     case "issue.work_product_updated":
-      return "updated work on";
+      return t("components.feedCard.verbUpdatedWorkOn", { defaultValue: "updated work on" });
     case "issue.work_product_deleted":
-      return "removed work from";
+      return t("components.feedCard.verbRemovedWorkFrom", { defaultValue: "removed work from" });
     case "issue.checked_out":
-      return "picked up";
+      return t("components.feedCard.verbPickedUp", { defaultValue: "picked up" });
     case "issue.released":
-      return "released";
+      return t("components.feedCard.verbReleased", { defaultValue: "released" });
     case "issue.commented":
     case "issue.comment_added":
-      return "commented on";
+      return t("components.feedCard.verbCommentedOn", { defaultValue: "commented on" });
     case "issue.attachment_added":
-      return "attached a file to";
+      return t("components.feedCard.verbAttachedFileTo", { defaultValue: "attached a file to" });
     case "issue.attachment_removed":
-      return "removed attachment from";
+      return t("components.feedCard.verbRemovedAttachmentFrom", {
+        defaultValue: "removed attachment from",
+      });
     case "issue.deleted":
-      return "deleted";
+      return t("components.feedCard.verbDeleted", { defaultValue: "deleted" });
 
     case "approval.created":
-      return context === "pinned" ? "needs approval on" : "requested approval on";
+      return context === "pinned"
+        ? t("components.feedCard.verbNeedsApprovalOn", { defaultValue: "needs approval on" })
+        : t("components.feedCard.verbRequestedApprovalOn", {
+            defaultValue: "requested approval on",
+          });
     case "approval.approved":
-      return "approved";
+      return t("components.feedCard.verbApproved", { defaultValue: "approved" });
     case "approval.rejected":
-      return "rejected";
+      return t("components.feedCard.verbRejected", { defaultValue: "rejected" });
     case "approval.revision_requested":
-      return "requested changes on";
+      return t("components.feedCard.verbRequestedChangesOn", {
+        defaultValue: "requested changes on",
+      });
 
     case "agent.created":
-      return context === "pinned" ? "wants to hire" : "hired";
+      return context === "pinned"
+        ? t("components.feedCard.verbWantsToHire", { defaultValue: "wants to hire" })
+        : t("components.feedCard.verbHired", { defaultValue: "hired" });
     case "agent.paused":
-      return "paused";
+      return t("components.feedCard.verbPaused", { defaultValue: "paused" });
     case "agent.resumed":
-      return "resumed";
+      return t("components.feedCard.verbResumed", { defaultValue: "resumed" });
     case "agent.updated":
-      return "updated";
+      return t("components.feedCard.verbUpdated", { defaultValue: "updated" });
     case "agent.terminated":
-      return "terminated";
+      return t("components.feedCard.verbTerminated", { defaultValue: "terminated" });
 
     case "heartbeat.invoked":
-      return "started a run on";
+      return t("components.feedCard.verbStartedRunOn", { defaultValue: "started a run on" });
     case "heartbeat.cancelled":
-      return "cancelled a run on";
+      return t("components.feedCard.verbCancelledRunOn", { defaultValue: "cancelled a run on" });
 
     case "project.created":
-      return "created project";
+      return t("components.feedCard.verbCreatedProject", { defaultValue: "created project" });
     case "project.updated":
-      return "updated project";
+      return t("components.feedCard.verbUpdatedProject", { defaultValue: "updated project" });
     case "project.deleted":
-      return "deleted project";
+      return t("components.feedCard.verbDeletedProject", { defaultValue: "deleted project" });
     case "goal.created":
-      return "created goal";
+      return t("components.feedCard.verbCreatedGoal", { defaultValue: "created goal" });
     case "goal.updated":
-      return "updated goal";
+      return t("components.feedCard.verbUpdatedGoal", { defaultValue: "updated goal" });
     case "goal.deleted":
-      return "deleted goal";
+      return t("components.feedCard.verbDeletedGoal", { defaultValue: "deleted goal" });
     case "company.created":
-      return "created company";
+      return t("components.feedCard.verbCreatedCompany", { defaultValue: "created company" });
     case "company.updated":
-      return "updated company";
+      return t("components.feedCard.verbUpdatedCompany", { defaultValue: "updated company" });
     case "company.archived":
-      return "archived company";
+      return t("components.feedCard.verbArchivedCompany", { defaultValue: "archived company" });
     case "company.budget_updated":
-      return "updated company budget";
+      return t("components.feedCard.verbUpdatedCompanyBudget", {
+        defaultValue: "updated company budget",
+      });
 
     default:
       return action.replace(/[._]/g, " ");
@@ -292,10 +313,10 @@ function resolveContent(
   const actorName =
     actor?.name ??
     (event.actorType === "system"
-      ? "System"
+      ? t("components.feedCard.actorSystem", { defaultValue: "System" })
       : event.actorType === "user"
-        ? "Board"
-        : event.actorId || "Unknown");
+        ? t("components.feedCard.actorBoard", { defaultValue: "Board" })
+        : event.actorId || t("components.feedCard.actorUnknown", { defaultValue: "Unknown" }));
 
   const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`) ?? null;
 
@@ -350,7 +371,9 @@ function resolveContent(
     if (approvalAgentName) {
       identifier = approvalAgentName;
     } else {
-      identifier = approvalType ? humanize(approvalType) : "approval";
+      identifier = approvalType
+        ? humanize(approvalType)
+        : t("components.feedCard.approvalFallback", { defaultValue: "approval" });
       identifierMono = false;
     }
     title = entityTitle;
@@ -424,6 +447,7 @@ export function FeedCard({
   isPinned = false,
   className,
 }: FeedCardProps) {
+  const { t } = useTranslation();
   const details = event.details as Record<string, unknown> | null;
   const content = resolveContent(event, agentMap, entityNameMap, entityTitleMap);
   const verb = formatVerb(event.action, details, isPinned ? "pinned" : "chronological");
@@ -467,7 +491,9 @@ export function FeedCard({
         )}
       </span>
       {isPinned && (
-        <span className="shrink-0 text-xs text-muted-foreground">Review →</span>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {t("components.feedCard.review", { defaultValue: "Review →" })}
+        </span>
       )}
       <span data-fc="time" className="shrink-0 text-muted-foreground">
         {timeAgo(event.createdAt)}

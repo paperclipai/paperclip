@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { CHROMELESS_DISPLAY_MODES, isChromelessDisplayMode } from "../lib/pwa-display-mode";
+import { useTranslation } from "@/i18n";
 
 function ControlButton({
   label,
@@ -34,6 +35,7 @@ function ControlButton({
 }
 
 export function StandaloneBrowserControls({ mobile }: { mobile: boolean }) {
+  const { t } = useTranslation();
   const [chromeless, setChromeless] = useState(() =>
     typeof window !== "undefined" && mobile ? isChromelessDisplayMode() : false,
   );
@@ -73,15 +75,28 @@ export function StandaloneBrowserControls({ mobile }: { mobile: boolean }) {
       }
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(url);
-        toastActions?.pushToast({ title: "Link copied", tone: "success" });
+        toastActions?.pushToast({
+          title: t("components.standaloneBrowserControls.linkCopied", { defaultValue: "Link copied" }),
+          tone: "success",
+        });
         return;
       }
-      toastActions?.pushToast({ title: "Sharing is unavailable", body: url, tone: "warn" });
+      toastActions?.pushToast({
+        title: t("components.standaloneBrowserControls.sharingUnavailable", { defaultValue: "Sharing is unavailable" }),
+        body: url,
+        tone: "warn",
+      });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      toastActions?.pushToast({ title: "Share failed", body: "Try opening the page in your browser.", tone: "error" });
+      toastActions?.pushToast({
+        title: t("components.standaloneBrowserControls.shareFailed", { defaultValue: "Share failed" }),
+        body: t("components.standaloneBrowserControls.shareFailedBody", {
+          defaultValue: "Try opening the page in your browser.",
+        }),
+        tone: "error",
+      });
     }
-  }, [toastActions]);
+  }, [toastActions, t]);
 
   const openInBrowser = useCallback(() => {
     window.open(window.location.href, "_blank", "noopener,noreferrer");
@@ -91,13 +106,22 @@ export function StandaloneBrowserControls({ mobile }: { mobile: boolean }) {
 
   return (
     <div className="flex h-10 items-center justify-end gap-1 border-b border-border bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/85">
-      <ControlButton label="Refresh" onClick={refresh}>
+      <ControlButton
+        label={t("components.standaloneBrowserControls.refresh", { defaultValue: "Refresh" })}
+        onClick={refresh}
+      >
         <RefreshCw className="h-4 w-4" />
       </ControlButton>
-      <ControlButton label="Share" onClick={share}>
+      <ControlButton
+        label={t("components.standaloneBrowserControls.share", { defaultValue: "Share" })}
+        onClick={share}
+      >
         <Share2 className="h-4 w-4" />
       </ControlButton>
-      <ControlButton label="Open in Browser" onClick={openInBrowser}>
+      <ControlButton
+        label={t("components.standaloneBrowserControls.openInBrowser", { defaultValue: "Open in Browser" })}
+        onClick={openInBrowser}
+      >
         <ExternalLink className="h-4 w-4" />
       </ControlButton>
     </div>

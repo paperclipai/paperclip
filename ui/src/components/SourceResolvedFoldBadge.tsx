@@ -1,5 +1,6 @@
 import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 export interface SourceResolvedFoldBadgeProps {
   className?: string;
@@ -10,9 +11,15 @@ export interface SourceResolvedFoldBadgeProps {
 
 export function SourceResolvedFoldBadge({
   className,
-  title = "System folded this run as a source-resolved false positive.",
+  title,
   showIcon = true,
 }: SourceResolvedFoldBadgeProps) {
+  const { t } = useTranslation();
+  const resolvedTitle =
+    title ??
+    t("components.sourceResolvedFoldBadge.title", {
+      defaultValue: "System folded this run as a source-resolved false positive.",
+    });
   return (
     <span
       className={cn(
@@ -21,11 +28,13 @@ export function SourceResolvedFoldBadge({
         "dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200",
         className,
       )}
-      title={title}
-      aria-label="Source-resolved watchdog fold"
+      title={resolvedTitle}
+      aria-label={t("components.sourceResolvedFoldBadge.ariaLabel", {
+        defaultValue: "Source-resolved watchdog fold",
+      })}
     >
       {showIcon ? <Sparkles className="h-3 w-3 text-emerald-700 dark:text-emerald-300" aria-hidden /> : null}
-      Source-resolved
+      {t("components.sourceResolvedFoldBadge.label", { defaultValue: "Source-resolved" })}
     </span>
   );
 }

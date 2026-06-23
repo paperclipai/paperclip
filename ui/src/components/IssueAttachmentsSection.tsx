@@ -18,6 +18,7 @@ import {
 } from "@/lib/issue-attachments";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 interface IssueAttachmentsSectionProps {
   attachments: IssueAttachment[];
@@ -52,23 +53,24 @@ function AttachmentActions({
   onDelete: (attachmentId: string) => void;
   deletePending?: boolean;
 }) {
+  const { t } = useTranslation();
   const filename = attachmentFilename(attachment);
   return (
     <div className="flex shrink-0 items-center gap-1">
-      <Button asChild variant="ghost" size="icon-sm" title="Open in new tab">
-        <a href={attachmentOpenPath(attachment)} target="_blank" rel="noreferrer" aria-label={`Open ${filename}`}>
+      <Button asChild variant="ghost" size="icon-sm" title={t("components.issueAttachmentsSection.openInNewTab", { defaultValue: "Open in new tab" })}>
+        <a href={attachmentOpenPath(attachment)} target="_blank" rel="noreferrer" aria-label={t("components.issueAttachmentsSection.openFile", { filename, defaultValue: "Open {{filename}}" })}>
           <ExternalLink className="h-4 w-4" />
         </a>
       </Button>
-      <Button asChild variant="ghost" size="icon-sm" title="Download">
-        <a href={attachmentDownloadPath(attachment)} aria-label={`Download ${filename}`}>
+      <Button asChild variant="ghost" size="icon-sm" title={t("components.issueAttachmentsSection.download", { defaultValue: "Download" })}>
+        <a href={attachmentDownloadPath(attachment)} aria-label={t("components.issueAttachmentsSection.downloadFile", { filename, defaultValue: "Download {{filename}}" })}>
           <Download className="h-4 w-4" />
         </a>
       </Button>
       <Button
         variant="ghost"
         size="icon-sm"
-        title="Delete attachment"
+        title={t("components.issueAttachmentsSection.deleteAttachment", { defaultValue: "Delete attachment" })}
         className="text-muted-foreground hover:text-destructive"
         onClick={() => onDelete(attachment.id)}
         disabled={deletePending}
@@ -80,9 +82,14 @@ function AttachmentActions({
 }
 
 function AttachmentMeta({ attachment }: { attachment: IssueAttachment }) {
+  const { t } = useTranslation();
   return (
     <p className="mt-0.5 text-[11px] text-muted-foreground">
-      Attachment · {attachment.contentType} · {formatBytes(attachment.byteSize)}
+      {t("components.issueAttachmentsSection.attachmentMeta", {
+        contentType: attachment.contentType,
+        size: formatBytes(attachment.byteSize),
+        defaultValue: "Attachment · {{contentType}} · {{size}}",
+      })}
     </p>
   );
 }
@@ -96,6 +103,7 @@ function MarkdownAttachmentCard({
   onDelete: (attachmentId: string) => void;
   deletePending?: boolean;
 }) {
+  const { t } = useTranslation();
   const filename = attachmentFilename(attachment);
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.attachmentPreview(attachment.id),
@@ -116,9 +124,9 @@ function MarkdownAttachmentCard({
       </div>
       <div className="mt-3 rounded-md hover:bg-accent/10">
         {isLoading ? (
-          <p className="px-1 py-2 text-xs text-muted-foreground">Loading preview...</p>
+          <p className="px-1 py-2 text-xs text-muted-foreground">{t("components.issueAttachmentsSection.loadingPreview", { defaultValue: "Loading preview..." })}</p>
         ) : error ? (
-          <p className="px-1 py-2 text-xs text-destructive">Could not load markdown preview.</p>
+          <p className="px-1 py-2 text-xs text-destructive">{t("components.issueAttachmentsSection.markdownPreviewError", { defaultValue: "Could not load markdown preview." })}</p>
         ) : (
           <FoldCurtain>
             <MarkdownBody className="paperclip-edit-in-place-content min-h-[220px] text-[15px] leading-7" softBreaks={false}>
@@ -164,6 +172,7 @@ function GenericAttachmentRow({
   onDelete: (attachmentId: string) => void;
   deletePending?: boolean;
 }) {
+  const { t } = useTranslation();
   const filename = attachmentFilename(attachment);
   return (
     <div id={`attachment-${attachment.id}`} className="flex scroll-mt-20 items-center gap-2.5 rounded-md border border-border bg-card p-2">
@@ -179,7 +188,11 @@ function GenericAttachmentRow({
           {filename}
         </a>
         <p className="truncate text-[11px] text-muted-foreground">
-          Attachment · {attachment.contentType} · {formatBytes(attachment.byteSize)}
+          {t("components.issueAttachmentsSection.attachmentMeta", {
+            contentType: attachment.contentType,
+            size: formatBytes(attachment.byteSize),
+            defaultValue: "Attachment · {{contentType}} · {{size}}",
+          })}
         </p>
       </div>
       <AttachmentActions attachment={attachment} onDelete={onDelete} deletePending={deletePending} />
@@ -200,6 +213,7 @@ export function IssueAttachmentsSection({
   onDragLeave,
   onDrop,
 }: IssueAttachmentsSectionProps) {
+  const { t } = useTranslation();
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const { imageAttachments, markdownAttachments, videoAttachments, genericAttachments } = useMemo(() => {
     const images: IssueAttachment[] = [];
@@ -242,7 +256,7 @@ export function IssueAttachmentsSection({
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Paperclip className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+          <h3 className="text-sm font-medium text-muted-foreground">{t("components.issueAttachmentsSection.heading", { defaultValue: "Attachments" })}</h3>
           <span className="text-xs text-muted-foreground">{attachments.length}</span>
         </div>
         {uploadButton}
@@ -273,7 +287,7 @@ export function IssueAttachmentsSection({
                   className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/60"
                   onClick={(event) => event.stopPropagation()}
                 >
-                  <p className="text-xs font-medium text-white">Delete?</p>
+                  <p className="text-xs font-medium text-white">{t("components.issueAttachmentsSection.deleteConfirmShort", { defaultValue: "Delete?" })}</p>
                   <div className="flex gap-1.5">
                     <button
                       type="button"
@@ -284,7 +298,7 @@ export function IssueAttachmentsSection({
                       }}
                       disabled={deletePending}
                     >
-                      Yes
+                      {t("components.issueAttachmentsSection.yes", { defaultValue: "Yes" })}
                     </button>
                     <button
                       type="button"
@@ -294,7 +308,7 @@ export function IssueAttachmentsSection({
                         setConfirmDeleteId(null);
                       }}
                     >
-                      No
+                      {t("components.issueAttachmentsSection.no", { defaultValue: "No" })}
                     </button>
                   </div>
                 </div>
@@ -306,7 +320,7 @@ export function IssueAttachmentsSection({
                     event.stopPropagation();
                     requestDelete(attachment.id);
                   }}
-                  title="Delete attachment"
+                  title={t("components.issueAttachmentsSection.deleteAttachment", { defaultValue: "Delete attachment" })}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -357,13 +371,15 @@ export function IssueAttachmentsSection({
 
       {confirmDeleteId && !imageAttachments.some((attachment) => attachment.id === confirmDeleteId) ? (
         <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3">
-          <p className="text-sm font-medium text-destructive">Delete this attachment? This cannot be undone.</p>
+          <p className="text-sm font-medium text-destructive">{t("components.issueAttachmentsSection.deleteConfirmMessage", { defaultValue: "Delete this attachment? This cannot be undone." })}</p>
           <div className="flex shrink-0 items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => setConfirmDeleteId(null)} disabled={deletePending}>
-              Cancel
+              {t("components.issueAttachmentsSection.cancel", { defaultValue: "Cancel" })}
             </Button>
             <Button variant="destructive" size="sm" onClick={() => confirmDelete(confirmDeleteId)} disabled={deletePending}>
-              {deletePending ? "Deleting..." : "Delete"}
+              {deletePending
+                ? t("components.issueAttachmentsSection.deleting", { defaultValue: "Deleting..." })
+                : t("components.issueAttachmentsSection.delete", { defaultValue: "Delete" })}
             </Button>
           </div>
         </div>

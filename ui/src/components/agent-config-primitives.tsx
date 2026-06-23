@@ -17,49 +17,134 @@ import { Button } from "@/components/ui/button";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { t, useTranslation } from "@/i18n";
 
-/* ---- Help text for (?) tooltips ---- */
+/* ---- Help text for (?) tooltips ----
+ * Exposed as getters so the translated strings are resolved lazily at access
+ * time, keeping the existing `help.xxx` access API while reacting to language
+ * changes.
+ */
 export const help: Record<string, string> = {
-  name: "Display name for this agent.",
-  title: "Job title shown in the org chart.",
-  role: "Organizational role. Determines position and capabilities.",
-  reportsTo: "The agent this one reports to in the org hierarchy.",
-  capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
-  adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",
-  cwd: "Deprecated legacy working directory fallback for local adapters. Existing agents may still carry this value, but new configurations should use project workspaces instead.",
-  promptTemplate: "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables.",
-  model: "Override the default model used by the adapter.",
-  thinkingEffort: "Control model reasoning depth. Supported values vary by adapter/model.",
-  chrome: "Enable Claude's Chrome integration by passing --chrome.",
-  dangerouslySkipPermissions: "Run unattended by auto-approving adapter permission prompts when supported.",
-  dangerouslyBypassSandbox: "Run Codex without sandbox restrictions. Required for filesystem/network access.",
-  search: "Enable Codex web search capability during runs.",
-  fastMode: "Enable Codex Fast mode. This burns credits/tokens much faster and is supported on GPT-5.4 and manual Codex model IDs.",
-  workspaceStrategy: "How Paperclip should realize an execution workspace for this agent. Keep project_primary for normal cwd execution, or use git_worktree for issue-scoped isolated checkouts.",
-  workspaceBaseRef: "Base git ref used when creating a worktree branch. Leave blank to use the resolved workspace ref or HEAD.",
-  workspaceBranchTemplate: "Template for naming derived branches. Supports {{issue.identifier}}, {{issue.title}}, {{agent.name}}, {{project.id}}, {{workspace.repoRef}}, and {{slug}}.",
-  worktreeParentDir: "Directory where derived worktrees should be created. Absolute, ~-prefixed, and repo-relative paths are supported.",
-  runtimeServicesJson: "Optional workspace runtime service definitions. Use this for shared app servers, workers, or other long-lived companion processes attached to the workspace.",
-  maxTurnsPerRun: "Maximum number of agentic turns (tool calls) per heartbeat run.",
-  command: "The command to execute (e.g. node, python).",
-  localCommand: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
-  args: "Command-line arguments, comma-separated.",
-  extraArgs: "Extra CLI arguments for local adapters, comma-separated.",
-  envVars: "Environment variables injected into the adapter process. Use plain values or secret references.",
-  bootstrapPrompt: "Only sent when Paperclip starts a fresh session. Use this for stable setup guidance that should not be repeated on every heartbeat.",
-  payloadTemplateJson: "Optional JSON merged into remote adapter request payloads before Paperclip adds its standard wake and workspace fields.",
-  webhookUrl: "The URL that receives POST requests when the agent is invoked.",
-  heartbeatInterval: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work.",
-  intervalSec: "Seconds between automatic heartbeat invocations.",
-  timeoutSec: "Maximum seconds a run can take before being terminated. 0 means no timeout.",
-  graceSec: "Seconds to wait after sending interrupt before force-killing the process.",
-  wakeOnDemand: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems.",
-  cooldownSec: "Minimum seconds between consecutive heartbeat runs.",
-  maxConcurrentRuns: "Maximum number of heartbeat runs that can execute simultaneously for this agent.",
-  maxTurnContinuationEnabled: "Automatically queue bounded continuation runs when an adapter stops because its per-run turn cap was exhausted.",
-  maxTurnContinuationMaxAttempts: "Maximum automatic continuations after one max-turn stop. This is separate from max turns per run.",
-  maxTurnContinuationDelaySec: "Seconds to wait before starting each max-turn continuation.",
-  budgetMonthlyCents: "Monthly spending limit in cents. 0 means no limit.",
+  get name() {
+    return t("components.agentConfigPrimitives.helpName", { defaultValue: "Display name for this agent." });
+  },
+  get title() {
+    return t("components.agentConfigPrimitives.helpTitle", { defaultValue: "Job title shown in the org chart." });
+  },
+  get role() {
+    return t("components.agentConfigPrimitives.helpRole", { defaultValue: "Organizational role. Determines position and capabilities." });
+  },
+  get reportsTo() {
+    return t("components.agentConfigPrimitives.helpReportsTo", { defaultValue: "The agent this one reports to in the org hierarchy." });
+  },
+  get capabilities() {
+    return t("components.agentConfigPrimitives.helpCapabilities", { defaultValue: "Describes what this agent can do. Shown in the org chart and used for task routing." });
+  },
+  get adapterType() {
+    return t("components.agentConfigPrimitives.helpAdapterType", { defaultValue: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook." });
+  },
+  get cwd() {
+    return t("components.agentConfigPrimitives.helpCwd", { defaultValue: "Deprecated legacy working directory fallback for local adapters. Existing agents may still carry this value, but new configurations should use project workspaces instead." });
+  },
+  get promptTemplate() {
+    return t("components.agentConfigPrimitives.helpPromptTemplate", { defaultValue: "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables." });
+  },
+  get model() {
+    return t("components.agentConfigPrimitives.helpModel", { defaultValue: "Override the default model used by the adapter." });
+  },
+  get thinkingEffort() {
+    return t("components.agentConfigPrimitives.helpThinkingEffort", { defaultValue: "Control model reasoning depth. Supported values vary by adapter/model." });
+  },
+  get chrome() {
+    return t("components.agentConfigPrimitives.helpChrome", { defaultValue: "Enable Claude's Chrome integration by passing --chrome." });
+  },
+  get dangerouslySkipPermissions() {
+    return t("components.agentConfigPrimitives.helpDangerouslySkipPermissions", { defaultValue: "Run unattended by auto-approving adapter permission prompts when supported." });
+  },
+  get dangerouslyBypassSandbox() {
+    return t("components.agentConfigPrimitives.helpDangerouslyBypassSandbox", { defaultValue: "Run Codex without sandbox restrictions. Required for filesystem/network access." });
+  },
+  get search() {
+    return t("components.agentConfigPrimitives.helpSearch", { defaultValue: "Enable Codex web search capability during runs." });
+  },
+  get fastMode() {
+    return t("components.agentConfigPrimitives.helpFastMode", { defaultValue: "Enable Codex Fast mode. This burns credits/tokens much faster and is supported on GPT-5.4 and manual Codex model IDs." });
+  },
+  get workspaceStrategy() {
+    return t("components.agentConfigPrimitives.helpWorkspaceStrategy", { defaultValue: "How Paperclip should realize an execution workspace for this agent. Keep project_primary for normal cwd execution, or use git_worktree for issue-scoped isolated checkouts." });
+  },
+  get workspaceBaseRef() {
+    return t("components.agentConfigPrimitives.helpWorkspaceBaseRef", { defaultValue: "Base git ref used when creating a worktree branch. Leave blank to use the resolved workspace ref or HEAD." });
+  },
+  get workspaceBranchTemplate() {
+    return t("components.agentConfigPrimitives.helpWorkspaceBranchTemplate", { defaultValue: "Template for naming derived branches. Supports {{issue.identifier}}, {{issue.title}}, {{agent.name}}, {{project.id}}, {{workspace.repoRef}}, and {{slug}}." });
+  },
+  get worktreeParentDir() {
+    return t("components.agentConfigPrimitives.helpWorktreeParentDir", { defaultValue: "Directory where derived worktrees should be created. Absolute, ~-prefixed, and repo-relative paths are supported." });
+  },
+  get runtimeServicesJson() {
+    return t("components.agentConfigPrimitives.helpRuntimeServicesJson", { defaultValue: "Optional workspace runtime service definitions. Use this for shared app servers, workers, or other long-lived companion processes attached to the workspace." });
+  },
+  get maxTurnsPerRun() {
+    return t("components.agentConfigPrimitives.helpMaxTurnsPerRun", { defaultValue: "Maximum number of agentic turns (tool calls) per heartbeat run." });
+  },
+  get command() {
+    return t("components.agentConfigPrimitives.helpCommand", { defaultValue: "The command to execute (e.g. node, python)." });
+  },
+  get localCommand() {
+    return t("components.agentConfigPrimitives.helpLocalCommand", { defaultValue: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode)." });
+  },
+  get args() {
+    return t("components.agentConfigPrimitives.helpArgs", { defaultValue: "Command-line arguments, comma-separated." });
+  },
+  get extraArgs() {
+    return t("components.agentConfigPrimitives.helpExtraArgs", { defaultValue: "Extra CLI arguments for local adapters, comma-separated." });
+  },
+  get envVars() {
+    return t("components.agentConfigPrimitives.helpEnvVars", { defaultValue: "Environment variables injected into the adapter process. Use plain values or secret references." });
+  },
+  get bootstrapPrompt() {
+    return t("components.agentConfigPrimitives.helpBootstrapPrompt", { defaultValue: "Only sent when Paperclip starts a fresh session. Use this for stable setup guidance that should not be repeated on every heartbeat." });
+  },
+  get payloadTemplateJson() {
+    return t("components.agentConfigPrimitives.helpPayloadTemplateJson", { defaultValue: "Optional JSON merged into remote adapter request payloads before Paperclip adds its standard wake and workspace fields." });
+  },
+  get webhookUrl() {
+    return t("components.agentConfigPrimitives.helpWebhookUrl", { defaultValue: "The URL that receives POST requests when the agent is invoked." });
+  },
+  get heartbeatInterval() {
+    return t("components.agentConfigPrimitives.helpHeartbeatInterval", { defaultValue: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work." });
+  },
+  get intervalSec() {
+    return t("components.agentConfigPrimitives.helpIntervalSec", { defaultValue: "Seconds between automatic heartbeat invocations." });
+  },
+  get timeoutSec() {
+    return t("components.agentConfigPrimitives.helpTimeoutSec", { defaultValue: "Maximum seconds a run can take before being terminated. 0 means no timeout." });
+  },
+  get graceSec() {
+    return t("components.agentConfigPrimitives.helpGraceSec", { defaultValue: "Seconds to wait after sending interrupt before force-killing the process." });
+  },
+  get wakeOnDemand() {
+    return t("components.agentConfigPrimitives.helpWakeOnDemand", { defaultValue: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems." });
+  },
+  get cooldownSec() {
+    return t("components.agentConfigPrimitives.helpCooldownSec", { defaultValue: "Minimum seconds between consecutive heartbeat runs." });
+  },
+  get maxConcurrentRuns() {
+    return t("components.agentConfigPrimitives.helpMaxConcurrentRuns", { defaultValue: "Maximum number of heartbeat runs that can execute simultaneously for this agent." });
+  },
+  get maxTurnContinuationEnabled() {
+    return t("components.agentConfigPrimitives.helpMaxTurnContinuationEnabled", { defaultValue: "Automatically queue bounded continuation runs when an adapter stops because its per-run turn cap was exhausted." });
+  },
+  get maxTurnContinuationMaxAttempts() {
+    return t("components.agentConfigPrimitives.helpMaxTurnContinuationMaxAttempts", { defaultValue: "Maximum automatic continuations after one max-turn stop. This is separate from max turns per run." });
+  },
+  get maxTurnContinuationDelaySec() {
+    return t("components.agentConfigPrimitives.helpMaxTurnContinuationDelaySec", { defaultValue: "Seconds to wait before starting each max-turn continuation." });
+  },
+  get budgetMonthlyCents() {
+    return t("components.agentConfigPrimitives.helpBudgetMonthlyCents", { defaultValue: "Monthly spending limit in cents. 0 means no limit." });
+  },
 };
 
 import { getAdapterLabels } from "../adapters/adapter-display-registry";
@@ -386,6 +471,7 @@ export function DraftNumberInput({
  * type the path due to browser security limitations.
  */
 export function ChoosePathButton() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -394,54 +480,53 @@ export function ChoosePathButton() {
         className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("components.agentConfigPrimitives.choose", { defaultValue: "Choose" })}
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
+            <DialogTitle>{t("components.agentConfigPrimitives.specifyPathManually", { defaultValue: "Specify path manually" })}</DialogTitle>
             <DialogDescription>
-              Browser security blocks apps from reading full local paths via a file picker.
-              Copy the absolute path and paste it into the input.
+              {t("components.agentConfigPrimitives.specifyPathDescription", { defaultValue: "Browser security blocks apps from reading full local paths via a file picker. Copy the absolute path and paste it into the input." })}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm">
             <section className="space-y-1.5">
-              <p className="font-medium">macOS (Finder)</p>
+              <p className="font-medium">{t("components.agentConfigPrimitives.macosFinder", { defaultValue: "macOS (Finder)" })}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
-                <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("components.agentConfigPrimitives.macosStep1", { defaultValue: "Find the folder in Finder." })}</li>
+                <li>{t("components.agentConfigPrimitives.macosStep2Prefix", { defaultValue: "Hold" })} <kbd>Option</kbd> {t("components.agentConfigPrimitives.macosStep2Suffix", { defaultValue: "and right-click the folder." })}</li>
+                <li>{t("components.agentConfigPrimitives.macosStep3", { defaultValue: "Click \"Copy <folder name> as Pathname\"." })}</li>
+                <li>{t("components.agentConfigPrimitives.pasteResultStep", { defaultValue: "Paste the result into the path input." })}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 /Users/yourname/Documents/project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Windows (File Explorer)</p>
+              <p className="font-medium">{t("components.agentConfigPrimitives.windowsFileExplorer", { defaultValue: "Windows (File Explorer)" })}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
-                <li>Click "Copy as path".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("components.agentConfigPrimitives.windowsStep1", { defaultValue: "Find the folder in File Explorer." })}</li>
+                <li>{t("components.agentConfigPrimitives.windowsStep2Prefix", { defaultValue: "Hold" })} <kbd>Shift</kbd> {t("components.agentConfigPrimitives.windowsStep2Suffix", { defaultValue: "and right-click the folder." })}</li>
+                <li>{t("components.agentConfigPrimitives.windowsStep3", { defaultValue: "Click \"Copy as path\"." })}</li>
+                <li>{t("components.agentConfigPrimitives.pasteResultStep", { defaultValue: "Paste the result into the path input." })}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 C:\Users\yourname\Documents\project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Terminal fallback (macOS/Linux)</p>
+              <p className="font-medium">{t("components.agentConfigPrimitives.terminalFallback", { defaultValue: "Terminal fallback (macOS/Linux)" })}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Run <code>cd /path/to/folder</code>.</li>
-                <li>Run <code>pwd</code>.</li>
-                <li>Copy the output and paste it into the path input.</li>
+                <li>{t("components.agentConfigPrimitives.terminalStep1Prefix", { defaultValue: "Run" })} <code>cd /path/to/folder</code>.</li>
+                <li>{t("components.agentConfigPrimitives.terminalStep2Prefix", { defaultValue: "Run" })} <code>pwd</code>.</li>
+                <li>{t("components.agentConfigPrimitives.terminalStep3", { defaultValue: "Copy the output and paste it into the path input." })}</li>
               </ol>
             </section>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
-              OK
+              {t("components.agentConfigPrimitives.ok", { defaultValue: "OK" })}
             </Button>
           </DialogFooter>
         </DialogContent>

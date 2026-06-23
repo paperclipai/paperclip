@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { useTranslation } from "@/i18n";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
@@ -23,6 +24,7 @@ import { NotFoundPage } from "./NotFound";
  * @see doc/plugins/PLUGIN_SPEC.md §24.4 — Company-Context Plugin Page
  */
 export function PluginPage() {
+  const { t } = useTranslation();
   const params = useParams<{
     companyPrefix?: string;
     pluginId?: string;
@@ -119,7 +121,7 @@ export function PluginPage() {
       return;
     }
     setBreadcrumbs([
-      { label: "Plugins", href: "/company/settings/instance/plugins" },
+      { label: t("pages.pluginPage.breadcrumbPlugins", { defaultValue: "Plugins" }), href: "/company/settings/instance/plugins" },
       { label: pageSlot.pluginDisplayName },
     ]);
   }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive]);
@@ -130,13 +132,13 @@ export function PluginPage() {
     }
     return (
       <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">Select a company to view this page.</p>
+        <p className="text-sm text-muted-foreground">{t("pages.pluginPage.selectCompany", { defaultValue: "Select a company to view this page." })}</p>
       </div>
     );
   }
 
   if (!contributions) {
-    return <div className="text-sm text-muted-foreground">Loading…</div>;
+    return <div className="text-sm text-muted-foreground">{t("pages.pluginPage.loading", { defaultValue: "Loading…" })}</div>;
   }
 
   if (!pluginId && pluginRoutePath) {
@@ -146,7 +148,7 @@ export function PluginPage() {
     if (duplicateMatches.length > 1) {
       return (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          Multiple plugins declare the route <code>{pluginRoutePath}</code>. Use the plugin-id route until the conflict is resolved.
+          {t("pages.pluginPage.routeConflictPrefix", { defaultValue: "Multiple plugins declare the route" })} <code>{pluginRoutePath}</code>. {t("pages.pluginPage.routeConflictSuffix", { defaultValue: "Use the plugin-id route until the conflict is resolved." })}
         </div>
       );
     }
@@ -170,7 +172,7 @@ export function PluginPage() {
           <Button variant="ghost" size="sm" asChild>
             <Link to={companyPrefix ? `/${companyPrefix}/dashboard` : "/dashboard"}>
               <ArrowLeft className="h-4 w-4 mr-1" />
-              Back
+              {t("pages.pluginPage.back", { defaultValue: "Back" })}
             </Link>
           </Button>
         </div>

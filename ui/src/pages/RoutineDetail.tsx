@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "@/i18n";
 import { Navigate, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Repeat, Sparkles } from "lucide-react";
@@ -69,16 +70,21 @@ import type {
 
 const LAST_SECTION_STORAGE_KEY = "paperclip.routineLastSection";
 
-const SECTION_TITLES: Record<RoutineSectionKey, string> = {
-  overview: "Overview",
-  triggers: "Triggers",
-  variables: "Variables",
-  secrets: "Secrets",
-  delivery: "Delivery",
-  runs: "Runs",
-  activity: "Activity",
-  history: "History",
-};
+type TranslateFn = ReturnType<typeof useTranslation>["t"];
+
+function sectionTitle(t: TranslateFn, section: RoutineSectionKey): string {
+  const titles: Record<RoutineSectionKey, string> = {
+    overview: t("pages.routineDetail.sectionOverview", { defaultValue: "Overview" }),
+    triggers: t("pages.routineDetail.sectionTriggers", { defaultValue: "Triggers" }),
+    variables: t("pages.routineDetail.sectionVariables", { defaultValue: "Variables" }),
+    secrets: t("pages.routineDetail.sectionSecrets", { defaultValue: "Secrets" }),
+    delivery: t("pages.routineDetail.sectionDelivery", { defaultValue: "Delivery" }),
+    runs: t("pages.routineDetail.sectionRuns", { defaultValue: "Runs" }),
+    activity: t("pages.routineDetail.sectionActivity", { defaultValue: "Activity" }),
+    history: t("pages.routineDetail.sectionHistory", { defaultValue: "History" }),
+  };
+  return titles[section];
+}
 
 function isRoutineSection(value: string | undefined | null): value is RoutineSectionKey {
   return value != null && ROUTINE_SECTION_KEYS.includes(value as RoutineSectionKey);
@@ -141,6 +147,7 @@ function buildRoutineMutationPayload(input: RoutineEditDraft) {
 }
 
 export function RoutineDetail() {
+  const { t } = useTranslation();
   const { routineId, section: sectionParam } = useParams<{ routineId: string; section?: string }>();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -265,33 +272,34 @@ export function RoutineDetail() {
   const dirtyFields = useMemo<RoutineHistoryDirtyFieldDescriptor[]>(() => {
     if (!routineDefaults) return [];
     const result: RoutineHistoryDirtyFieldDescriptor[] = [];
-    if (editDraft.title !== routineDefaults.title) result.push({ key: "title", label: "the title" });
+    if (editDraft.title !== routineDefaults.title)
+      result.push({ key: "title", label: t("pages.routineDetail.dirtyFieldTitle", { defaultValue: "the title" }) });
     if (editDraft.description !== routineDefaults.description) {
-      result.push({ key: "description", label: "the description" });
+      result.push({ key: "description", label: t("pages.routineDetail.dirtyFieldDescription", { defaultValue: "the description" }) });
     }
     if (editDraft.projectId !== routineDefaults.projectId) {
-      result.push({ key: "projectId", label: "the project" });
+      result.push({ key: "projectId", label: t("pages.routineDetail.dirtyFieldProject", { defaultValue: "the project" }) });
     }
     if (editDraft.assigneeAgentId !== routineDefaults.assigneeAgentId) {
-      result.push({ key: "assigneeAgentId", label: "the default agent" });
+      result.push({ key: "assigneeAgentId", label: t("pages.routineDetail.dirtyFieldDefaultAgent", { defaultValue: "the default agent" }) });
     }
     if (editDraft.priority !== routineDefaults.priority) {
-      result.push({ key: "priority", label: "the priority" });
+      result.push({ key: "priority", label: t("pages.routineDetail.dirtyFieldPriority", { defaultValue: "the priority" }) });
     }
     if (editDraft.concurrencyPolicy !== routineDefaults.concurrencyPolicy) {
-      result.push({ key: "concurrencyPolicy", label: "the concurrency policy" });
+      result.push({ key: "concurrencyPolicy", label: t("pages.routineDetail.dirtyFieldConcurrencyPolicy", { defaultValue: "the concurrency policy" }) });
     }
     if (editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy) {
-      result.push({ key: "catchUpPolicy", label: "the catch-up policy" });
+      result.push({ key: "catchUpPolicy", label: t("pages.routineDetail.dirtyFieldCatchUpPolicy", { defaultValue: "the catch-up policy" }) });
     }
     if (JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)) {
-      result.push({ key: "variables", label: "the variables" });
+      result.push({ key: "variables", label: t("pages.routineDetail.dirtyFieldVariables", { defaultValue: "the variables" }) });
     }
     if (JSON.stringify(editDraft.env ?? null) !== JSON.stringify(routineDefaults.env ?? null)) {
-      result.push({ key: "env", label: "the secrets" });
+      result.push({ key: "env", label: t("pages.routineDetail.dirtyFieldSecrets", { defaultValue: "the secrets" }) });
     }
     return result;
-  }, [editDraft, routineDefaults]);
+  }, [editDraft, routineDefaults, t]);
   const isEditDirty = dirtyFields.length > 0;
 
   const sectionDirtyFields = useCallback(
@@ -324,14 +332,17 @@ export function RoutineDetail() {
 
   useEffect(() => {
     if (!routine) return;
-    setBreadcrumbs([{ label: "Routines", href: "/routines" }, { label: routine.title }]);
+    setBreadcrumbs([
+      { label: t("pages.routineDetail.breadcrumbRoutines", { defaultValue: "Routines" }), href: "/routines" },
+      { label: routine.title },
+    ]);
     if (!routineDefaults) return;
     const changedRoutine = hydratedRoutineIdRef.current !== routine.id;
     if (changedRoutine || !isEditDirty) {
       setEditDraft(routineDefaults);
       hydratedRoutineIdRef.current = routine.id;
     }
-  }, [routine, routineDefaults, isEditDirty, setBreadcrumbs]);
+  }, [routine, routineDefaults, isEditDirty, setBreadcrumbs, t]);
 
   useEffect(() => {
     autoResizeTextarea(titleInputRef.current);
@@ -348,16 +359,16 @@ export function RoutineDetail() {
     async (label: string, value: string) => {
       try {
         await navigator.clipboard.writeText(value);
-        pushToast({ title: `${label} copied`, tone: "success" });
+        pushToast({ title: t("pages.routineDetail.copiedToast", { label, defaultValue: "{{label}} copied" }), tone: "success" });
       } catch (copyError) {
         pushToast({
-          title: `Failed to copy ${label.toLowerCase()}`,
-          body: copyError instanceof Error ? copyError.message : "Clipboard access was denied.",
+          title: t("pages.routineDetail.copyFailedToast", { label: label.toLowerCase(), defaultValue: "Failed to copy {{label}}" }),
+          body: copyError instanceof Error ? copyError.message : t("pages.routineDetail.clipboardDeniedBody", { defaultValue: "Clipboard access was denied." }),
           tone: "error",
         });
       }
     },
-    [pushToast],
+    [pushToast, t],
   );
 
   const saveRoutine = useMutation({
@@ -382,15 +393,15 @@ export function RoutineDetail() {
       if (mutationError instanceof ApiError && mutationError.status === 409) {
         setSaveConflict(true);
         pushToast({
-          title: "Routine changed",
-          body: "Someone else updated this routine. Reload to see the latest revision.",
+          title: t("pages.routineDetail.routineChangedTitle", { defaultValue: "Routine changed" }),
+          body: t("pages.routineDetail.routineChangedBody", { defaultValue: "Someone else updated this routine. Reload to see the latest revision." }),
           tone: "warn",
         });
         return;
       }
       pushToast({
-        title: "Failed to save routine",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not save the routine.",
+        title: t("pages.routineDetail.saveFailedTitle", { defaultValue: "Failed to save routine" }),
+        body: mutationError instanceof Error ? mutationError.message : t("pages.routineDetail.saveFailedBody", { defaultValue: "Paperclip could not save the routine." }),
         tone: "error",
       });
     },
@@ -411,7 +422,7 @@ export function RoutineDetail() {
           : {}),
       }),
     onSuccess: async () => {
-      pushToast({ title: "Routine run started", tone: "success" });
+      pushToast({ title: t("pages.routineDetail.runStartedToast", { defaultValue: "Routine run started" }), tone: "success" });
       setRunVariablesOpen(false);
       navigateToSection("runs");
       await Promise.all([
@@ -423,8 +434,8 @@ export function RoutineDetail() {
     },
     onError: (runError) => {
       pushToast({
-        title: "Routine run failed",
-        body: runError instanceof Error ? runError.message : "Paperclip could not start the routine run.",
+        title: t("pages.routineDetail.runFailedTitle", { defaultValue: "Routine run failed" }),
+        body: runError instanceof Error ? runError.message : t("pages.routineDetail.runFailedBody", { defaultValue: "Paperclip could not start the routine run." }),
         tone: "error",
       });
     },
@@ -434,8 +445,11 @@ export function RoutineDetail() {
     mutationFn: (status: string) => routinesApi.update(routineId!, { status }),
     onSuccess: async (_data, status) => {
       pushToast({
-        title: "Routine saved",
-        body: status === "paused" ? "Automation paused." : "Automation enabled.",
+        title: t("pages.routineDetail.routineSavedTitle", { defaultValue: "Routine saved" }),
+        body:
+          status === "paused"
+            ? t("pages.routineDetail.automationPausedBody", { defaultValue: "Automation paused." })
+            : t("pages.routineDetail.automationEnabledBody", { defaultValue: "Automation enabled." }),
         tone: "success",
       });
       await Promise.all([
@@ -445,8 +459,8 @@ export function RoutineDetail() {
     },
     onError: (statusError) => {
       pushToast({
-        title: "Failed to update routine",
-        body: statusError instanceof Error ? statusError.message : "Paperclip could not update the routine.",
+        title: t("pages.routineDetail.updateRoutineFailedTitle", { defaultValue: "Failed to update routine" }),
+        body: statusError instanceof Error ? statusError.message : t("pages.routineDetail.updateRoutineFailedBody", { defaultValue: "Paperclip could not update the routine." }),
         tone: "error",
       });
     },
@@ -470,11 +484,15 @@ export function RoutineDetail() {
     onSuccess: async (result) => {
       if (result.secretMaterial) {
         setSecretMessage({
-          title: "Webhook trigger created",
+          title: t("pages.routineDetail.webhookTriggerCreatedTitle", { defaultValue: "Webhook trigger created" }),
           entries: [{ webhookUrl: result.secretMaterial.webhookUrl, webhookSecret: result.secretMaterial.webhookSecret }],
         });
       } else {
-        pushToast({ title: "Trigger added", body: "The routine schedule was saved.", tone: "success" });
+        pushToast({
+          title: t("pages.routineDetail.triggerAddedTitle", { defaultValue: "Trigger added" }),
+          body: t("pages.routineDetail.triggerAddedBody", { defaultValue: "The routine schedule was saved." }),
+          tone: "success",
+        });
       }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
@@ -484,8 +502,8 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to add trigger",
-        body: triggerError instanceof Error ? triggerError.message : "Paperclip could not create the trigger.",
+        title: t("pages.routineDetail.addTriggerFailedTitle", { defaultValue: "Failed to add trigger" }),
+        body: triggerError instanceof Error ? triggerError.message : t("pages.routineDetail.addTriggerFailedBody", { defaultValue: "Paperclip could not create the trigger." }),
         tone: "error",
       });
     },
@@ -494,7 +512,11 @@ export function RoutineDetail() {
   const updateTrigger = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: Record<string, unknown> }) => routinesApi.updateTrigger(id, patch),
     onSuccess: async () => {
-      pushToast({ title: "Trigger saved", body: "The routine cadence update was saved.", tone: "success" });
+      pushToast({
+        title: t("pages.routineDetail.triggerSavedTitle", { defaultValue: "Trigger saved" }),
+        body: t("pages.routineDetail.triggerSavedBody", { defaultValue: "The routine cadence update was saved." }),
+        tone: "success",
+      });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -503,8 +525,8 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to update trigger",
-        body: triggerError instanceof Error ? triggerError.message : "Paperclip could not update the trigger.",
+        title: t("pages.routineDetail.updateTriggerFailedTitle", { defaultValue: "Failed to update trigger" }),
+        body: triggerError instanceof Error ? triggerError.message : t("pages.routineDetail.updateTriggerFailedBody", { defaultValue: "Paperclip could not update the trigger." }),
         tone: "error",
       });
     },
@@ -513,7 +535,7 @@ export function RoutineDetail() {
   const deleteTrigger = useMutation({
     mutationFn: (id: string) => routinesApi.deleteTrigger(id),
     onSuccess: async () => {
-      pushToast({ title: "Trigger deleted", tone: "success" });
+      pushToast({ title: t("pages.routineDetail.triggerDeletedToast", { defaultValue: "Trigger deleted" }), tone: "success" });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -522,8 +544,8 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to delete trigger",
-        body: triggerError instanceof Error ? triggerError.message : "Paperclip could not delete the trigger.",
+        title: t("pages.routineDetail.deleteTriggerFailedTitle", { defaultValue: "Failed to delete trigger" }),
+        body: triggerError instanceof Error ? triggerError.message : t("pages.routineDetail.deleteTriggerFailedBody", { defaultValue: "Paperclip could not delete the trigger." }),
         tone: "error",
       });
     },
@@ -533,7 +555,7 @@ export function RoutineDetail() {
     mutationFn: (id: string): Promise<RotateRoutineTriggerResponse> => routinesApi.rotateTriggerSecret(id),
     onSuccess: async (result) => {
       setSecretMessage({
-        title: "Webhook secret rotated",
+        title: t("pages.routineDetail.webhookSecretRotatedTitle", { defaultValue: "Webhook secret rotated" }),
         entries: [{ webhookUrl: result.secretMaterial.webhookUrl, webhookSecret: result.secretMaterial.webhookSecret }],
       });
       await Promise.all([
@@ -543,8 +565,8 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to rotate webhook secret",
-        body: triggerError instanceof Error ? triggerError.message : "Paperclip could not rotate the webhook secret.",
+        title: t("pages.routineDetail.rotateSecretFailedTitle", { defaultValue: "Failed to rotate webhook secret" }),
+        body: triggerError instanceof Error ? triggerError.message : t("pages.routineDetail.rotateSecretFailedBody", { defaultValue: "Paperclip could not rotate the webhook secret." }),
         tone: "error",
       });
     },
@@ -608,15 +630,18 @@ export function RoutineDetail() {
       setSecretMessage({
         title:
           response.secretMaterials.length === 1
-            ? "Webhook trigger restored"
-            : `${response.secretMaterials.length} webhook triggers restored`,
+            ? t("pages.routineDetail.webhookTriggerRestoredTitle", { defaultValue: "Webhook trigger restored" })
+            : t("pages.routineDetail.webhookTriggersRestoredTitle", {
+                count: response.secretMaterials.length,
+                defaultValue: "{{count}} webhook triggers restored",
+              }),
         entries: response.secretMaterials.map((recreated) => ({
           webhookUrl: recreated.webhookUrl,
           webhookSecret: recreated.webhookSecret,
         })),
       });
     }
-  }, []);
+  }, [t]);
 
   const onHistoryRestored = useCallback(
     (response: RestoreRoutineRevisionResponse) => {
@@ -650,7 +675,7 @@ export function RoutineDetail() {
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return <EmptyState icon={Repeat} message={t("pages.routineDetail.selectCompanyEmpty", { defaultValue: "Select a company to view routines." })} />;
   }
 
   // Back-compat redirect: `?tab=x` → `/routines/:id/x`.
@@ -677,7 +702,7 @@ export function RoutineDetail() {
     return (
       <EmptyState
         icon={AlertCircle}
-        message={error instanceof Error ? error.message : "We couldn't load this routine."}
+        message={error instanceof Error ? error.message : t("pages.routineDetail.loadRoutineError", { defaultValue: "We couldn't load this routine." })}
       />
     );
   }
@@ -686,12 +711,12 @@ export function RoutineDetail() {
   const automationToggleDisabled = updateRoutineStatus.isPending || routine.status === "archived";
   const automationLabel =
     routine.status === "archived"
-      ? "Archived"
+      ? t("pages.routineDetail.statusArchived", { defaultValue: "Archived" })
       : !routine.assigneeAgentId
-        ? "Draft"
+        ? t("pages.routineDetail.statusDraft", { defaultValue: "Draft" })
         : automationEnabled
-          ? "Active"
-          : "Paused";
+          ? t("pages.routineDetail.statusActive", { defaultValue: "Active" })
+          : t("pages.routineDetail.statusPaused", { defaultValue: "Paused" });
   const automationLabelClassName =
     routine.status === "archived"
       ? "text-muted-foreground"
@@ -721,8 +746,8 @@ export function RoutineDetail() {
     onToggleAutomation: () => {
       if (!automationEnabled && !routine.assigneeAgentId) {
         pushToast({
-          title: "Default agent required",
-          body: "Set a default agent before enabling routine automation.",
+          title: t("pages.routineDetail.defaultAgentRequiredTitle", { defaultValue: "Default agent required" }),
+          body: t("pages.routineDetail.defaultAgentRequiredBody", { defaultValue: "Set a default agent before enabling routine automation." }),
           tone: "warn",
         });
         return;
@@ -774,7 +799,7 @@ export function RoutineDetail() {
         href="#routine-section"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-20 focus:rounded focus:bg-background focus:px-3 focus:py-1.5 focus:text-sm"
       >
-        Skip to section
+        {t("pages.routineDetail.skipToSection", { defaultValue: "Skip to section" })}
       </a>
 
       <div className="-m-4 flex min-h-full flex-col md:-m-6">
@@ -785,7 +810,7 @@ export function RoutineDetail() {
               ref={titleInputRef}
               data-autosize-title
               className="min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-base font-semibold leading-7 outline-none placeholder:text-muted-foreground/50"
-              placeholder="Routine title"
+              placeholder={t("pages.routineDetail.routineTitlePlaceholder", { defaultValue: "Routine title" })}
               rows={1}
               value={editDraft.title}
               onChange={(event) => {
@@ -819,7 +844,11 @@ export function RoutineDetail() {
                 checked={automationEnabled}
                 onCheckedChange={contextValue.onToggleAutomation}
                 disabled={automationToggleDisabled}
-                aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
+                aria-label={
+                  automationEnabled
+                    ? t("pages.routineDetail.pauseTriggersAria", { defaultValue: "Pause automatic triggers" })
+                    : t("pages.routineDetail.enableTriggersAria", { defaultValue: "Enable automatic triggers" })
+                }
               />
               <span className={`text-sm font-medium ${automationLabelClassName}`}>{automationLabel}</span>
             </div>
@@ -852,7 +881,7 @@ export function RoutineDetail() {
               className={isEditableSection ? "mx-auto w-full max-w-3xl" : "w-full"}
             >
               <h2 id="routine-section-title" className="mb-4 text-lg font-semibold">
-                {SECTION_TITLES[section]}
+                {sectionTitle(t, section)}
               </h2>
 
               {section === "overview" && <OverviewSection />}

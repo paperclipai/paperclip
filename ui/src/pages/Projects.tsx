@@ -21,15 +21,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ArrowUpDown, Check, Hexagon, Plus } from "lucide-react";
+import { t, useTranslation } from "@/i18n";
 
 type ProjectSortField = "name" | "updated" | "created" | "targetDate";
 type ProjectSortDir = "asc" | "desc";
 
-const PROJECT_SORT_OPTIONS: Array<{ field: ProjectSortField; label: string }> = [
-  { field: "name", label: "Name" },
-  { field: "updated", label: "Updated" },
-  { field: "created", label: "Created" },
-  { field: "targetDate", label: "Target date" },
+const PROJECT_SORT_OPTIONS: Array<{ field: ProjectSortField; label: () => string }> = [
+  { field: "name", label: () => t("pages.projects.sortFieldName", { defaultValue: "Name" }) },
+  { field: "updated", label: () => t("pages.projects.sortFieldUpdated", { defaultValue: "Updated" }) },
+  { field: "created", label: () => t("pages.projects.sortFieldCreated", { defaultValue: "Created" }) },
+  { field: "targetDate", label: () => t("pages.projects.sortFieldTargetDate", { defaultValue: "Target date" }) },
 ];
 
 function compareProjectNames(left: Project, right: Project) {
@@ -74,6 +75,7 @@ function sortProjects(projects: Project[], sortField: ProjectSortField, sortDir:
 }
 
 export function Projects() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -81,8 +83,8 @@ export function Projects() {
   const [sortDir, setSortDir] = useState<ProjectSortDir>("asc");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Projects" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("pages.projects.breadcrumb", { defaultValue: "Projects" }) }]);
+  }, [setBreadcrumbs, t]);
 
   const { data: allProjects, isLoading, error } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
@@ -113,10 +115,17 @@ export function Projects() {
 
     return groups;
   }, [membershipsQuery.data, sortedProjects]);
-  const sortLabel = PROJECT_SORT_OPTIONS.find((option) => option.field === sortField)?.label ?? "Name";
+  const sortLabel =
+    PROJECT_SORT_OPTIONS.find((option) => option.field === sortField)?.label() ??
+    t("pages.projects.sortFieldName", { defaultValue: "Name" });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
+    return (
+      <EmptyState
+        icon={Hexagon}
+        message={t("pages.projects.selectCompany", { defaultValue: "Select a company to view projects." })}
+      />
+    );
   }
 
   if (isLoading) {
@@ -128,9 +137,14 @@ export function Projects() {
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <Popover>
           <PopoverTrigger asChild>
-            <Button variant="ghost" size="sm" className="w-fit text-xs" title="Sort">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-fit text-xs"
+              title={t("pages.projects.sortTitle", { defaultValue: "Sort" })}
+            >
               <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-              <span>Sort: {sortLabel}</span>
+              <span>{t("pages.projects.sortLabel", { label: sortLabel, defaultValue: "Sort: {{label}}" })}</span>
             </Button>
           </PopoverTrigger>
           <PopoverContent align="start" className="w-44 p-0">
@@ -153,11 +167,13 @@ export function Projects() {
                     setSortDir(option.field === "name" || option.field === "targetDate" ? "asc" : "desc");
                   }}
                 >
-                  <span>{option.label}</span>
+                  <span>{option.label()}</span>
                   {sortField === option.field ? (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Check className="h-3 w-3" />
-                      {sortDir === "asc" ? "Asc" : "Desc"}
+                      {sortDir === "asc"
+                        ? t("pages.projects.sortDirAsc", { defaultValue: "Asc" })
+                        : t("pages.projects.sortDirDesc", { defaultValue: "Desc" })}
                     </span>
                   ) : null}
                 </button>
@@ -167,7 +183,7 @@ export function Projects() {
         </Popover>
         <Button size="sm" variant="outline" onClick={openNewProject}>
           <Plus className="h-4 w-4 mr-1" />
-          Add Project
+          {t("pages.projects.addProject", { defaultValue: "Add Project" })}
         </Button>
       </div>
 
@@ -176,8 +192,8 @@ export function Projects() {
       {!isLoading && projects.length === 0 && (
         <EmptyState
           icon={Hexagon}
-          message="No projects yet."
-          action="Add Project"
+          message={t("pages.projects.emptyMessage", { defaultValue: "No projects yet." })}
+          action={t("pages.projects.addProject", { defaultValue: "Add Project" })}
           onAction={openNewProject}
         />
       )}
@@ -185,17 +201,21 @@ export function Projects() {
       {projects.length > 0 && (
         <div className="space-y-6">
           {([
-            ["My Projects", groupedProjects.mine],
-            ["Other Projects", groupedProjects.other],
-          ] as const).map(([label, sectionProjects]) => {
+            ["mine", t("pages.projects.sectionMine", { defaultValue: "My Projects" }), groupedProjects.mine],
+            ["other", t("pages.projects.sectionOther", { defaultValue: "Other Projects" }), groupedProjects.other],
+          ] as const).map(([groupKey, label, sectionProjects]) => {
             if (sectionProjects.length === 0) return null;
 
             return (
-              <section key={label} className="space-y-2">
+              <section key={groupKey} className="space-y-2">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-medium">{label}</h2>
                   <span className="text-xs text-muted-foreground">
-                    {sectionProjects.length} project{sectionProjects.length === 1 ? "" : "s"}
+                    {t("pages.projects.projectCount", {
+                      count: sectionProjects.length,
+                      defaultValue: "{{count}} project",
+                      defaultValue_other: "{{count}} projects",
+                    })}
                   </span>
                 </div>
                 <div className="border border-border">
@@ -217,9 +237,19 @@ export function Projects() {
                           <div className="flex items-center gap-3">
                             <span
                               className="hidden text-xs text-muted-foreground tabular-nums sm:inline"
-                              title={`${formatNumber(project.taskCount ?? 0)} task${(project.taskCount ?? 0) === 1 ? "" : "s"}`}
+                              title={t("pages.projects.taskCount", {
+                                count: project.taskCount ?? 0,
+                                formattedCount: formatNumber(project.taskCount ?? 0),
+                                defaultValue: "{{formattedCount}} task",
+                                defaultValue_other: "{{formattedCount}} tasks",
+                              })}
                             >
-                              {formatNumber(project.taskCount ?? 0)} task{(project.taskCount ?? 0) === 1 ? "" : "s"}
+                              {t("pages.projects.taskCount", {
+                                count: project.taskCount ?? 0,
+                                formattedCount: formatNumber(project.taskCount ?? 0),
+                                defaultValue: "{{formattedCount}} task",
+                                defaultValue_other: "{{formattedCount}} tasks",
+                              })}
                             </span>
                             {project.budget && (
                               <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline">

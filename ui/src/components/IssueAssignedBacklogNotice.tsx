@@ -1,6 +1,7 @@
 import { Flag } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 
 interface IssueAssignedBacklogNoticeProps {
   issueStatus: string;
@@ -17,10 +18,15 @@ export function IssueAssignedBacklogNotice({
   onResume,
   resuming,
 }: IssueAssignedBacklogNoticeProps) {
+  const { t } = useTranslation();
   if (issueStatus !== "backlog") return null;
   if (!assigneeAgent && !assigneeUserId) return null;
 
-  const assigneeLabel = assigneeAgent?.name ?? "the assignee";
+  const assigneeLabel =
+    assigneeAgent?.name ??
+    t("components.issueAssignedBacklogNotice.assigneeFallback", {
+      defaultValue: "the assignee",
+    });
 
   return (
     <div
@@ -32,14 +38,28 @@ export function IssueAssignedBacklogNotice({
         <Flag className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
         <div className="min-w-0 flex-1 space-y-1.5">
           <p className="leading-5">
-            <span className="font-medium">Parked</span> —{" "}
-            <span className="font-medium">{assigneeLabel}</span> will not be woken until status changes to{" "}
-            <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">todo</code> or{" "}
+            <span className="font-medium">
+              {t("components.issueAssignedBacklogNotice.parkedLabel", {
+                defaultValue: "Parked",
+              })}
+            </span>{" "}
+            —{" "}
+            <span className="font-medium">{assigneeLabel}</span>{" "}
+            {t("components.issueAssignedBacklogNotice.notWokenUntil", {
+              defaultValue: "will not be woken until status changes to",
+            })}{" "}
+            <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">todo</code>{" "}
+            {t("components.issueAssignedBacklogNotice.statusOr", {
+              defaultValue: "or",
+            })}{" "}
             <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">in_progress</code>.
           </p>
           {assigneeAgent ? (
             <p className="text-xs leading-5 text-amber-800 dark:text-amber-200">
-              Comments still wake the assignee for questions or triage. Leave this parked only if the work is intentionally on hold.
+              {t("components.issueAssignedBacklogNotice.commentsWakeAssignee", {
+                defaultValue:
+                  "Comments still wake the assignee for questions or triage. Leave this parked only if the work is intentionally on hold.",
+              })}
             </p>
           ) : null}
           {onResume ? (
@@ -52,7 +72,13 @@ export function IssueAssignedBacklogNotice({
                 disabled={resuming}
                 data-testid="issue-assigned-backlog-resume"
               >
-                {resuming ? "Resuming…" : "Resume now"}
+                {resuming
+                  ? t("components.issueAssignedBacklogNotice.resuming", {
+                      defaultValue: "Resuming…",
+                    })
+                  : t("components.issueAssignedBacklogNotice.resumeNow", {
+                      defaultValue: "Resume now",
+                    })}
               </Button>
             </div>
           ) : null}

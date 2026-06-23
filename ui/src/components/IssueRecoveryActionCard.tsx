@@ -7,6 +7,7 @@ import type {
   IssueRecoveryActionStatus,
 } from "@paperclipai/shared";
 import { Eye, OctagonAlert, RefreshCw, Sparkles, TriangleAlert } from "lucide-react";
+import { t, useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,31 +44,77 @@ export interface IssueRecoveryActionCardProps {
   className?: string;
 }
 
-const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition: "Missing Disposition",
-  stranded_assigned_issue: "Stranded Task",
-  workspace_validation: "Workspace Validation",
-  configuration_validation: "Configuration Validation",
-  active_run_watchdog: "Active Watchdog",
-  issue_graph_liveness: "Graph Liveness",
-};
+function getKindLabel(): Record<IssueRecoveryActionKind, string> {
+  return {
+    missing_disposition: t("components.issueRecoveryActionCard.kindLabelMissingDisposition", {
+      defaultValue: "Missing Disposition",
+    }),
+    stranded_assigned_issue: t("components.issueRecoveryActionCard.kindLabelStrandedAssignedIssue", {
+      defaultValue: "Stranded Task",
+    }),
+    workspace_validation: t("components.issueRecoveryActionCard.kindLabelWorkspaceValidation", {
+      defaultValue: "Workspace Validation",
+    }),
+    configuration_validation: t("components.issueRecoveryActionCard.kindLabelConfigurationValidation", {
+      defaultValue: "Configuration Validation",
+    }),
+    active_run_watchdog: t("components.issueRecoveryActionCard.kindLabelActiveRunWatchdog", {
+      defaultValue: "Active Watchdog",
+    }),
+    issue_graph_liveness: t("components.issueRecoveryActionCard.kindLabelIssueGraphLiveness", {
+      defaultValue: "Graph Liveness",
+    }),
+  };
+}
 
-const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition: "This task's run finished, but no next step was chosen.",
-  stranded_assigned_issue:
-    "Paperclip retried this task's last run and it still has no live execution path.",
-  workspace_validation:
-    "Paperclip stopped this run because the task's git workspace could not be validated.",
-  configuration_validation:
-    "Paperclip stopped before dispatching this run because required secret/env bindings are missing.",
-  active_run_watchdog:
-    "The active run has been silent. Recovery is observing without interrupting it.",
-  issue_graph_liveness:
-    "Paperclip detected this task lost a live action path. A recovery owner needs to act.",
-};
+function getKindHeadline(): Record<IssueRecoveryActionKind, string> {
+  return {
+    missing_disposition: t("components.issueRecoveryActionCard.kindHeadlineMissingDisposition", {
+      defaultValue: "This task's run finished, but no next step was chosen.",
+    }),
+    stranded_assigned_issue: t("components.issueRecoveryActionCard.kindHeadlineStrandedAssignedIssue", {
+      defaultValue:
+        "Paperclip retried this task's last run and it still has no live execution path.",
+    }),
+    workspace_validation: t("components.issueRecoveryActionCard.kindHeadlineWorkspaceValidation", {
+      defaultValue:
+        "Paperclip stopped this run because the task's git workspace could not be validated.",
+    }),
+    configuration_validation: t("components.issueRecoveryActionCard.kindHeadlineConfigurationValidation", {
+      defaultValue:
+        "Paperclip stopped before dispatching this run because required secret/env bindings are missing.",
+    }),
+    active_run_watchdog: t("components.issueRecoveryActionCard.kindHeadlineActiveRunWatchdog", {
+      defaultValue:
+        "The active run has been silent. Recovery is observing without interrupting it.",
+    }),
+    issue_graph_liveness: t("components.issueRecoveryActionCard.kindHeadlineIssueGraphLiveness", {
+      defaultValue:
+        "Paperclip detected this task lost a live action path. A recovery owner needs to act.",
+    }),
+  };
+}
 
+function getStateLabel(): Record<RecoveryCardCardState, string> {
+  return {
+    needed: t("components.issueRecoveryActionCard.stateLabelNeeded", {
+      defaultValue: "RECOVERY NEEDED",
+    }),
+    in_progress: t("components.issueRecoveryActionCard.stateLabelInProgress", {
+      defaultValue: "RECOVERY IN PROGRESS",
+    }),
+    observe_only: t("components.issueRecoveryActionCard.stateLabelObserveOnly", {
+      defaultValue: "OBSERVING ACTIVE RUN",
+    }),
+    escalated: t("components.issueRecoveryActionCard.stateLabelEscalated", {
+      defaultValue: "RECOVERY ESCALATED",
+    }),
+    resolved: t("components.issueRecoveryActionCard.stateLabelResolved", {
+      defaultValue: "RECOVERY RESOLVED",
+    }),
+  };
+}
 const STATE_TONE: Record<RecoveryCardCardState, {
-  label: string;
   containerClass: string;
   iconWrapClass: string;
   iconClass: string;
@@ -76,7 +123,6 @@ const STATE_TONE: Record<RecoveryCardCardState, {
   divider: string;
 }> = {
   needed: {
-    label: "RECOVERY NEEDED",
     containerClass:
       "border-amber-300/70 bg-amber-50/85 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
     iconWrapClass: "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200",
@@ -86,7 +132,6 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-amber-300/60 dark:border-amber-500/30",
   },
   in_progress: {
-    label: "RECOVERY IN PROGRESS",
     containerClass:
       "border-sky-300/70 bg-sky-50/80 text-sky-950 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100",
     iconWrapClass: "bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200",
@@ -96,7 +141,6 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-sky-300/60 dark:border-sky-500/30",
   },
   observe_only: {
-    label: "OBSERVING ACTIVE RUN",
     containerClass:
       "border-border bg-muted/40 text-foreground dark:bg-muted/20",
     iconWrapClass: "bg-muted text-foreground/70",
@@ -106,7 +150,6 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-border/70",
   },
   escalated: {
-    label: "RECOVERY ESCALATED",
     containerClass:
       "border-red-400/60 bg-red-50/85 text-red-950 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-100",
     iconWrapClass: "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200",
@@ -116,7 +159,6 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-red-400/50 dark:border-red-500/30",
   },
   resolved: {
-    label: "RECOVERY RESOLVED",
     containerClass:
       "border-emerald-300/70 bg-emerald-50/80 text-emerald-950 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100",
     iconWrapClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200",
@@ -127,14 +169,28 @@ const STATE_TONE: Record<RecoveryCardCardState, {
   },
 };
 
-const OUTCOME_LABEL: Record<IssueRecoveryActionOutcome, string> = {
-  restored: "restored",
-  delegated: "delegated to follow-up",
-  false_positive: "false positive",
-  blocked: "blocked",
-  escalated: "escalated",
-  cancelled: "cancelled",
-};
+function getOutcomeLabel(): Record<IssueRecoveryActionOutcome, string> {
+  return {
+    restored: t("components.issueRecoveryActionCard.outcomeRestored", {
+      defaultValue: "restored",
+    }),
+    delegated: t("components.issueRecoveryActionCard.outcomeDelegated", {
+      defaultValue: "delegated to follow-up",
+    }),
+    false_positive: t("components.issueRecoveryActionCard.outcomeFalsePositive", {
+      defaultValue: "false positive",
+    }),
+    blocked: t("components.issueRecoveryActionCard.outcomeBlocked", {
+      defaultValue: "blocked",
+    }),
+    escalated: t("components.issueRecoveryActionCard.outcomeEscalated", {
+      defaultValue: "escalated",
+    }),
+    cancelled: t("components.issueRecoveryActionCard.outcomeCancelled", {
+      defaultValue: "cancelled",
+    }),
+  };
+}
 
 function readEvidenceString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -172,13 +228,30 @@ function readWakePolicySummary(action: IssueRecoveryAction): string | null {
   if (!policy) return null;
   const type = readEvidenceString(policy.type);
   if (!type) return null;
-  if (type === "wake_owner") return "Corrective wake queued";
-  if (type === "board_escalation") return "Escalated to board";
-  if (type === "manual") return "Manual";
-  if (type === "manual_repair_required") return "Manual repair required";
+  if (type === "wake_owner")
+    return t("components.issueRecoveryActionCard.wakeCorrectiveQueued", {
+      defaultValue: "Corrective wake queued",
+    });
+  if (type === "board_escalation")
+    return t("components.issueRecoveryActionCard.wakeEscalatedToBoard", {
+      defaultValue: "Escalated to board",
+    });
+  if (type === "manual")
+    return t("components.issueRecoveryActionCard.wakeManual", { defaultValue: "Manual" });
+  if (type === "manual_repair_required")
+    return t("components.issueRecoveryActionCard.wakeManualRepairRequired", {
+      defaultValue: "Manual repair required",
+    });
   if (type === "monitor") {
     const interval = readEvidenceString(policy.intervalLabel);
-    return interval ? `Monitor scheduled · ${interval}` : "Monitor scheduled";
+    return interval
+      ? t("components.issueRecoveryActionCard.wakeMonitorScheduledInterval", {
+          interval,
+          defaultValue: "Monitor scheduled · {{interval}}",
+        })
+      : t("components.issueRecoveryActionCard.wakeMonitorScheduled", {
+          defaultValue: "Monitor scheduled",
+        });
   }
   return type.replaceAll("_", " ");
 }
@@ -192,7 +265,17 @@ function formatTimeShort(value: string | Date | null | undefined): string | null
     const diffMs = date.getTime() - now;
     const absMin = Math.round(Math.abs(diffMs) / 60_000);
     if (absMin < 60) {
-      return diffMs >= 0 ? `in ${absMin}m` : `${absMin}m ago`;
+      return diffMs >= 0
+        ? t("components.issueRecoveryActionCard.timeInMinutes", {
+            count: absMin,
+            defaultValue: "in {{count}}m",
+            defaultValue_other: "in {{count}}m",
+          })
+        : t("components.issueRecoveryActionCard.timeMinutesAgo", {
+            count: absMin,
+            defaultValue: "{{count}}m ago",
+            defaultValue_other: "{{count}}m ago",
+          });
     }
     return date.toLocaleString(undefined, {
       month: "short",
@@ -241,11 +324,17 @@ function AgentLink({
   agentMap?: ReadonlyMap<string, Agent>;
   fallback?: string | null;
 }) {
+  const { t } = useTranslation();
   if (!agentId) {
     return fallback ? <span>{fallback}</span> : <MissingValue />;
   }
   const agent = agentMap?.get(agentId);
-  const label = agent?.name ?? `agent ${agentId.slice(0, 8)}`;
+  const label =
+    agent?.name ??
+    t("components.issueRecoveryActionCard.agentFallback", {
+      id: agentId.slice(0, 8),
+      defaultValue: "agent {{id}}",
+    });
   if (agent) {
     return (
       <Link
@@ -268,12 +357,16 @@ function RunChip({
   agentId: string | null | undefined;
   status?: string | null;
 }) {
+  const { t } = useTranslation();
   if (!runId) return <MissingValue />;
   const short = shortenRunId(runId);
   const inner = (
     <>
       <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
-        run {short}
+        {t("components.issueRecoveryActionCard.runChip", {
+          id: short,
+          defaultValue: "run {{id}}",
+        })}
       </code>
       {status ? (
         <span className="font-sans text-[11px] text-muted-foreground">{status}</span>
@@ -293,43 +386,65 @@ function RunChip({
   return <span className="inline-flex items-center gap-2">{inner}</span>;
 }
 
-const RESOLVE_OPTIONS: Array<{
+function getResolveOptions(): Array<{
   outcome: RecoveryResolveOutcome;
   label: string;
   description: string;
   destructive?: boolean;
   boardOnly?: boolean;
-}> = [
-  {
-    outcome: "todo",
-    label: "Try again",
-    description: "Dismiss recovery and return the source task to todo.",
-  },
-  {
-    outcome: "done",
-    label: "Mark task done",
-    description: "Restore by recording the requested work as complete.",
-  },
-  {
-    outcome: "in_review",
-    label: "Send for review",
-    description: "Hand off to a reviewer with a real review path.",
-  },
-  {
-    outcome: "false_positive_done",
-    label: "False positive, done",
-    description: "Dismiss recovery and mark the source task complete.",
-    destructive: true,
-    boardOnly: true,
-  },
-  {
-    outcome: "false_positive_in_review",
-    label: "False positive, review",
-    description: "Dismiss recovery and send the source task for review.",
-    destructive: true,
-    boardOnly: true,
-  },
-];
+}> {
+  return [
+    {
+      outcome: "todo",
+      label: t("components.issueRecoveryActionCard.resolveTodoLabel", {
+        defaultValue: "Try again",
+      }),
+      description: t("components.issueRecoveryActionCard.resolveTodoDescription", {
+        defaultValue: "Dismiss recovery and return the source task to todo.",
+      }),
+    },
+    {
+      outcome: "done",
+      label: t("components.issueRecoveryActionCard.resolveDoneLabel", {
+        defaultValue: "Mark task done",
+      }),
+      description: t("components.issueRecoveryActionCard.resolveDoneDescription", {
+        defaultValue: "Restore by recording the requested work as complete.",
+      }),
+    },
+    {
+      outcome: "in_review",
+      label: t("components.issueRecoveryActionCard.resolveInReviewLabel", {
+        defaultValue: "Send for review",
+      }),
+      description: t("components.issueRecoveryActionCard.resolveInReviewDescription", {
+        defaultValue: "Hand off to a reviewer with a real review path.",
+      }),
+    },
+    {
+      outcome: "false_positive_done",
+      label: t("components.issueRecoveryActionCard.resolveFalsePositiveDoneLabel", {
+        defaultValue: "False positive, done",
+      }),
+      description: t("components.issueRecoveryActionCard.resolveFalsePositiveDoneDescription", {
+        defaultValue: "Dismiss recovery and mark the source task complete.",
+      }),
+      destructive: true,
+      boardOnly: true,
+    },
+    {
+      outcome: "false_positive_in_review",
+      label: t("components.issueRecoveryActionCard.resolveFalsePositiveInReviewLabel", {
+        defaultValue: "False positive, review",
+      }),
+      description: t("components.issueRecoveryActionCard.resolveFalsePositiveInReviewDescription", {
+        defaultValue: "Dismiss recovery and send the source task for review.",
+      }),
+      destructive: true,
+      boardOnly: true,
+    },
+  ];
+}
 
 export function IssueRecoveryActionCard({
   action,
@@ -339,16 +454,23 @@ export function IssueRecoveryActionCard({
   canFalsePositive = false,
   className,
 }: IssueRecoveryActionCardProps) {
+  const { t } = useTranslation();
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action);
   const tone = STATE_TONE[cardState];
+  const toneLabel = getStateLabel()[cardState];
   const ToneIcon = tone.Icon;
 
   const headline = useMemo(() => {
     if (cardState === "resolved" && action.outcome) {
-      return `Recovery resolved as ${OUTCOME_LABEL[action.outcome] ?? action.outcome}.`;
+      const outcomeLabel = getOutcomeLabel()[action.outcome] ?? action.outcome;
+      return t("components.issueRecoveryActionCard.headlineResolvedAs", {
+        outcome: outcomeLabel,
+        defaultValue: "Recovery resolved as {{outcome}}.",
+      });
     }
-    return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
-  }, [action.kind, action.outcome, cardState]);
+    const kindHeadline = getKindHeadline();
+    return kindHeadline[action.kind] ?? kindHeadline.missing_disposition;
+  }, [action.kind, action.outcome, cardState, t]);
 
   const wakeSummary = readWakePolicySummary(action);
   const evidenceSummary = pickEvidenceSummary(action);
@@ -368,15 +490,23 @@ export function IssueRecoveryActionCard({
   const updatedAtLabel = formatTimeShort(action.updatedAt);
 
   const ariaState = ({
-    needed: "needed",
-    in_progress: "in progress",
-    observe_only: "observing active run",
-    escalated: "escalated",
-    resolved: "resolved",
+    needed: t("components.issueRecoveryActionCard.ariaStateNeeded", { defaultValue: "needed" }),
+    in_progress: t("components.issueRecoveryActionCard.ariaStateInProgress", {
+      defaultValue: "in progress",
+    }),
+    observe_only: t("components.issueRecoveryActionCard.ariaStateObserveOnly", {
+      defaultValue: "observing active run",
+    }),
+    escalated: t("components.issueRecoveryActionCard.ariaStateEscalated", {
+      defaultValue: "escalated",
+    }),
+    resolved: t("components.issueRecoveryActionCard.ariaStateResolved", {
+      defaultValue: "resolved",
+    }),
   } satisfies Record<RecoveryCardCardState, string>)[cardState];
 
   const showResolveActions = onResolve !== undefined && cardState !== "resolved";
-  const visibleResolveOptions = RESOLVE_OPTIONS.filter((option) => {
+  const visibleResolveOptions = getResolveOptions().filter((option) => {
     if (option.boardOnly && !canFalsePositive) return false;
     return true;
   });
@@ -384,7 +514,10 @@ export function IssueRecoveryActionCard({
   return (
     <section
       role="status"
-      aria-label={`Recovery action: ${ariaState}`}
+      aria-label={t("components.issueRecoveryActionCard.sectionAriaLabel", {
+        state: ariaState,
+        defaultValue: "Recovery action: {{state}}",
+      })}
       data-recovery-state={cardState}
       data-recovery-kind={action.kind}
       className={cn(
@@ -405,10 +538,10 @@ export function IssueRecoveryActionCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-semibold uppercase tracking-[0.14em]">
-            <span className={tone.labelClass}>{tone.label}</span>
+            <span className={tone.labelClass}>{toneLabel}</span>
             <span className="text-muted-foreground/60" aria-hidden>·</span>
             <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[11px] tracking-normal text-muted-foreground">
-              {KIND_LABEL[action.kind] ?? action.kind}
+              {getKindLabel()[action.kind] ?? action.kind}
             </code>
             {updatedAtLabel ? (
               <>
@@ -423,67 +556,126 @@ export function IssueRecoveryActionCard({
         </div>
       </header>
       <dl className={cn("border-t bg-background/40 dark:bg-background/20", tone.divider)}>
-        <MetadataRow label="Owner">
+        <MetadataRow
+          label={t("components.issueRecoveryActionCard.rowLabelOwner", { defaultValue: "Owner" })}
+        >
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {action.ownerType === "agent" && action.ownerAgentId ? (
               <>
-                <span className="text-muted-foreground">Recovery:</span>
+                <span className="text-muted-foreground">
+                  {t("components.issueRecoveryActionCard.ownerRecoveryPrefix", {
+                    defaultValue: "Recovery:",
+                  })}
+                </span>
                 <AgentLink agentId={action.ownerAgentId} agentMap={agentMap} />
               </>
             ) : action.ownerType === "board" ? (
-              <span className="font-medium">Board</span>
+              <span className="font-medium">
+                {t("components.issueRecoveryActionCard.ownerBoard", { defaultValue: "Board" })}
+              </span>
             ) : action.ownerType === "user" && action.ownerUserId ? (
-              <span className="font-medium">user {action.ownerUserId.slice(0, 6)}</span>
+              <span className="font-medium">
+                {t("components.issueRecoveryActionCard.ownerUser", {
+                  id: action.ownerUserId.slice(0, 6),
+                  defaultValue: "user {{id}}",
+                })}
+              </span>
             ) : action.ownerType === "system" ? (
-              <span className="font-medium">System</span>
+              <span className="font-medium">
+                {t("components.issueRecoveryActionCard.ownerSystem", { defaultValue: "System" })}
+              </span>
             ) : (
-              <span className="text-muted-foreground">unassigned — pick one to wake them</span>
+              <span className="text-muted-foreground">
+                {t("components.issueRecoveryActionCard.ownerUnassigned", {
+                  defaultValue: "unassigned — pick one to wake them",
+                })}
+              </span>
             )}
             {action.returnOwnerAgentId ? (
               <>
-                <span className="text-muted-foreground">→ Returns to:</span>
+                <span className="text-muted-foreground">
+                  {t("components.issueRecoveryActionCard.ownerReturnsTo", {
+                    defaultValue: "→ Returns to:",
+                  })}
+                </span>
                 <AgentLink agentId={action.returnOwnerAgentId} agentMap={agentMap} />
               </>
             ) : null}
           </span>
         </MetadataRow>
-        <MetadataRow label="Source run">
+        <MetadataRow
+          label={t("components.issueRecoveryActionCard.rowLabelSourceRun", {
+            defaultValue: "Source run",
+          })}
+        >
           <RunChip runId={sourceRunId} agentId={action.previousOwnerAgentId} />
         </MetadataRow>
         {correctiveRunId ? (
-          <MetadataRow label="Corrective run">
+          <MetadataRow
+            label={t("components.issueRecoveryActionCard.rowLabelCorrectiveRun", {
+              defaultValue: "Corrective run",
+            })}
+          >
             <RunChip runId={correctiveRunId} agentId={action.previousOwnerAgentId} />
           </MetadataRow>
         ) : null}
-        <MetadataRow label="Evidence">
+        <MetadataRow
+          label={t("components.issueRecoveryActionCard.rowLabelEvidence", {
+            defaultValue: "Evidence",
+          })}
+        >
           {evidenceSummary ? (
             <span className="break-words font-mono text-[11px] text-foreground/80">{evidenceSummary}</span>
           ) : (
             <MissingValue />
           )}
         </MetadataRow>
-        <MetadataRow label="Next action">
+        <MetadataRow
+          label={t("components.issueRecoveryActionCard.rowLabelNextAction", {
+            defaultValue: "Next action",
+          })}
+        >
           {action.nextAction ? <span>{action.nextAction}</span> : <MissingValue />}
         </MetadataRow>
-        <MetadataRow label="Wake">
+        <MetadataRow
+          label={t("components.issueRecoveryActionCard.rowLabelWake", { defaultValue: "Wake" })}
+        >
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {wakeSummary ? <span>{wakeSummary}</span> : <MissingValue />}
             {showAttempt ? (
               <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                attempt {action.attemptCount} of {action.maxAttempts}
+                {t("components.issueRecoveryActionCard.attemptOfMax", {
+                  attempt: action.attemptCount,
+                  max: action.maxAttempts,
+                  defaultValue: "attempt {{attempt}} of {{max}}",
+                })}
               </span>
             ) : null}
             {showTimeoutInline ? (
               <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                Times out {formatTimeShort(action.timeoutAt) ?? "soon"}
+                {t("components.issueRecoveryActionCard.timesOut", {
+                  when:
+                    formatTimeShort(action.timeoutAt) ??
+                    t("components.issueRecoveryActionCard.timesOutSoon", {
+                      defaultValue: "soon",
+                    }),
+                  defaultValue: "Times out {{when}}",
+                })}
               </span>
             ) : null}
           </span>
         </MetadataRow>
         {cardState === "resolved" && action.outcome ? (
-          <MetadataRow label="Resolution">
+          <MetadataRow
+            label={t("components.issueRecoveryActionCard.rowLabelResolution", {
+              defaultValue: "Resolution",
+            })}
+          >
             <span className={cn("font-medium", tone.labelClass)}>
-              Resolved as {OUTCOME_LABEL[action.outcome]}
+              {t("components.issueRecoveryActionCard.resolvedAs", {
+                outcome: getOutcomeLabel()[action.outcome],
+                defaultValue: "Resolved as {{outcome}}",
+              })}
               {action.resolvedAt ? ` · ${formatTimeShort(action.resolvedAt) ?? ""}` : ""}
             </span>
           </MetadataRow>
@@ -498,9 +690,13 @@ export function IssueRecoveryActionCard({
                 size="sm"
                 variant="default"
                 data-testid="recovery-action-resolve-trigger"
-                aria-label="Resolve recovery"
+                aria-label={t("components.issueRecoveryActionCard.resolveRecoveryAriaLabel", {
+                  defaultValue: "Resolve recovery",
+                })}
               >
-                Resolve…
+                {t("components.issueRecoveryActionCard.resolveTrigger", {
+                  defaultValue: "Resolve…",
+                })}
               </Button>
             </PopoverTrigger>
             <PopoverContent
@@ -509,7 +705,9 @@ export function IssueRecoveryActionCard({
               className="w-72 p-1.5"
             >
               <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                Resolve recovery
+                {t("components.issueRecoveryActionCard.resolveRecoveryHeading", {
+                  defaultValue: "Resolve recovery",
+                })}
               </div>
               <div className="flex flex-col">
                 {visibleResolveOptions.map((option) => (
@@ -532,11 +730,15 @@ export function IssueRecoveryActionCard({
           </Popover>
           {cardState === "observe_only" ? (
             <span className="text-[11px] text-muted-foreground">
-              Recovery is observing without interrupting the live run.
+              {t("components.issueRecoveryActionCard.observeOnlyHint", {
+                defaultValue: "Recovery is observing without interrupting the live run.",
+              })}
             </span>
           ) : (
             <span className="text-[11px] text-muted-foreground">
-              The card stays open until an explicit decision is recorded.
+              {t("components.issueRecoveryActionCard.explicitDecisionHint", {
+                defaultValue: "The card stays open until an explicit decision is recorded.",
+              })}
             </span>
           )}
         </div>

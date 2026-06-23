@@ -1,5 +1,6 @@
 import type { Issue } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 import { formatMonitorOffset } from "@/lib/issue-monitor";
 import { formatDateTime } from "@/lib/utils";
 
@@ -30,6 +31,7 @@ export function IssueMonitorActivityCard({
   onCheckNow = null,
   checkingNow = false,
 }: IssueMonitorActivityCardProps) {
+  const { t } = useTranslation();
   const monitor = resolveScheduledMonitor(issue);
   if (!monitor) return null;
 
@@ -37,9 +39,17 @@ export function IssueMonitorActivityCard({
     <div className="mb-3 rounded-lg border border-border bg-muted/30 px-3 py-2">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground">Monitor scheduled</div>
+          <div className="text-sm font-medium text-foreground">
+            {t("components.issueMonitorActivityCard.monitorScheduled", {
+              defaultValue: "Monitor scheduled",
+            })}
+          </div>
           <div className="text-xs text-muted-foreground">
-            Next check {formatDateTime(monitor.nextCheckAt)} ({formatMonitorOffset(monitor.nextCheckAt)})
+            {t("components.issueMonitorActivityCard.nextCheck", {
+              dateTime: formatDateTime(monitor.nextCheckAt),
+              offset: formatMonitorOffset(monitor.nextCheckAt),
+              defaultValue: "Next check {{dateTime}} ({{offset}})",
+            })}
           </div>
           {monitor.notes ? (
             <div className="mt-1 text-xs text-muted-foreground">{monitor.notes}</div>
@@ -50,7 +60,13 @@ export function IssueMonitorActivityCard({
             </div>
           ) : null}
           {monitor.attemptCount > 0 ? (
-            <div className="mt-1 text-xs text-muted-foreground">Attempt {monitor.attemptCount}</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {t("components.issueMonitorActivityCard.attempt", {
+                count: monitor.attemptCount,
+                defaultValue: "Attempt {{count}}",
+                defaultValue_other: "Attempt {{count}}",
+              })}
+            </div>
           ) : null}
         </div>
         {onCheckNow ? (
@@ -62,7 +78,13 @@ export function IssueMonitorActivityCard({
             onClick={onCheckNow}
             disabled={checkingNow}
           >
-            {checkingNow ? "Checking..." : "Check now"}
+            {checkingNow
+              ? t("components.issueMonitorActivityCard.checking", {
+                  defaultValue: "Checking...",
+                })
+              : t("components.issueMonitorActivityCard.checkNow", {
+                  defaultValue: "Check now",
+                })}
           </Button>
         ) : null}
       </div>

@@ -1,6 +1,7 @@
 import type { FinanceEvent } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useTranslation } from "@/i18n";
 import {
   financeDirectionDisplayName,
   financeEventKindDisplayName,
@@ -16,17 +17,29 @@ interface FinanceTimelineCardProps {
 
 export function FinanceTimelineCard({
   rows,
-  emptyMessage = "No financial events in this period.",
+  emptyMessage,
 }: FinanceTimelineCardProps) {
+  const { t } = useTranslation();
+  const resolvedEmptyMessage =
+    emptyMessage ??
+    t("components.financeTimelineCard.emptyMessage", {
+      defaultValue: "No financial events in this period.",
+    });
   return (
     <Card>
       <CardHeader className="px-4 pt-4 pb-1">
-        <CardTitle className="text-base">Recent financial events</CardTitle>
-        <CardDescription>Top-ups, fees, credits, commitments, and other non-request charges.</CardDescription>
+        <CardTitle className="text-base">
+          {t("components.financeTimelineCard.title", { defaultValue: "Recent financial events" })}
+        </CardTitle>
+        <CardDescription>
+          {t("components.financeTimelineCard.description", {
+            defaultValue: "Top-ups, fees, credits, commitments, and other non-request charges.",
+          })}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 px-4 pb-4 pt-3">
         {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{emptyMessage}</p>
+          <p className="text-sm text-muted-foreground">{resolvedEmptyMessage}</p>
         ) : (
           rows.map((row) => (
             <div
@@ -50,16 +63,41 @@ export function FinanceTimelineCard({
                   {(row.description || row.externalInvoiceId || row.region || row.pricingTier) && (
                     <div className="space-y-1 text-xs text-muted-foreground">
                       {row.description ? <div>{row.description}</div> : null}
-                      {row.externalInvoiceId ? <div>invoice {row.externalInvoiceId}</div> : null}
-                      {row.region ? <div>region {row.region}</div> : null}
-                      {row.pricingTier ? <div>tier {row.pricingTier}</div> : null}
+                      {row.externalInvoiceId ? (
+                        <div>
+                          {t("components.financeTimelineCard.invoiceLabel", {
+                            invoiceId: row.externalInvoiceId,
+                            defaultValue: "invoice {{invoiceId}}",
+                          })}
+                        </div>
+                      ) : null}
+                      {row.region ? (
+                        <div>
+                          {t("components.financeTimelineCard.regionLabel", {
+                            region: row.region,
+                            defaultValue: "region {{region}}",
+                          })}
+                        </div>
+                      ) : null}
+                      {row.pricingTier ? (
+                        <div>
+                          {t("components.financeTimelineCard.tierLabel", {
+                            tier: row.pricingTier,
+                            defaultValue: "tier {{tier}}",
+                          })}
+                        </div>
+                      ) : null}
                     </div>
                   )}
                 </div>
                 <div className="text-right tabular-nums">
                   <div className="text-sm font-semibold">{formatCents(row.amountCents)}</div>
                   <div className="text-xs text-muted-foreground">{row.currency}</div>
-                  {row.estimated ? <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">estimated</div> : null}
+                  {row.estimated ? (
+                    <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">
+                      {t("components.financeTimelineCard.estimated", { defaultValue: "estimated" })}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>

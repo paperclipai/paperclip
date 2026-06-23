@@ -65,6 +65,7 @@ import {
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "../lib/utils";
+import { useTranslation, t } from "@/i18n";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextClassic, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { useConferenceRoomChatEnabled } from "../hooks/useConferenceRoomChatEnabled";
@@ -142,6 +143,29 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "max", label: "Max" },
   ],
 } as const;
+
+// Thinking-effort labels are localized here; the option values come from the
+// adapter capabilities. `fallback` is shown for any unrecognized value.
+function thinkingEffortLabel(value: string, fallback: string): string {
+  switch (value) {
+    case "":
+      return t("components.newIssueDialog.thinkingEffortDefault", { defaultValue: "Default" });
+    case "minimal":
+      return t("components.newIssueDialog.thinkingEffortMinimal", { defaultValue: "Minimal" });
+    case "low":
+      return t("components.newIssueDialog.thinkingEffortLow", { defaultValue: "Low" });
+    case "medium":
+      return t("components.newIssueDialog.thinkingEffortMedium", { defaultValue: "Medium" });
+    case "high":
+      return t("components.newIssueDialog.thinkingEffortHigh", { defaultValue: "High" });
+    case "xhigh":
+      return t("components.newIssueDialog.thinkingEffortXHigh", { defaultValue: "X-High" });
+    case "max":
+      return t("components.newIssueDialog.thinkingEffortMax", { defaultValue: "Max" });
+    default:
+      return fallback;
+  }
+}
 
 function loadDraft(): IssueDraft | null {
   try {
@@ -223,34 +247,38 @@ function buildStatusOptions(
   return [
     {
       value: "backlog",
-      label: "Backlog",
+      label: t("components.newIssueDialog.statusBacklog", { defaultValue: "Backlog" }),
       color: palette.backlog ?? issueStatusTextDefault,
-      description: "Parked — assignee will not be woken",
+      description: t("components.newIssueDialog.statusBacklogDescription", { defaultValue: "Parked — assignee will not be woken" }),
     },
     {
       value: "todo",
-      label: "Todo",
+      label: t("components.newIssueDialog.statusTodo", { defaultValue: "Todo" }),
       color: palette.todo ?? issueStatusTextDefault,
-      description: "Executable — assignee will be woken",
+      description: t("components.newIssueDialog.statusTodoDescription", { defaultValue: "Executable — assignee will be woken" }),
     },
-    { value: "in_progress", label: "In Progress", color: palette.in_progress ?? issueStatusTextDefault },
-    { value: "in_review", label: "In Review", color: palette.in_review ?? issueStatusTextDefault },
-    { value: "done", label: "Done", color: palette.done ?? issueStatusTextDefault },
+    { value: "in_progress", label: t("components.newIssueDialog.statusInProgress", { defaultValue: "In Progress" }), color: palette.in_progress ?? issueStatusTextDefault },
+    { value: "in_review", label: t("components.newIssueDialog.statusInReview", { defaultValue: "In Review" }), color: palette.in_review ?? issueStatusTextDefault },
+    { value: "done", label: t("components.newIssueDialog.statusDone", { defaultValue: "Done" }), color: palette.done ?? issueStatusTextDefault },
   ];
 }
 
-const priorities = [
-  { value: "critical", label: "Critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
-  { value: "high", label: "High", icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
-  { value: "medium", label: "Medium", icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
-  { value: "low", label: "Low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
-];
+function buildPriorities() {
+  return [
+    { value: "critical", label: t("components.newIssueDialog.priorityCritical", { defaultValue: "Critical" }), icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
+    { value: "high", label: t("components.newIssueDialog.priorityHigh", { defaultValue: "High" }), icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
+    { value: "medium", label: t("components.newIssueDialog.priorityMedium", { defaultValue: "Medium" }), icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
+    { value: "low", label: t("components.newIssueDialog.priorityLow", { defaultValue: "Low" }), icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
+  ];
+}
 
-const EXECUTION_WORKSPACE_MODES = [
-  { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
-] as const;
+function buildExecutionWorkspaceModes() {
+  return [
+    { value: "shared_workspace", label: t("components.newIssueDialog.workspaceModeProjectDefault", { defaultValue: "Project default" }) },
+    { value: "isolated_workspace", label: t("components.newIssueDialog.workspaceModeNewIsolated", { defaultValue: "New isolated workspace" }) },
+    { value: "reuse_existing", label: t("components.newIssueDialog.workspaceModeReuseExisting", { defaultValue: "Reuse existing workspace" }) },
+  ] as const;
+}
 
 function defaultProjectWorkspaceIdForProject(project: { workspaces?: Array<{ id: string; isPrimary: boolean }>; executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null } | null | undefined) {
   if (!project) return "";
@@ -306,6 +334,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   projectSelectorRef: RefObject<HTMLButtonElement | null>;
   onChange: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   const [draftValue, setDraftValue] = useState(value);
 
   useEffect(() => {
@@ -315,7 +344,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   return (
     <textarea
       className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-      placeholder="Task title"
+      placeholder={t("components.newIssueDialog.titlePlaceholder", { defaultValue: "Task title" })}
       rows={1}
       value={draftValue}
       onChange={(e) => {
@@ -369,6 +398,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
   imageUploadHandler: (file: File) => Promise<string>;
   onChange: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   const [draftValue, setDraftValue] = useState(value);
 
   useEffect(() => {
@@ -383,7 +413,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
         setDraftValue(nextValue);
         onChange(nextValue);
       }}
-      placeholder="Add description..."
+      placeholder={t("components.newIssueDialog.descriptionPlaceholder", { defaultValue: "Add description..." })}
       bordered={false}
       mentions={mentions}
       contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
@@ -403,12 +433,15 @@ function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | u
 }
 
 export function NewIssueDialog() {
+  const { t } = useTranslation();
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
   // Conference Room Chat flag (PAP-139): selects work-mode labels + status hues.
   const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
   const workModeOptions = useMemo(() => workModeMetaList(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
   const statuses = useMemo(() => buildStatusOptions(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
+  const priorities = useMemo(() => buildPriorities(), []);
+  const executionWorkspaceModes = useMemo(() => buildExecutionWorkspaceModes(), []);
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [title, setTitle] = useState("");
@@ -601,11 +634,15 @@ export function NewIssueDialog() {
         const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
         const issueRef = issue.identifier ?? issue.id;
         pushToast({
-          title: `Created ${issueRef} with upload warnings`,
-          body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
+          title: t("components.newIssueDialog.uploadWarningsTitle", { issueRef, defaultValue: "Created {{issueRef}} with upload warnings" }),
+          body: t("components.newIssueDialog.uploadWarningsBody", {
+            count: failures.length,
+            defaultValue: "{{count}} staged file could not be added.",
+            defaultValue_other: "{{count}} staged files could not be added.",
+          }),
           tone: "warn",
           action: prefix
-            ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
+            ? { label: t("components.newIssueDialog.openIssueAction", { issueRef, defaultValue: "Open {{issueRef}}" }), href: `/${prefix}/issues/${issueRef}` }
             : undefined,
         });
       }
@@ -1136,12 +1173,12 @@ export function NewIssueDialog() {
     && !isUsingParentExecutionWorkspace;
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
-      ? "Claude options"
+      ? t("components.newIssueDialog.optionsTitleClaude", { defaultValue: "Claude options" })
       : assigneeAdapterType === "codex_local"
-        ? "Codex options"
+        ? t("components.newIssueDialog.optionsTitleCodex", { defaultValue: "Codex options" })
         : assigneeAdapterType === "opencode_local"
-          ? "OpenCode options"
-        : "Agent options";
+          ? t("components.newIssueDialog.optionsTitleOpenCode", { defaultValue: "OpenCode options" })
+        : t("components.newIssueDialog.optionsTitleAgent", { defaultValue: "Agent options" });
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
@@ -1195,7 +1232,7 @@ export function NewIssueDialog() {
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
-    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create task. Try again.";
+    createIssue.error instanceof Error ? createIssue.error.message : t("components.newIssueDialog.createError", { defaultValue: "Failed to create task. Try again." });
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
 
@@ -1344,7 +1381,9 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{isSubIssueMode ? "New sub-task" : "New task"}</span>
+            <span>{isSubIssueMode
+              ? t("components.newIssueDialog.breadcrumbNewSubTask", { defaultValue: "New sub-task" })
+              : t("components.newIssueDialog.breadcrumbNewTask", { defaultValue: "New task" })}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1386,17 +1425,17 @@ export function NewIssueDialog() {
           <div className="px-4 pb-2">
             <div className="overflow-x-auto overscroll-x-contain">
               <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
-              <span className="w-6 shrink-0 text-center">For</span>
+              <span className="w-6 shrink-0 text-center">{t("components.newIssueDialog.forLabel", { defaultValue: "For" })}</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
                 value={assigneeValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Assignee"
+                placeholder={t("components.newIssueDialog.assigneePlaceholder", { defaultValue: "Assignee" })}
                 disablePortal
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
+                noneLabel={t("components.newIssueDialog.assigneeNone", { defaultValue: "No assignee" })}
+                searchPlaceholder={t("components.newIssueDialog.assigneeSearchPlaceholder", { defaultValue: "Search assignees..." })}
+                emptyMessage={t("components.newIssueDialog.assigneeEmptyMessage", { defaultValue: "No assignees found." })}
                 onChange={(value) => {
                   const nextAssignee = parseAssigneeValue(value);
                   if (nextAssignee.assigneeAgentId) {
@@ -1426,7 +1465,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     )
                   ) : (
-                    <span className="text-muted-foreground">Assignee</span>
+                    <span className="text-muted-foreground">{t("components.newIssueDialog.assigneePlaceholder", { defaultValue: "Assignee" })}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1439,23 +1478,23 @@ export function NewIssueDialog() {
                       {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
                       <span className="truncate">{option.label}</span>
                       {assignee && getTrustPreset(assignee.permissions) === "low_trust_review" ? (
-                        <ShieldAlert className="ml-auto h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-label="Low-trust review agent" />
+                        <ShieldAlert className="ml-auto h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-label={t("components.newIssueDialog.lowTrustReviewAgentAria", { defaultValue: "Low-trust review agent" })} />
                       ) : null}
                     </>
                   );
                 }}
               />
-              <span>in</span>
+              <span>{t("components.newIssueDialog.inLabel", { defaultValue: "in" })}</span>
               <InlineEntitySelector
                 ref={projectSelectorRef}
                 value={projectId}
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
-                placeholder="Project"
+                placeholder={t("components.newIssueDialog.projectPlaceholder", { defaultValue: "Project" })}
                 disablePortal
-                noneLabel="No project"
-                searchPlaceholder="Search projects..."
-                emptyMessage="No projects found."
+                noneLabel={t("components.newIssueDialog.projectNone", { defaultValue: "No project" })}
+                searchPlaceholder={t("components.newIssueDialog.projectSearchPlaceholder", { defaultValue: "Search projects..." })}
+                emptyMessage={t("components.newIssueDialog.projectEmptyMessage", { defaultValue: "No projects found." })}
                 onChange={handleProjectChange}
                 onConfirm={() => {
                   descriptionEditorRef.current?.focus();
@@ -1470,7 +1509,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Project</span>
+                    <span className="text-muted-foreground">{t("components.newIssueDialog.projectPlaceholder", { defaultValue: "Project" })}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1494,7 +1533,9 @@ export function NewIssueDialog() {
                   <button
                     type="button"
                     className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-accent/50 transition-colors"
-                    title={taskWatchdogsEnabled ? "Add reviewer, approver, or watchdog" : "Add reviewer or approver"}
+                    title={taskWatchdogsEnabled
+                      ? t("components.newIssueDialog.addReviewerApproverOrWatchdog", { defaultValue: "Add reviewer, approver, or watchdog" })
+                      : t("components.newIssueDialog.addReviewerOrApprover", { defaultValue: "Add reviewer or approver" })}
                   >
                     <MoreHorizontal className="h-4 w-4" />
                   </button>
@@ -1512,7 +1553,7 @@ export function NewIssueDialog() {
                     }}
                   >
                     <Eye className="h-3 w-3" />
-                    Reviewer
+                    {t("components.newIssueDialog.reviewerMenuItem", { defaultValue: "Reviewer" })}
                   </button>
                   <button
                     className={cn(
@@ -1526,7 +1567,7 @@ export function NewIssueDialog() {
                     }}
                   >
                     <ShieldCheck className="h-3 w-3" />
-                    Approver
+                    {t("components.newIssueDialog.approverMenuItem", { defaultValue: "Approver" })}
                   </button>
                   {taskWatchdogsEnabled && (
                     <button
@@ -1564,11 +1605,11 @@ export function NewIssueDialog() {
                 value={reviewerValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Reviewer"
+                placeholder={t("components.newIssueDialog.reviewerPlaceholder", { defaultValue: "Reviewer" })}
                 disablePortal
-                noneLabel="No reviewer"
-                searchPlaceholder="Search reviewers..."
-                emptyMessage="No reviewers found."
+                noneLabel={t("components.newIssueDialog.reviewerNone", { defaultValue: "No reviewer" })}
+                searchPlaceholder={t("components.newIssueDialog.reviewerSearchPlaceholder", { defaultValue: "Search reviewers..." })}
+                emptyMessage={t("components.newIssueDialog.reviewerEmptyMessage", { defaultValue: "No reviewers found." })}
                 onChange={setReviewerValue}
                 renderTriggerValue={(option) =>
                   option ? (
@@ -1582,7 +1623,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Reviewer</span>
+                    <span className="text-muted-foreground">{t("components.newIssueDialog.reviewerPlaceholder", { defaultValue: "Reviewer" })}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1609,11 +1650,11 @@ export function NewIssueDialog() {
                 value={approverValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Approver"
+                placeholder={t("components.newIssueDialog.approverPlaceholder", { defaultValue: "Approver" })}
                 disablePortal
-                noneLabel="No approver"
-                searchPlaceholder="Search approvers..."
-                emptyMessage="No approvers found."
+                noneLabel={t("components.newIssueDialog.approverNone", { defaultValue: "No approver" })}
+                searchPlaceholder={t("components.newIssueDialog.approverSearchPlaceholder", { defaultValue: "Search approvers..." })}
+                emptyMessage={t("components.newIssueDialog.approverEmptyMessage", { defaultValue: "No approvers found." })}
                 onChange={setApproverValue}
                 renderTriggerValue={(option) =>
                   option ? (
@@ -1627,7 +1668,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Approver</span>
+                    <span className="text-muted-foreground">{t("components.newIssueDialog.approverPlaceholder", { defaultValue: "Approver" })}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1742,7 +1783,7 @@ export function NewIssueDialog() {
             <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
               <div className="flex items-center gap-1.5">
                 <ListTree className="h-3.5 w-3.5 shrink-0" />
-                <span className="shrink-0">Sub-task of</span>
+                <span className="shrink-0">{t("components.newIssueDialog.subTaskOf", { defaultValue: "Sub-task of" })}</span>
                 <span className="font-medium text-foreground">{parentIssueLabel}</span>
               </div>
               {newIssueDefaults.parentTitle ? (
@@ -1757,9 +1798,9 @@ export function NewIssueDialog() {
           {currentProject && currentProjectSupportsExecutionWorkspace && (
             <div className="px-4 py-3 space-y-2">
             <div className="space-y-1.5">
-              <div className="text-xs font-medium">Execution workspace</div>
+              <div className="text-xs font-medium">{t("components.newIssueDialog.executionWorkspaceHeading", { defaultValue: "Execution workspace" })}</div>
               <div className="text-[11px] text-muted-foreground">
-                Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one.
+                {t("components.newIssueDialog.executionWorkspaceDescription", { defaultValue: "Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one." })}
               </div>
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
@@ -1771,7 +1812,7 @@ export function NewIssueDialog() {
                   }
                 }}
               >
-                {EXECUTION_WORKSPACE_MODES.map((option) => (
+                {executionWorkspaceModes.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
@@ -1783,7 +1824,7 @@ export function NewIssueDialog() {
                   value={selectedExecutionWorkspaceId}
                   onChange={(e) => setSelectedExecutionWorkspaceId(e.target.value)}
                 >
-                  <option value="">Choose an existing workspace</option>
+                  <option value="">{t("components.newIssueDialog.chooseExistingWorkspace", { defaultValue: "Choose an existing workspace" })}</option>
                   {deduplicatedReusableWorkspaces.map((workspace) => (
                     <option key={workspace.id} value={workspace.id}>
                       {workspace.name} · {workspace.status} · {workspace.branchName ?? workspace.cwd ?? workspace.id.slice(0, 8)}
@@ -1793,12 +1834,23 @@ export function NewIssueDialog() {
               )}
               {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
                 <div className="text-[11px] text-muted-foreground">
-                  Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? "existing execution workspace"}.
+                  {t("components.newIssueDialog.reusingWorkspace", {
+                    name: selectedReusableExecutionWorkspace.name,
+                    source: selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? t("components.newIssueDialog.existingExecutionWorkspaceFallback", { defaultValue: "existing execution workspace" }),
+                    defaultValue: "Reusing {{name}} from {{source}}.",
+                  })}
                 </div>
               )}
               {showParentWorkspaceWarning ? (
                 <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
-                  Warning: this sub-task will no longer use the parent task workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                  {parentExecutionWorkspaceLabel
+                    ? t("components.newIssueDialog.parentWorkspaceWarningLabeled", {
+                        label: parentExecutionWorkspaceLabel,
+                        defaultValue: "Warning: this sub-task will no longer use the parent task workspace ({{label}}).",
+                      })
+                    : t("components.newIssueDialog.parentWorkspaceWarning", {
+                        defaultValue: "Warning: this sub-task will no longer use the parent task workspace.",
+                      })}
                 </div>
               ) : null}
             </div>
@@ -1817,11 +1869,11 @@ export function NewIssueDialog() {
             {assigneeOptionsOpen && (
               <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
                 <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Model lane</div>
+                  <div className="text-xs text-muted-foreground">{t("components.newIssueDialog.modelLaneLabel", { defaultValue: "Model lane" })}</div>
                   <div
                     className="flex w-full overflow-hidden rounded-md border border-border"
                     role="radiogroup"
-                    aria-label="Model lane"
+                    aria-label={t("components.newIssueDialog.modelLaneLabel", { defaultValue: "Model lane" })}
                   >
                     {(["primary", ...(assigneeSupportsCheapLane ? (["cheap"] as const) : ([] as const)), "custom"] as const).map((lane) => (
                       <button
@@ -1836,48 +1888,48 @@ export function NewIssueDialog() {
                         onClick={() => setAssigneeModelLane(lane)}
                       >
                         {lane === "primary"
-                          ? "Primary"
+                          ? t("components.newIssueDialog.lanePrimary", { defaultValue: "Primary" })
                           : lane === "cheap"
-                            ? "Cheap"
-                            : "Custom"}
+                            ? t("components.newIssueDialog.laneCheap", { defaultValue: "Cheap" })
+                            : t("components.newIssueDialog.laneCustom", { defaultValue: "Custom" })}
                       </button>
                     ))}
                   </div>
                   {assigneeModelLane === "cheap" && (
                     <p className="text-[11px] text-muted-foreground">
-                      Sends <code>modelProfile: "cheap"</code>{" "}
+                      {t("components.newIssueDialog.laneCheapSends", { defaultValue: "Sends" })} <code>modelProfile: "cheap"</code>{" "}
                       {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
-                        ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
+                        ? <>· {t("components.newIssueDialog.laneCheapAdapterDefault", { defaultValue: "adapter default" })} <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
                         : assigneeCheapProfile
-                          ? <>· uses the agent's configured cheap profile</>
-                          : <>· falls back to the primary model if no cheap profile is configured</>}
+                          ? <>· {t("components.newIssueDialog.laneCheapUsesProfile", { defaultValue: "uses the agent's configured cheap profile" })}</>
+                          : <>· {t("components.newIssueDialog.laneCheapFallback", { defaultValue: "falls back to the primary model if no cheap profile is configured" })}</>}
                     </p>
                   )}
                   {assigneeModelLane === "primary" && (
-                    <p className="text-[11px] text-muted-foreground">Runs on the agent's primary model.</p>
+                    <p className="text-[11px] text-muted-foreground">{t("components.newIssueDialog.lanePrimaryDescription", { defaultValue: "Runs on the agent's primary model." })}</p>
                   )}
                   {assigneeModelLane === "custom" && (
-                    <p className="text-[11px] text-muted-foreground">Override the model and effort for this task only.</p>
+                    <p className="text-[11px] text-muted-foreground">{t("components.newIssueDialog.laneCustomDescription", { defaultValue: "Override the model and effort for this task only." })}</p>
                   )}
                 </div>
                 {assigneeModelLane === "custom" && (
                   <div className="space-y-1.5">
-                    <div className="text-xs text-muted-foreground">Model</div>
+                    <div className="text-xs text-muted-foreground">{t("components.newIssueDialog.modelLabel", { defaultValue: "Model" })}</div>
                     <InlineEntitySelector
                       value={assigneeModelOverride}
                       options={modelOverrideOptions}
-                      placeholder="Default model"
+                      placeholder={t("components.newIssueDialog.defaultModel", { defaultValue: "Default model" })}
                       disablePortal
-                      noneLabel="Default model"
-                      searchPlaceholder="Search models..."
-                      emptyMessage="No models found."
+                      noneLabel={t("components.newIssueDialog.defaultModel", { defaultValue: "Default model" })}
+                      searchPlaceholder={t("components.newIssueDialog.modelSearchPlaceholder", { defaultValue: "Search models..." })}
+                      emptyMessage={t("components.newIssueDialog.modelEmptyMessage", { defaultValue: "No models found." })}
                       onChange={setAssigneeModelOverride}
                     />
                   </div>
                 )}
                 {assigneeModelLane === "custom" && (
                   <div className="space-y-1.5">
-                    <div className="text-xs text-muted-foreground">Thinking effort</div>
+                    <div className="text-xs text-muted-foreground">{t("components.newIssueDialog.thinkingEffortLabel", { defaultValue: "Thinking effort" })}</div>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {thinkingEffortOptions.map((option) => (
                         <button
@@ -1888,7 +1940,7 @@ export function NewIssueDialog() {
                           )}
                           onClick={() => setAssigneeThinkingEffort(option.value)}
                         >
-                          {option.label}
+                          {thinkingEffortLabel(option.value, option.label)}
                         </button>
                       ))}
                     </div>
@@ -1896,7 +1948,7 @@ export function NewIssueDialog() {
                 )}
                 {assigneeAdapterType === "claude_local" && assigneeModelLane === "custom" && (
                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                    <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
+                    <div className="text-xs text-muted-foreground">{t("components.newIssueDialog.enableChrome", { defaultValue: "Enable Chrome (--chrome)" })}</div>
                     <ToggleSwitch
                       checked={assigneeChrome}
                       onCheckedChange={() => setAssigneeChrome((value) => !value)}
@@ -1935,7 +1987,7 @@ export function NewIssueDialog() {
               <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
               {stagedDocuments.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-xs font-medium text-muted-foreground">Documents</div>
+                  <div className="text-xs font-medium text-muted-foreground">{t("components.newIssueDialog.documentsHeading", { defaultValue: "Documents" })}</div>
                   <div className="space-y-2">
                     {stagedDocuments.map((file) => (
                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
@@ -1959,7 +2011,7 @@ export function NewIssueDialog() {
                           className="shrink-0 text-muted-foreground"
                           onClick={() => removeStagedFile(file.id)}
                           disabled={createIssue.isPending}
-                          title="Remove document"
+                          title={t("components.newIssueDialog.removeDocument", { defaultValue: "Remove document" })}
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -1971,7 +2023,7 @@ export function NewIssueDialog() {
 
               {stagedAttachments.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-xs font-medium text-muted-foreground">Attachments</div>
+                  <div className="text-xs font-medium text-muted-foreground">{t("components.newIssueDialog.attachmentsHeading", { defaultValue: "Attachments" })}</div>
                   <div className="space-y-2">
                     {stagedAttachments.map((file) => (
                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
@@ -1990,7 +2042,7 @@ export function NewIssueDialog() {
                           className="shrink-0 text-muted-foreground"
                           onClick={() => removeStagedFile(file.id)}
                           disabled={createIssue.isPending}
-                          title="Remove attachment"
+                          title={t("components.newIssueDialog.removeAttachment", { defaultValue: "Remove attachment" })}
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -2052,7 +2104,7 @@ export function NewIssueDialog() {
                 ) : (
                   <>
                     <Minus className="h-3 w-3 text-muted-foreground" />
-                    Priority
+                    {t("components.newIssueDialog.priorityChipPlaceholder", { defaultValue: "Priority" })}
                   </>
                 )}
               </button>
@@ -2094,7 +2146,7 @@ export function NewIssueDialog() {
             disabled={createIssue.isPending}
           >
             <Paperclip className="h-3 w-3" />
-            Upload
+            {t("components.newIssueDialog.uploadButton", { defaultValue: "Upload" })}
           </button>
 
           {/* Work mode chip */}
@@ -2153,7 +2205,7 @@ export function NewIssueDialog() {
             <PopoverContent className="w-44 p-1" align="start" data-testid="new-issue-more-menu">
               <div className="sm:hidden">
                 <div className="px-2 py-1 text-[10px] font-medium uppercase text-muted-foreground">
-                  Priority
+                  {t("components.newIssueDialog.priorityMenuHeading", { defaultValue: "Priority" })}
                 </div>
                 {priorities.map((p) => (
                   <button
@@ -2177,11 +2229,11 @@ export function NewIssueDialog() {
               </div>
               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
                 <Calendar className="h-3 w-3" />
-                Start date
+                {t("components.newIssueDialog.startDate", { defaultValue: "Start date" })}
               </button>
               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
                 <Calendar className="h-3 w-3" />
-                Due date
+                {t("components.newIssueDialog.dueDate", { defaultValue: "Due date" })}
               </button>
             </PopoverContent>
           </Popover>
@@ -2194,7 +2246,12 @@ export function NewIssueDialog() {
           >
             <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
             <span className="leading-snug">
-              Assigning implies executable intent — leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
+              {t("components.newIssueDialog.assignedBacklogNotePrefix", { defaultValue: "Assigning implies executable intent — leave status as" })}{" "}
+              <span className="font-medium">{t("components.newIssueDialog.statusBacklog", { defaultValue: "Backlog" })}</span>{" "}
+              {t("components.newIssueDialog.assignedBacklogNoteMiddle", { defaultValue: "only to deliberately park this. The assignee will not be woken until status moves to" })}{" "}
+              <span className="font-medium">{t("components.newIssueDialog.statusTodo", { defaultValue: "Todo" })}</span>{" "}
+              {t("components.newIssueDialog.assignedBacklogNoteOr", { defaultValue: "or" })}{" "}
+              <span className="font-medium">{t("components.newIssueDialog.statusInProgress", { defaultValue: "In Progress" })}</span>{t("components.newIssueDialog.assignedBacklogNoteSuffix", { defaultValue: "." })}
             </span>
           </div>
         ) : null}
@@ -2206,7 +2263,7 @@ export function NewIssueDialog() {
           >
             <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
             <span className="leading-snug">
-              Low-trust review agent. It can only act inside its assigned review boundary; issue, project, or run policy defines the concrete scope.
+              {t("components.newIssueDialog.lowTrustReviewAgentNote", { defaultValue: "Low-trust review agent. It can only act inside its assigned review boundary; issue, project, or run policy defines the concrete scope." })}
             </span>
           </div>
         ) : null}
@@ -2220,14 +2277,14 @@ export function NewIssueDialog() {
             onClick={discardDraft}
             disabled={createIssue.isPending || !canDiscardDraft}
           >
-            Discard Draft
+            {t("components.newIssueDialog.discardDraft", { defaultValue: "Discard Draft" })}
           </Button>
           <div className="flex items-center gap-3">
             <div className="min-h-5 text-right">
               {createIssue.isPending ? (
                 <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  Creating issue...
+                  {t("components.newIssueDialog.creatingIssue", { defaultValue: "Creating issue..." })}
                 </span>
               ) : createIssue.isError ? (
                 <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
@@ -2242,7 +2299,11 @@ export function NewIssueDialog() {
             >
               <span className="inline-flex items-center justify-center gap-1.5">
                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Task" : "Create Task"}</span>
+                <span>{createIssue.isPending
+                  ? t("components.newIssueDialog.creatingButton", { defaultValue: "Creating..." })
+                  : isSubIssueMode
+                    ? t("components.newIssueDialog.createSubTaskButton", { defaultValue: "Create Sub-Task" })
+                    : t("components.newIssueDialog.createTaskButton", { defaultValue: "Create Task" })}</span>
               </span>
             </Button>
           </div>

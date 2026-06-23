@@ -41,6 +41,7 @@ import {
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
+import { useTranslation } from "@/i18n";
 
 /* ── Top-level tab types ── */
 
@@ -77,6 +78,7 @@ function OverviewContent({
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-6">
       <InlineEditor
@@ -85,21 +87,21 @@ function OverviewContent({
         nullable
         as="p"
         className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
+        placeholder={t("pages.projectDetail.descriptionPlaceholder", { defaultValue: "Add a description..." })}
         multiline
         imageUploadHandler={imageUploadHandler}
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-muted-foreground">{t("pages.projectDetail.statusLabel", { defaultValue: "Status" })}</span>
           <div className="mt-1">
             <StatusBadge status={project.status} />
           </div>
         </div>
         {project.targetDate && (
           <div>
-            <span className="text-muted-foreground">Target Date</span>
+            <span className="text-muted-foreground">{t("pages.projectDetail.targetDateLabel", { defaultValue: "Target Date" })}</span>
             <p>{project.targetDate}</p>
           </div>
         )}
@@ -123,6 +125,7 @@ function ProjectTilePicker({
   onSelectIcon: (icon: string) => void;
   onSelectColor: (color: string | null) => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -147,16 +150,16 @@ function ProjectTilePicker({
         <button
           type="button"
           className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
-          aria-label="Change project icon and color"
+          aria-label={t("pages.projectDetail.changeIconColorAria", { defaultValue: "Change project icon and color" })}
         >
           <ProjectTile color={color} icon={icon} size="md" />
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-72 p-3" align="start">
         {/* Icon search + grid */}
-        <p className="text-xs font-medium text-muted-foreground mb-2">Icon</p>
+        <p className="text-xs font-medium text-muted-foreground mb-2">{t("pages.projectDetail.iconSectionLabel", { defaultValue: "Icon" })}</p>
         <Input
-          placeholder="Search icons..."
+          placeholder={t("pages.projectDetail.searchIconsPlaceholder", { defaultValue: "Search icons..." })}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="mb-2 h-8 text-sm"
@@ -178,13 +181,13 @@ function ProjectTilePicker({
             </button>
           ))}
           {filteredIcons.length === 0 && (
-            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">No icons match</p>
+            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">{t("pages.projectDetail.noIconsMatch", { defaultValue: "No icons match" })}</p>
           )}
         </div>
 
         {/* Color swatches */}
         <div className="mt-3 border-t border-border pt-3">
-          <p className="text-xs font-medium text-muted-foreground mb-2">Color</p>
+          <p className="text-xs font-medium text-muted-foreground mb-2">{t("pages.projectDetail.colorSectionLabel", { defaultValue: "Color" })}</p>
           <div className="grid grid-cols-5 gap-1.5">
             {/* Neutral / reset-to-gray option */}
             <button
@@ -195,8 +198,8 @@ function ProjectTilePicker({
                   ? "ring-2 ring-foreground ring-offset-1 ring-offset-background rounded-md"
                   : ""
               }`}
-              aria-label="Reset to neutral gray"
-              title="Neutral (default)"
+              aria-label={t("pages.projectDetail.resetNeutralAria", { defaultValue: "Reset to neutral gray" })}
+              title={t("pages.projectDetail.neutralDefaultTitle", { defaultValue: "Neutral (default)" })}
             >
               <ProjectTile color={null} size="sm" />
             </button>
@@ -211,7 +214,7 @@ function ProjectTilePicker({
                     : "hover:ring-2 hover:ring-foreground/30"
                 }`}
                 style={{ backgroundColor: swatch }}
-                aria-label={`Select color ${swatch}`}
+                aria-label={t("pages.projectDetail.selectColorAria", { color: swatch, defaultValue: "Select color {{color}}" })}
               />
             ))}
           </div>
@@ -345,6 +348,7 @@ export function ProjectDetail() {
     projectId: string;
     filter?: string;
   }>();
+  const { t } = useTranslation();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -468,17 +472,19 @@ export function ProjectDetail() {
       ),
     onSuccess: (updatedProject, archived) => {
       invalidateProject();
-      const name = updatedProject?.name ?? project?.name ?? "Project";
+      const name = updatedProject?.name ?? project?.name ?? t("pages.projectDetail.projectFallbackName", { defaultValue: "Project" });
       if (archived) {
-        pushToast({ title: `"${name}" has been archived`, tone: "success" });
+        pushToast({ title: t("pages.projectDetail.archivedToast", { name, defaultValue: "\"{{name}}\" has been archived" }), tone: "success" });
         navigate("/dashboard");
       } else {
-        pushToast({ title: `"${name}" has been unarchived`, tone: "success" });
+        pushToast({ title: t("pages.projectDetail.unarchivedToast", { name, defaultValue: "\"{{name}}\" has been unarchived" }), tone: "success" });
       }
     },
     onError: (_, archived) => {
       pushToast({
-        title: archived ? "Failed to archive project" : "Failed to unarchive project",
+        title: archived
+          ? t("pages.projectDetail.archiveFailedToast", { defaultValue: "Failed to archive project" })
+          : t("pages.projectDetail.unarchiveFailedToast", { defaultValue: "Failed to unarchive project" }),
         tone: "error",
       });
     },
@@ -501,10 +507,10 @@ export function ProjectDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Projects", href: "/projects" },
-      { label: project?.name ?? routeProjectRef ?? "Project" },
+      { label: t("pages.projectDetail.breadcrumbProjects", { defaultValue: "Projects" }), href: "/projects" },
+      { label: project?.name ?? routeProjectRef ?? t("pages.projectDetail.projectFallbackName", { defaultValue: "Project" }) },
     ]);
-  }, [setBreadcrumbs, project, routeProjectRef]);
+  }, [setBreadcrumbs, project, routeProjectRef, t]);
 
   useEffect(() => {
     if (!project) return;
@@ -612,7 +618,7 @@ export function ProjectDetail() {
       companyId: resolvedCompanyId ?? "",
       scopeType: "project",
       scopeId: project?.id ?? routeProjectRef,
-      scopeName: project?.name ?? "Project",
+      scopeName: project?.name ?? t("pages.projectDetail.projectFallbackName", { defaultValue: "Project" }),
       metric: "billed_cents",
       windowKind: "lifetime",
       amount: 0,
@@ -726,7 +732,7 @@ export function ProjectDetail() {
       {showLeftProjectNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-100">
           <p className="min-w-0 flex-1">
-            You left this project. It no longer appears in your sidebar.
+            {t("pages.projectDetail.leftProjectNotice", { defaultValue: "You left this project. It no longer appears in your sidebar." })}
           </p>
           <MembershipAction
             compact
@@ -750,7 +756,7 @@ export function ProjectDetail() {
           <button
             type="button"
             className="h-6 w-6 shrink-0 text-yellow-100/70 hover:text-yellow-100"
-            aria-label="Dismiss project membership notice"
+            aria-label={t("pages.projectDetail.dismissNoticeAria", { defaultValue: "Dismiss project membership notice" })}
             onClick={() => setDismissedLeftProjectIds((current) => new Set(current).add(project.id))}
           >
             ×
@@ -776,13 +782,13 @@ export function ProjectDetail() {
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
-              Paused by budget hard stop
+              {t("pages.projectDetail.pausedByBudgetBadge", { defaultValue: "Paused by budget hard stop" })}
             </div>
           ) : null}
           {project.managedByPlugin ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-[11px] font-medium text-muted-foreground">
               <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "#6366f1" }} />
-              Managed by {project.managedByPlugin.pluginDisplayName}
+              {t("pages.projectDetail.managedByBadge", { name: project.managedByPlugin.pluginDisplayName, defaultValue: "Managed by {{name}}" })}
             </div>
           ) : null}
         </div>
@@ -822,12 +828,12 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Tasks" },
-            { value: "overview", label: "Overview" },
-            ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            { value: "list", label: t("pages.projectDetail.tabTasks", { defaultValue: "Tasks" }) },
+            { value: "overview", label: t("pages.projectDetail.tabOverview", { defaultValue: "Overview" }) },
+            ...(project.managedByPlugin ? [{ value: "plugin-operations", label: t("pages.projectDetail.tabPluginOperations", { defaultValue: "Plugin operations" }) }] : []),
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: t("pages.projectDetail.tabWorkspaces", { defaultValue: "Workspaces" }) }] : []),
+            { value: "configuration", label: t("pages.projectDetail.tabConfiguration", { defaultValue: "Configuration" }) },
+            { value: "budget", label: t("pages.projectDetail.tabBudget", { defaultValue: "Budget" }) },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -875,7 +881,7 @@ export function ProjectDetail() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">{t("pages.projectDetail.loadingWorkspaces", { defaultValue: "Loading workspaces..." })}</p>
         )
       ) : null}
 

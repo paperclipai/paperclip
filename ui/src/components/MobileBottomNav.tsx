@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { NavLink, useLocation } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import {
   House,
   CircleDot,
@@ -35,6 +36,7 @@ interface MobileNavActionItem {
 type MobileNavItem = MobileNavLinkItem | MobileNavActionItem;
 
 export function MobileBottomNav({ visible }: MobileBottomNavProps) {
+  const { t } = useTranslation();
   const location = useLocation();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
@@ -42,19 +44,39 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
 
   const items = useMemo<MobileNavItem[]>(
     () => [
-      { type: "link", to: "/dashboard", label: "Home", icon: House },
-      { type: "link", to: "/issues", label: "Tasks", icon: CircleDot },
-      { type: "action", label: "Create", icon: SquarePen, onClick: () => openNewIssue() },
-      { type: "link", to: "/agents/all", label: "Agents", icon: Users },
+      {
+        type: "link",
+        to: "/dashboard",
+        label: t("components.mobileBottomNav.home", { defaultValue: "Home" }),
+        icon: House,
+      },
+      {
+        type: "link",
+        to: "/issues",
+        label: t("components.mobileBottomNav.tasks", { defaultValue: "Tasks" }),
+        icon: CircleDot,
+      },
+      {
+        type: "action",
+        label: t("components.mobileBottomNav.create", { defaultValue: "Create" }),
+        icon: SquarePen,
+        onClick: () => openNewIssue(),
+      },
+      {
+        type: "link",
+        to: "/agents/all",
+        label: t("components.mobileBottomNav.agents", { defaultValue: "Agents" }),
+        icon: Users,
+      },
       {
         type: "link",
         to: "/inbox",
-        label: "Inbox",
+        label: t("components.mobileBottomNav.inbox", { defaultValue: "Inbox" }),
         icon: Inbox,
         badge: inboxBadge.inbox,
       },
     ],
-    [openNewIssue, inboxBadge.inbox],
+    [t, openNewIssue, inboxBadge.inbox],
   );
 
   return (
@@ -63,16 +85,16 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         "fixed bottom-0 left-0 right-0 z-30 border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 transition-transform duration-200 ease-out md:hidden pb-[env(safe-area-inset-bottom)]",
         visible ? "translate-y-0" : "translate-y-full",
       )}
-      aria-label="Mobile navigation"
+      aria-label={t("components.mobileBottomNav.navAriaLabel", { defaultValue: "Mobile navigation" })}
     >
       <div className="grid h-16 grid-cols-5 px-1">
-        {items.map((item) => {
+        {items.map((item, index) => {
           if (item.type === "action") {
             const Icon = item.icon;
             const active = /\/issues\/new(?:\/|$)/.test(location.pathname);
             return (
               <button
-                key={item.label}
+                key={index}
                 type="button"
                 onClick={item.onClick}
                 className={cn(
@@ -91,7 +113,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
           const Icon = item.icon;
           return (
             <NavLink
-              key={item.label}
+              key={index}
               to={item.to}
               state={SIDEBAR_SCROLL_RESET_STATE}
               className={({ isActive }) =>

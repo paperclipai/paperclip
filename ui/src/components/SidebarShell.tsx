@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 const DEFAULT_SIDEBAR_WIDTH = 240;
 const MIN_SIDEBAR_WIDTH = 208;
@@ -101,6 +102,7 @@ export function SidebarShell({
   onPanelFocusCapture,
   onPanelBlurCapture,
 }: SidebarShellProps) {
+  const { t } = useTranslation();
   const [width, setWidth] = useState(() => readStoredSidebarWidth(storageKey));
   const [isResizing, setIsResizing] = useState(false);
   const widthRef = useRef(width);
@@ -218,7 +220,9 @@ export function SidebarShell({
         {canResize ? (
           <div
             role="separator"
-            aria-label="Resize sidebar"
+            aria-label={t("components.sidebarShell.resizeSidebar", {
+              defaultValue: "Resize sidebar",
+            })}
             aria-orientation="vertical"
             aria-valuemin={MIN_SIDEBAR_WIDTH}
             aria-valuemax={MAX_SIDEBAR_WIDTH}

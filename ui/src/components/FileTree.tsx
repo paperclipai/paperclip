@@ -10,6 +10,7 @@ import {
   FolderOpen,
 } from "lucide-react";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
+import { useTranslation } from "@/i18n";
 import { Button } from "./ui/button";
 import { Skeleton } from "./ui/skeleton";
 
@@ -274,8 +275,10 @@ export function FileTree({
   loading = false,
   error,
   empty,
-  ariaLabel = "Files",
+  ariaLabel,
 }: FileTreeProps) {
+  const { t } = useTranslation();
+  const resolvedAriaLabel = ariaLabel ?? t("components.fileTree.ariaLabel", { defaultValue: "Files" });
   const effectiveCheckedFiles = checkedFiles ?? new Set<string>();
   const visibleNodes = useMemo(
     () => flattenVisibleNodes(nodes, expandedDirs),
@@ -337,7 +340,7 @@ export function FileTree({
 
   if (loading) {
     return (
-      <div aria-busy="true" aria-label={ariaLabel} role="tree" className="py-1">
+      <div aria-busy="true" aria-label={resolvedAriaLabel} role="tree" className="py-1">
         {[0, 1, 2, 3].map((row) => (
           <div key={row} className={cn("flex items-center gap-2 px-4", TREE_ROW_HEIGHT_CLASS)}>
             <Skeleton className="h-4 w-4 shrink-0 rounded-sm" />
@@ -350,7 +353,7 @@ export function FileTree({
 
   if (error) {
     return (
-      <div aria-label={ariaLabel} role="tree" className="p-3">
+      <div aria-label={resolvedAriaLabel} role="tree" className="p-3">
         <div
           role="treeitem"
           aria-level={1}
@@ -363,13 +366,13 @@ export function FileTree({
                 statusBadge.error ?? statusBadgeDefault,
               )}
             >
-              error
+              {t("components.fileTree.errorBadge", { defaultValue: "error" })}
             </span>
             <span className="min-w-0 text-destructive">{error.message}</span>
           </div>
           {error.retry && (
             <Button type="button" size="xs" variant="outline" onClick={error.retry}>
-              Retry
+              {t("components.fileTree.retry", { defaultValue: "Retry" })}
             </Button>
           )}
         </div>
@@ -379,11 +382,16 @@ export function FileTree({
 
   if (nodes.length === 0) {
     return (
-      <div aria-label={ariaLabel} role="tree" className="p-3">
+      <div aria-label={resolvedAriaLabel} role="tree" className="p-3">
         <div className="rounded-md border border-dashed border-border px-4 py-8 text-center">
-          <div className="text-sm font-medium">{empty?.title ?? "No files"}</div>
+          <div className="text-sm font-medium">
+            {empty?.title ?? t("components.fileTree.emptyTitle", { defaultValue: "No files" })}
+          </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            {empty?.description ?? "Files will appear here when they are available."}
+            {empty?.description ??
+              t("components.fileTree.emptyDescription", {
+                defaultValue: "Files will appear here when they are available.",
+              })}
           </div>
         </div>
       </div>
@@ -391,7 +399,7 @@ export function FileTree({
   }
 
   return (
-    <div aria-label={ariaLabel} role="tree">
+    <div aria-label={resolvedAriaLabel} role="tree">
       {visibleNodes.map(({ node, depth }, index) => {
         const expanded = node.kind === "dir" && expandedDirs.has(node.path);
         const { allChecked, someChecked } = checkboxState(node, effectiveCheckedFiles);
@@ -483,7 +491,17 @@ export function FileTree({
                   event.stopPropagation();
                   onToggleDir(node.path);
                 }}
-                aria-label={expanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
+                aria-label={
+                  expanded
+                    ? t("components.fileTree.collapseDir", {
+                        name: node.name,
+                        defaultValue: "Collapse {{name}}",
+                      })
+                    : t("components.fileTree.expandDir", {
+                        name: node.name,
+                        defaultValue: "Expand {{name}}",
+                      })
+                }
               >
                 {expanded ? (
                   <ChevronDown className="h-3.5 w-3.5" />

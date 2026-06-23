@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
+import { useTranslation } from "@/i18n";
 
 const SEARCH_ALL_VALUE = "__paperclip-search-all__";
 
@@ -49,6 +50,7 @@ function isOnIssueDetail(pathname: string): boolean {
 }
 
 export function CommandPalette() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
@@ -137,7 +139,7 @@ export function CommandPalette() {
         if (v && isMobile) setSidebarOpen(false);
       }}>
       <CommandInput
-        placeholder="Search tasks, agents, projects..."
+        placeholder={t("components.commandPalette.searchPlaceholder", { defaultValue: "Search tasks, agents, projects..." })}
         value={query}
         onValueChange={setQuery}
         onKeyDown={(event) => {
@@ -151,17 +153,17 @@ export function CommandPalette() {
         <CommandEmpty>
           {showSearchAll ? (
             <span>
-              No quick task matches. Press{" "}
+              {t("components.commandPalette.noQuickMatchPress", { defaultValue: "No quick task matches. Press" })}{" "}
               <kbd className="rounded border border-border bg-muted px-1 py-0.5 text-[10px]">↵</kbd>{" "}
-              to <span className="font-medium">search all</span> or keep typing to refine.
+              {t("components.commandPalette.noQuickMatchTo", { defaultValue: "to" })} <span className="font-medium">{t("components.commandPalette.searchAll", { defaultValue: "search all" })}</span> {t("components.commandPalette.noQuickMatchRefine", { defaultValue: "or keep typing to refine." })}
             </span>
           ) : (
-            "No results found."
+            t("components.commandPalette.noResultsFound", { defaultValue: "No results found." })
           )}
         </CommandEmpty>
 
         {showSearchAll ? (
-          <CommandGroup heading="Search">
+          <CommandGroup heading={t("components.commandPalette.groupSearch", { defaultValue: "Search" })}>
             <CommandItem
               value={`${SEARCH_ALL_VALUE} ${searchQuery}`}
               onSelect={goFullSearch}
@@ -170,10 +172,10 @@ export function CommandPalette() {
             >
               <Search className="mr-2 h-4 w-4" />
               <span className="flex-1 truncate">
-                Search all for <span className="font-semibold">&ldquo;{searchQuery}&rdquo;</span>
+                {t("components.commandPalette.searchAllFor", { defaultValue: "Search all for" })} <span className="font-semibold">&ldquo;{searchQuery}&rdquo;</span>
               </span>
               <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground">
-                <span>open full search</span>
+                <span>{t("components.commandPalette.openFullSearch", { defaultValue: "open full search" })}</span>
                 <kbd className="rounded border border-border bg-background px-1 py-0.5 text-[10px]">↵</kbd>
               </span>
             </CommandItem>
@@ -182,7 +184,7 @@ export function CommandPalette() {
 
         {showSearchAll ? <CommandSeparator /> : null}
 
-        <CommandGroup heading="Actions">
+        <CommandGroup heading={t("components.commandPalette.groupActions", { defaultValue: "Actions" })}>
           <CommandItem
             onSelect={() => {
               setOpen(false);
@@ -190,7 +192,7 @@ export function CommandPalette() {
             }}
           >
             <SquarePen className="mr-2 h-4 w-4" />
-            Create new task
+            {t("components.commandPalette.createNewTask", { defaultValue: "Create new task" })}
             <span className="ml-auto text-xs text-muted-foreground">C</span>
           </CommandItem>
           {onIssueDetail && fileViewerEnabled && (
@@ -201,7 +203,7 @@ export function CommandPalette() {
               }}
             >
               <FileCode2 className="mr-2 h-4 w-4" />
-              Open file in this issue...
+              {t("components.commandPalette.openFileInIssue", { defaultValue: "Open file in this issue..." })}
               <span className="ml-auto text-xs text-muted-foreground">g f</span>
             </CommandItem>
           )}
@@ -212,55 +214,55 @@ export function CommandPalette() {
             }}
           >
             <Plus className="mr-2 h-4 w-4" />
-            Create new agent
+            {t("components.commandPalette.createNewAgent", { defaultValue: "Create new agent" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Plus className="mr-2 h-4 w-4" />
-            Create new project
+            {t("components.commandPalette.createNewProject", { defaultValue: "Create new project" })}
           </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />
 
-        <CommandGroup heading="Pages">
+        <CommandGroup heading={t("components.commandPalette.groupPages", { defaultValue: "Pages" })}>
           <CommandItem onSelect={() => go("/dashboard")}>
             <LayoutDashboard className="mr-2 h-4 w-4" />
-            Dashboard
+            {t("components.commandPalette.pageDashboard", { defaultValue: "Dashboard" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/inbox")}>
             <Inbox className="mr-2 h-4 w-4" />
-            Inbox
+            {t("components.commandPalette.pageInbox", { defaultValue: "Inbox" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
-            Tasks
+            {t("components.commandPalette.pageTasks", { defaultValue: "Tasks" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Hexagon className="mr-2 h-4 w-4" />
-            Projects
+            {t("components.commandPalette.pageProjects", { defaultValue: "Projects" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/goals")}>
             <Target className="mr-2 h-4 w-4" />
-            Goals
+            {t("components.commandPalette.pageGoals", { defaultValue: "Goals" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />
-            Agents
+            {t("components.commandPalette.pageAgents", { defaultValue: "Agents" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/costs")}>
             <DollarSign className="mr-2 h-4 w-4" />
-            Costs
+            {t("components.commandPalette.pageCosts", { defaultValue: "Costs" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/activity")}>
             <History className="mr-2 h-4 w-4" />
-            Activity
+            {t("components.commandPalette.pageActivity", { defaultValue: "Activity" })}
           </CommandItem>
         </CommandGroup>
 
         {visibleIssues.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Tasks">
+            <CommandGroup heading={t("components.commandPalette.groupTasks", { defaultValue: "Tasks" })}>
               {visibleIssues.slice(0, 10).map((issue) => (
                 <CommandItem
                   key={issue.id}
@@ -289,7 +291,7 @@ export function CommandPalette() {
         {agents.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Agents">
+            <CommandGroup heading={t("components.commandPalette.groupAgents", { defaultValue: "Agents" })}>
               {agents.slice(0, 10).map((agent) => (
                 <CommandItem key={agent.id} onSelect={() => go(agentUrl(agent))}>
                   <Bot className="mr-2 h-4 w-4" />
@@ -304,7 +306,7 @@ export function CommandPalette() {
         {projects.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Projects">
+            <CommandGroup heading={t("components.commandPalette.groupProjects", { defaultValue: "Projects" })}>
               {projects.slice(0, 10).map((project) => (
                 <CommandItem key={project.id} onSelect={() => go(projectUrl(project))}>
                   <Hexagon className="mr-2 h-4 w-4" />

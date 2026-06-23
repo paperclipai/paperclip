@@ -2,6 +2,7 @@ import { memo, type ComponentType, type SVGProps } from "react";
 import { Bot, FileText, Hexagon, MessageSquare, Paperclip, Quote } from "lucide-react";
 import type { Agent, CompanySearchResult } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
+import { t } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { StatusIcon } from "../StatusIcon";
 import { Identity } from "../Identity";
@@ -12,15 +13,29 @@ type SnippetStyle = {
   label: string;
 };
 
-const SNIPPET_STYLES: Record<string, SnippetStyle> = {
-  comment: { Icon: MessageSquare, label: "Comment" },
-  document: { Icon: FileText, label: "Doc" },
-  artifact: { Icon: Paperclip, label: "Artifact" },
-  description: { Icon: Quote, label: "Description" },
-};
+function getSnippetStyles(): Record<string, SnippetStyle> {
+  return {
+    comment: {
+      Icon: MessageSquare,
+      label: t("components.searchResultRow.snippetLabelComment", { defaultValue: "Comment" }),
+    },
+    document: {
+      Icon: FileText,
+      label: t("components.searchResultRow.snippetLabelDoc", { defaultValue: "Doc" }),
+    },
+    artifact: {
+      Icon: Paperclip,
+      label: t("components.searchResultRow.snippetLabelArtifact", { defaultValue: "Artifact" }),
+    },
+    description: {
+      Icon: Quote,
+      label: t("components.searchResultRow.snippetLabelDescription", { defaultValue: "Description" }),
+    },
+  };
+}
 
 function snippetStyle(field: string, fallbackLabel: string): SnippetStyle {
-  return SNIPPET_STYLES[field] ?? { Icon: Quote, label: fallbackLabel };
+  return getSnippetStyles()[field] ?? { Icon: Quote, label: fallbackLabel };
 }
 
 function formatRelativeTime(input: string | null): string {
@@ -29,7 +44,7 @@ function formatRelativeTime(input: string | null): string {
   if (Number.isNaN(value.getTime())) return "";
   const diffMs = Date.now() - value.getTime();
   const seconds = Math.round(diffMs / 1000);
-  if (seconds < 60) return "just now";
+  if (seconds < 60) return t("components.searchResultRow.justNow", { defaultValue: "just now" });
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.round(minutes / 60);
@@ -79,7 +94,10 @@ function SearchResultRowImpl({
               text={result.snippets[0]?.text ?? result.snippet}
               highlights={result.snippets[0]?.highlights}
               field="agent"
-              fallbackLabel={result.sourceLabel ?? "Agent"}
+              fallbackLabel={
+                result.sourceLabel ??
+                t("components.searchResultRow.fallbackLabelAgent", { defaultValue: "Agent" })
+              }
             />
           ) : null}
         </div>
@@ -102,7 +120,10 @@ function SearchResultRowImpl({
               text={result.snippets[0]?.text ?? result.snippet}
               highlights={result.snippets[0]?.highlights}
               field="project"
-              fallbackLabel={result.sourceLabel ?? "Project"}
+              fallbackLabel={
+                result.sourceLabel ??
+                t("components.searchResultRow.fallbackLabelProject", { defaultValue: "Project" })
+              }
             />
           ) : null}
         </div>
@@ -134,7 +155,10 @@ function SearchResultRowImpl({
               text={result.snippets[0]?.text ?? result.snippet}
               highlights={result.snippets[0]?.highlights}
               field="artifact"
-              fallbackLabel={result.sourceLabel ?? "Artifact"}
+              fallbackLabel={
+                result.sourceLabel ??
+                t("components.searchResultRow.fallbackLabelArtifact", { defaultValue: "Artifact" })
+              }
               multiline
             />
           ) : null}

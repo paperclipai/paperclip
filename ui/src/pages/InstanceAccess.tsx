@@ -8,9 +8,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
+import { useTranslation } from "@/i18n";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function InstanceAccess() {
+  const { t } = useTranslation();
   const { companies } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -21,11 +23,14 @@ export function InstanceAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
-      { label: "Access" },
+      { label: t("pages.instanceAccess.breadcrumbSettings", { defaultValue: "Settings" }), href: "/company/settings" },
+      {
+        label: t("pages.instanceAccess.breadcrumbInstanceSettings", { defaultValue: "Instance settings" }),
+        href: "/company/settings/instance/general",
+      },
+      { label: t("pages.instanceAccess.breadcrumbAccess", { defaultValue: "Access" }) },
     ]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const usersQuery = useQuery({
     queryKey: queryKeys.access.adminUsers(search),
@@ -65,7 +70,10 @@ export function InstanceAccess() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId!) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.adminUsers(search) });
-      pushToast({ title: "Company access updated", tone: "success" });
+      pushToast({
+        title: t("pages.instanceAccess.toastCompanyAccessUpdated", { defaultValue: "Company access updated" }),
+        tone: "success",
+      });
     },
   });
 
@@ -80,21 +88,30 @@ export function InstanceAccess() {
       if (selectedUserId) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId) });
       }
-      pushToast({ title: "Instance role updated", tone: "success" });
+      pushToast({
+        title: t("pages.instanceAccess.toastInstanceRoleUpdated", { defaultValue: "Instance role updated" }),
+        tone: "success",
+      });
     },
   });
 
   if (usersQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading instance users…</div>;
+    return (
+      <div className="text-sm text-muted-foreground">
+        {t("pages.instanceAccess.loadingInstanceUsers", { defaultValue: "Loading instance users…" })}
+      </div>
+    );
   }
 
   if (usersQuery.error) {
     const message =
       usersQuery.error instanceof ApiError && usersQuery.error.status === 403
-        ? "Instance admin access is required to manage users."
+        ? t("pages.instanceAccess.errorAdminRequired", {
+            defaultValue: "Instance admin access is required to manage users.",
+          })
         : usersQuery.error instanceof Error
           ? usersQuery.error.message
-          : "Failed to load users.";
+          : t("pages.instanceAccess.errorLoadUsers", { defaultValue: "Failed to load users." });
     return <div className="text-sm text-destructive">{message}</div>;
   }
 
@@ -103,22 +120,31 @@ export function InstanceAccess() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Instance Access</h1>
+          <h1 className="text-lg font-semibold">
+            {t("pages.instanceAccess.heading", { defaultValue: "Instance Access" })}
+          </h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Search users, manage instance-admin status, and control which companies they can access.
+          {t("pages.instanceAccess.subheading", {
+            defaultValue:
+              "Search users, manage instance-admin status, and control which companies they can access.",
+          })}
         </p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
         <section className="space-y-4 rounded-xl border border-border bg-card p-4">
           <label className="block space-y-2 text-sm">
-            <span className="font-medium">Search users</span>
+            <span className="font-medium">
+              {t("pages.instanceAccess.searchUsersLabel", { defaultValue: "Search users" })}
+            </span>
             <input
               className="w-full rounded-md border border-border bg-background px-3 py-2"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search by name or email"
+              placeholder={t("pages.instanceAccess.searchPlaceholder", {
+                defaultValue: "Search by name or email",
+              })}
             />
           </label>
           <div className="space-y-2">
@@ -143,7 +169,10 @@ export function InstanceAccess() {
                   ) : null}
                 </div>
                 <div className="mt-2 text-xs text-muted-foreground">
-                  {user.activeCompanyMembershipCount} active company memberships
+                  {t("pages.instanceAccess.activeCompanyMemberships", {
+                    count: user.activeCompanyMembershipCount,
+                    defaultValue: "{{count}} active company memberships",
+                  })}
                 </div>
               </button>
             ))}
@@ -152,12 +181,22 @@ export function InstanceAccess() {
 
         <section className="space-y-4 rounded-xl border border-border bg-card p-5">
           {!selectedUserId ? (
-            <div className="text-sm text-muted-foreground">Select a user to inspect instance access.</div>
+            <div className="text-sm text-muted-foreground">
+              {t("pages.instanceAccess.selectUserPrompt", {
+                defaultValue: "Select a user to inspect instance access.",
+              })}
+            </div>
           ) : userAccessQuery.isLoading ? (
-            <div className="text-sm text-muted-foreground">Loading user access…</div>
+            <div className="text-sm text-muted-foreground">
+              {t("pages.instanceAccess.loadingUserAccess", { defaultValue: "Loading user access…" })}
+            </div>
           ) : userAccessQuery.error ? (
             <div className="text-sm text-destructive">
-              {userAccessQuery.error instanceof Error ? userAccessQuery.error.message : "Failed to load user access."}
+              {userAccessQuery.error instanceof Error
+                ? userAccessQuery.error.message
+                : t("pages.instanceAccess.errorLoadUserAccess", {
+                    defaultValue: "Failed to load user access.",
+                  })}
             </div>
           ) : (
             <>
@@ -175,15 +214,24 @@ export function InstanceAccess() {
                   onClick={() => setAdminMutation.mutate(!(selectedUser?.isInstanceAdmin ?? false))}
                   disabled={setAdminMutation.isPending}
                 >
-                  {selectedUser?.isInstanceAdmin ? "Remove instance admin" : "Promote to instance admin"}
+                  {selectedUser?.isInstanceAdmin
+                    ? t("pages.instanceAccess.removeInstanceAdmin", { defaultValue: "Remove instance admin" })
+                    : t("pages.instanceAccess.promoteInstanceAdmin", {
+                        defaultValue: "Promote to instance admin",
+                      })}
                 </Button>
               </div>
 
               <div className="space-y-3">
                 <div>
-                  <h2 className="text-sm font-semibold">Company access</h2>
+                  <h2 className="text-sm font-semibold">
+                    {t("pages.instanceAccess.companyAccessHeading", { defaultValue: "Company access" })}
+                  </h2>
                   <p className="text-sm text-muted-foreground">
-                    Toggle company membership for this user. New access defaults to an active operator membership.
+                    {t("pages.instanceAccess.companyAccessDescription", {
+                      defaultValue:
+                        "Toggle company membership for this user. New access defaults to an active operator membership.",
+                    })}
                   </p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -215,13 +263,17 @@ export function InstanceAccess() {
                     onClick={() => updateCompanyAccessMutation.mutate()}
                     disabled={updateCompanyAccessMutation.isPending}
                   >
-                    {updateCompanyAccessMutation.isPending ? "Saving…" : "Save company access"}
+                    {updateCompanyAccessMutation.isPending
+                      ? t("pages.instanceAccess.saving", { defaultValue: "Saving…" })
+                      : t("pages.instanceAccess.saveCompanyAccess", { defaultValue: "Save company access" })}
                   </Button>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <h2 className="text-sm font-semibold">Current memberships</h2>
+                <h2 className="text-sm font-semibold">
+                  {t("pages.instanceAccess.currentMembershipsHeading", { defaultValue: "Current memberships" })}
+                </h2>
                 <div className="space-y-2">
                   {(userAccessQuery.data?.companyAccess ?? []).map((membership) => (
                     <div
@@ -231,7 +283,9 @@ export function InstanceAccess() {
                       <div>
                         <div className="font-medium">{membership.companyName || membership.companyId}</div>
                         <div className="text-muted-foreground">
-                          {membership.membershipRole || "unset"} • {membership.status}
+                          {membership.membershipRole ||
+                            t("pages.instanceAccess.roleUnset", { defaultValue: "unset" })}{" "}
+                          • {membership.status}
                         </div>
                       </div>
                       <div className="text-xs text-muted-foreground">

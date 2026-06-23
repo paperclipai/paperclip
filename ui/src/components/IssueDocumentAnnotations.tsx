@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { documentAnnotationsApi } from "@/api/document-annotations";
 import { queryKeys } from "@/lib/queryKeys";
 import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
+import { useTranslation } from "@/i18n";
 import { DocumentAnnotationLayer, type PendingAnchor } from "./DocumentAnnotationLayer";
 import { DocumentAnnotationPanel } from "./DocumentAnnotationPanel";
 import type { CompanyUserProfile } from "@/lib/company-members";
@@ -55,6 +56,7 @@ export function IssueDocumentAnnotations({
   userProfileMap,
   defaultFocusedThreadId,
 }: IssueDocumentAnnotationsProps) {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLElement | null>(null);
   const [focusedThreadId, setFocusedThreadId] = useState<string | null>(defaultFocusedThreadId ?? null);
   const [focusedCommentId, setFocusedCommentId] = useState<string | null>(null);
@@ -168,13 +170,21 @@ export function IssueDocumentAnnotations({
 
   const newCommentDisabled = draftDirty || draftConflicted || historicalPreview || !doc.latestRevisionId;
   const newCommentDisabledReason = historicalPreview
-    ? "New comments are disabled while previewing a historical revision."
+    ? t("components.issueDocumentAnnotations.disabledHistoricalPreview", {
+        defaultValue: "New comments are disabled while previewing a historical revision.",
+      })
     : draftConflicted
-      ? "Resolve the document conflict before adding new comments."
+      ? t("components.issueDocumentAnnotations.disabledConflict", {
+          defaultValue: "Resolve the document conflict before adding new comments.",
+        })
       : draftDirty
-        ? "Save the draft to anchor new comments."
+        ? t("components.issueDocumentAnnotations.disabledDirty", {
+            defaultValue: "Save the draft to anchor new comments.",
+          })
         : !doc.latestRevisionId
-          ? "Document has no saved revision yet."
+          ? t("components.issueDocumentAnnotations.disabledNoRevision", {
+              defaultValue: "Document has no saved revision yet.",
+            })
           : null;
 
   const handleSelectionAnchorChange = useCallback((anchor: PendingAnchor | null) => {
@@ -343,6 +353,7 @@ export function DocumentAnnotationsCountChip({
   panelOpen,
   onToggle,
 }: DocumentAnnotationsCountChipProps) {
+  const { t } = useTranslation();
   const annotationsQuery = useQuery({
     queryKey: queryKeys.issues.documentAnnotations(issueId, docKey, "all"),
     queryFn: () => documentAnnotationsApi.list(issueId, docKey, { status: "all", includeComments: true }),
@@ -368,14 +379,24 @@ export function DocumentAnnotationsCountChip({
       onClick={onToggle}
       data-testid={`document-annotation-count-${docKey}`}
       aria-label={openCount === 0
-        ? `Open comments on ${docKey}`
-        : `Open ${openCount} unresolved comments on ${docKey}`}
+        ? t("components.issueDocumentAnnotations.openCommentsAria", {
+            docKey,
+            defaultValue: "Open comments on {{docKey}}",
+          })
+        : t("components.issueDocumentAnnotations.openUnresolvedCommentsAria", {
+            count: openCount,
+            docKey,
+            defaultValue: "Open {{count}} unresolved comment on {{docKey}}",
+            defaultValue_other: "Open {{count}} unresolved comments on {{docKey}}",
+          })}
       aria-expanded={panelOpen}
     >
       <MessageSquare className="h-3 w-3" aria-hidden="true" />
       <span className="tabular-nums">{openCount}</span>
       <span className="hidden sm:inline">
-        {openCount === 1 ? "comment" : "comments"}
+        {openCount === 1
+          ? t("components.issueDocumentAnnotations.commentSingular", { defaultValue: "comment" })
+          : t("components.issueDocumentAnnotations.commentPlural", { defaultValue: "comments" })}
       </span>
     </Button>
   );

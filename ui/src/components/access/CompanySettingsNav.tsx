@@ -1,25 +1,64 @@
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
+import { t } from "@/i18n";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
 
-const items = [
-  { value: "general", label: "General", href: "/company/settings" },
-  { value: "cloud-upstream", label: "Cloud upstream", href: "/company/settings/cloud-upstream" },
-  { value: "members", label: "Members", href: "/company/settings/members" },
-  { value: "invites", label: "Invites", href: "/company/settings/invites" },
-  { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
-  { value: "instance-profile", label: "Instance profile", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/profile` },
-  { value: "instance-general", label: "Instance general", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/general` },
-  { value: "instance-environments", label: "Instance environments", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/environments` },
-  { value: "instance-access", label: "Instance access", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/access` },
-  { value: "instance-heartbeats", label: "Instance heartbeats", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats` },
-  { value: "instance-experimental", label: "Instance experimental", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
-  { value: "instance-plugins", label: "Instance plugins", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
-  { value: "instance-adapters", label: "Instance adapters", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
-] as const;
+function getItems() {
+  return [
+    { value: "general", label: t("components.companySettingsNav.general", { defaultValue: "General" }), href: "/company/settings" },
+    {
+      value: "cloud-upstream",
+      label: t("components.companySettingsNav.cloudUpstream", { defaultValue: "Cloud upstream" }),
+      href: "/company/settings/cloud-upstream",
+    },
+    { value: "members", label: t("components.companySettingsNav.members", { defaultValue: "Members" }), href: "/company/settings/members" },
+    { value: "invites", label: t("components.companySettingsNav.invites", { defaultValue: "Invites" }), href: "/company/settings/invites" },
+    { value: "secrets", label: t("components.companySettingsNav.secrets", { defaultValue: "Secrets" }), href: "/company/settings/secrets" },
+    {
+      value: "instance-profile",
+      label: t("components.companySettingsNav.instanceProfile", { defaultValue: "Instance profile" }),
+      href: `${INSTANCE_SETTINGS_PATH_PREFIX}/profile`,
+    },
+    {
+      value: "instance-general",
+      label: t("components.companySettingsNav.instanceGeneral", { defaultValue: "Instance general" }),
+      href: `${INSTANCE_SETTINGS_PATH_PREFIX}/general`,
+    },
+    {
+      value: "instance-environments",
+      label: t("components.companySettingsNav.instanceEnvironments", { defaultValue: "Instance environments" }),
+      href: `${INSTANCE_SETTINGS_PATH_PREFIX}/environments`,
+    },
+    {
+      value: "instance-access",
+      label: t("components.companySettingsNav.instanceAccess", { defaultValue: "Instance access" }),
+      href: `${INSTANCE_SETTINGS_PATH_PREFIX}/access`,
+    },
+    {
+      value: "instance-heartbeats",
+      label: t("components.companySettingsNav.instanceHeartbeats", { defaultValue: "Instance heartbeats" }),
+      href: `${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`,
+    },
+    {
+      value: "instance-experimental",
+      label: t("components.companySettingsNav.instanceExperimental", { defaultValue: "Instance experimental" }),
+      href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`,
+    },
+    {
+      value: "instance-plugins",
+      label: t("components.companySettingsNav.instancePlugins", { defaultValue: "Instance plugins" }),
+      href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`,
+    },
+    {
+      value: "instance-adapters",
+      label: t("components.companySettingsNav.instanceAdapters", { defaultValue: "Instance adapters" }),
+      href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`,
+    },
+  ] as const;
+}
 
-type CompanySettingsTab = (typeof items)[number]["value"];
+type CompanySettingsTab = ReturnType<typeof getItems>[number]["value"];
 
 export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`)) {
@@ -81,6 +120,7 @@ export function CompanySettingsNav() {
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = getCompanySettingsTab(location.pathname);
+  const items = getItems();
 
   function handleTabChange(value: string) {
     const nextTab = items.find((item) => item.value === value);

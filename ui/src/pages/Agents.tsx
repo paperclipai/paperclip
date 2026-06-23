@@ -27,6 +27,7 @@ import {
 } from "../hooks/useResourceMemberships";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { useTranslation } from "@/i18n";
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
@@ -77,6 +78,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab): OrgNode[] {
 }
 
 export function Agents() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -132,11 +134,11 @@ export function Agents() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Agents" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("pages.agents.breadcrumb", { defaultValue: "Agents" }) }]);
+  }, [setBreadcrumbs, t]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message={t("pages.agents.selectCompany", { defaultValue: "Select a company to view agents." })} />;
   }
 
   if (isLoading) {
@@ -152,10 +154,10 @@ export function Agents() {
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
             items={[
-              { value: "all", label: "All" },
-              { value: "active", label: "Active" },
-              { value: "paused", label: "Paused" },
-              { value: "error", label: "Error" },
+              { value: "all", label: t("pages.agents.tabAll", { defaultValue: "All" }) },
+              { value: "active", label: t("pages.agents.tabActive", { defaultValue: "Active" }) },
+              { value: "paused", label: t("pages.agents.tabPaused", { defaultValue: "Paused" }) },
+              { value: "error", label: t("pages.agents.tabError", { defaultValue: "Error" }) },
             ]}
             value={tab}
             onValueChange={(v) => navigate(`/agents/${v}`)}
@@ -187,13 +189,13 @@ export function Agents() {
           )}
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Agent
+            {t("pages.agents.newAgent", { defaultValue: "New Agent" })}
           </Button>
         </div>
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="text-xs text-muted-foreground">{t("pages.agents.agentCount", { count: filtered.length, defaultValue: "{{count}} agent", defaultValue_other: "{{count}} agents" })}</p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -201,8 +203,8 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
-          action="New Agent"
+          message={t("pages.agents.emptyCreateFirst", { defaultValue: "Create your first agent to get started." })}
+          action={t("pages.agents.newAgent", { defaultValue: "New Agent" })}
           onAction={openNewAgent}
         />
       )}
@@ -229,7 +231,7 @@ export function Agents() {
                   resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "text-foreground/55" : "",
                 )}
                 leading={hasInvalidOrgChain ? (
-                  <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
+                  <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label={t("pages.agents.invalidReportingChain", { defaultValue: "Invalid reporting chain" })} />
                 ) : (
                   <AgentStatusCapsule status={agent.status} />
                 )}
@@ -274,7 +276,7 @@ export function Agents() {
                       <AgentActionButtons
                         agent={agent}
                         companyId={selectedCompanyId}
-                        runLabel="Run Heartbeat"
+                        runLabel={t("pages.agents.runHeartbeat", { defaultValue: "Run Heartbeat" })}
                         showStatus={false}
                       />
                     </div>
@@ -316,7 +318,7 @@ export function Agents() {
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          {t("pages.agents.noMatchFilter", { defaultValue: "No agents match the selected filter." })}
         </p>
       )}
 
@@ -340,13 +342,13 @@ export function Agents() {
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          {t("pages.agents.noMatchFilter", { defaultValue: "No agents match the selected filter." })}
         </p>
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No organizational hierarchy defined.
+          {t("pages.agents.noOrgHierarchy", { defaultValue: "No organizational hierarchy defined." })}
         </p>
       )}
     </div>
@@ -370,6 +372,7 @@ function OrgTreeNode({
   memberships: ReturnType<typeof useResourceMemberships>["data"];
   membershipMutation: ReturnType<typeof useResourceMembershipMutation>;
 }) {
+  const { t } = useTranslation();
   const agent = agentMap.get(node.id);
   const hasInvalidOrgChain = Boolean(agent && agent.orgChainHealth?.status === "invalid_org_chain");
   const membershipState = resourceMembershipState(memberships, "agent", node.id);
@@ -388,7 +391,7 @@ function OrgTreeNode({
         )}
       >
         {hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label={t("pages.agents.invalidReportingChain", { defaultValue: "Invalid reporting chain" })} />
         ) : (
           <AgentStatusCapsule status={node.status} />
         )}
@@ -507,6 +510,7 @@ function LiveRunIndicator({
   runId: string;
   liveCount: number;
 }) {
+  const { t } = useTranslation();
   return (
     <Link
       to={`/agents/${agentRef}/runs/${runId}`}
@@ -518,7 +522,9 @@ function LiveRunIndicator({
         <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
       </span>
       <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-        Live{liveCount > 1 ? ` (${liveCount})` : ""}
+        {liveCount > 1
+          ? t("pages.agents.liveWithCount", { count: liveCount, defaultValue: "Live ({{count}})" })
+          : t("pages.agents.live", { defaultValue: "Live" })}
       </span>
     </Link>
   );

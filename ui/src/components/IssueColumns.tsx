@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { t, useTranslation } from "@/i18n";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { InboxIssueColumn } from "../lib/inbox";
 import { cn } from "../lib/utils";
@@ -22,30 +23,37 @@ import { StatusIcon } from "./StatusIcon";
 
 export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "parent", "labels", "updated"];
 
-const issueColumnLabels: Record<InboxIssueColumn, string> = {
-  status: "Status",
-  id: "ID",
-  assignee: "Assignee",
-  project: "Project",
-  workspace: "Workspace",
-  parent: "Parent task",
-  labels: "Tags",
-  updated: "Last updated",
-};
+function getIssueColumnLabels(): Record<InboxIssueColumn, string> {
+  return {
+    status: t("components.issueColumns.columnLabelStatus", { defaultValue: "Status" }),
+    id: t("components.issueColumns.columnLabelId", { defaultValue: "ID" }),
+    assignee: t("components.issueColumns.columnLabelAssignee", { defaultValue: "Assignee" }),
+    project: t("components.issueColumns.columnLabelProject", { defaultValue: "Project" }),
+    workspace: t("components.issueColumns.columnLabelWorkspace", { defaultValue: "Workspace" }),
+    parent: t("components.issueColumns.columnLabelParent", { defaultValue: "Parent task" }),
+    labels: t("components.issueColumns.columnLabelLabels", { defaultValue: "Tags" }),
+    updated: t("components.issueColumns.columnLabelUpdated", { defaultValue: "Last updated" }),
+  };
+}
 
-const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
-  status: "Task state chip on the left edge.",
-  id: "Ticket identifier like PAP-1009.",
-  assignee: "Assigned agent or board user.",
-  project: "Linked project pill with its color.",
-  workspace: "Execution or project workspace used for the task.",
-  parent: "Parent task identifier and title.",
-  labels: "Task labels and tags.",
-  updated: "Latest visible activity time.",
-};
+function getIssueColumnDescriptions(): Record<InboxIssueColumn, string> {
+  return {
+    status: t("components.issueColumns.columnDescStatus", { defaultValue: "Task state chip on the left edge." }),
+    id: t("components.issueColumns.columnDescId", { defaultValue: "Ticket identifier like PAP-1009." }),
+    assignee: t("components.issueColumns.columnDescAssignee", { defaultValue: "Assigned agent or board user." }),
+    project: t("components.issueColumns.columnDescProject", { defaultValue: "Linked project pill with its color." }),
+    workspace: t("components.issueColumns.columnDescWorkspace", { defaultValue: "Execution or project workspace used for the task." }),
+    parent: t("components.issueColumns.columnDescParent", { defaultValue: "Parent task identifier and title." }),
+    labels: t("components.issueColumns.columnDescLabels", { defaultValue: "Task labels and tags." }),
+    updated: t("components.issueColumns.columnDescUpdated", { defaultValue: "Latest visible activity time." }),
+  };
+}
 
 export function issueActivityText(issue: Issue): string {
-  return `Updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`;
+  return t("components.issueColumns.activityUpdated", {
+    time: timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt),
+    defaultValue: "Updated {{time}}",
+  });
 }
 
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
@@ -76,6 +84,9 @@ export function IssueColumnPicker({
   title: string;
   iconOnly?: boolean;
 }) {
+  const { t } = useTranslation();
+  const issueColumnLabels = getIssueColumnLabels();
+  const issueColumnDescriptions = getIssueColumnDescriptions();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -84,17 +95,17 @@ export function IssueColumnPicker({
           variant={iconOnly ? "outline" : "ghost"}
           size={iconOnly ? "icon" : "sm"}
           className={iconOnly ? "h-8 w-8 shrink-0" : "hidden h-8 shrink-0 px-2 text-xs sm:inline-flex"}
-          title="Columns"
+          title={t("components.issueColumns.columnsButton", { defaultValue: "Columns" })}
         >
           <Columns3 className={iconOnly ? "h-3.5 w-3.5" : "mr-1 h-3.5 w-3.5"} />
-          {!iconOnly && "Columns"}
+          {!iconOnly && t("components.issueColumns.columnsButton", { defaultValue: "Columns" })}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              Desktop task rows
+              {t("components.issueColumns.desktopTaskRows", { defaultValue: "Desktop task rows" })}
             </div>
             <div className="text-sm font-medium text-foreground">
               {title}
@@ -125,8 +136,8 @@ export function IssueColumnPicker({
           onSelect={onResetColumns}
           className="rounded-lg px-3 py-2 text-sm"
         >
-          Reset defaults
-          <span className="ml-auto text-xs text-muted-foreground">status, id, updated</span>
+          {t("components.issueColumns.resetDefaults", { defaultValue: "Reset defaults" })}
+          <span className="ml-auto text-xs text-muted-foreground">{t("components.issueColumns.resetDefaultsHint", { defaultValue: "status, id, updated" })}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -150,6 +161,7 @@ export function InboxIssueMetaLeading({
   statusSlot?: ReactNode;
   checklistStepNumber?: number | string | null;
 }) {
+  const { t } = useTranslation();
   return (
     <>
       {showStatus ? (
@@ -189,7 +201,7 @@ export function InboxIssueMetaLeading({
               "text-blue-600 dark:text-blue-400",
             )}
           >
-            Live
+            {t("components.issueColumns.live", { defaultValue: "Live" })}
           </span>
         </span>
       )}
@@ -248,8 +260,9 @@ export function InboxIssueTrailingColumns({
   assigneeContent?: ReactNode;
   onFilterWorkspace?: (workspaceId: string) => void;
 }) {
+  const { t } = useTranslation();
   const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
-  const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
+  const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? t("components.issueColumns.userFallback", { defaultValue: "User" });
 
   return (
     <span
@@ -289,7 +302,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              Unassigned
+              {t("components.issueColumns.unassigned", { defaultValue: "Unassigned" })}
             </span>
           );
         }
@@ -314,7 +327,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              No project
+              {t("components.issueColumns.noProject", { defaultValue: "No project" })}
             </span>
           );
         }
@@ -371,7 +384,7 @@ export function InboxIssueTrailingColumns({
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" sideOffset={6}>
-                    Filter by workspace
+                    {t("components.issueColumns.filterByWorkspace", { defaultValue: "Filter by workspace" })}
                   </TooltipContent>
                 </Tooltip>
               ) : (
@@ -391,7 +404,7 @@ export function InboxIssueTrailingColumns({
               {parentIdentifier ? (
                 <span className="font-mono">{parentIdentifier}</span>
               ) : (
-                <span className="italic">Sub-task</span>
+                <span className="italic">{t("components.issueColumns.subTask", { defaultValue: "Sub-task" })}</span>
               )}
             </span>
           );

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";
 import { X } from "lucide-react";
 import {
@@ -30,6 +31,7 @@ function AnimatedToast({
   toast: ToastItem;
   onDismiss: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -68,7 +70,7 @@ function AnimatedToast({
         </div>
         <button
           type="button"
-          aria-label="Dismiss notification"
+          aria-label={t("components.toastViewport.dismissNotification", { defaultValue: "Dismiss notification" })}
           onClick={() => onDismiss(toast.id)}
           className="mt-0.5 shrink-0 rounded p-1 opacity-50 hover:bg-black/10 hover:opacity-100 dark:hover:bg-white/10"
         >

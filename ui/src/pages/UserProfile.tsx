@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertCircle, UserRound } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import type { UserProfileDailyPoint, UserProfileWindowStats } from "@paperclipai/shared";
 import { Link, useParams } from "@/lib/router";
 import { userProfilesApi } from "../api/userProfiles";
@@ -51,29 +52,32 @@ function HeroStat({ label, value, hint }: { label: string; value: string; hint?:
 }
 
 function WindowColumn({ stats }: { stats: UserProfileWindowStats }) {
+  const { t } = useTranslation();
   const tokens = totalTokens(stats);
   return (
     <div className="flex min-w-0 flex-col gap-4 border-l border-border pl-5 first:border-l-0 first:pl-0">
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{stats.label}</h2>
-        <span className="text-[11px] text-muted-foreground tabular-nums">{completionRate(stats)} done</span>
+        <span className="text-[11px] text-muted-foreground tabular-nums">
+          {t("pages.userProfile.completionDone", { rate: completionRate(stats), defaultValue: "{{rate}} done" })}
+        </span>
       </div>
 
       <div className="grid grid-cols-2 gap-x-5 gap-y-3">
-        <Metric value={formatNumber(stats.touchedIssues)} label="Touched" />
-        <Metric value={formatNumber(stats.completedIssues)} label="Completed" />
-        <Metric value={formatNumber(stats.commentCount)} label="Comments" />
-        <Metric value={formatNumber(stats.activityCount)} label="Actions" />
+        <Metric value={formatNumber(stats.touchedIssues)} label={t("pages.userProfile.metricTouched", { defaultValue: "Touched" })} />
+        <Metric value={formatNumber(stats.completedIssues)} label={t("pages.userProfile.metricCompleted", { defaultValue: "Completed" })} />
+        <Metric value={formatNumber(stats.commentCount)} label={t("pages.userProfile.metricComments", { defaultValue: "Comments" })} />
+        <Metric value={formatNumber(stats.activityCount)} label={t("pages.userProfile.metricActions", { defaultValue: "Actions" })} />
       </div>
 
       <div className="grid grid-cols-2 gap-x-5 gap-y-1.5 pt-3 text-xs tabular-nums text-muted-foreground">
-        <span>Tokens</span>
+        <span>{t("pages.userProfile.tokens", { defaultValue: "Tokens" })}</span>
         <span className="text-right text-foreground">{formatTokens(tokens)}</span>
-        <span>Spend</span>
+        <span>{t("pages.userProfile.spend", { defaultValue: "Spend" })}</span>
         <span className="text-right text-foreground">{formatCents(stats.costCents)}</span>
-        <span>Created</span>
+        <span>{t("pages.userProfile.created", { defaultValue: "Created" })}</span>
         <span className="text-right text-foreground">{formatNumber(stats.createdIssues)}</span>
-        <span>Open</span>
+        <span>{t("pages.userProfile.open", { defaultValue: "Open" })}</span>
         <span className="text-right text-foreground">{formatNumber(stats.assignedOpenIssues)}</span>
       </div>
     </div>
@@ -90,6 +94,7 @@ function Metric({ value, label }: { value: string; label: string }) {
 }
 
 function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
+  const { t } = useTranslation();
   const totals = points.map((point) => totalTokens(point));
   const maxTokens = Math.max(1, ...totals);
   const maxCompleted = Math.max(1, ...points.map((point) => point.completedIssues));
@@ -98,10 +103,10 @@ function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
   return (
     <section>
       <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-border pb-3">
-        <h2 className="text-sm font-semibold">Last 14 days</h2>
+        <h2 className="text-sm font-semibold">{t("pages.userProfile.last14Days", { defaultValue: "Last 14 days" })}</h2>
         <div className="flex items-baseline gap-4 text-xs text-muted-foreground">
           <span className="tabular-nums text-foreground">{formatTokens(totalTokensSum)}</span>
-          <span>tokens total</span>
+          <span>{t("pages.userProfile.tokensTotal", { defaultValue: "tokens total" })}</span>
         </div>
       </div>
       <div className="mt-6 grid grid-cols-[repeat(14,minmax(0,1fr))] items-end gap-1.5 sm:gap-2">
@@ -116,7 +121,12 @@ function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
               <div
                 className="w-full bg-foreground/80 transition-opacity group-hover:bg-foreground"
                 style={{ height: `${heightPct}%`, minHeight: tokens === 0 ? 1 : undefined }}
-                title={`${formatShortDate(point.date)}: ${formatTokens(tokens)} tokens, ${point.completedIssues} completed`}
+                title={t("pages.userProfile.chartBarTooltip", {
+                  date: formatShortDate(point.date),
+                  tokens: formatTokens(tokens),
+                  completed: point.completedIssues,
+                  defaultValue: "{{date}}: {{tokens}} tokens, {{completed}} completed",
+                })}
               />
               {completedPct > 0 ? (
                 <div
@@ -137,10 +147,10 @@ function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-4 text-[10px] uppercase tracking-wide text-muted-foreground">
         <span className="inline-flex items-center gap-1.5">
-          <span className="h-2 w-2 bg-foreground/80" /> tokens / day
+          <span className="h-2 w-2 bg-foreground/80" /> {t("pages.userProfile.legendTokensPerDay", { defaultValue: "tokens / day" })}
         </span>
         <span className="inline-flex items-center gap-1.5">
-          <span className="h-[3px] w-4 rounded-full bg-emerald-500/80" /> completions
+          <span className="h-[3px] w-4 rounded-full bg-emerald-500/80" /> {t("pages.userProfile.legendCompletions", { defaultValue: "completions" })}
         </span>
       </div>
     </section>
@@ -195,6 +205,7 @@ function UsageList({
 }
 
 export function UserProfile() {
+  const { t } = useTranslation();
   const { userSlug = "" } = useParams<{ userSlug: string }>();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -207,25 +218,31 @@ export function UserProfile() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Users" }, { label: data?.user.name ?? userSlug }]);
-  }, [data?.user.name, setBreadcrumbs, userSlug]);
+    setBreadcrumbs([
+      { label: t("pages.userProfile.breadcrumbUsers", { defaultValue: "Users" }) },
+      { label: data?.user.name ?? userSlug },
+    ]);
+  }, [data?.user.name, setBreadcrumbs, userSlug, t]);
 
   const allTime = data?.stats.find((entry) => entry.key === "all");
   const last7 = data?.stats.find((entry) => entry.key === "last7");
-  const displayName = data?.user.name?.trim() || data?.user.email?.split("@")[0] || "User";
+  const displayName =
+    data?.user.name?.trim() ||
+    data?.user.email?.split("@")[0] ||
+    t("pages.userProfile.defaultUserName", { defaultValue: "User" });
 
   const agentUsageRows = useMemo<UsageRow[]>(
     () =>
       (data?.topAgents ?? []).map((row) => ({
         key: row.agentId ?? "unknown",
         label: row.agentName ?? (row.agentId ? row.agentId.slice(0, 8) : "unknown"),
-        sublabel: "Task-linked usage",
+        sublabel: t("pages.userProfile.taskLinkedUsage", { defaultValue: "Task-linked usage" }),
         costCents: row.costCents,
         inputTokens: row.inputTokens,
         cachedInputTokens: row.cachedInputTokens,
         outputTokens: row.outputTokens,
       })),
-    [data?.topAgents],
+    [data?.topAgents, t],
   );
 
   const providerUsageRows = useMemo<UsageRow[]>(
@@ -233,17 +250,25 @@ export function UserProfile() {
       (data?.topProviders ?? []).map((row) => ({
         key: `${row.provider}:${row.biller}:${row.model}`,
         label: `${providerDisplayName(row.provider)} / ${row.model}`,
-        sublabel: `Billed through ${providerDisplayName(row.biller)}`,
+        sublabel: t("pages.userProfile.billedThrough", {
+          biller: providerDisplayName(row.biller),
+          defaultValue: "Billed through {{biller}}",
+        }),
         costCents: row.costCents,
         inputTokens: row.inputTokens,
         cachedInputTokens: row.cachedInputTokens,
         outputTokens: row.outputTokens,
       })),
-    [data?.topProviders],
+    [data?.topProviders, t],
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={UserRound} message="Select a company to view user profiles." />;
+    return (
+      <EmptyState
+        icon={UserRound}
+        message={t("pages.userProfile.selectCompany", { defaultValue: "Select a company to view user profiles." })}
+      />
+    );
   }
 
   if (isLoading) {
@@ -251,14 +276,19 @@ export function UserProfile() {
   }
 
   if (error || !data) {
-    return <EmptyState icon={AlertCircle} message="User profile not found for this company." />;
+    return (
+      <EmptyState
+        icon={AlertCircle}
+        message={t("pages.userProfile.notFound", { defaultValue: "User profile not found for this company." })}
+      />
+    );
   }
 
   const allTimeTokens = allTime ? totalTokens(allTime) : 0;
   const metaParts = [
     data.user.membershipRole ?? "member",
     data.user.membershipStatus,
-    `joined ${formatDate(data.user.joinedAt)}`,
+    t("pages.userProfile.joinedDate", { date: formatDate(data.user.joinedAt), defaultValue: "joined {{date}}" }),
   ];
 
   return (
@@ -283,10 +313,26 @@ export function UserProfile() {
         </div>
 
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          <HeroStat label="All-time tokens" value={formatTokens(allTimeTokens)} hint={formatCents(allTime?.costCents ?? 0) + " spent"} />
-          <HeroStat label="Completed" value={formatNumber(allTime?.completedIssues ?? 0)} hint={allTime ? `${completionRate(allTime)} rate` : undefined} />
-          <HeroStat label="Open assigned" value={formatNumber(allTime?.assignedOpenIssues ?? 0)} hint={`${formatNumber(allTime?.createdIssues ?? 0)} created`} />
-          <HeroStat label="7-day actions" value={formatNumber(last7?.activityCount ?? 0)} hint={`${formatNumber(last7?.commentCount ?? 0)} comments`} />
+          <HeroStat
+            label={t("pages.userProfile.heroAllTimeTokens", { defaultValue: "All-time tokens" })}
+            value={formatTokens(allTimeTokens)}
+            hint={t("pages.userProfile.heroSpent", { amount: formatCents(allTime?.costCents ?? 0), defaultValue: "{{amount}} spent" })}
+          />
+          <HeroStat
+            label={t("pages.userProfile.heroCompleted", { defaultValue: "Completed" })}
+            value={formatNumber(allTime?.completedIssues ?? 0)}
+            hint={allTime ? t("pages.userProfile.heroRate", { rate: completionRate(allTime), defaultValue: "{{rate}} rate" }) : undefined}
+          />
+          <HeroStat
+            label={t("pages.userProfile.heroOpenAssigned", { defaultValue: "Open assigned" })}
+            value={formatNumber(allTime?.assignedOpenIssues ?? 0)}
+            hint={t("pages.userProfile.heroCreated", { count: formatNumber(allTime?.createdIssues ?? 0), defaultValue: "{{count}} created" })}
+          />
+          <HeroStat
+            label={t("pages.userProfile.heroSevenDayActions", { defaultValue: "7-day actions" })}
+            value={formatNumber(last7?.activityCount ?? 0)}
+            hint={t("pages.userProfile.heroComments", { count: formatNumber(last7?.commentCount ?? 0), defaultValue: "{{count}} comments" })}
+          />
         </div>
       </section>
 
@@ -299,11 +345,11 @@ export function UserProfile() {
       <div className="grid gap-10 pt-2 xl:grid-cols-2">
         <section>
           <div className="flex items-baseline justify-between gap-3 border-b border-border pb-3">
-            <h2 className="text-sm font-semibold">Recent tasks</h2>
+            <h2 className="text-sm font-semibold">{t("pages.userProfile.recentTasks", { defaultValue: "Recent tasks" })}</h2>
             <span className="text-xs text-muted-foreground tabular-nums">{data.recentIssues.length}</span>
           </div>
           {data.recentIssues.length === 0 ? (
-            <div className="pt-4 text-sm text-muted-foreground">No touched tasks yet.</div>
+            <div className="pt-4 text-sm text-muted-foreground">{t("pages.userProfile.noTouchedTasks", { defaultValue: "No touched tasks yet." })}</div>
           ) : (
             <ul className="divide-y divide-border">
               {data.recentIssues.map((issue) => (
@@ -327,11 +373,11 @@ export function UserProfile() {
 
         <section>
           <div className="flex items-baseline justify-between gap-3 border-b border-border pb-3">
-            <h2 className="text-sm font-semibold">Recent activity</h2>
+            <h2 className="text-sm font-semibold">{t("pages.userProfile.recentActivity", { defaultValue: "Recent activity" })}</h2>
             <span className="text-xs text-muted-foreground tabular-nums">{data.recentActivity.length}</span>
           </div>
           {data.recentActivity.length === 0 ? (
-            <div className="pt-4 text-sm text-muted-foreground">No direct user actions recorded yet.</div>
+            <div className="pt-4 text-sm text-muted-foreground">{t("pages.userProfile.noUserActions", { defaultValue: "No direct user actions recorded yet." })}</div>
           ) : (
             <ul className="divide-y divide-border">
               {data.recentActivity.map((event) => (
@@ -351,8 +397,16 @@ export function UserProfile() {
       </div>
 
       <div className="grid gap-10 xl:grid-cols-2">
-        <UsageList title="Agent attribution" empty="No issue-linked token usage yet." rows={agentUsageRows} />
-        <UsageList title="Provider mix" empty="No provider usage attributed yet." rows={providerUsageRows} />
+        <UsageList
+          title={t("pages.userProfile.agentAttribution", { defaultValue: "Agent attribution" })}
+          empty={t("pages.userProfile.noAgentUsage", { defaultValue: "No issue-linked token usage yet." })}
+          rows={agentUsageRows}
+        />
+        <UsageList
+          title={t("pages.userProfile.providerMix", { defaultValue: "Provider mix" })}
+          empty={t("pages.userProfile.noProviderUsage", { defaultValue: "No provider usage attributed yet." })}
+          rows={providerUsageRows}
+        />
       </div>
     </div>
   );

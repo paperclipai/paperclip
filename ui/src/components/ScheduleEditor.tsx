@@ -2,19 +2,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { t, useTranslation } from "@/i18n";
 import { nextCronFires, parseCronExpression } from "../lib/cron-fires";
 
 export type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
 
-const PRESETS: { value: SchedulePreset; label: string }[] = [
-  { value: "every_minute", label: "Every minute" },
-  { value: "every_hour", label: "Every hour" },
-  { value: "every_day", label: "Every day" },
-  { value: "weekdays", label: "Weekdays" },
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
-  { value: "custom", label: "Custom (cron)" },
-];
+function getPresets(): { value: SchedulePreset; label: string }[] {
+  return [
+    { value: "every_minute", label: t("components.scheduleEditor.presetEveryMinute", { defaultValue: "Every minute" }) },
+    { value: "every_hour", label: t("components.scheduleEditor.presetEveryHour", { defaultValue: "Every hour" }) },
+    { value: "every_day", label: t("components.scheduleEditor.presetEveryDay", { defaultValue: "Every day" }) },
+    { value: "weekdays", label: t("components.scheduleEditor.presetWeekdays", { defaultValue: "Weekdays" }) },
+    { value: "weekly", label: t("components.scheduleEditor.presetWeekly", { defaultValue: "Weekly" }) },
+    { value: "monthly", label: t("components.scheduleEditor.presetMonthly", { defaultValue: "Monthly" }) },
+    { value: "custom", label: t("components.scheduleEditor.presetCustom", { defaultValue: "Custom (cron)" }) },
+  ];
+}
 
 const HOURS = Array.from({ length: 24 }, (_, i) => ({
   value: String(i),
@@ -26,15 +30,17 @@ const MINUTES = Array.from({ length: 12 }, (_, i) => ({
   label: String(i * 5).padStart(2, "0"),
 }));
 
-const DAYS_OF_WEEK = [
-  { value: "1", label: "Mon" },
-  { value: "2", label: "Tue" },
-  { value: "3", label: "Wed" },
-  { value: "4", label: "Thu" },
-  { value: "5", label: "Fri" },
-  { value: "6", label: "Sat" },
-  { value: "0", label: "Sun" },
-];
+function getDaysOfWeek(): { value: string; label: string }[] {
+  return [
+    { value: "1", label: t("components.scheduleEditor.dayMon", { defaultValue: "Mon" }) },
+    { value: "2", label: t("components.scheduleEditor.dayTue", { defaultValue: "Tue" }) },
+    { value: "3", label: t("components.scheduleEditor.dayWed", { defaultValue: "Wed" }) },
+    { value: "4", label: t("components.scheduleEditor.dayThu", { defaultValue: "Thu" }) },
+    { value: "5", label: t("components.scheduleEditor.dayFri", { defaultValue: "Fri" }) },
+    { value: "6", label: t("components.scheduleEditor.daySat", { defaultValue: "Sat" }) },
+    { value: "0", label: t("components.scheduleEditor.daySun", { defaultValue: "Sun" }) },
+  ];
+}
 
 const DAYS_OF_MONTH = Array.from({ length: 31 }, (_, i) => ({
   value: String(i + 1),
@@ -88,7 +94,7 @@ export function parseCronToPreset(cron: string): {
   }
 
   // Weekly: "M H * * D" (single day)
-  if (dom === "*" && month === "*" && hasOption(DAYS_OF_WEEK, dow) && selectableHour && selectableMinute) {
+  if (dom === "*" && month === "*" && hasOption(getDaysOfWeek(), dow) && selectableHour && selectableMinute) {
     return { preset: "weekly", ...defaults, hour: hr, minute: min, dayOfWeek: dow };
   }
 
@@ -126,21 +132,32 @@ function describeSchedule(cron: string): string {
 
   switch (preset) {
     case "every_minute":
-      return "Every minute";
+      return t("components.scheduleEditor.describeEveryMinute", { defaultValue: "Every minute" });
     case "every_hour":
-      return `Every hour at :${minute.padStart(2, "0")}`;
+      return t("components.scheduleEditor.describeEveryHour", {
+        minute: minute.padStart(2, "0"),
+        defaultValue: "Every hour at :{{minute}}",
+      });
     case "every_day":
-      return `Every day at ${timeStr}`;
+      return t("components.scheduleEditor.describeEveryDay", { time: timeStr, defaultValue: "Every day at {{time}}" });
     case "weekdays":
-      return `Weekdays at ${timeStr}`;
+      return t("components.scheduleEditor.describeWeekdays", { time: timeStr, defaultValue: "Weekdays at {{time}}" });
     case "weekly": {
-      const day = DAYS_OF_WEEK.find((d) => d.value === dayOfWeek)?.label ?? dayOfWeek;
-      return `Every ${day} at ${timeStr}`;
+      const day = getDaysOfWeek().find((d) => d.value === dayOfWeek)?.label ?? dayOfWeek;
+      return t("components.scheduleEditor.describeWeekly", {
+        day,
+        time: timeStr,
+        defaultValue: "Every {{day}} at {{time}}",
+      });
     }
     case "monthly":
-      return `Monthly on the ${dayOfMonth}${ordinalSuffix(Number(dayOfMonth))} at ${timeStr}`;
+      return t("components.scheduleEditor.describeMonthly", {
+        day: `${dayOfMonth}${ordinalSuffix(Number(dayOfMonth))}`,
+        time: timeStr,
+        defaultValue: "Monthly on the {{day}} at {{time}}",
+      });
     case "custom":
-      return cron || "No schedule set";
+      return cron || t("components.scheduleEditor.noScheduleSet", { defaultValue: "No schedule set" });
   }
 }
 
@@ -200,6 +217,7 @@ export function ScheduleEditor({
   onChange: (cron: string) => void;
   onValidityChange?: (valid: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const parsed = useMemo(() => parseCronToPreset(value), [value]);
   const [preset, setPreset] = useState<SchedulePreset>(parsed.preset);
   const [hour, setHour] = useState(parsed.hour);
@@ -247,11 +265,11 @@ export function ScheduleEditor({
   return (
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
-        <SelectTrigger className="w-full" aria-label="Schedule frequency">
-          <SelectValue placeholder="Choose frequency..." />
+        <SelectTrigger className="w-full" aria-label={t("components.scheduleEditor.frequencyAriaLabel", { defaultValue: "Schedule frequency" })}>
+          <SelectValue placeholder={t("components.scheduleEditor.frequencyPlaceholder", { defaultValue: "Choose frequency..." })} />
         </SelectTrigger>
         <SelectContent>
-          {PRESETS.map((p) => (
+          {getPresets().map((p) => (
             <SelectItem key={p.value} value={p.value}>
               {p.label}
             </SelectItem>
@@ -276,7 +294,9 @@ export function ScheduleEditor({
             className="font-mono text-sm"
           />
           <p className="text-xs text-muted-foreground">
-            Five fields: minute hour day-of-month month day-of-week
+            {t("components.scheduleEditor.cronFieldsHint", {
+              defaultValue: "Five fields: minute hour day-of-month month day-of-week",
+            })}
           </p>
           <p
             className={customValidation.valid ? "text-xs text-muted-foreground" : "text-xs text-destructive"}
@@ -292,7 +312,7 @@ export function ScheduleEditor({
         <div className="flex flex-wrap items-center gap-2">
           {preset !== "every_minute" && preset !== "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at</span>
+              <span className="text-sm text-muted-foreground">{t("components.scheduleEditor.labelAt", { defaultValue: "at" })}</span>
               <Select
                 value={hour}
                 onValueChange={(h) => {
@@ -335,7 +355,7 @@ export function ScheduleEditor({
 
           {preset === "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at minute</span>
+              <span className="text-sm text-muted-foreground">{t("components.scheduleEditor.labelAtMinute", { defaultValue: "at minute" })}</span>
               <Select
                 value={minute}
                 onValueChange={(m) => {
@@ -359,9 +379,9 @@ export function ScheduleEditor({
 
           {preset === "weekly" && (
             <>
-              <span className="text-sm text-muted-foreground">on</span>
+              <span className="text-sm text-muted-foreground">{t("components.scheduleEditor.labelOn", { defaultValue: "on" })}</span>
               <div className="flex gap-1">
-                {DAYS_OF_WEEK.map((d) => (
+                {getDaysOfWeek().map((d) => (
                   <Button
                     key={d.value}
                     type="button"
@@ -382,7 +402,7 @@ export function ScheduleEditor({
 
           {preset === "monthly" && (
             <>
-              <span className="text-sm text-muted-foreground">on day</span>
+              <span className="text-sm text-muted-foreground">{t("components.scheduleEditor.labelOnDay", { defaultValue: "on day" })}</span>
               <Select
                 value={dayOfMonth}
                 onValueChange={(dom) => {

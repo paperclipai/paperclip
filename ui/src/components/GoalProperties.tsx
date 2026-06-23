@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { Goal } from "@paperclipai/shared";
@@ -71,6 +72,7 @@ function PickerButton({
 }
 
 export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
 
   const { data: agents } = useQuery({
@@ -96,7 +98,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <PropertyRow label="Status">
+        <PropertyRow label={t("components.goalProperties.statusLabel", { defaultValue: "Status" })}>
           {onUpdate ? (
             <PickerButton
               current={goal.status}
@@ -110,7 +112,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
           )}
         </PropertyRow>
 
-        <PropertyRow label="Level">
+        <PropertyRow label={t("components.goalProperties.levelLabel", { defaultValue: "Level" })}>
           {onUpdate ? (
             <PickerButton
               current={goal.level}
@@ -124,7 +126,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
           )}
         </PropertyRow>
 
-        <PropertyRow label="Owner">
+        <PropertyRow label={t("components.goalProperties.ownerLabel", { defaultValue: "Owner" })}>
           {ownerAgent ? (
             <Link
               to={agentUrl(ownerAgent)}
@@ -133,12 +135,12 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
               {ownerAgent.name}
             </Link>
           ) : (
-            <span className="text-sm text-muted-foreground">None</span>
+            <span className="text-sm text-muted-foreground">{t("components.goalProperties.ownerNone", { defaultValue: "None" })}</span>
           )}
         </PropertyRow>
 
         {goal.parentId && (
-          <PropertyRow label="Parent Goal">
+          <PropertyRow label={t("components.goalProperties.parentGoalLabel", { defaultValue: "Parent Goal" })}>
             <Link
               to={`/goals/${goal.parentId}`}
               className="text-sm hover:underline"
@@ -152,10 +154,10 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
       <Separator />
 
       <div className="space-y-1">
-        <PropertyRow label="Created">
+        <PropertyRow label={t("components.goalProperties.createdLabel", { defaultValue: "Created" })}>
           <span className="text-sm">{formatDate(goal.createdAt)}</span>
         </PropertyRow>
-        <PropertyRow label="Updated">
+        <PropertyRow label={t("components.goalProperties.updatedLabel", { defaultValue: "Updated" })}>
           <span className="text-sm">{formatDate(goal.updatedAt)}</span>
         </PropertyRow>
       </div>

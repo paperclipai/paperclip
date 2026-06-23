@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { MoreHorizontal, Play } from "lucide-react";
+import { t, useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
@@ -35,7 +36,7 @@ export type RoutineListRowItem = {
 };
 
 export function formatLastRunTimestamp(value: Date | string | null | undefined) {
-  if (!value) return "Never";
+  if (!value) return t("components.routineList.lastRunNever", { defaultValue: "Never" });
   return new Date(value).toLocaleString();
 }
 
@@ -56,7 +57,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   runningRoutineId,
   statusMutationRoutineId,
   href,
-  configureLabel = "Edit",
+  configureLabel = t("components.routineList.configureLabelDefault", { defaultValue: "Edit" }),
   managedByLabel,
   secondaryDetails,
   runNowButton = false,
@@ -87,6 +88,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   onToggleEnabled: (routine: TRoutine, enabled: boolean) => void;
   onToggleArchived?: (routine: TRoutine) => void;
 }) {
+  const { t } = useTranslation();
   const enabled = routine.status === "active";
   const isArchived = routine.status === "archived";
   const isStatusPending = statusMutationRoutineId === routine.id;
@@ -107,7 +109,11 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
           <span className="truncate text-sm font-medium">{routine.title}</span>
           {(isArchived || routine.status === "paused" || isDraft) ? (
             <span className="text-xs text-muted-foreground">
-              {isArchived ? "archived" : isDraft ? "draft" : "paused"}
+              {isArchived
+                ? t("components.routineList.badgeArchived", { defaultValue: "archived" })
+                : isDraft
+                  ? t("components.routineList.badgeDraft", { defaultValue: "draft" })
+                  : t("components.routineList.badgePaused", { defaultValue: "paused" })}
             </span>
           ) : null}
           {managedByLabel ? (
@@ -120,11 +126,11 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
               className="h-2.5 w-2.5 shrink-0 rounded-sm"
               style={{ backgroundColor: project?.color ?? "#64748b" }}
             />
-            <span>{routine.projectId ? (project?.name ?? "Unknown project") : "No project"}</span>
+            <span>{routine.projectId ? (project?.name ?? t("components.routineList.unknownProject", { defaultValue: "Unknown project" })) : t("components.routineList.noProject", { defaultValue: "No project" })}</span>
           </span>
           <span className="flex items-center gap-2">
             {agent?.icon ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0" /> : null}
-            <span>{routine.assigneeAgentId ? (agent?.name ?? "Unknown agent") : "No default agent"}</span>
+            <span>{routine.assigneeAgentId ? (agent?.name ?? t("components.routineList.unknownAgent", { defaultValue: "Unknown agent" })) : t("components.routineList.noDefaultAgent", { defaultValue: "No default agent" })}</span>
           </span>
           <span>
             {formatLastRunTimestamp(routine.lastRun?.triggeredAt)}
@@ -145,7 +151,9 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
             onClick={() => onRunNow(routine)}
           >
             <Play className="h-3.5 w-3.5" />
-            {runningRoutineId === routine.id ? "Running..." : "Run now"}
+            {runningRoutineId === routine.id
+              ? t("components.routineList.running", { defaultValue: "Running..." })
+              : t("components.routineList.runNow", { defaultValue: "Run now" })}
           </Button>
         ) : null}
 
@@ -155,16 +163,39 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
             checked={enabled}
             onCheckedChange={() => onToggleEnabled(routine, enabled)}
             disabled={isStatusPending || isArchived || disableToggle}
-            aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`}
+            aria-label={
+              enabled
+                ? t("components.routineList.disableAriaLabel", {
+                    title: routine.title,
+                    defaultValue: "Disable {{title}}",
+                  })
+                : t("components.routineList.enableAriaLabel", {
+                    title: routine.title,
+                    defaultValue: "Enable {{title}}",
+                  })
+            }
           />
           <span className="w-12 text-xs text-muted-foreground">
-            {isArchived ? "Archived" : isDraft ? "Draft" : enabled ? "On" : "Off"}
+            {isArchived
+              ? t("components.routineList.statusArchived", { defaultValue: "Archived" })
+              : isDraft
+                ? t("components.routineList.statusDraft", { defaultValue: "Draft" })
+                : enabled
+                  ? t("components.routineList.statusOn", { defaultValue: "On" })
+                  : t("components.routineList.statusOff", { defaultValue: "Off" })}
           </span>
         </div>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${routine.title}`}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t("components.routineList.moreActionsAriaLabel", {
+                title: routine.title,
+                defaultValue: "More actions for {{title}}",
+              })}
+            >
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -176,21 +207,27 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
               disabled={runDisabled}
               onClick={() => onRunNow(routine)}
             >
-              {runningRoutineId === routine.id ? "Running..." : "Run now"}
+              {runningRoutineId === routine.id
+                ? t("components.routineList.running", { defaultValue: "Running..." })
+                : t("components.routineList.runNow", { defaultValue: "Run now" })}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => onToggleEnabled(routine, enabled)}
               disabled={isStatusPending || isArchived || disableToggle}
             >
-              {enabled ? "Pause" : "Enable"}
+              {enabled
+                ? t("components.routineList.actionPause", { defaultValue: "Pause" })
+                : t("components.routineList.actionEnable", { defaultValue: "Enable" })}
             </DropdownMenuItem>
             {!hideArchiveAction && onToggleArchived ? (
               <DropdownMenuItem
                 onClick={() => onToggleArchived(routine)}
                 disabled={isStatusPending}
               >
-                {routine.status === "archived" ? "Restore" : "Archive"}
+                {routine.status === "archived"
+                  ? t("components.routineList.actionRestore", { defaultValue: "Restore" })
+                  : t("components.routineList.actionArchive", { defaultValue: "Archive" })}
               </DropdownMenuItem>
             ) : null}
           </DropdownMenuContent>

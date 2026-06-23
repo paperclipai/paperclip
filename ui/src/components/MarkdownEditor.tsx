@@ -48,6 +48,7 @@ import { normalizeMarkdown } from "../lib/normalize-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
+import { useTranslation } from "@/i18n";
 
 /* ---- Mention types ---- */
 
@@ -599,6 +600,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   onSubmit,
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
+  const { t } = useTranslation();
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
   const { slashCommands } = useEditorAutocomplete();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -770,7 +772,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
+            const message = err instanceof Error
+              ? err.message
+              : t("components.markdownEditor.imageUploadFailed", { defaultValue: "Image upload failed" });
             setUploadError(message);
             throw err;
           }
@@ -797,7 +801,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       all.push(imagePlugin({ imageUploadHandler: imageHandler }));
     }
     return all;
-  }, [hasImageUpload]);
+  }, [hasImageUpload, t]);
 
   useEffect(() => {
     if (editorValue !== latestValueRef.current) {
@@ -1087,7 +1091,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         )}
       >
         <div className="flex items-start justify-between gap-3 px-3 pt-2 text-xs text-muted-foreground">
-          <p>Rich editor unavailable for this markdown. Showing raw source instead.</p>
+          <p>
+            {t("components.markdownEditor.richEditorUnavailable", {
+              defaultValue: "Rich editor unavailable for this markdown. Showing raw source instead.",
+            })}
+          </p>
           <button
             type="button"
             className="shrink-0 underline underline-offset-2 hover:text-foreground"
@@ -1095,7 +1103,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               setRichEditorError(null);
             }}
           >
-            Retry rich editor
+            {t("components.markdownEditor.retryRichEditor", { defaultValue: "Retry rich editor" })}
           </button>
         </div>
         <textarea
@@ -1354,27 +1362,27 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 )}
                 {option.kind === "issue" && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    Task
+                    {t("components.markdownEditor.badgeTask", { defaultValue: "Task" })}
                   </span>
                 )}
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    Project
+                    {t("components.markdownEditor.badgeProject", { defaultValue: "Project" })}
                   </span>
                 )}
                 {option.kind === "user" && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    User
+                    {t("components.markdownEditor.badgeUser", { defaultValue: "User" })}
                   </span>
                 )}
                 {option.kind === "skill" && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    Skill
+                    {t("components.markdownEditor.badgeSkill", { defaultValue: "Skill" })}
                   </span>
                 )}
                 {option.kind === "routine" && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    Routine
+                    {t("components.markdownEditor.badgeRoutine", { defaultValue: "Routine" })}
                   </span>
                 )}
               </button>
@@ -1390,7 +1398,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             !bordered && "inset-0 rounded-sm",
           )}
         >
-          Drop {onDropFile ? "file" : "image"} to upload
+          {onDropFile
+            ? t("components.markdownEditor.dropFileToUpload", { defaultValue: "Drop file to upload" })
+            : t("components.markdownEditor.dropImageToUpload", { defaultValue: "Drop image to upload" })}
         </div>
       )}
       {uploadError && (

@@ -1,4 +1,5 @@
 import type { IssueRelatedWorkItem, IssueRelatedWorkSummary } from "@paperclipai/shared";
+import { useTranslation } from "@/i18n";
 import { IssueReferencePill } from "./IssueReferencePill";
 
 type GroupedSource = {
@@ -88,22 +89,36 @@ export function IssueRelatedWorkPanel({
 }: {
   relatedWork?: IssueRelatedWorkSummary | null;
 }) {
+  const { t } = useTranslation();
   const outbound = relatedWork?.outbound ?? [];
   const inbound = relatedWork?.inbound ?? [];
 
   return (
     <div className="space-y-3">
       <Section
-        title="References"
-        description="Other tasks this task currently points at in its title, description, comments, or documents."
+        title={t("components.issueRelatedWorkPanel.referencesTitle", {
+          defaultValue: "References",
+        })}
+        description={t("components.issueRelatedWorkPanel.referencesDescription", {
+          defaultValue:
+            "Other tasks this task currently points at in its title, description, comments, or documents.",
+        })}
         items={outbound}
-        emptyLabel="This task does not reference any other tasks yet."
+        emptyLabel={t("components.issueRelatedWorkPanel.referencesEmpty", {
+          defaultValue: "This task does not reference any other tasks yet.",
+        })}
       />
       <Section
-        title="Referenced by"
-        description="Other tasks that currently point at this task."
+        title={t("components.issueRelatedWorkPanel.referencedByTitle", {
+          defaultValue: "Referenced by",
+        })}
+        description={t("components.issueRelatedWorkPanel.referencedByDescription", {
+          defaultValue: "Other tasks that currently point at this task.",
+        })}
         items={inbound}
-        emptyLabel="No other tasks reference this task yet."
+        emptyLabel={t("components.issueRelatedWorkPanel.referencedByEmpty", {
+          defaultValue: "No other tasks reference this task yet.",
+        })}
       />
     </div>
   );
