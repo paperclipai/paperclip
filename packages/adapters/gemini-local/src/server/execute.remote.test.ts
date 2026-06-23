@@ -115,7 +115,7 @@ describe("Gemini remote execution", () => {
         id: "agent-1",
         companyId: "company-1",
         name: "Gemini Builder",
-        adapterType: "Gemini_local",
+        adapterType: "gemini_local",
         adapterConfig: {},
       },
       runtime: {
@@ -176,12 +176,12 @@ describe("Gemini remote execution", () => {
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
-      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/Gemini/skills`,
+      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/gemini/skills`,
       followSymlinks: true,
     }));
     expect(runSshCommand).toHaveBeenCalledWith(
       expect.anything(),
-      expect.stringContaining(".Gemini/skills"),
+      expect.stringContaining(".gemini/skills"),
       expect.anything(),
     );
     const call = runChildProcess.mock.calls[0] as unknown as
@@ -203,7 +203,7 @@ describe("Gemini remote execution", () => {
     ]);
     expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
     expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
-    expect(call?.[3].env.Gemini_CLI_TRUST_WORKSPACE).toBe("true");
+    expect(call?.[3].env.GEMINI_CLI_TRUST_WORKSPACE).toBe("true");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
@@ -222,7 +222,7 @@ describe("Gemini remote execution", () => {
         id: "agent-1",
         companyId: "company-1",
         name: "Gemini Builder",
-        adapterType: "Gemini_local",
+        adapterType: "gemini_local",
         adapterConfig: {},
       },
       runtime: {
@@ -266,7 +266,7 @@ describe("Gemini remote execution", () => {
     });
 
     const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
-    expect(call?.[2]).toContain("--conversation");
+    expect(call?.[2]).toContain("--resume");
     expect(call?.[2]).toContain("session-123");
   });
 
@@ -283,7 +283,7 @@ describe("Gemini remote execution", () => {
         id: "agent-1",
         companyId: "company-1",
         name: "Gemini Builder",
-        adapterType: "Gemini_local",
+        adapterType: "gemini_local",
         adapterConfig: {},
       },
       runtime: {

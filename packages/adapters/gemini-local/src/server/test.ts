@@ -63,7 +63,7 @@ export async function testEnvironment(
 
   if (targetLabel) {
     checks.push({
-      code: "Gemini_environment_target",
+      code: "gemini_environment_target",
       level: "info",
       message: `Probing inside environment: ${targetLabel}`,
     });
@@ -76,13 +76,13 @@ export async function testEnvironment(
       createIfMissing: true,
     });
     checks.push({
-      code: "Gemini_cwd_valid",
+      code: "gemini_cwd_valid",
       level: "info",
       message: `Working directory is valid: ${cwd}`,
     });
   } catch (err) {
     checks.push({
-      code: "Gemini_cwd_invalid",
+      code: "gemini_cwd_invalid",
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -94,8 +94,8 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  if (targetIsRemote && typeof env.Gemini_CLI_TRUST_WORKSPACE !== "string") {
-    env.Gemini_CLI_TRUST_WORKSPACE = "true";
+  if (targetIsRemote && typeof env.GEMINI_CLI_TRUST_WORKSPACE !== "string") {
+    env.GEMINI_CLI_TRUST_WORKSPACE = "true";
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
@@ -110,21 +110,21 @@ export async function testEnvironment(
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
-      code: "Gemini_command_resolvable",
+      code: "gemini_command_resolvable",
       level: "info",
       message: `Command is executable: ${command}`,
     });
   } catch (err) {
     checks.push({
-      code: "Gemini_command_unresolvable",
+      code: "gemini_command_unresolvable",
       level: "error",
       message: err instanceof Error ? err.message : "Command is not executable",
       detail: command,
     });
   }
 
-  const configGeminiApiKey = env.Gemini_API_KEY;
-  const hostGeminiApiKey = targetIsRemote ? undefined : process.env.Gemini_API_KEY;
+  const configGeminiApiKey = env.GEMINI_API_KEY;
+  const hostGeminiApiKey = targetIsRemote ? undefined : process.env.GEMINI_API_KEY;
   const configGoogleApiKey = env.GOOGLE_API_KEY;
   const hostGoogleApiKey = targetIsRemote ? undefined : process.env.GOOGLE_API_KEY;
   const hasGca = env.GOOGLE_GENAI_USE_GCA === "true" || (!targetIsRemote && process.env.GOOGLE_GENAI_USE_GCA === "true");
@@ -141,26 +141,26 @@ export async function testEnvironment(
         ? "adapter config env"
         : "server environment";
     checks.push({
-      code: "Gemini_api_key_present",
+      code: "gemini_api_key_present",
       level: "info",
       message: "Gemini API credentials are set for CLI authentication.",
       detail: `Detected in ${source}.`,
     });
   } else {
     checks.push({
-      code: "Gemini_api_key_missing",
+      code: "gemini_api_key_missing",
       level: "info",
       message: "No explicit API key detected. Gemini CLI may still authenticate via `Gemini auth login` (OAuth).",
-      hint: "If the hello probe fails with an auth error, set Gemini_API_KEY or GOOGLE_API_KEY in adapter env, or run `Gemini auth login`.",
+      hint: "If the hello probe fails with an auth error, set GEMINI_API_KEY or GOOGLE_API_KEY in adapter env, or run `Gemini auth login`.",
     });
   }
 
   const canRunProbe =
-    checks.every((check) => check.code !== "Gemini_cwd_invalid" && check.code !== "Gemini_command_unresolvable");
+    checks.every((check) => check.code !== "gemini_cwd_invalid" && check.code !== "gemini_command_unresolvable");
   if (canRunProbe) {
     if (!commandLooksLike(command, "agy")) {
       checks.push({
-        code: "Gemini_hello_probe_skipped_custom_command",
+        code: "gemini_hello_probe_skipped_custom_command",
         level: "info",
         message: "Skipped hello probe because command is not `agy`.",
         detail: command,
@@ -212,7 +212,7 @@ export async function testEnvironment(
 
       if (quotaMeta.exhausted) {
         checks.push({
-          code: "Gemini_hello_probe_quota_exhausted",
+          code: "gemini_hello_probe_quota_exhausted",
           level: "warn",
           message: probe.timedOut
             ? "Gemini CLI is retrying after quota exhaustion."
@@ -222,7 +222,7 @@ export async function testEnvironment(
         });
       } else if (probe.timedOut) {
         checks.push({
-          code: "Gemini_hello_probe_timed_out",
+          code: "gemini_hello_probe_timed_out",
           level: "warn",
           message: "Gemini hello probe timed out.",
           hint: "Retry the probe. If this persists, verify Gemini can run `Respond with hello.` from this directory manually.",
@@ -234,7 +234,7 @@ export async function testEnvironment(
         // on success. Treat empty output + exit 0 as a pass.
         const hasHello = !summary || /\bhello\b/i.test(summary);
         checks.push({
-          code: hasHello ? "Gemini_hello_probe_passed" : "Gemini_hello_probe_unexpected_output",
+          code: hasHello ? "gemini_hello_probe_passed" : "gemini_hello_probe_unexpected_output",
           level: hasHello ? "info" : "warn",
           message: hasHello
             ? "Gemini hello probe succeeded."
@@ -248,15 +248,15 @@ export async function testEnvironment(
         });
       } else if (authMeta.requiresAuth) {
         checks.push({
-          code: "Gemini_hello_probe_auth_required",
+          code: "gemini_hello_probe_auth_required",
           level: "warn",
           message: "Gemini CLI is installed, but authentication is not ready.",
           ...(detail ? { detail } : {}),
-          hint: "Run `agy auth` or configure Gemini_API_KEY / GOOGLE_API_KEY in adapter env/shell, then retry the probe.",
+          hint: "Run `agy auth` or configure GEMINI_API_KEY / GOOGLE_API_KEY in adapter env/shell, then retry the probe.",
         });
       } else {
         checks.push({
-          code: "Gemini_hello_probe_failed",
+          code: "gemini_hello_probe_failed",
           level: "error",
           message: "Gemini hello probe failed.",
           ...(detail ? { detail } : {}),
