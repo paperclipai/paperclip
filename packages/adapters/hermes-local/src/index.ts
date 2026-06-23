@@ -9,7 +9,11 @@
  * @packageDocumentation
  */
 
-import type { ServerAdapterModule } from "@paperclipai/adapter-utils";
+import type {
+  AdapterRuntimeCommandSpec,
+  AdapterSessionManagement,
+  ServerAdapterModule,
+} from "@paperclipai/adapter-utils";
 
 import { ADAPTER_TYPE, ADAPTER_LABEL } from "./shared/constants.js";
 import {
@@ -19,7 +23,9 @@ import {
   listSkills,
   syncSkills,
   detectModel,
+  getConfigSchema,
 } from "./server/index.js";
+import { resolveHermesCommand } from "./server/execute.js";
 
 export const type = ADAPTER_TYPE;
 export const label = ADAPTER_LABEL;
@@ -32,6 +38,26 @@ export const label = ADAPTER_LABEL;
  * since Hermes availability depends on the user's local configuration.
  */
 export const models: { id: string; label: string }[] = [];
+
+const sessionManagement: AdapterSessionManagement = {
+  supportsSessionResume: true,
+  nativeContextManagement: "confirmed",
+  defaultSessionCompaction: {
+    enabled: true,
+    maxSessionRuns: 0,
+    maxRawInputTokens: 0,
+    maxSessionAgeHours: 0,
+  },
+};
+
+function getRuntimeCommandSpec(config: Record<string, unknown>): AdapterRuntimeCommandSpec {
+  const command = resolveHermesCommand(config);
+  return {
+    command,
+    detectCommand: command,
+    installCommand: null,
+  };
+}
 
 /**
  * Documentation shown in the Paperclip UI when configuring a Hermes agent.
@@ -102,6 +128,7 @@ export function createServerAdapter(): ServerAdapterModule {
     execute,
     testEnvironment,
     sessionCodec,
+    sessionManagement,
     listSkills,
     syncSkills,
     models,
@@ -109,7 +136,9 @@ export function createServerAdapter(): ServerAdapterModule {
     supportsInstructionsBundle: true,
     instructionsPathKey: "instructionsFilePath",
     requiresMaterializedRuntimeSkills: false,
+    getRuntimeCommandSpec,
     agentConfigurationDoc,
     detectModel,
+    getConfigSchema,
   };
 }

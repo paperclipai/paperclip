@@ -373,10 +373,8 @@ export async function execute(
   });
 
   // ── Load agent instructions file (Paperclip instruction bundles) ──────
-  // Built-in adapters (claude_local, codex_local, gemini_local) read the
-  // instructionsFilePath from adapterConfig and inject it into the agent
-  // prompt. The hermes adapter was missing this — so curated instruction
-  // files (AGENTS.md, SOUL.md, HEARTBEAT.md, TOOLS.md) were never read.
+  // Paperclip can materialize managed instructions into instructionsFilePath;
+  // when present, inject that bundle into the Hermes prompt.
   const instructionsFilePath = cfgString(config.instructionsFilePath);
   let agentInstructions = "";
   if (instructionsFilePath) {
