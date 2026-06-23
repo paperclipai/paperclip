@@ -4525,6 +4525,13 @@ function IssueFileViewer({
   const viewer = useRequiredFileViewer();
   const open = viewer.state !== null || viewer.browse || promptOpen;
   const showPromptWhenEmpty = (promptOpen || viewer.browse) && viewer.state === null;
+
+  useEffect(() => {
+    if (!promptOpen) return;
+    if (viewer.state === null && !viewer.browse) return;
+    onPromptOpenChange(false);
+  }, [onPromptOpenChange, promptOpen, viewer.browse, viewer.state]);
+
   return (
     <FileViewerSheet
       issueId={issueId}
