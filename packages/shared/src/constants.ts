@@ -494,8 +494,25 @@ export const APPROVAL_TYPES = [
   "approve_ceo_strategy",
   "budget_override_required",
   "request_board_approval",
+  "request_mcp_install",
+  "request_skill_install",
+  "request_plugin_install",
 ] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
+
+/** Capability-request approval types an agent can raise to self-provision tools (issues #2, #5). */
+export const CAPABILITY_REQUEST_APPROVAL_TYPES = [
+  "request_mcp_install",
+  "request_skill_install",
+  "request_plugin_install",
+] as const;
+
+/** Transports an installed MCP server can use (issue #2). */
+export const MCP_TRANSPORTS = ["http", "stdio"] as const;
+export type McpTransport = (typeof MCP_TRANSPORTS)[number];
+
+export const MCP_SERVER_STATUSES = ["enabled", "disabled"] as const;
+export type McpServerStatus = (typeof MCP_SERVER_STATUSES)[number];
 
 export const APPROVAL_STATUSES = [
   "pending",

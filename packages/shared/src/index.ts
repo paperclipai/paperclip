@@ -303,6 +303,11 @@ export {
   AGENT_MEMORY_STATUSES,
   type AgentMemoryType,
   type AgentMemoryStatus,
+  MCP_TRANSPORTS,
+  MCP_SERVER_STATUSES,
+  CAPABILITY_REQUEST_APPROVAL_TYPES,
+  type McpTransport,
+  type McpServerStatus,
 } from "./constants.js";
 
 export {
@@ -806,6 +811,8 @@ export type {
   ProviderQuotaResult,
   AgentMemory,
   AgentMemoryConsolidationRun,
+  AgentMcpServer,
+  RuntimeMcpServer,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
 export {
@@ -927,6 +934,18 @@ export {
   type CreateAgentMemory,
   type RecallAgentMemory,
   type CorrectAgentMemory,
+  mcpEnvEntrySchema,
+  requestMcpInstallSchema,
+  mcpSecretValuesSchema,
+  createAgentMcpServerSchema,
+  setAgentMcpServerStatusSchema,
+  requestSkillInstallSchema,
+  requestPluginInstallSchema,
+  type RequestMcpInstall,
+  type McpSecretValues,
+  type CreateAgentMcpServer,
+  type RequestSkillInstall,
+  type RequestPluginInstall,
 } from "./validators/index.js";
 
 export {

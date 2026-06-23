@@ -16,6 +16,7 @@ import { companySkillRoutes } from "./routes/company-skills.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { agentMemoryRoutes } from "./routes/agent-memories.js";
+import { agentMcpServerRoutes } from "./routes/agent-mcp-servers.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
@@ -225,6 +226,7 @@ export async function createApp(
   api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(agentMemoryRoutes(db));
+  api.use(agentMcpServerRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
@@ -238,7 +240,8 @@ export async function createApp(
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
-  api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
+  // approvalRoutes is registered later (after the plugin loader is built) so it can
+  // install plugins on approval — see the registration below `pluginRoutes`.
   api.use(secretRoutes(db));
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
@@ -321,6 +324,21 @@ export async function createApp(
       { toolDispatcher },
       { workerManager },
     ),
+  );
+  // Now that the plugin loader/lifecycle exist, register approvals with the
+  // plugin-install seam so `request_plugin_install` approvals actually install.
+  api.use(
+    approvalRoutes(db, {
+      pluginWorkerManager: workerManager,
+      installPlugin: async ({ packageName, version }) => {
+        const discovered = await loader.installPlugin({ packageName, version });
+        if (!discovered.manifest) throw new Error("Plugin installed but manifest is missing");
+        const installed = await pluginRegistry.getByKey(discovered.manifest.id);
+        if (!installed) throw new Error("Plugin installed but not found in registry");
+        await lifecycle.load(installed.id);
+        return { id: installed.id, name: discovered.manifest.displayName ?? discovered.manifest.id };
+      },
+    }),
   );
   api.use(adapterRoutes());
   api.use(

@@ -13,6 +13,9 @@ export type CreateApproval = z.infer<typeof createApprovalSchema>;
 
 export const resolveApprovalSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
+  // For `request_mcp_install` approvals: board-supplied secret values, keyed by the
+  // `secretName` declared in the request. Stored in company_secrets, never echoed back.
+  mcpSecretValues: z.record(z.string().min(1), z.string().min(1)).optional(),
 });
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;

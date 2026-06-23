@@ -4,6 +4,9 @@ import {
   askUserQuestionsPayloadSchema,
   checkoutIssueSchema,
   createApprovalSchema,
+  requestMcpInstallSchema,
+  requestSkillInstallSchema,
+  requestPluginInstallSchema,
   createIssueInputSchema,
   issueThreadInteractionContinuationPolicySchema,
   requestCheckboxConfirmationPayloadSchema,
@@ -433,6 +436,45 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       async ({ companyId, ...body }) =>
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
           body,
+        }),
+    ),
+    makeTool(
+      "paperclipRequestMcpServer",
+      "Request a new MCP server for yourself (browser, integrations, etc). Raises a board approval; on approval the server is installed into your runtime and you are woken to use it. Declare secrets by name only — the board supplies the values.",
+      z.object({
+        companyId: companyIdOptional,
+        issueIds: z.array(z.string().uuid()).optional(),
+        request: requestMcpInstallSchema,
+      }),
+      async ({ companyId, issueIds, request }) =>
+        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
+          body: { type: "request_mcp_install", payload: request, issueIds },
+        }),
+    ),
+    makeTool(
+      "paperclipRequestSkillInstall",
+      "Request installation of a catalog skill (e.g. a how-to guide your role is missing). Raises a board approval; on approval the skill is installed for the company.",
+      z.object({
+        companyId: companyIdOptional,
+        issueIds: z.array(z.string().uuid()).optional(),
+        request: requestSkillInstallSchema,
+      }),
+      async ({ companyId, issueIds, request }) =>
+        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
+          body: { type: "request_skill_install", payload: request, issueIds },
+        }),
+    ),
+    makeTool(
+      "paperclipRequestPluginInstall",
+      "Request installation of a server plugin (npm package) for the instance. Privileged and instance-scoped: requires an instance admin to approve. Raises a board approval describing the exact package and version.",
+      z.object({
+        companyId: companyIdOptional,
+        issueIds: z.array(z.string().uuid()).optional(),
+        request: requestPluginInstallSchema,
+      }),
+      async ({ companyId, issueIds, request }) =>
+        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
+          body: { type: "request_plugin_install", payload: request, issueIds },
         }),
     ),
     makeTool(

@@ -133,6 +133,8 @@ import {
   createAgentMemorySchema,
   recallAgentMemorySchema,
   correctAgentMemorySchema,
+  createAgentMcpServerSchema,
+  setAgentMcpServerStatusSchema,
 } from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
@@ -538,6 +540,9 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "POST /api/agents/{agentId}/mcp-servers",
+  "POST /api/agents/{agentId}/mcp-servers/{id}/status",
+  "DELETE /api/agents/{agentId}/mcp-servers/{id}",
   "GET /api/companies",
   "POST /api/companies",
   "GET /api/companies/stats",
@@ -4566,6 +4571,33 @@ registerCurrentRoute({
   path: "/api/agents/{agentId}/memories/consolidate",
   tags: ["agents"],
   summary: "Run a memory consolidation (dreaming) pass for an agent",
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/agents/{agentId}/mcp-servers",
+  tags: ["agents"],
+  summary: "List an agent's installed MCP servers",
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/agents/{agentId}/mcp-servers",
+  tags: ["agents"],
+  summary: "Install an MCP server on an agent (board)",
+  body: createAgentMcpServerSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/agents/{agentId}/mcp-servers/{id}/status",
+  tags: ["agents"],
+  summary: "Enable or disable an installed MCP server",
+  body: setAgentMcpServerStatusSchema,
+});
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/agents/{agentId}/mcp-servers/{id}",
+  tags: ["agents"],
+  summary: "Remove an installed MCP server",
 });
 
 // ─── Spec builder ─────────────────────────────────────────────────────────────

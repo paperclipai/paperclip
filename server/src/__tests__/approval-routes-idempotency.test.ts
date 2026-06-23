@@ -31,11 +31,19 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
+const mockAgentMcpServerService = vi.hoisted(() => ({
+  provisionFromApproval: vi.fn(),
+}));
+const mockCompanySkillService = vi.hoisted(() => ({
+  installFromCatalog: vi.fn(),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
+    agentMcpServerService: () => mockAgentMcpServerService,
     approvalService: () => mockApprovalService,
+    companySkillService: () => mockCompanySkillService,
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,

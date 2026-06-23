@@ -1,4 +1,4 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, Plug, BookOpen, Puzzle } from "lucide-react";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -6,6 +6,9 @@ export const typeLabel: Record<string, string> = {
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
+  request_mcp_install: "MCP Server",
+  request_skill_install: "Skill Install",
+  request_plugin_install: "Plugin Install",
 };
 
 function firstNonEmptyString(...values: unknown[]): string | null {
@@ -21,6 +24,8 @@ export function approvalSubject(payload?: Record<string, unknown> | null): strin
   return firstNonEmptyString(
     payload?.title,
     payload?.name,
+    payload?.packageName,
+    payload?.catalogSkillId,
     payload?.summary,
     payload?.recommendedAction,
   );
@@ -41,6 +46,9 @@ export const typeIcon: Record<string, typeof UserPlus> = {
   approve_ceo_strategy: Lightbulb,
   budget_override_required: ShieldAlert,
   request_board_approval: ShieldCheck,
+  request_mcp_install: Plug,
+  request_skill_install: BookOpen,
+  request_plugin_install: Puzzle,
 };
 
 export const defaultTypeIcon = ShieldCheck;
@@ -229,6 +237,89 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
   );
 }
 
+function McpInstallPayload({ payload }: { payload: Record<string, unknown> }) {
+  const transport = String(payload.transport ?? "");
+  const env = Array.isArray(payload.env) ? payload.env : [];
+  const secretEntries = env.filter(
+    (e): e is Record<string, unknown> => typeof e === "object" && e !== null && typeof (e as Record<string, unknown>).secretName === "string",
+  );
+  const command = firstNonEmptyString(payload.command);
+  const args = Array.isArray(payload.args) ? payload.args.map((a) => String(a)) : [];
+  return (
+    <div className="mt-3 space-y-1.5 text-sm">
+      <PayloadField label="Server" value={payload.name} />
+      <PayloadField label="Transport" value={transport} />
+      {transport === "http" && <PayloadField label="URL" value={payload.url} />}
+      {transport === "stdio" && (
+        <div className="flex items-start gap-2">
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Command</span>
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] break-all">
+            {[command, ...args].filter(Boolean).join(" ") || "—"}
+          </code>
+        </div>
+      )}
+      {!!payload.reason && (
+        <div className="flex items-start gap-2">
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Reason</span>
+          <span className="text-muted-foreground">{String(payload.reason)}</span>
+        </div>
+      )}
+      {secretEntries.length > 0 && (
+        <div className="mt-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs">
+          <p className="font-medium text-amber-700 dark:text-amber-300">Secrets required before approval</p>
+          <p className="mt-1 text-muted-foreground">
+            Create these as company secrets (by exact name) so the server can authenticate. Values never appear here.
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {secretEntries.map((e) => (
+              <span key={String(e.secretName)} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+                {String(e.secretName)}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SkillInstallPayload({ payload }: { payload: Record<string, unknown> }) {
+  return (
+    <div className="mt-3 space-y-1.5 text-sm">
+      <PayloadField label="Skill" value={payload.catalogSkillId} />
+      <PayloadField label="Slug" value={payload.slug} />
+      {!!payload.reason && (
+        <div className="flex items-start gap-2">
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Reason</span>
+          <span className="text-muted-foreground">{String(payload.reason)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PluginInstallPayload({ payload }: { payload: Record<string, unknown> }) {
+  return (
+    <div className="mt-3 space-y-1.5 text-sm">
+      <div className="flex items-center gap-2">
+        <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">Package</span>
+        <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] break-all">
+          {String(payload.packageName ?? "—")}{payload.version ? `@${String(payload.version)}` : ""}
+        </code>
+      </div>
+      {!!payload.reason && (
+        <div className="flex items-start gap-2">
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Reason</span>
+          <span className="text-muted-foreground">{String(payload.reason)}</span>
+        </div>
+      )}
+      <div className="mt-2 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-muted-foreground">
+        Plugins run privileged server code instance-wide. Approving requires an instance admin.
+      </div>
+    </div>
+  );
+}
+
 export function ApprovalPayloadRenderer({
   type,
   payload,
@@ -240,6 +331,9 @@ export function ApprovalPayloadRenderer({
 }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
+  if (type === "request_mcp_install") return <McpInstallPayload payload={payload} />;
+  if (type === "request_skill_install") return <SkillInstallPayload payload={payload} />;
+  if (type === "request_plugin_install") return <PluginInstallPayload payload={payload} />;
   if (type === "request_board_approval") {
     return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
   }

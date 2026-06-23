@@ -5,6 +5,7 @@ export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export { agentMemoryService } from "./agent-memories.js";
+export { agentMcpServerService } from "./agent-mcp-servers.js";
 export { agentMemoryConsolidationService } from "./agent-memory-consolidation.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";

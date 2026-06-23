@@ -105,6 +105,7 @@ import {
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import { agentMemoryService } from "./agent-memories.js";
+import { agentMcpServerService } from "./agent-mcp-servers.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -8596,6 +8597,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context.paperclipMemorySummary = memorySection;
     } else {
       delete context.paperclipMemorySummary;
+    }
+    // MCP auto-install (issue #2): inject the agent's board-approved MCP servers
+    // (with secret refs resolved into env/headers) so the adapter can render a
+    // per-run .mcp.json. Only enabled servers are surfaced.
+    const mcpServers = await agentMcpServerService(db)
+      .buildRuntimeMcpServers(agent.companyId, agent.id)
+      .catch((err) => {
+        logger.warn(
+          { err, companyId: agent.companyId, agentId: agent.id },
+          "failed to build MCP servers for run context; continuing without them",
+        );
+        return [];
+      });
+    if (mcpServers.length > 0) {
+      context.paperclipMcpServers = mcpServers;
+    } else {
+      delete context.paperclipMcpServers;
     }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;

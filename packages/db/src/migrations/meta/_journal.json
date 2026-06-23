@@ -750,6 +750,13 @@
       "when": 1782000000000,
       "tag": "0106_agent_memories",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1782100000000,
+      "tag": "0107_agent_mcp_servers",
+      "breakpoints": true
     }
   ]
 }

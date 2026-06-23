@@ -5,20 +5,25 @@ import {
   addApprovalCommentSchema,
   createApprovalSchema,
   requestApprovalRevisionSchema,
+  requestMcpInstallSchema,
+  requestSkillInstallSchema,
+  requestPluginInstallSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
+  agentMcpServerService,
   approvalService,
   accessService,
+  companySkillService,
   heartbeatService,
   issueApprovalService,
   logActivity,
   secretService,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -41,7 +46,13 @@ function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
 
 export function approvalRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    // Seam injected by app.ts (which owns the plugin loader/lifecycle): installs and
+    // loads a plugin from npm on approval of a `request_plugin_install`. When absent,
+    // plugin approvals resolve but the install is logged as skipped.
+    installPlugin?: (input: { packageName: string; version?: string }) => Promise<{ id: string; name: string }>;
+  } = {},
 ) {
   const router = Router();
   const svc = approvalService(db);
@@ -50,6 +61,8 @@ export function approvalRoutes(
     pluginWorkerManager: options.pluginWorkerManager,
   });
   const issueApprovalsSvc = issueApprovalService(db);
+  const mcpServersSvc = agentMcpServerService(db);
+  const skillsSvc = companySkillService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
@@ -200,6 +213,9 @@ export function approvalRoutes(
       res.status(404).json({ error: "Approval not found" });
       return;
     }
+    // Plugins are instance-scoped and privileged: only an instance admin may approve.
+    const preApproval = await svc.getById(id);
+    if (preApproval?.type === "request_plugin_install") assertInstanceAdmin(req);
     const decidedByUserId = req.actor.userId ?? "board";
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
@@ -221,6 +237,107 @@ export function approvalRoutes(
           linkedIssueIds,
         },
       });
+
+      // MCP auto-install (issue #2): on approval, provision the requested MCP
+      // server into the agent's runtime. Board-supplied secret values arrive in
+      // req.body.mcpSecretValues and are stored in company_secrets (never echoed).
+      if (approval.type === "request_mcp_install" && approval.requestedByAgentId) {
+        try {
+          const parsed = requestMcpInstallSchema.parse(approval.payload);
+          const server = await mcpServersSvc.provisionFromApproval(
+            approval.companyId,
+            approval.requestedByAgentId,
+            { ...parsed, secretValues: req.body.mcpSecretValues },
+            { actorType: "user", actorId: req.actor.userId ?? "board" },
+            approval.id,
+          );
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "agent_mcp_installed",
+            entityType: "agent_mcp_server",
+            entityId: server.id,
+            agentId: approval.requestedByAgentId,
+            details: { name: server.name, transport: server.transport, source: "approval", approvalId: approval.id },
+          });
+        } catch (err) {
+          logger.warn({ err, approvalId: approval.id }, "failed to provision MCP server from approval");
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "agent_mcp_install_failed",
+            entityType: "approval",
+            entityId: approval.id,
+            details: { error: err instanceof Error ? err.message : String(err) },
+          });
+        }
+      }
+
+      // Skill auto-install (issue #5): install a catalog skill for the company on
+      // approval, reusing the existing installer. Company-scoped, board-level.
+      if (approval.type === "request_skill_install") {
+        try {
+          const parsed = requestSkillInstallSchema.parse(approval.payload);
+          const result = await skillsSvc.installFromCatalog(approval.companyId, {
+            catalogSkillId: parsed.catalogSkillId,
+            slug: parsed.slug,
+          });
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "company_skill_installed",
+            entityType: "company_skill",
+            entityId: result.skill.id,
+            agentId: approval.requestedByAgentId,
+            details: { catalogSkillId: parsed.catalogSkillId, action: result.action, source: "approval", approvalId: approval.id },
+          });
+        } catch (err) {
+          logger.warn({ err, approvalId: approval.id }, "failed to install skill from approval");
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "company_skill_install_failed",
+            entityType: "approval",
+            entityId: approval.id,
+            details: { error: err instanceof Error ? err.message : String(err) },
+          });
+        }
+      }
+
+      // Plugin auto-install (issue #2 sibling): install + load an npm plugin into the
+      // instance on approval, via the loader seam app.ts injected. Instance-scoped.
+      if (approval.type === "request_plugin_install") {
+        try {
+          const parsed = requestPluginInstallSchema.parse(approval.payload);
+          if (!options.installPlugin) throw new Error("Plugin installer is not available in this server context");
+          const installed = await options.installPlugin({ packageName: parsed.packageName, version: parsed.version });
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "plugin.installed_via_approval",
+            entityType: "plugin",
+            entityId: installed.id,
+            agentId: approval.requestedByAgentId,
+            details: { packageName: parsed.packageName, version: parsed.version ?? null, name: installed.name, approvalId: approval.id },
+          });
+        } catch (err) {
+          logger.warn({ err, approvalId: approval.id }, "failed to install plugin from approval");
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "plugin.install_via_approval_failed",
+            entityType: "approval",
+            entityId: approval.id,
+            details: { error: err instanceof Error ? err.message : String(err) },
+          });
+        }
+      }
 
       if (approval.requestedByAgentId) {
         try {

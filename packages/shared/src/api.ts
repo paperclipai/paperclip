@@ -5,6 +5,7 @@ export const API = {
   companies: `${API_PREFIX}/companies`,
   agents: `${API_PREFIX}/agents`,
   agentMemories: `${API_PREFIX}/agents/:agentId/memories`,
+  agentMcpServers: `${API_PREFIX}/agents/:agentId/mcp-servers`,
   projects: `${API_PREFIX}/projects`,
   issues: `${API_PREFIX}/issues`,
   issueWatchdog: `${API_PREFIX}/issues/:issueId/watchdog`,

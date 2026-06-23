@@ -418,6 +418,7 @@ export type {
   SecretVersionStatus,
 } from "./secrets.js";
 export type { AgentMemory, AgentMemoryConsolidationRun } from "./agent-memory.js";
+export type { AgentMcpServer, RuntimeMcpServer } from "./agent-mcp.js";
 export type {
   Routine,
   RoutineEnvConfig,

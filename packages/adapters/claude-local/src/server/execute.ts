@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -570,6 +571,81 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
     );
   }
+  // MCP auto-install (issue #2): board-approved MCP servers for this agent, with
+  // secret refs already resolved into env/headers. Render into a per-run .mcp.json and
+  // point the Claude CLI at it with --mcp-config (+ --strict-mcp-config so ONLY these load).
+  const mcpServers = Array.isArray(context.paperclipMcpServers)
+    ? context.paperclipMcpServers.filter(
+        (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+      )
+    : [];
+  // The .mcp.json is built below from the secret-bearing `mcpServers`, but the same
+  // `context` is rendered into prompts and persisted via onMeta — so anything that
+  // reaches those sinks must use a copy with the resolved env/header VALUES redacted.
+  const redactRecordValues = (value: unknown) =>
+    typeof value === "object" && value !== null
+      ? Object.fromEntries(Object.keys(value as Record<string, unknown>).map((key) => [key, "[redacted]"]))
+      : {};
+  const contextForPromptAndMeta =
+    mcpServers.length === 0
+      ? context
+      : {
+          ...context,
+          paperclipMcpServers: mcpServers.map((server) => ({
+            ...server,
+            ...(server.env !== undefined ? { env: redactRecordValues(server.env) } : {}),
+            ...(server.headers !== undefined ? { headers: redactRecordValues(server.headers) } : {}),
+          })),
+        };
+  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
+  const mcpEntries: Record<string, unknown> = {};
+  for (const server of mcpServers) {
+    const name = asString(server.name, "").trim();
+    if (!name) continue;
+    const transport = asString(server.transport, "").trim();
+    if (transport === "stdio") {
+      const command = asString(server.command, "").trim();
+      if (!command) continue;
+      mcpEntries[name] = {
+        command,
+        args: Array.isArray(server.args) ? server.args.map((a: unknown) => String(a)) : [],
+        env: isRecord(server.env) ? server.env : {},
+      };
+    } else if (transport === "http") {
+      const url = asString(server.url, "").trim();
+      if (!url) continue;
+      mcpEntries[name] = { type: "http", url, headers: isRecord(server.headers) ? server.headers : {} };
+    }
+  }
+  const mcpServerCount = Object.keys(mcpEntries).length;
+  // Always materialize a config (possibly empty) and run the CLI in strict mode, so
+  // the board-approved set is enforced as the COMPLETE set — no ambient/cloud MCP
+  // connectors leak in. The file holds resolved secrets: 0600 + cleaned up after.
+  let mcpConfigFilePath: string | null = null;
+  {
+    const json = JSON.stringify({ mcpServers: mcpEntries });
+    if (executionTargetIsRemote && remoteClaudeRuntimeRoot) {
+      const remotePath = path.posix.join(remoteClaudeRuntimeRoot, "mcp.json");
+      const b64 = Buffer.from(json, "utf8").toString("base64");
+      await runAdapterExecutionTargetShellCommand(
+        runId,
+        executionTarget,
+        `mkdir -p ${shellQuote(remoteClaudeRuntimeRoot)} && (umask 177; printf %s ${shellQuote(b64)} | base64 -d > ${shellQuote(remotePath)}) && chmod 600 ${shellQuote(remotePath)}`,
+        { cwd, env, timeoutSec: Math.max(timeoutSec, 15), graceSec, onLog },
+      );
+      mcpConfigFilePath = remotePath;
+    } else {
+      const localPath = path.join(os.tmpdir(), `paperclip-mcp-${runId}.json`);
+      await fs.writeFile(localPath, json, { mode: 0o600 });
+      mcpConfigFilePath = localPath;
+    }
+    if (mcpServerCount > 0) {
+      await onLog(
+        "stdout",
+        `[paperclip] Injected ${mcpServerCount} approved MCP server(s) via --mcp-config (strict mode).\n`,
+      );
+    }
+  }
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
   if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
     paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
@@ -679,7 +755,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     company: { id: agent.companyId },
     agent,
     run: { id: runId, source: "on_demand" },
-    context,
+    context: contextForPromptAndMeta,
   };
   const renderedBootstrapPrompt =
     !sessionId && bootstrapPromptTemplate.trim().length > 0
@@ -709,6 +785,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     memoryChars: memoryNote.length,
     taskContextChars: taskContextNote.length,
     heartbeatPromptChars: renderedPrompt.length,
+    mcpServerCount,
   };
 
   const buildClaudeArgs = (
@@ -737,6 +814,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    // Load ONLY the board-approved MCP servers (issue #2); strict mode prevents the
+    // CLI from also pulling in ambient/cloud MCP connectors.
+    if (mcpConfigFilePath) {
+      args.push("--mcp-config", mcpConfigFilePath, "--strict-mcp-config");
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
@@ -784,7 +866,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env: loggedEnv,
         prompt,
         promptMetrics,
-        context,
+        context: contextForPromptAndMeta,
       });
     }
 
@@ -1064,6 +1146,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
+    // The local MCP config holds resolved secrets; remove it once the run is done.
+    // (Remote configs live under the ephemeral runtime root and are cleaned with it.)
+    if (mcpConfigFilePath && !executionTargetIsRemote) {
+      await fs.unlink(mcpConfigFilePath).catch(() => {});
+    }
     if (paperclipBridge) {
       await paperclipBridge.stop();
     }

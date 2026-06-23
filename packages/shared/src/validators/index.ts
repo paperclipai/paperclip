@@ -461,6 +461,21 @@ export {
 } from "./agent-memory.js";
 
 export {
+  mcpEnvEntrySchema,
+  requestMcpInstallSchema,
+  mcpSecretValuesSchema,
+  createAgentMcpServerSchema,
+  setAgentMcpServerStatusSchema,
+  requestSkillInstallSchema,
+  requestPluginInstallSchema,
+  type RequestMcpInstall,
+  type McpSecretValues,
+  type CreateAgentMcpServer,
+  type RequestSkillInstall,
+  type RequestPluginInstall,
+} from "./agent-mcp.js";
+
+export {
   createRoutineSchema,
   updateRoutineSchema,
   createRoutineTriggerSchema,
