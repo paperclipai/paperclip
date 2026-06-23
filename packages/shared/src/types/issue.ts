@@ -73,6 +73,16 @@ export interface IssueAncestor {
   goal: IssueAncestorGoal | null;
 }
 
+export type IssueRootHumanRequesterSource = "ancestor" | "current_issue";
+
+export interface IssueRootHumanRequester {
+  userId: string;
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  source: IssueRootHumanRequesterSource;
+}
+
 export interface IssueLabel {
   id: string;
   companyId: string;

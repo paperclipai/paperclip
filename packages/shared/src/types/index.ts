@@ -382,6 +382,8 @@ export type {
   IssueAncestor,
   IssueAncestorProject,
   IssueAncestorGoal,
+  IssueRootHumanRequester,
+  IssueRootHumanRequesterSource,
   IssueAttachment,
   IssueLabel,
   IssueWatchdog,

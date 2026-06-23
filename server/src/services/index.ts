@@ -25,6 +25,10 @@ export {
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
+export {
+  issueRequesterService,
+  resolveRootHumanRequesterFromIssuePath,
+} from "./issue-requester.js";
 export { issueReferenceService } from "./issue-references.js";
 export { issueRecoveryActionService } from "./issue-recovery-actions.js";
 export { taskWatchdogService } from "./task-watchdogs.js";

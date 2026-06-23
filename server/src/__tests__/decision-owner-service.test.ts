@@ -46,6 +46,7 @@ describeEmbeddedPostgres("decision owner resolution", () => {
     const goalId = randomUUID();
     const rootIssueId = randomUUID();
     const childIssueId = randomUUID();
+    const grandchildIssueId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -78,8 +79,17 @@ describeEmbeddedPostgres("decision owner resolution", () => {
       status: "in_progress",
       priority: "medium",
     });
+    await db.insert(issues).values({
+      id: grandchildIssueId,
+      companyId,
+      goalId,
+      parentId: childIssueId,
+      title: "Agent grandchild issue",
+      status: "in_progress",
+      priority: "medium",
+    });
 
-    return { companyId, rootIssueId, childIssueId };
+    return { companyId, rootIssueId, childIssueId, grandchildIssueId };
   }
 
   async function seedActiveCompanyUser(companyId: string, userId: string, membershipRole = "owner") {
@@ -93,7 +103,7 @@ describeEmbeddedPostgres("decision owner resolution", () => {
   }
 
   it("prefers explicit user, then root human requester, then source comment author", async () => {
-    const { companyId, childIssueId } = await seedIssueTree();
+    const { companyId, childIssueId, grandchildIssueId } = await seedIssueTree();
     const sourceCommentId = randomUUID();
     await seedActiveCompanyUser(companyId, "explicit-user");
     await seedActiveCompanyUser(companyId, "thomas-user");
@@ -120,11 +130,12 @@ describeEmbeddedPostgres("decision owner resolution", () => {
     await expect(resolveDecisionOwnerUserId(db, {
       companyId,
       sourceCommentId,
-      issueIds: [childIssueId],
+      issueIds: [grandchildIssueId],
       currentUserId: "current-user",
     })).resolves.toMatchObject({
       userId: "jonas-user",
       source: "root_human_requester",
+      issueId: expect.any(String),
     });
 
     await expect(resolveDecisionOwnerUserId(db, {
