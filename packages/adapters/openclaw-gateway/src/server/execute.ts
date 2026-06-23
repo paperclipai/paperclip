@@ -14,6 +14,10 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
+import {
+  OPENCLAW_GATEWAY_PROTOCOL_RANGE,
+  OPENCLAW_GATEWAY_PROTOCOL_VERSION,
+} from "./protocol.js";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
 
@@ -86,7 +90,6 @@ type GatewayClientRequestOptions = {
   expectFinal?: boolean;
 };
 
-const PROTOCOL_VERSION = 3;
 const DEFAULT_SCOPES = ["operator.admin"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
@@ -875,8 +878,7 @@ async function autoApproveDevicePairing(params: {
 
     await client.connect(
       () => ({
-        minProtocol: PROTOCOL_VERSION,
-        maxProtocol: PROTOCOL_VERSION,
+        ...OPENCLAW_GATEWAY_PROTOCOL_RANGE,
         client: {
           id: params.clientId,
           version: params.clientVersion,
@@ -1269,8 +1271,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const hello = await client.connect((nonce) => {
         const signedAtMs = Date.now();
         const connectParams: Record<string, unknown> = {
-          minProtocol: PROTOCOL_VERSION,
-          maxProtocol: PROTOCOL_VERSION,
+          ...OPENCLAW_GATEWAY_PROTOCOL_RANGE,
           client: {
             id: clientId,
             version: clientVersion,
@@ -1316,7 +1317,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       await ctx.onLog(
         "stdout",
-        `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
+        `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, OPENCLAW_GATEWAY_PROTOCOL_VERSION)}\n`,
       );
 
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {

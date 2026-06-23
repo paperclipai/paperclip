@@ -6,6 +6,7 @@ import type {
 import { asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
+import { OPENCLAW_GATEWAY_PROTOCOL_RANGE } from "./protocol.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -145,8 +146,7 @@ async function probeGateway(input: {
             id: connectId,
             method: "connect",
             params: {
-              minProtocol: 3,
-              maxProtocol: 3,
+              ...OPENCLAW_GATEWAY_PROTOCOL_RANGE,
               client: {
                 id: "gateway-client",
                 version: "paperclip-probe",
