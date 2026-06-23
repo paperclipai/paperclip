@@ -121,6 +121,7 @@ import {
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
 import { isGateReviewWake } from "./plan-gates.js";
+import { isWakeBlockedByStrictGate } from "./plan-gate-enforcement.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
@@ -10509,6 +10510,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           interaction: true,
         };
       }
+    }
+
+    // Gate A — strict plan enforcement. If the issue is under a strict plan
+    // whose plan-approval gate is not yet approved, suppress all build wakes.
+    // Gate review wakes (architect, code-reviewer, etc.) are always allowed.
+    // Fails-open on error so a DB hiccup never deadlocks an agent.
+    if (issueId && await isWakeBlockedByStrictGate(db, agent.companyId, issueId, reason)) {
+      await writeSkippedRequest("blocked.strict_plan_gate");
+      return null;
     }
 
     if (issueId) {

@@ -743,6 +743,13 @@
       "when": 1780535400000,
       "tag": "0105_plan_supervision_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1780535500000,
+      "tag": "0106_plan_gate_enforcement",
+      "breakpoints": true
     }
   ]
 }

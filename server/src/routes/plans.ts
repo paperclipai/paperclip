@@ -41,21 +41,30 @@ const planTierSchema = z.object({
   childIssueIds: z.array(z.string()).default([]),
 });
 
-const createPlanSchema = z.object({
-  companyId: z.string().uuid(),
-  title: z.string().min(1),
-  overview: z.string().nullish(),
-  tiers: z.array(planTierSchema).optional(),
-  budgetCapCents: z.number().int().nonnegative().nullish(),
-  budgetCapTokens: z.number().int().nonnegative().nullish(),
-  gateProfile: z.enum(["none", "solo", "light", "dev_team"]).optional(),
-  // Declared scope for the Layer 0 triage floor (gate-triage.ts). Optional —
-  // when present, a high-risk path or large file count forces gateProfile up.
-  touchedPaths: z.array(z.string()).optional(),
-  fileCount: z.number().int().nonnegative().optional(),
-  assigneeAgentId: z.string().uuid().nullish(),
-  projectId: z.string().uuid().nullish(),
-});
+const createPlanSchema = z
+  .object({
+    companyId: z.string().uuid(),
+    title: z.string().min(1),
+    overview: z.string().nullish(),
+    tiers: z.array(planTierSchema).optional(),
+    budgetCapCents: z.number().int().nonnegative().nullish(),
+    budgetCapTokens: z.number().int().nonnegative().nullish(),
+    gateProfile: z.enum(["none", "solo", "light", "dev_team"]).optional(),
+    // 'strict' requires a gated gateProfile (light or dev_team); 'soft' is the default.
+    gateEnforcement: z.enum(["soft", "strict"]).optional(),
+    // Declared scope for the Layer 0 triage floor (gate-triage.ts). Optional —
+    // when present, a high-risk path or large file count forces gateProfile up.
+    touchedPaths: z.array(z.string()).optional(),
+    fileCount: z.number().int().nonnegative().optional(),
+    assigneeAgentId: z.string().uuid().nullish(),
+    projectId: z.string().uuid().nullish(),
+  })
+  .refine(
+    (v) =>
+      v.gateEnforcement !== "strict" ||
+      (v.gateProfile !== undefined && v.gateProfile !== "none" && v.gateProfile !== "solo"),
+    { message: "strict gateEnforcement requires a gated gateProfile (light or dev_team)" },
+  );
 
 const listPlansQuerySchema = z.object({
   state: z.string().min(1).optional(),
@@ -116,6 +125,7 @@ export function planRoutes(
       budgetCapCents: body.budgetCapCents ?? null,
       budgetCapTokens: body.budgetCapTokens ?? null,
       gateProfile: body.gateProfile ?? "none",
+      gateEnforcement: body.gateEnforcement ?? "soft",
       touchedPaths: body.touchedPaths ?? null,
       fileCount: body.fileCount ?? null,
       assigneeAgentId: body.assigneeAgentId ?? null,

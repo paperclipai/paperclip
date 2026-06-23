@@ -49,6 +49,10 @@ export interface CreatePlanInput {
   budgetCapCents?: number | null;
   budgetCapTokens?: number | null;
   gateProfile?: PlanGateProfile | null;
+  // 'soft' (default) = gates are advisory; 'strict' = platform hard-blocks wakes
+  // until plan-approval approved, and blocks done-transition until review gates approved.
+  // strict requires a gated profile (not 'none'/'solo') — caller must validate.
+  gateEnforcement?: "soft" | "strict";
   // Declared scope for the Layer 0 triage floor. When the touched paths hit a
   // high-risk surface (auth/payments/migration/secrets/public-api) or exceed the
   // file-count threshold, the persisted gateProfile is forced up to dev_team.
@@ -232,6 +236,7 @@ export function planService(db: Db) {
             touchedPaths: input.touchedPaths,
             fileCount: input.fileCount,
           }),
+          gateEnforcement: input.gateEnforcement ?? "soft",
           createdByUserId: input.createdByUserId ?? null,
           createdByAgentId: input.createdByAgentId ?? null,
         })

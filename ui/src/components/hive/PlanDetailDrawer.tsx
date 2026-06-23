@@ -115,7 +115,17 @@ export function PlanDetailDrawer({ companyId }: PlanDetailDrawerProps) {
           <>
             <SheetHeader>
               <SheetTitle>{plan.issue.title}</SheetTitle>
-              <SheetDescription className="capitalize">State: {state}</SheetDescription>
+              <SheetDescription className="flex items-center gap-2 capitalize">
+                State: {state}
+                {plan.planDetails.gateEnforcement === "strict" && (
+                  <span
+                    title="Hard gates active — implementors cannot start until plan-approval is approved"
+                    className="inline-flex items-center rounded-full border border-amber-400/50 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/40 dark:bg-amber-400/10 dark:text-amber-300"
+                  >
+                    strict gates
+                  </span>
+                )}
+              </SheetDescription>
             </SheetHeader>
 
             <div className="space-y-5 px-4 pb-6">

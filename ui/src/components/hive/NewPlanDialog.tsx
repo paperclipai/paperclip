@@ -46,6 +46,7 @@ export function NewPlanDialog({ open, onOpenChange, companyId }: NewPlanDialogPr
   const [capTokens, setCapTokens] = useState("");
   const [assigneeAgentId, setAssigneeAgentId] = useState<string>("");
   const [gateProtocol, setGateProtocol] = useState(false);
+  const [strictGating, setStrictGating] = useState(false);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId!),
@@ -60,6 +61,7 @@ export function NewPlanDialog({ open, onOpenChange, companyId }: NewPlanDialogPr
     setCapTokens("");
     setAssigneeAgentId("");
     setGateProtocol(false);
+    setStrictGating(false);
     setMode("manual");
   };
 
@@ -93,6 +95,7 @@ export function NewPlanDialog({ open, onOpenChange, companyId }: NewPlanDialogPr
         tiers,
         budgetCapTokens: tokens && Number.isFinite(tokens) ? tokens : null,
         gateProfile: gateProtocol ? "dev_team" : "none",
+        gateEnforcement: gateProtocol && strictGating ? "strict" : "soft",
         assigneeAgentId: mode === "assign" ? assigneeAgentId || null : null,
       });
     },
@@ -237,17 +240,58 @@ export function NewPlanDialog({ open, onOpenChange, companyId }: NewPlanDialogPr
               type="checkbox"
               className="mt-0.5 h-4 w-4 cursor-pointer"
               checked={gateProtocol}
-              onChange={(e) => setGateProtocol(e.target.checked)}
+              onChange={(e) => {
+                setGateProtocol(e.target.checked);
+                if (!e.target.checked) setStrictGating(false);
+              }}
             />
             <span className="space-y-0.5">
               <span className="block text-sm font-medium">Enforce dev-team gate protocol</span>
               <span className="block text-[11px] text-muted-foreground">
-                Advisory. On activate, routes Architect plan-approval plus per-task
-                code-review and wiring-review gates to the designated agents. Nothing is
-                blocked — gates surface as decisions on the board.
+                On activate, routes Architect plan-approval plus per-task code-review and
+                wiring-review gates to the designated agents.
               </span>
             </span>
           </label>
+
+          {gateProtocol && (
+            <div className="ml-1 space-y-1.5 rounded-md border border-border bg-muted/30 p-3">
+              <p className="text-[11px] font-medium text-muted-foreground">Gate enforcement</p>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="radio"
+                  name="gate-enforcement"
+                  value="soft"
+                  className="mt-0.5 h-3.5 w-3.5"
+                  checked={!strictGating}
+                  onChange={() => setStrictGating(false)}
+                />
+                <span className="space-y-0.5">
+                  <span className="block text-xs font-medium">Advisory (soft)</span>
+                  <span className="block text-[10px] text-muted-foreground">
+                    Gates surface on the board — agents are not blocked from starting.
+                  </span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="radio"
+                  name="gate-enforcement"
+                  value="strict"
+                  className="mt-0.5 h-3.5 w-3.5"
+                  checked={strictGating}
+                  onChange={() => setStrictGating(true)}
+                />
+                <span className="space-y-0.5">
+                  <span className="block text-xs font-medium">Hard gates (strict)</span>
+                  <span className="block text-[10px] text-muted-foreground">
+                    Implementors cannot start until plan-approval is approved. Tasks cannot
+                    be marked done until review gates pass.
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
         </div>
 
         <DialogFooter>

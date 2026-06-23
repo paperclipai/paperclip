@@ -1,5 +1,7 @@
 import { Router, type Request } from "express";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { issues as issuesTable, planDetails as planDetailsTable } from "@paperclipai/db";
 import {
   GATE_APPROVAL_TYPES,
   addApprovalCommentSchema,
@@ -27,6 +29,7 @@ import {
   REVIEW_GATE_WAKE_REASON,
   buildGateWorkspaceContext,
 } from "../services/plan-gates.js";
+import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -69,6 +72,65 @@ export function approvalRoutes(
     if (decision.allowed) return true;
     res.status(403).json({ error: "Approvals are outside this actor's authorization boundary" });
     return false;
+  }
+
+  // Gate A (strict plan) — after a plan-approval gate is approved, wake the
+  // first-tier assignees that were held by isWakeBlockedByStrictGate. Both the
+  // board-approve and agent-decide handlers call this; it is a no-op for soft plans
+  // and non-plan-approval types. Errors are logged and swallowed — the approval
+  // itself is already committed.
+  async function maybeWakeFirstTierOnStrictPlanApproval(
+    approval: { type: string; companyId: string; payload: Record<string, unknown> },
+    heartbeatSvc: ReturnType<typeof heartbeatService>,
+  ) {
+    if (approval.type !== GATE_APPROVAL_TYPES.planApproval) return;
+    const planRootIssueId =
+      typeof approval.payload.planRootIssueId === "string"
+        ? approval.payload.planRootIssueId
+        : null;
+    if (!planRootIssueId) return;
+
+    try {
+      const [plan] = await db
+        .select({ gateEnforcement: planDetailsTable.gateEnforcement, tiers: planDetailsTable.tiers })
+        .from(planDetailsTable)
+        .where(eq(planDetailsTable.issueId, planRootIssueId));
+
+      if (!plan || plan.gateEnforcement !== "strict") return;
+
+      const tiers = Array.isArray(plan.tiers) ? (plan.tiers as { childIssueIds?: unknown[] }[]) : [];
+      const firstTierChildIds = tiers
+        .flatMap((t) => (Array.isArray(t.childIssueIds) ? t.childIssueIds : []))
+        .filter((id): id is string => typeof id === "string");
+
+      if (firstTierChildIds.length === 0) return;
+
+      const children = await db
+        .select({ id: issuesTable.id, assigneeAgentId: issuesTable.assigneeAgentId, status: issuesTable.status })
+        .from(issuesTable)
+        .where(
+          and(
+            eq(issuesTable.companyId, approval.companyId),
+            inArray(issuesTable.id, firstTierChildIds),
+          ),
+        );
+
+      for (const child of children) {
+        void queueIssueAssignmentWakeup({
+          heartbeat: heartbeatSvc,
+          issue: { id: child.id, assigneeAgentId: child.assigneeAgentId ?? null, status: child.status },
+          reason: "strict_plan_approval_approved",
+          mutation: "strict_plan_gate_unblocked",
+          contextSource: "plan.strict_gate_approved",
+          requestedByActorType: "system",
+        });
+      }
+    } catch (err) {
+      logger.warn(
+        { err, planRootIssueId, companyId: approval.companyId },
+        "maybeWakeFirstTierOnStrictPlanApproval failed — first-tier wakes skipped",
+      );
+    }
   }
 
   router.get("/companies/:companyId/approvals", async (req, res) => {
@@ -282,6 +344,8 @@ export function approvalRoutes(
           });
         }
       }
+      // Gate A: strict plan — wake held first-tier assignees now that plan-approval passed.
+      await maybeWakeFirstTierOnStrictPlanApproval(approval, heartbeat);
     }
 
     res.json(redactApprovalPayload(approval));
@@ -452,6 +516,11 @@ export function approvalRoutes(
             logger.warn({ err, issueId: issue.id, agentId: target.agentId }, "failed to wake completeness-critic"),
           );
       }
+    }
+    // Gate A: strict plan — if architect just approved the plan-approval gate,
+    // wake the first-tier implementors that were held by the strict gate.
+    if (decision === "approved") {
+      await maybeWakeFirstTierOnStrictPlanApproval(updated, heartbeat);
     }
 
     res.json(redactApprovalPayload(updated));

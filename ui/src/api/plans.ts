@@ -20,6 +20,7 @@ export interface PlanDetails {
   budgetCapCents: number | null;
   budgetCapTokens: number | null;
   gateProfile: "none" | "dev_team";
+  gateEnforcement: "soft" | "strict";
   activatedAt: string | null;
   stoppedAt: string | null;
   stopReason: string | null;
@@ -70,7 +71,8 @@ export interface CreatePlanInput {
   tiers?: PlanTier[];
   budgetCapCents?: number | null;
   budgetCapTokens?: number | null;
-  gateProfile?: "none" | "dev_team";
+  gateProfile?: "none" | "dev_team" | "light";
+  gateEnforcement?: "soft" | "strict";
   assigneeAgentId?: string | null;
 }
 
