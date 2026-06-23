@@ -2860,7 +2860,7 @@ async function blockedInboxIssueConditions(
   if (filters?.status) {
     const statuses = filters.status.split(",").map((status) => status.trim()).filter(Boolean);
     if (statuses.length > 0) {
-      conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]!) : inArray(issues.status, statuses));
+      conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
     }
   }
   if (filters?.assigneeAgentId) conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
@@ -3791,8 +3791,9 @@ export function issueService(db: Db) {
         `);
       }
       if (filters?.status) {
-        const statuses = filters.status.split(",").map((s) => s.trim());
-        conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
+        const statuses = filters.status.split(",").map((status) => status.trim()).filter(Boolean);
+        if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]));
+        else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
       }
       if (filters?.assigneeAgentId) {
         conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
@@ -3972,7 +3973,7 @@ export function issueService(db: Db) {
       const conditions = [eq(issues.companyId, companyId), isNull(issues.hiddenAt)];
       if (filters?.status) {
         const statuses = filters.status.split(",").map((status) => status.trim()).filter(Boolean);
-        if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]!));
+        if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]));
         else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
       }
       if (filters?.assigneeAgentId) conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));

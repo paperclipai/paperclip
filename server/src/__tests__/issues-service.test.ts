@@ -946,6 +946,46 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
   });
 
+  it("treats empty and whitespace-only status filters as no filter (GRA-4140)", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Touched issue A",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+      },
+    ]);
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId: (await db.select().from(issues).where(eq(issues.companyId, companyId)).limit(1))[0]!.id,
+        authorUserId: "other-user",
+        body: "Unread update.",
+      },
+    ]);
+
+    // Empty string, whitespace-only, and "," must not crash and must not filter to zero rows.
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, "")).resolves.toBe(1);
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, "  ")).resolves.toBe(1);
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, ",")).resolves.toBe(1);
+
+    // list() must also tolerate empty/whitespace status without throwing or dropping rows.
+    await expect(svc.list(companyId, { status: "" })).resolves.toHaveLength(1);
+    await expect(svc.list(companyId, { status: "  " })).resolves.toHaveLength(1);
+    await expect(svc.list(companyId, { status: "," })).resolves.toHaveLength(1);
+  });
+
   it("hides archived inbox issues until new external activity arrives", async () => {
     const companyId = randomUUID();
     const userId = "user-1";
