@@ -1,12 +1,14 @@
-import {
-  buildSandboxNpmInstallCommand,
-  type AdapterModelProfileDefinition,
+import type {
+  AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
 
 export const type = "gemini_local";
 export const label = "Gemini CLI (local)";
 
-export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@google/gemini-cli");
+// The agy CLI is distributed as a native binary from https://antigravity.google/docs/cli-install
+// and is not available as an npm package. Sandbox install is intentionally disabled — users
+// must pre-install agy on their sandbox image or install it manually following the official docs.
+export const SANDBOX_INSTALL_COMMAND = "";
 
 export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
@@ -67,4 +69,5 @@ Notes:
 - Sessions resume with --conversation when stored session cwd matches the current cwd.
 - Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
 - Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY or local Gemini CLI login.
+- The agy CLI must be installed manually on the host or sandbox image. It is a native binary (not an npm package); install it by following https://antigravity.google/docs/cli-install.
 `;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseGeminiJsonl,
   isGeminiSessionUnrecoverableError,
+  isGeminiTransientNetworkError,
   describeGeminiFailure,
   detectGeminiAuthRequired,
   detectGeminiQuotaExhausted,
@@ -126,15 +127,42 @@ describe("parseGeminiJsonl", () => {
 });
 
 describe("isGeminiSessionUnrecoverableError", () => {
-  it("detects unknown session errors", () => {
-    expect(isGeminiSessionUnrecoverableError("unknown session abc", "")).toBe(true);
+  it("matches 'unknown session'", () => {
+    expect(isGeminiSessionUnrecoverableError("", "Error: unknown session 'abc-123'")).toBe(true);
+  });
+
+  it("matches 'session ... not found'", () => {
+    expect(isGeminiSessionUnrecoverableError("", "Resumed session abc-123 not found on disk")).toBe(true);
     expect(isGeminiSessionUnrecoverableError("", "session not found")).toBe(true);
+  });
+
+  it("matches 'cannot resume' and 'failed to resume'", () => {
     expect(isGeminiSessionUnrecoverableError("cannot resume session", "")).toBe(true);
     expect(isGeminiSessionUnrecoverableError("failed to resume", "")).toBe(true);
   });
 
-  it("returns false for normal output", () => {
+  it("matches 'exceeds the maximum number of tokens' (compression overflow)", () => {
+    const stderr =
+      '_ApiError: {"error":{"code":400,"message":"The input token count exceeds the maximum number of tokens allowed 1048576","status":"INVALID_ARGUMENT"}} at ChatCompressionService.compress';
+    expect(isGeminiSessionUnrecoverableError("", stderr)).toBe(true);
+  });
+
+  it("matches 'input token count exceeds'", () => {
+    expect(isGeminiSessionUnrecoverableError("", "input token count exceeds maximum")).toBe(true);
+  });
+
+  it("does not match unrelated stderr", () => {
+    expect(isGeminiSessionUnrecoverableError("", "Some other error")).toBe(false);
     expect(isGeminiSessionUnrecoverableError("hello world", "success")).toBe(false);
+  });
+
+  it("does not match transient network errors (those go to isGeminiTransientNetworkError)", () => {
+    expect(
+      isGeminiSessionUnrecoverableError(
+        "",
+        "_GaxiosError: getaddrinfo ENOTFOUND oauth2.googleapis.com",
+      ),
+    ).toBe(false);
   });
 });
 
@@ -173,8 +201,6 @@ describe("detectGeminiQuotaExhausted", () => {
     expect(detectGeminiQuotaExhausted({ parsed: null, stdout: "429 too many requests", stderr: "" }).exhausted).toBe(true);
   });
 
-
-
   it("returns false for normal output", () => {
     expect(detectGeminiQuotaExhausted({ parsed: null, stdout: "hello", stderr: "" }).exhausted).toBe(false);
   });
@@ -196,5 +222,43 @@ describe("isGeminiTurnLimitResult", () => {
     expect(isGeminiTurnLimitResult({ status: "success" })).toBe(false);
     expect(isGeminiTurnLimitResult(null, 0)).toBe(false);
     expect(isGeminiTurnLimitResult(null)).toBe(false);
+  });
+});
+
+describe("isGeminiTransientNetworkError", () => {
+  it("matches DNS failure on oauth2.googleapis.com", () => {
+    const stderr =
+      "_GaxiosError: request to https://oauth2.googleapis.com/token failed, reason: getaddrinfo ENOTFOUND oauth2.googleapis.com";
+    expect(isGeminiTransientNetworkError("", stderr)).toBe(true);
+  });
+
+  it("matches EAI_AGAIN on any googleapis.com host", () => {
+    expect(
+      isGeminiTransientNetworkError("", "Error: getaddrinfo EAI_AGAIN sts.googleapis.com"),
+    ).toBe(true);
+  });
+
+  it("matches _UserRefreshClient ENOTFOUND", () => {
+    const stderr =
+      "at _UserRefreshClient.refreshTokenNoCache (.../google-auth-library/...)\n" +
+      "  caused by: ENOTFOUND oauth2.googleapis.com";
+    expect(isGeminiTransientNetworkError("", stderr)).toBe(true);
+  });
+
+  it("matches _GaxiosError ENOTFOUND on sts.googleapis.com", () => {
+    expect(
+      isGeminiTransientNetworkError("", "_GaxiosError: ENOTFOUND sts.googleapis.com"),
+    ).toBe(true);
+  });
+
+  it("does not match unrelated stderr", () => {
+    expect(isGeminiTransientNetworkError("", "Some other error")).toBe(false);
+    expect(isGeminiTransientNetworkError("hello", "")).toBe(false);
+  });
+
+  it("does not match unknown-session errors (those go to isGeminiSessionUnrecoverableError)", () => {
+    expect(
+      isGeminiTransientNetworkError("", "Error: unknown session 'abc-123'"),
+    ).toBe(false);
   });
 });
