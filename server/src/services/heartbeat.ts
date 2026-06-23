@@ -1419,8 +1419,12 @@ const heartbeatRunListColumns = {
   updatedAt: heartbeatRuns.updatedAt,
 } as const;
 
+function heartbeatRunContextIssueIdSql() {
+  return sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`;
+}
+
 const heartbeatRunListContextColumns = {
-  contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("contextIssueId"),
+  contextIssueId: heartbeatRunContextIssueIdSql().as("contextIssueId"),
   contextTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`.as("contextTaskId"),
   contextTaskKey: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`.as("contextTaskKey"),
   contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
@@ -1530,7 +1534,7 @@ const heartbeatRunIssueSummaryColumns = {
   lastOutputSeq: heartbeatRuns.lastOutputSeq,
   lastOutputStream: heartbeatRuns.lastOutputStream,
   lastOutputBytes: heartbeatRuns.lastOutputBytes,
-  issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+  issueId: heartbeatRunContextIssueIdSql().as("issueId"),
 } as const;
 
 function appendExcerpt(prev: string, chunk: string) {
@@ -1979,13 +1983,25 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   return Math.max(0, Math.round(costUsd * 100));
 }
 
+export function resolveIssueIdFromContext(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  return readNonEmptyString(contextSnapshot?.issueId) ?? readNonEmptyString(contextSnapshot?.taskId);
+}
+
+export function resolveLedgerIssueIdFromContext(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  return resolveIssueIdFromContext(contextSnapshot);
+}
+
 async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
   run: typeof heartbeatRuns.$inferSelect,
 ) {
   const context = parseObject(run.contextSnapshot);
-  const contextIssueId = readNonEmptyString(context.issueId);
+  const contextIssueId = resolveLedgerIssueIdFromContext(context);
   const contextProjectId = readNonEmptyString(context.projectId);
 
   if (!contextIssueId) {
@@ -2265,11 +2281,9 @@ function deriveTaskKey(
 /**
  * Extended task key derivation that falls back to a stable synthetic key
  * for timer/heartbeat wakes. The synthetic key keeps the
- * `agentTaskSessions` row addressable across heartbeats so the row can be
- * cleared and re-keyed deterministically; it does NOT mean the prior
- * session is resumed. Since PF-4 (#4838), `heartbeat_timer` wakes always
- * go through `shouldResetTaskSessionForWake` and start a fresh session —
- * see `describeSessionResetReason` for the paired log message.
+ * `agentTaskSessions` row addressable across heartbeats so generic timer
+ * wakes can reuse adapter-native prompt caches instead of starting every
+ * interval from a fresh session.
  *
  * The synthetic key is only used when:
  * - No explicit task/issue key exists in the context
@@ -2283,7 +2297,8 @@ export function deriveTaskKeyWithHeartbeatFallback(
   if (explicit) return explicit;
 
   const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
-  if (wakeSource === "timer") return HEARTBEAT_TASK_KEY;
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  if (wakeSource === "timer" || wakeReason === "heartbeat_timer") return HEARTBEAT_TASK_KEY;
 
   return null;
 }
@@ -2294,20 +2309,17 @@ export function shouldResetTaskSessionForWake(
   if (contextSnapshot?.forceFreshSession === true) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  const hasExplicitTaskContext = Boolean(deriveTaskKey(contextSnapshot, null));
   if (
     wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
-    wakeReason === "execution_changes_requested" ||
-    // PF-4: timer-driven wakes are exploratory ("any new work?"). They do not
-    // carry meaningful continuation state, so reusing the prior task session
-    // for repeated timer wakes accumulates low-value context and pushes the
-    // session toward the 64k compaction threshold (observed in CEO run
-    // 292a5fd1, where timer wakes repeatedly bloated a long-lived manager
-    // session). Reset on every timer wake so each interval starts fresh.
-    wakeReason === "heartbeat_timer"
+    wakeReason === "execution_changes_requested"
   ) {
-    return true;
+    // The first run for a task still starts fresh because no task session row
+    // exists yet. Repeated assignment/review wakes for the same issue should
+    // not discard a valid saved session solely because of the wake reason.
+    return !hasExplicitTaskContext;
   }
   return false;
 }
@@ -2407,13 +2419,13 @@ export function describeSessionResetReason(
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
-  if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
-  if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
-  if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
-  // PF-4: paired with shouldResetTaskSessionForWake — keep the reason wording
-  // explicit so run logs make session reuse/reset behavior legible.
-  if (wakeReason === "heartbeat_timer") return "wake reason is heartbeat_timer (timer-driven wake starts fresh)";
+  const hasExplicitTaskContext = Boolean(deriveTaskKey(contextSnapshot, null));
+  if (!hasExplicitTaskContext) {
+    if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+    if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
+    if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
+    if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
+  }
   return null;
 }
 
@@ -2772,7 +2784,7 @@ export async function buildPaperclipWakePayload(input: {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
-  const issueId = readNonEmptyString(input.contextSnapshot.issueId);
+  const issueId = resolveIssueIdFromContext(input.contextSnapshot);
   const continuationSummary = input.continuationSummary ?? null;
   const issueSummary =
     input.issueSummary ??
@@ -4587,7 +4599,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     previousSessionParams: Record<string, unknown> | null,
     opts?: { useProjectWorkspace?: boolean | null },
   ): Promise<ResolvedWorkspaceForRun> {
-    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const issueId = resolveIssueIdFromContext(context);
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
     const issueProjectRef = issueId
@@ -4990,7 +5002,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         error: run.error ?? null,
         errorCode: run.errorCode ?? null,
         issueId: typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
-          ? (run.contextSnapshot as Record<string, unknown>).issueId ?? null
+          ? resolveIssueIdFromContext(run.contextSnapshot as Record<string, unknown>)
           : null,
         startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
         finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
@@ -5040,7 +5052,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (livenessState !== "plan_only" && livenessState !== "empty_response") return;
 
     const context = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(context.issueId);
+    const issueId = resolveIssueIdFromContext(context);
     if (!issueId) return;
 
     const [issue, agent] = await Promise.all([
@@ -5222,7 +5234,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function handleSuccessfulRunHandoff(run: typeof heartbeatRuns.$inferSelect, agent: typeof agents.$inferSelect) {
     if (run.status !== "succeeded") return;
     const context = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const issueId = resolveIssueIdFromContext(context);
     if (!issueId) return;
 
     const issue = await db
@@ -5597,7 +5609,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueId = resolveIssueIdFromContext(contextSnapshot);
     if (!issueId) return null;
     try {
       return await refreshIssueContinuationSummary({
@@ -5789,7 +5801,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueId = resolveIssueIdFromContext(contextSnapshot);
     if (!issueId) {
       if (run.issueCommentStatus !== "not_applicable") {
         await patchRunIssueCommentStatus(run.id, {
@@ -5892,7 +5904,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueId = resolveIssueIdFromContext(contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({
@@ -6022,7 +6034,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const { run, agent, contextSnapshot } = input;
     const retryReason =
       input.retryReason ?? readNonEmptyString(contextSnapshot.retryReason) ?? run.scheduledRetryReason ?? null;
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueId = resolveIssueIdFromContext(contextSnapshot);
     const projectId = readNonEmptyString(contextSnapshot.projectId);
 
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
@@ -6428,7 +6440,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
         const contextSnapshot = parseObject(run.contextSnapshot);
-        const issueId = readNonEmptyString(contextSnapshot.issueId);
+        const issueId = resolveIssueIdFromContext(contextSnapshot);
         await appendRunEvent(run, await nextRunEventSeq(run.id), {
           eventType: "lifecycle",
           stream: "system",
@@ -6462,7 +6474,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : baseSchedule;
 
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueId = resolveIssueIdFromContext(contextSnapshot);
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
       const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
       if (!gate.allowed) {
@@ -7019,7 +7031,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         heartbeat.skipTimerWhenNoActionableWork ??
           heartbeat.requireActionableTimerWork ??
           heartbeat.issueOnlyTimer,
-        false,
+        true,
       ),
       maxDailyRuns: normalizeOptionalNonNegativeInteger(
         heartbeat.maxDailyRuns ?? heartbeat.dailyRunLimit ?? heartbeat.dailyRunCap ?? heartbeat.maxRunsPerDay,
@@ -7150,21 +7162,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function hasActionableTimerWork(agent: typeof agents.$inferSelect) {
-    const row = await db
-      .select({ id: issues.id })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, agent.companyId),
-          eq(issues.assigneeAgentId, agent.id),
-          isNull(issues.assigneeUserId),
-          isNull(issues.hiddenAt),
-          inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
-        ),
-      )
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    return Boolean(row);
+    const batchSize = 50;
+    for (let offset = 0; ; offset += batchSize) {
+      const candidateRows = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, agent.companyId),
+            eq(issues.assigneeAgentId, agent.id),
+            isNull(issues.assigneeUserId),
+            isNull(issues.hiddenAt),
+            inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
+          ),
+        )
+        .orderBy(asc(issues.updatedAt), asc(issues.id))
+        .limit(batchSize)
+        .offset(offset);
+      if (candidateRows.length === 0) return false;
+
+      const readinessByIssueId = await issuesSvc.listDependencyReadiness(
+        agent.companyId,
+        candidateRows.map((row) => row.id),
+      );
+      if (candidateRows.some((row) => readinessByIssueId.get(row.id)?.isDependencyReady ?? true)) {
+        return true;
+      }
+      if (candidateRows.length < batchSize) return false;
+    }
   }
 
   async function markTimerHeartbeatChecked(agentId: string, source: WakeupOptions["source"]) {
@@ -7247,7 +7272,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
-      issueId: readNonEmptyString(context.issueId),
+      issueId: resolveIssueIdFromContext(context),
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
@@ -7265,7 +7290,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
-    const issueId = readNonEmptyString(context.issueId);
+    const issueId = resolveIssueIdFromContext(context);
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
@@ -7754,7 +7779,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     resultJson: Record<string, unknown> | null | undefined,
   ): Promise<RunLivenessClassificationInput> {
     const context = parseObject(run.contextSnapshot);
-    const contextIssueId = readNonEmptyString(context.issueId);
+    const contextIssueId = resolveIssueIdFromContext(context);
     const continuationAttempt = asNumber(context.continuationAttempt, run.continuationAttempt ?? 0);
 
     const issue = contextIssueId
@@ -8078,7 +8103,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
-    return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    return resolveIssueIdFromContext(context);
   }
 
   function issueIdFromWakePayload(payload: unknown) {
@@ -8293,7 +8318,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
-    const issueId = readNonEmptyString(context.issueId);
+    const issueId = resolveIssueIdFromContext(context);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)

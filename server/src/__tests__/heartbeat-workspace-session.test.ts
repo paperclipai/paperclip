@@ -21,6 +21,8 @@ import {
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveIssueIdFromContext,
+  resolveLedgerIssueIdFromContext,
   resolveNextSessionState,
   requiresPushCapabilityPreflight,
   resolveWorkspaceAfterLowTrustPreflight,
@@ -884,24 +886,61 @@ describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {
 });
 
 describe("shouldResetTaskSessionForWake", () => {
-  it("resets session context on assignment wake", () => {
+  it("resets session context on assignment wake without task context", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
   });
 
-  it("resets session context on execution review wakes", () => {
+  it("preserves session context on assignment wake when issue-scoped", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "issue_assigned",
+        issueId: "issue-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("resets session context on execution review wakes without task context", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_review_requested" })).toBe(true);
   });
 
-  it("resets session context on execution approval wakes", () => {
+  it("resets session context on execution approval wakes without task context", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_approval_requested" })).toBe(true);
   });
 
-  it("resets session context on execution changes-requested wakes", () => {
+  it("resets session context on execution changes-requested wakes without task context", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(true);
+  });
+
+  it("preserves session context on issue-scoped execution stage wakes", () => {
+    for (const wakeReason of [
+      "execution_review_requested",
+      "execution_approval_requested",
+      "execution_changes_requested",
+    ] as const) {
+      expect(shouldResetTaskSessionForWake({ wakeReason, taskId: "issue-1" })).toBe(false);
+    }
   });
 
   it("preserves session context on timer heartbeats", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
+  });
+
+  it("preserves session context on issue-scoped heartbeat timer wakes", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "heartbeat_timer",
+        issueId: "issue-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("preserves session context on taskId-only issue-scoped heartbeat timer wakes", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "heartbeat_timer",
+        taskId: "issue-1",
+      }),
+    ).toBe(false);
   });
 
   it("preserves session context on manual on-demand invokes by default", () => {
@@ -1124,6 +1163,24 @@ describe("normalizeSessionParams", () => {
   });
 });
 
+describe("resolveIssueIdFromContext", () => {
+  it("uses issueId when present", () => {
+    expect(resolveIssueIdFromContext({ issueId: "issue-1", taskId: "task-1" })).toBe("issue-1");
+  });
+
+  it("falls back to taskId for issue-scoped run contexts", () => {
+    expect(resolveIssueIdFromContext({ taskId: "issue-1" })).toBe("issue-1");
+  });
+
+  it("returns null when no issue-like context is present", () => {
+    expect(resolveIssueIdFromContext({ wakeReason: "heartbeat_timer" })).toBeNull();
+  });
+
+  it("keeps the legacy ledger helper behavior aligned", () => {
+    expect(resolveLedgerIssueIdFromContext({ taskId: "issue-1" })).toBe("issue-1");
+  });
+});
+
 describe("deriveTaskKeyWithHeartbeatFallback", () => {
   it("returns explicit taskKey when present", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({ taskKey: "issue-123" }, null)).toBe("issue-123");
@@ -1135,6 +1192,10 @@ describe("deriveTaskKeyWithHeartbeatFallback", () => {
 
   it("returns __heartbeat__ for timer wakes with no explicit key", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({ wakeSource: "timer" }, null)).toBe("__heartbeat__");
+  });
+
+  it("returns __heartbeat__ for heartbeat_timer wakes with no explicit key", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({ wakeReason: "heartbeat_timer" }, null)).toBe("__heartbeat__");
   });
 
   it("prefers explicit key over heartbeat fallback even on timer wakes", () => {

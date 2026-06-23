@@ -12,6 +12,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
@@ -393,10 +394,175 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 
-  it("runs generic timer wakes by default for proactive agents without assigned issue work", async () => {
+  it("skips generic timer wakes when assigned todo work is blocked by dependencies", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocking issue",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked assigned work",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const [wakeup] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const runRows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.timer.no_actionable_work",
+    });
+    expect(wakeup?.payload).toMatchObject({
+      heartbeatSkip: {
+        reason: expect.stringContaining("No assigned todo or in_progress issue"),
+      },
+    });
+    expect(runRows).toHaveLength(0);
+  });
+
+  it("allows generic timer wakes when ready work appears after blocked dependency batches", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const baseTime = new Date("2026-06-21T00:00:00.000Z");
+    const issueRows: Array<typeof issues.$inferInsert> = [];
+    const relationRows: Array<typeof issueRelations.$inferInsert> = [];
+
+    for (let index = 0; index < 50; index += 1) {
+      const blockerId = randomUUID();
+      const blockedIssueId = randomUUID();
+      issueRows.push(
+        {
+          id: blockerId,
+          companyId,
+          title: `Blocking issue ${index}`,
+          status: "todo",
+          priority: "high",
+          updatedAt: new Date(baseTime.getTime() + index),
+        },
+        {
+          id: blockedIssueId,
+          companyId,
+          title: `Blocked assigned work ${index}`,
+          status: "todo",
+          priority: "high",
+          assigneeAgentId: agentId,
+          updatedAt: new Date(baseTime.getTime() + index),
+        },
+      );
+      relationRows.push({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      });
+    }
+
+    issueRows.push({
+      id: randomUUID(),
+      companyId,
+      title: "Ready assigned work after blocked sample",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      updatedAt: new Date(baseTime.getTime() + 10_000),
+    });
+    await db.insert(issues).values(issueRows);
+    await db.insert(issueRelations).values(relationRows);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).not.toBeNull();
+    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it("skips generic timer wakes by default when the agent has no assigned issue work", async () => {
     const { agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
         enabled: true,
+      },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const [wakeup] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const runRows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.timer.no_actionable_work",
+    });
+    expect(wakeup?.payload).toMatchObject({
+      heartbeatSkip: {
+        reason: expect.stringContaining("No assigned todo or in_progress issue"),
+      },
+    });
+    expect(runRows).toHaveLength(0);
+  });
+
+  it("allows generic timer wakes without assigned issue work when no-work skipping is disabled", async () => {
+    const { agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: false,
       },
     });
 
