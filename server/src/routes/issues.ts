@@ -60,6 +60,8 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type IssuePendingApprovalSummary,
+  type IssuePendingInteractionSummary,
   type IssueRelationIssueSummary,
   type IssueWatchdogDiscoveryKind,
   type SourceTrustMetadata,
@@ -3376,6 +3378,8 @@ export function issueRoutes(
       successfulRunHandoffStates,
       scheduledRetry,
       activeRecoveryAction,
+      issueInteractions,
+      issueApprovals,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -3388,7 +3392,33 @@ export function issueRoutes(
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
       svc.getCurrentScheduledRetry(issue.id),
       recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+      issueThreadInteractionsSvc.listForIssue(issue.id),
+      issueApprovalsSvc.listApprovalsForIssue(issue.id),
     ]);
+    // Project pending structured waits onto the issue-detail payload so a
+    // consumer reading only this response can detect them without a second
+    // call to `/issues/:id/interactions`. Previously these fields were absent
+    // (read as null), which let consumers misread "no pending wait". Superseded
+    // request_confirmations are expired synchronously on comment-post, so the
+    // stored `pending` status is trustworthy here.
+    const pendingInteractions: IssuePendingInteractionSummary[] = issueInteractions
+      .filter((interaction) => interaction.status === "pending")
+      .map((interaction) => ({
+        id: interaction.id,
+        kind: interaction.kind,
+        status: interaction.status,
+        continuationPolicy: interaction.continuationPolicy,
+        title: interaction.title ?? null,
+        createdAt: interaction.createdAt,
+      }));
+    const pendingApprovals: IssuePendingApprovalSummary[] = issueApprovals
+      .filter((approval) => approval.status === "pending")
+      .map((approval) => ({
+        id: approval.id,
+        type: approval.type as IssuePendingApprovalSummary["type"],
+        status: approval.status as IssuePendingApprovalSummary["status"],
+        createdAt: approval.createdAt,
+      }));
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
       issue.companyId,
@@ -3430,6 +3460,10 @@ export function issueRoutes(
       mentionedProjects,
       currentExecutionWorkspace,
       workProducts,
+      pendingInteractions,
+      pendingApprovals,
+      pendingInteractionCount: pendingInteractions.length,
+      pendingApprovalCount: pendingApprovals.length,
     });
   });
 
