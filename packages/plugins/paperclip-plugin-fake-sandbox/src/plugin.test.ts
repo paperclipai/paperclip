@@ -58,8 +58,8 @@ describe("fake sandbox provider plugin", () => {
     const executed = await harness.execute({
       ...base,
       lease,
-      command: "sh",
-      args: ["-lc", "printf fake-plugin-ok"],
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('fake-plugin-ok')"],
       cwd: realized.cwd,
       timeoutMs: 10_000,
     });
@@ -115,8 +115,8 @@ describe("fake sandbox provider plugin", () => {
       const executed = await harness.execute({
         ...base,
         lease,
-        command: "sh",
-        args: ["-lc", "test -z \"${PAPERCLIP_FAKE_PLUGIN_HOST_SECRET+x}\" && printf \"$EXPLICIT_ONLY\""],
+        command: process.execPath,
+        args: ["-e", "if (process.env.PAPERCLIP_FAKE_PLUGIN_HOST_SECRET === undefined) process.stdout.write(process.env.EXPLICIT_ONLY || '')"],
         cwd: realized.cwd,
         env: { EXPLICIT_ONLY: "visible" },
         timeoutMs: 10_000,
@@ -169,8 +169,8 @@ describe("fake sandbox provider plugin", () => {
     const executed = await harness.execute({
       ...base,
       lease,
-      command: "sh",
-      args: ["-lc", "printf %s \"$PATH\""],
+      command: process.execPath,
+      args: ["-e", "process.stdout.write(process.env.PATH || '')"],
       cwd: realized.cwd,
       timeoutMs: 10_000,
     });
@@ -211,8 +211,8 @@ describe("fake sandbox provider plugin", () => {
     const executed = await harness.execute({
       ...base,
       lease,
-      command: "sh",
-      args: ["-lc", "trap '' TERM; while :; do sleep 1; done"],
+      command: process.execPath,
+      args: ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
       cwd: realized.cwd,
       timeoutMs: 100,
     });

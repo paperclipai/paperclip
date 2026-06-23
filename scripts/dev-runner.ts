@@ -553,7 +553,7 @@ async function startServerChild() {
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env, shell: process.platform === "win32" },
+    { stdio: ["ignore", "inherit", "inherit"], env, shell: process.platform === "win32" },
   );
 
   childExitPromise = new Promise((resolve, reject) => {
@@ -633,6 +633,32 @@ async function maybeAutoRestartChild() {
 }
 
 function installDevIntervals() {
+  if (stdin.isTTY) {
+    try {
+      // using the statically imported createInterface from top of the file
+      const rl = createInterface({
+        input: stdin,
+        output: process.stdout,
+        terminal: true
+      });
+      rl.on("SIGINT", () => {
+        console.log(`\n[paperclip] shutting down gracefully...\n`);
+        void shutdown("SIGINT", 0);
+      });
+      rl.on("line", (line) => {
+        if (line.trim().toLowerCase() === "q") {
+          console.log(`\n[paperclip] shutting down gracefully...\n`);
+          void shutdown("SIGINT", 0);
+        }
+      });
+      console.log("[paperclip] press 'q' and ENTER to shutdown gracefully");
+    } catch (err) {
+      console.warn("[paperclip] failed to set raw mode on stdin:", err instanceof Error ? err.message : err);
+    }
+  } else {
+    console.log("[paperclip] non-interactive terminal detected, 'q' shortcut disabled");
+  }
+
   if (mode !== "dev") return;
 
   scanTimer = setInterval(() => {
@@ -652,9 +678,17 @@ function clearDevIntervals() {
     clearInterval(autoRestartTimer);
     autoRestartTimer = null;
   }
+  if (stdin.isTTY) {
+    try {
+      stdin.setRawMode(false);
+      stdin.pause();
+    } catch {
+      // ignore
+    }
+  }
 }
 
-async function shutdown(signal: NodeJS.Signals) {
+async function shutdown(signal: NodeJS.Signals, explicitExitCode?: number) {
   if (shuttingDown) return;
   shuttingDown = true;
   clearDevIntervals();
@@ -667,8 +701,22 @@ async function shutdown(signal: NodeJS.Signals) {
   }
 
   childExitWasExpected = true;
-  child.kill(signal);
+
+  if (process.platform === "win32") {
+    // On Windows, signals are unreliable for child processes.
+    // Forcefully kill the process tree to prevent terminal hanging.
+    console.log("[paperclip] killing process tree...");
+    if (child.pid) {
+      spawn("taskkill", ["/pid", child.pid.toString(), "/f", "/t"], { stdio: "ignore" });
+    }
+  } else {
+    child.kill(signal);
+  }
+
   const exit = await waitForChildExit();
+  if (typeof explicitExitCode === "number") {
+    process.exit(explicitExitCode);
+  }
   if (exit.signal) {
     exitForSignal(exit.signal);
     return;

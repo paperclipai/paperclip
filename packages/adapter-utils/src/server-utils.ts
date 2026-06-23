@@ -1509,10 +1509,38 @@ async function resolveSpawnTarget(
   }
 
   if (/\.(cmd|bat)$/i.test(executable)) {
+    try {
+      const content = await fs.readFile(executable, "utf8");
+      const match = content.match(/(?:"%_prog%"|node)\s+"(?:%~dp0|%dp0%)\\([^"]+\.js)"/i);
+      if (match) {
+        const scriptPath = path.join(path.dirname(executable), match[1]);
+        return {
+          command: process.execPath,
+          args: [scriptPath, ...args],
+        };
+      }
+    } catch {
+      // Ignore read errors
+    }
+  }
+
+  const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
+  if (commandLine.length > 8000) {
+    return {
+      command: "powershell.exe",
+      args: [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `& '${executable.replace(/'/g, "''")}' ${args.map((a) => `'${a.replace(/'/g, "''")}'`).join(" ")}`,
+      ],
+    };
+  }
+
+  if (/\.(cmd|bat)$/i.test(executable)) {
     // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
     // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
     const shell = resolveWindowsCmdShell(env);
-    const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
     return {
       command: shell,
       args: ["/d", "/s", "/c", commandLine],
@@ -2030,7 +2058,7 @@ export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
   linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+    fs.symlink(linkSource, linkTarget, process.platform === "win32" ? "junction" : "dir"),
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
