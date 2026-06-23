@@ -333,7 +333,9 @@ export async function createApp(
       installPlugin: async ({ packageName, version }) => {
         // First-party plugins are bundled in the image (not on npm); install those
         // from their local path. Everything else goes through npm by name+version.
-        const bundled = await findBundledPluginByPackageName(packageName).catch(() => null);
+        // Let bundled-discovery errors propagate (fail closed) instead of silently
+        // npm-installing a possibly-different artifact of the same name.
+        const bundled = await findBundledPluginByPackageName(packageName);
         const discovered = bundled
           ? await loader.installPlugin({ localPath: bundled.localPath })
           : await loader.installPlugin({ packageName, version });
