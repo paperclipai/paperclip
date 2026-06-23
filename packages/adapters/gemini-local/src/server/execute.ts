@@ -548,7 +548,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--print", prompt];
-    if (resumeSessionId) args.push("--resume", resumeSessionId);
+    if (resumeSessionId) args.push("--conversation", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
     args.push("--dangerously-skip-permissions");
     if (sandbox) {

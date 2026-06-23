@@ -59,7 +59,7 @@ export async function testEnvironment(
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
     : null;
-  const runId = `Gemini-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const runId = `gemini-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   if (targetLabel) {
     checks.push({
@@ -101,7 +101,7 @@ export async function testEnvironment(
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
     target,
-    adapterKey: "Gemini",
+    adapterKey: "gemini",
     installCommand: SANDBOX_INSTALL_COMMAND,
     detectCommand: command,
     env,
@@ -150,8 +150,8 @@ export async function testEnvironment(
     checks.push({
       code: "gemini_api_key_missing",
       level: "info",
-      message: "No explicit API key detected. Gemini CLI may still authenticate via `Gemini auth login` (OAuth).",
-      hint: "If the hello probe fails with an auth error, set GEMINI_API_KEY or GOOGLE_API_KEY in adapter env, or run `Gemini auth login`.",
+      message: "No explicit API key detected. Gemini CLI may still authenticate via `agy auth` (OAuth).",
+      hint: "If the hello probe fails with an auth error, set GEMINI_API_KEY or GOOGLE_API_KEY in adapter env, or run `agy auth`.",
     });
   }
 
@@ -181,6 +181,8 @@ export async function testEnvironment(
       // the CLI is reachable and authenticated; model/approvalMode are used at runtime.
       if (sandbox) {
         args.push("--sandbox");
+      } else {
+        args.push("--sandbox=false");
       }
       if (extraArgs.length > 0) args.push(...extraArgs);
 

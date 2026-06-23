@@ -6,7 +6,7 @@ import {
 export const type = "gemini_local";
 export const label = "Gemini CLI (local)";
 
-export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@google/gemini-cli");
+export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("agy");
 
 export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
@@ -39,7 +39,7 @@ Adapter: gemini_local
 
 Use when:
 - You want Paperclip to run the Gemini CLI locally on the host machine
-- You want Gemini chat sessions resumed across heartbeats with --resume
+- You want Gemini chat sessions resumed across heartbeats with --conversation
 - You want Paperclip skills injected locally without polluting the global environment
 
 Don't use when:
@@ -52,8 +52,8 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.
-- sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
-- command (string, optional): defaults to "gemini"
+- sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=false)
+- command (string, optional): defaults to "agy"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
 
@@ -62,9 +62,9 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- Runs use --prompt for non-interactive execution, not stdin.
+- Runs pass the prompt as a positional argument (index 1) for non-interactive execution, not stdin.
 - The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
-- Sessions resume with --resume when stored session cwd matches the current cwd.
+- Sessions resume with --conversation when stored session cwd matches the current cwd.
 - Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
 - Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY or local Gemini CLI login.
 `;
