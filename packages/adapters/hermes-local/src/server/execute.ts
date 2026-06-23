@@ -32,6 +32,10 @@ import {
   buildPaperclipEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
+  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  joinPromptSections,
+  renderPaperclipWakePrompt,
+  stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -74,76 +78,65 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
 
-const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee in a Paperclip-managed company.
+const HERMES_DEFAULT_PROMPT_TEMPLATE = [
+  'You are "{{agent.name}}", an AI agent employee in a Paperclip-managed company.',
+  "",
+  "Paperclip runtime identity:",
+  "- Agent ID: {{agent.id}}",
+  "- Company ID: {{agent.companyId}}",
+  "- Run ID: {{run.id}}",
+  "- API base: {{paperclipApiUrl}}",
+  "",
+  "Paperclip API guidance:",
+  "- Use `curl` from the terminal for Paperclip API calls; browser/web extraction tools may not reach localhost.",
+  "- Use `$PAPERCLIP_API_URL`, `$PAPERCLIP_API_KEY`, and `$PAPERCLIP_RUN_ID`; do not hard-code local ports or copy secrets into comments.",
+  "- Include `-H \"Authorization: Bearer $PAPERCLIP_API_KEY\"` on API requests.",
+  "- Include `-H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\"` on mutating issue requests.",
+  "- For multiline comments or status updates, preserve newlines with `jq --arg` or a heredoc-fed helper rather than hand-escaping JSON.",
+  "",
+  "Safe multiline update pattern:",
+  "```bash",
+  "api=\"${PAPERCLIP_API_URL%/}\"",
+  "case \"$api\" in */api) ;; *) api=\"$api/api\" ;; esac",
+  "",
+  "body=$(cat <<'MD'",
+  "Summary line",
+  "",
+  "- Detail one",
+  "- Detail two",
+  "MD",
+  ")",
+  "jq -n --arg status done --arg comment \"$body\" '{status:$status, comment:$comment}' | \\",
+  "  curl -sS -X PATCH \"$api/issues/{{context.issueId}}\" \\",
+  "    -H \"Authorization: Bearer $PAPERCLIP_API_KEY\" \\",
+  "    -H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\" \\",
+  "    -H \"Content-Type: application/json\" \\",
+  "    --data-binary @-",
+  "```",
+  "",
+  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+].join("\n");
 
-IMPORTANT: Use \`terminal\` tool with \`curl\` for ALL Paperclip API calls (web_extract and browser cannot access localhost).
+function renderConditionalSections(template: string, vars: Record<string, unknown>): string {
+  const isTruthy = (key: string) => {
+    if (key === "noTask") return !vars.taskId;
+    const value = vars[key];
+    if (Array.isArray(value)) return value.length > 0;
+    return Boolean(value);
+  };
+  return template.replace(
+    /\{\{#([a-zA-Z0-9_.-]+)\}\}([\s\S]*?)\{\{\/\1\}\}/g,
+    (_match, key: string, body: string) => (isTruthy(key) ? body : ""),
+  );
+}
 
-Your Paperclip identity:
-  Agent ID: {{agentId}}
-  Company ID: {{companyId}}
-  API Base: {{paperclipApiUrl}}
-
-{{#taskId}}
-## Assigned Task
-
-Issue ID: {{taskId}}
-Title: {{taskTitle}}
-
-{{taskBody}}
-
-## Workflow
-
-0. First, check out the issue so others know you are working on it:
-   \`curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" "{{paperclipApiUrl}}/issues/{{taskId}}/checkout"\`
-1. Work on the task using your tools
-2. When done, mark the issue as completed:
-   \`curl -s -X PATCH -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" "{{paperclipApiUrl}}/issues/{{taskId}}" -H "Content-Type: application/json" -d '{"status":"done"}'\`
-3. Post a completion comment on the issue summarizing what you did:
-   \`curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" "{{paperclipApiUrl}}/issues/{{taskId}}/comments" -H "Content-Type: application/json" -d '{"body":"DONE: <your summary here>"}'\`
-4. If this issue has a parent (check the issue body or comments for references like TRA-XX), post a brief notification on the parent issue so the parent owner knows:
-   \`curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" "{{paperclipApiUrl}}/issues/PARENT_ISSUE_ID/comments" -H "Content-Type: application/json" -d '{"body":"{{agentName}} completed {{taskId}}. Summary: <brief>"}'\`
-{{/taskId}}
-
-{{#commentId}}
-## Comment on This Issue
-
-Someone commented. Read it:
-   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}"\`
-
-You do NOT need to be assigned to this issue to comment on it.
-Address the comment, POST a reply if needed, then continue working.
-{{/commentId}}
-
-{{#noTask}}
-## Heartbeat Wake — Check for Work
-
-First, check your environment for context:
-   \`echo "TASK_ID=$PAPERCLIP_TASK_ID WAKE_REASON=$PAPERCLIP_WAKE_REASON WAKE_COMMENT_ID=$PAPERCLIP_WAKE_COMMENT_ID"\`
-
-1. List ALL open issues assigned to you (todo, backlog, in_progress):
-   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f\\"{i['identifier']} {i['status']:>12} {i['priority']:>6} {i['title']}\\") for i in issues if i['status'] not in ('done','cancelled')]" \`
-
-2. If issues found, pick the highest priority one that is not done/cancelled and work on it:
-   - Read the issue details: \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/ISSUE_ID"\`
-   - Do the work in the project directory: {{projectName}}
-   - When done, mark complete and post a comment (see Workflow steps 2-4 above)
-
-3. If no issues assigned to you, check for unassigned issues:
-   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f\\"{i['identifier']} {i['title']}\\") for i in issues if not i.get('assigneeAgentId')]" \`
-   If you find a relevant issue, assign it to yourself:
-   \`curl -s -X PATCH -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" "{{paperclipApiUrl}}/issues/ISSUE_ID" -H "Content-Type: application/json" -d '{"assigneeAgentId":"{{agentId}}","status":"todo"}'\`
-
-4. If truly nothing to do, report briefly what you checked.
-{{/noTask}}`;
-
-function buildPrompt(
+export function buildPrompt(
   ctx: AdapterExecutionContext,
   config: Record<string, unknown>,
+  options: { resumedSession?: boolean } = {},
 ): string {
-  const template = cfgString(config.promptTemplate) || DEFAULT_PROMPT_TEMPLATE;
+  const template = cfgString(config.promptTemplate) || HERMES_DEFAULT_PROMPT_TEMPLATE;
 
-  // BUG FIX: Read task/comment data from ctx.context (wake context), not ctx.config (adapter config).
-  // ctx.config only contains adapterConfig (model, provider, timeout); ctx.context has the wake payload.
   const context = (ctx as any).context || {};
   const taskId = cfgString(context.taskId) || cfgString(context.issueId) || cfgString(ctx.config?.taskId);
   const taskTitle = cfgString(context.taskTitle) || cfgString(ctx.config?.taskTitle) || "";
@@ -164,12 +157,23 @@ function buildPrompt(
     paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "") + "/api";
   }
 
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    resumedSession: options.resumedSession === true,
+  });
+  const paperclipTaskMarkdown = cfgString(context.paperclipTaskMarkdown)?.trim() || "";
+  const sessionHandoffMarkdown = cfgString(context.paperclipSessionHandoffMarkdown)?.trim() || "";
+  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake) || "";
+
   const vars: Record<string, unknown> = {
     agentId: ctx.agent?.id || "",
     agentName,
     companyId: ctx.agent?.companyId || "",
     companyName,
     runId: ctx.runId || "",
+    agent: ctx.agent || {},
+    company: { id: ctx.agent?.companyId || "", name: companyName },
+    run: { id: ctx.runId || "", source: "on_demand" },
+    context,
     taskId: taskId || "",
     taskTitle,
     taskBody,
@@ -177,31 +181,22 @@ function buildPrompt(
     wakeReason,
     projectName,
     paperclipApiUrl,
+    paperclipWakePrompt: wakePrompt,
+    paperclipTaskMarkdown,
+    taskContext: paperclipTaskMarkdown,
+    paperclipWakeJson: wakePayloadJson,
+    wakePayloadJson,
+    paperclipApiKeyEnv: "PAPERCLIP_API_KEY",
+    paperclipRunIdEnv: "PAPERCLIP_RUN_ID",
   };
 
-  // Handle conditional sections: {{#key}}...{{/key}}
-  let rendered = template;
-
-  // {{#taskId}}...{{/taskId}} — include if task is assigned
-  rendered = rendered.replace(
-    /\{\{#taskId\}\}([\s\S]*?)\{\{\/taskId\}\}/g,
-    taskId ? "$1" : "",
-  );
-
-  // {{#noTask}}...{{/noTask}} — include if no task
-  rendered = rendered.replace(
-    /\{\{#noTask\}\}([\s\S]*?)\{\{\/noTask\}\}/g,
-    taskId ? "" : "$1",
-  );
-
-  // {{#commentId}}...{{/commentId}} — include if comment exists
-  rendered = rendered.replace(
-    /\{\{#commentId\}\}([\s\S]*?)\{\{\/commentId\}\}/g,
-    commentId ? "$1" : "",
-  );
-
-  // Replace remaining {{variable}} placeholders
-  return renderTemplate(rendered, vars);
+  const rendered = renderTemplate(renderConditionalSections(template, vars), vars);
+  return joinPromptSections([
+    wakePrompt,
+    sessionHandoffMarkdown,
+    paperclipTaskMarkdown,
+    rendered,
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +336,9 @@ export async function execute(
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
+  const prevSessionId = cfgString(
+    (ctx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId,
+  );
 
   // ── Resolve provider (defense in depth) ────────────────────────────────
   // Priority chain:
@@ -403,7 +401,7 @@ export async function execute(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
-  let prompt = buildPrompt(ctx, config);
+  let prompt = buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
   if (agentInstructions) {
     prompt = agentInstructions + "\n\n---\n\n" + prompt;
   }
@@ -447,10 +445,6 @@ export async function execute(
   // system is designed for human-attended interactive sessions.
   args.push("--yolo");
 
-  // Session resume
-  const prevSessionId = cfgString(
-    (ctx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId,
-  );
   if (persistSession && prevSessionId) {
     args.push("--resume", prevSessionId);
   }
@@ -460,8 +454,10 @@ export async function execute(
   }
 
   // ── Build environment ──────────────────────────────────────────────────
+  const userEnv = config.env as Record<string, string> | undefined;
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
+    ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
     ...buildPaperclipEnv(ctx.agent),
   };
 
@@ -478,11 +474,8 @@ export async function execute(
   if (envWakeReason) env.PAPERCLIP_WAKE_REASON = envWakeReason;
   const envCommentId = cfgString(ctxContext.commentId) || cfgString(ctxContext.wakeCommentId) || cfgString(ctx.config?.commentId);
   if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
-
-  const userEnv = config.env as Record<string, string> | undefined;
-  if (userEnv && typeof userEnv === "object") {
-    Object.assign(env, userEnv);
-  }
+  const wakePayloadJson = stringifyPaperclipWakePayload(ctxContext.paperclipWake);
+  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
 
   // ── Resolve working directory ──────────────────────────────────────────
   const cwd =
