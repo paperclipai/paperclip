@@ -52,8 +52,22 @@ The agent request is built as:
   - `idempotencyKey` (Paperclip `runId`)
   - `sessionKey` (resolved strategy)
 - optional additions:
-  - all `payloadTemplate` fields merged in
+  - supported OpenClaw v4 agent fields from `payloadTemplate` merged in
   - `agentId` from config if set and not already in template
+
+Top-level `payloadTemplate` keys that are not valid OpenClaw v4 agent params are
+not sent over the gateway. Paperclip run/workspace context is provided through
+the wake message instead of as unknown wire fields.
+
+When the full Paperclip workflow is included, the wake message documents the
+issue-work endpoints and the guarded CEO / agent-creator staffing endpoints:
+list agents, create governed hire requests, directly create agents when allowed,
+and assign/update issues. The agent must first confirm its own role/permissions
+with `GET /api/agents/me`.
+
+Set `includePaperclipWorkflow=false` (or `paperclipWorkflow=false`) to send a
+lean gateway prompt without appending the full Paperclip issue-work procedure.
+This is useful for connectivity smoke checks and direct one-shot OpenClaw tasks.
 
 ## Timeouts
 
