@@ -25,7 +25,7 @@
 
 <br/>
 
-# Paperclip is the app people use to manage AI agents for work.
+# Paperclip is the app people use to manage AI agents for work. 🤖
 
 Open-source orchestration for teams of AI agents.
 
