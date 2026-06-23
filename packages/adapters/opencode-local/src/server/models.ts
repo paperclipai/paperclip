@@ -209,6 +209,17 @@ export async function discoverOpenCodeModelsCached(input: {
   const existing = inFlightDiscovery.get(key);
   if (existing) return existing;
 
+  // Error handling is intentionally fail-open with NO negative caching (XIP-4911,
+  // Greptile Issue 2): on a spawn failure the rejection is shared by all callers
+  // that joined this single flight, and we cache nothing — so the *next* fan-out
+  // wave re-spawns rather than serving a stale error. This is deliberate: a failed
+  // probe is usually transient (auth not yet warm, command briefly missing) and a
+  // negative cache would wrongly suppress a now-recoverable enumeration. The
+  // herd risk this PR targets is already bounded — single-flight collapses an
+  // entire concurrent burst onto ONE spawn even when it fails, and successive
+  // fan-out waves are spaced by the heartbeat scheduler, so failures cannot
+  // tight-loop re-spawn. If failure storms are ever observed in prod, add a short
+  // negative-cache TTL on `key` here.
   const discovery = (async () => {
     const models = await discoverOpenCodeModels({ command, cwd, env });
     discoveryCache.set(key, { expiresAt: Date.now() + MODELS_CACHE_TTL_MS, models });

@@ -23,17 +23,25 @@ import { runningProcesses } from "../adapters/index.ts";
 // herd → host saturation). The gate caps the host-wide number of concurrently
 // running opencode_local runs at PAPERCLIP_OPENCODE_LOCAL_MAX_CONCURRENT.
 
-const mockAdapterExecute = vi.hoisted(() =>
-  vi.fn(async () => ({
-    exitCode: 0,
-    signal: null,
-    timedOut: false,
-    errorMessage: null,
-    summary: "Global-gate test run.",
-    provider: "test",
-    model: "test-model",
-  })),
-);
+const { mockAdapterExecute, adapterControl } = vi.hoisted(() => {
+  // `gate`, when set to a pending promise, blocks every adapter execution until it
+  // resolves — used by the concurrency test to keep claimed runs in `running` for
+  // the duration of a concurrent dispatch. Null (the default) resolves immediately.
+  const adapterControl = { gate: null as Promise<void> | null };
+  const mockAdapterExecute = vi.fn(async () => {
+    if (adapterControl.gate) await adapterControl.gate;
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Global-gate test run.",
+      provider: "test",
+      model: "test-model",
+    };
+  });
+  return { mockAdapterExecute, adapterControl };
+});
 
 vi.mock("../adapters/index.ts", async () => {
   const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
@@ -145,6 +153,12 @@ describeEmbeddedPostgres("heartbeat opencode_local host-global concurrency gate"
 
   afterEach(async () => {
     delete process.env.PAPERCLIP_OPENCODE_LOCAL_MAX_CONCURRENT;
+    adapterControl.gate = null;
+    // Drop any runs left queued by a gate test so settle observes an idle host.
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.status, "queued"));
     // Free the synthetic "running" fixtures so settle can observe an idle host
     // (these rows have no backing process and never finalize on their own).
     await db
@@ -316,5 +330,55 @@ describeEmbeddedPostgres("heartbeat opencode_local host-global concurrency gate"
 
     expect(await runStatus(queuedRunId)).toBe("succeeded");
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("never exceeds the global cap under concurrent cross-agent dispatch (TOCTOU)", async () => {
+    // Regression for XIP-4911: the gate's check (count running) and claim (status
+    // write) are separate awaited DB ops. Before the advisory-lock serialization,
+    // N agents dispatching concurrently all observed the same pre-claim count of 0,
+    // all passed the gate, and all claimed — overshooting the cap by up to N×. This
+    // test starts from an idle host and dispatches every agent concurrently (true
+    // interleaving), which resumeQueuedRuns' sequential loop never exercises.
+    process.env.PAPERCLIP_OPENCODE_LOCAL_MAX_CONCURRENT = "2";
+    const companyId = await seedCompany();
+
+    const agentIds: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const agentId = await seedAgent(companyId, "opencode_local");
+      agentIds.push(agentId);
+      await seedQueuedIssueRun(companyId, agentId);
+    }
+
+    // Block adapter execution so every claimed run stays `running` for the whole
+    // dispatch — otherwise a fast-finishing run frees a slot and masks an over-claim.
+    let release!: () => void;
+    adapterControl.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    try {
+      // Dispatch all agents concurrently — this is the interleaving the race needs.
+      await Promise.all(agentIds.map((id) => heartbeat.startNextQueuedRunForAgent(id)));
+      // Give any racy over-claim a chance to materialize before asserting.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+      const running = runs.filter((run) => run.status === "running").length;
+      const queued = runs.filter((run) => run.status === "queued").length;
+
+      // The cap is 2: exactly two runs claimed, the other three held queued.
+      expect(running).toBeLessThanOrEqual(2);
+      expect(running).toBe(2);
+      expect(queued).toBe(3);
+    } finally {
+      release();
+      adapterControl.gate = null;
+    }
+
+    // Let the two running runs drain so afterEach teardown sees an idle host.
+    await waitForCondition(async () => {
+      const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+      return runs.every((run) => run.status !== "running");
+    });
   });
 });
