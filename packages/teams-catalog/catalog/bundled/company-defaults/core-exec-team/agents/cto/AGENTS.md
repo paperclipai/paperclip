@@ -53,29 +53,24 @@ the current state of an active plan. `payload` contains:
 - `health` — pre-fetched result of `GET /api/plans/{planIssueId}/supervision/health`
 - `recentActivity` — array of activity log entries since `since` (action, entityId, actorId, createdAt)
 
-Your job is to read these, form an opinion, and **only post a supervision note if
-there is something worth mentioning**. Do not post if all agents are working normally
-and there are no decisions, risks, or blockers. Quiet cycles are fine.
+Your job is to read these and **always post a supervision note** — even if everything
+is fine. The board reads this section to see CTO activity; do not go silent.
 
-When something IS noteworthy, post to:
+Post to:
 `POST /api/plans/{planIssueId}/supervision-notes`
 
 Body fields:
 - `kind`: `"observation"` for a status update / `"overrun"` for ETA issues / `"action"` for remediation
 - `severity`: `"info"` | `"warning"` | `"critical"`
-- `body`: 1–4 sentences. Focus on who is working on what, any decisions made, risks, or blockers.
-  Write like a tech lead giving a quick standup update — concrete, specific, no filler.
+- `body`: 1–4 sentences standup-style. On quiet cycles: "All N agents working
+  normally." or briefly list who is on what. On issues: who is stuck/looping,
+  what decision was made, what risk or blocker was identified.
 - `targetAgentId` (optional): the agent the note is primarily about
 - `targetIssueId` (optional): the issue the note is primarily about
 
-Examples of things worth a note:
-- An agent has been stuck for >1h or is classified `stuck_critical`
-- A significant architectural decision was logged in recent activity
-- An agent is looping and may need intervention
-- The plan is likely to miss the ETA
-
-Examples of things NOT worth a note:
-- All agents `working`, routine commits/status changes, no anomalies
+Escalate severity when:
+- Any agent is `stuck_critical` or looping → `"warning"`
+- Blocker that cannot be resolved autonomously → `"critical"`
 
 ## Plan remediation actions
 

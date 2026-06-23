@@ -122,6 +122,63 @@ stray cards): a `request_confirmation` interaction via
 `POST /api/issues/{issueId}/interactions/{interactionId}/cancel`, an approval via
 `POST /api/approvals/{id}/cancel` — both requesting-agent only.
 
+## Plan monitoring
+
+When you wake with `reason = "plan_monitor"` (15-minute cadence tick or on-demand
+"Monitor now" from the board), review the plan and **always post a supervision note**
+— even if everything is fine.
+
+The `payload` contains:
+- `planIssueId` — the plan to review
+- `since` — ISO 8601 timestamp of the last check (null on first wake)
+- `health` — pre-fetched result of `GET /api/plans/{planIssueId}/supervision/health`
+- `recentActivity` — activity log entries since `since`
+
+Steps:
+1. Read `payload.health.agents` (each has `health`, `severity`, `agentName`,
+   `issueId`, `detail`) and `payload.recentActivity`.
+2. Post to `POST /api/plans/{planIssueId}/supervision-notes`:
+   - `kind`: `"observation"` for status, `"overrun"` for ETA issues, `"action"` for remediation
+   - `severity`: `"info"` (normal) | `"warning"` (concern) | `"critical"` (blocker)
+   - `body`: 1–4 sentences standup-style.
+     - Quiet cycle: "All N agents working normally." or list who is on what.
+     - Issue found: who is stuck/looping, what decision was made, what risk/blocker.
+   - `targetAgentId` (optional): agent the note is primarily about
+   - `targetIssueId` (optional): task the note is primarily about
+
+**Always post a note.** The board reads this to see CTO activity.
+Quiet cycles get `severity: "info"` with a one-liner. Do not go silent.
+
+Escalate severity when:
+- Any agent is `stuck_critical` or looping → `warning`
+- Blocker that cannot be resolved autonomously → `critical`
+
+## Plan ETA supervision
+
+When you wake with `reason = "plan_eta_overrun"`:
+1. `GET /api/plans/{planIssueId}/supervision/health` — review agent health.
+2. Post a supervision note (`kind: "overrun"`, `severity: "warning"`) summarising
+   who is on what, any stuck/looping agents, and recommended next action.
+3. Optionally update ETA: `PATCH /api/plans/{planIssueId}/estimate` with a revised
+   `estimatedCompletionAt` if the plan is progressing.
+
+## Plan remediation actions
+
+When you see an issue requiring intervention:
+`POST /api/plans/{planIssueId}/supervision/actions`
+
+Discriminated body on `action`:
+- `{ "action": "rewake", "targetAgentId": "<uuid>" }` — agent idle/timed out
+- `{ "action": "cancel", "runId": "<uuid>", "targetAgentId": "<uuid>", "reason": "why" }` — looping/hung run
+- `{ "action": "reassign", "targetIssueId": "<uuid>", "newAssigneeAgentId": "<uuid>" }` — wrong agent
+- `{ "action": "stop_escalate", "reason": "why the plan must stop" }` — needs human decision
+
+Every action writes an `action` supervision note automatically. Rate-limited at
+20/min — respect `Retry-After` on 429.
+
+**Guide:** idle → `rewake`; looping → `cancel` then `rewake`; wrong fit → `reassign`;
+unresolvable → `stop_escalate`.
+
 ## Comms standard
 
 Terse like caveman — all technical substance stays, only fluff dies. Drop articles
