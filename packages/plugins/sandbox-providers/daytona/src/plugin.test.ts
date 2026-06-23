@@ -40,6 +40,7 @@ function createMockSandbox(overrides: {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     recover: vi.fn().mockResolvedValue(undefined),
+    resize: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
     fs: {
       createFolder: vi.fn().mockResolvedValue(undefined),
@@ -209,7 +210,7 @@ describe("Daytona sandbox provider plugin", () => {
     );
   });
 
-  it("passes configured resources to Daytona for snapshot-based creation", async () => {
+  it("passes configured resources to Daytona for image-based creation", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockCreate.mockResolvedValue(sandbox);
@@ -223,7 +224,7 @@ describe("Daytona sandbox provider plugin", () => {
       executionWorkspaceId: "workspace-1",
       adapterType: "codex_local",
       config: {
-        snapshot: "base-snapshot",
+        image: "node:20",
         cpu: 4,
         memory: 8,
         disk: 20,
@@ -235,10 +236,57 @@ describe("Daytona sandbox provider plugin", () => {
     expect(mockCreate).toHaveBeenCalledTimes(1);
     const [createParams] = mockCreate.mock.calls[0] as [Record<string, unknown>];
     expect(createParams).toMatchObject({
-      snapshot: "base-snapshot",
+      image: "node:20",
       resources: { cpu: 4, memory: 8, disk: 20, gpu: undefined },
     });
-    expect(createParams).not.toHaveProperty("image");
+    expect(createParams).not.toHaveProperty("snapshot");
+    expect(sandbox.resize).not.toHaveBeenCalled();
+  });
+
+  it("rejects resource settings for snapshot-backed creation", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const result = await plugin.definition.onEnvironmentValidateConfig?.({
+      driverKey: "daytona",
+      config: {
+        snapshot: "base-snapshot",
+        cpu: 4,
+        memory: 8,
+        disk: 20,
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      errors: [
+        "Daytona resource settings require image-backed sandbox creation; snapshot/default sandbox creation cannot override CPU, memory, disk, or GPU.",
+      ],
+    });
+  });
+
+  it("rejects resource settings for default snapshot creation before creating a sandbox", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+
+    await expect(plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      agentId: "agent-1",
+      executionWorkspaceId: "workspace-1",
+      adapterType: "codex_local",
+      config: {
+        cpu: 4,
+        memory: 4,
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+    })).rejects.toThrow(
+      "Daytona resource settings require image-backed sandbox creation; snapshot/default sandbox creation cannot override CPU, memory, disk, or GPU.",
+    );
+
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("records requested resources in lease metadata", async () => {
@@ -255,7 +303,7 @@ describe("Daytona sandbox provider plugin", () => {
       executionWorkspaceId: "workspace-1",
       adapterType: "codex_local",
       config: {
-        snapshot: "base-snapshot",
+        image: "daytonaio/sandbox:0.8.0",
         cpu: 4,
         memory: 8,
         timeoutMs: 300000,
@@ -283,7 +331,7 @@ describe("Daytona sandbox provider plugin", () => {
         executionWorkspaceId: "workspace-1",
         adapterType: "codex_local",
         config: {
-          snapshot: "base-snapshot",
+          image: "daytonaio/sandbox:0.8.0",
           cpu,
           timeoutMs: 300000,
           reuseLease: true,
