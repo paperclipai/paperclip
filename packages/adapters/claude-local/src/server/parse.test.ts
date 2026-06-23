@@ -161,6 +161,27 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
+  it("classifies per-session limit errors as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "You've hit your session limit · resets 10:20am (America/Chicago)",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          is_error: true,
+          result: "You've hit your session limit. Resets at 10:20am (America/Chicago).",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "Session limit reached · resets 8:00pm (America/New_York)",
+      }),
+    ).toBe(true);
+  });
+
   it("does not classify login/auth failures as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
@@ -217,5 +238,25 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+
+  it("parses the reset time from a session-limit error", () => {
+    const now = new Date("2026-06-23T14:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your session limit · resets 10:20am (America/Chicago)" },
+      now,
+    );
+    // 10:20am CDT = UTC-5 → 15:20 UTC; the current time is 14:00 UTC, so same day
+    expect(extracted?.toISOString()).toBe("2026-06-23T15:20:00.000Z");
+  });
+
+  it("rolls forward past midnight for a session-limit reset that has already passed today", () => {
+    const now = new Date("2026-06-23T16:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your session limit · resets 10:20am (America/Chicago)" },
+      now,
+    );
+    // 10:20am CDT = 15:20 UTC; current time 16:00 UTC already passed → rolls to next day
+    expect(extracted?.toISOString()).toBe("2026-06-24T15:20:00.000Z");
   });
 });
