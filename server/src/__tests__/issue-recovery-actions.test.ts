@@ -24,7 +24,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
-import { recoveryService } from "../services/recovery/service.js";
+import { SOURCE_SCOPED_RECOVERY_DISPATCH_CAP, recoveryService } from "../services/recovery/service.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -377,6 +377,64 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       strandedRunId: secondLatestRun.id,
       recoveryCause: "stranded_assigned_issue",
     });
+  });
+
+  it("posts a board-visible comment on cap breach and does not re-post on subsequent calls", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const makeRun = () => ({
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed" as const,
+      error: "adapter failed",
+      errorCode: "adapter_failed",
+      contextSnapshot: { retryReason: "issue_continuation_needed" },
+      livenessState: "needs_followup" as const,
+    });
+
+    // Drive attemptCount to SOURCE_SCOPED_RECOVERY_DISPATCH_CAP + 1 to breach the cap
+    for (let i = 0; i <= SOURCE_SCOPED_RECOVERY_DISPATCH_CAP; i++) {
+      await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: makeRun(),
+        comment: "Automatic continuation recovery failed.",
+      });
+    }
+
+    const systemComments = await db
+      .select()
+      .from(issueComments)
+      .where(and(eq(issueComments.issueId, sourceIssue.id), eq(issueComments.authorType, "system")));
+    const capBreachComments = systemComments.filter((c) => (c.body ?? "").includes("source-scoped recovery has been suspended"));
+    expect(capBreachComments).toHaveLength(1);
+    expect(capBreachComments[0]?.body).toContain(`cap: \`${SOURCE_SCOPED_RECOVERY_DISPATCH_CAP}\``);
+
+    // One more call — idempotency: no second cap-breach comment
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: makeRun(),
+      comment: "Automatic continuation recovery failed.",
+    });
+
+    const systemCommentsAfter = await db
+      .select()
+      .from(issueComments)
+      .where(and(eq(issueComments.issueId, sourceIssue.id), eq(issueComments.authorType, "system")));
+    const capBreachCommentsAfter = systemCommentsAfter.filter((c) => (c.body ?? "").includes("source-scoped recovery has been suspended"));
+    expect(capBreachCommentsAfter).toHaveLength(1);
+
+    // Wake was not enqueued on the cap-breach attempts
+    expect(enqueueWakeup).toHaveBeenCalledTimes(SOURCE_SCOPED_RECOVERY_DISPATCH_CAP);
+
+    // wakePolicy on the action updated to board_escalation
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actionRow?.wakePolicy).toMatchObject({ type: "board_escalation", reason: "max_source_scoped_recovery_attempts_exceeded" });
   });
 
   it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {

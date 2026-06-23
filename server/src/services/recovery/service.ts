@@ -2356,6 +2356,59 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         cap: SOURCE_SCOPED_RECOVERY_DISPATCH_CAP,
         ownerAgentId: input.action.ownerAgentId,
       }, "source_scoped_recovery: dispatch cap exceeded, suppressing agent wake — board must intervene");
+
+      // Flip wakePolicy to board_escalation so the action card reflects the escalated state.
+      await db
+        .update(issueRecoveryActions)
+        .set({ wakePolicy: { type: "board_escalation", reason: "max_source_scoped_recovery_attempts_exceeded" } })
+        .where(eq(issueRecoveryActions.id, input.action.id));
+
+      // Emit a board-visible comment on the stranded issue so the cap breach is not log-only.
+      // Idempotent: dual-guard — sentinel phrase AND recovery action ID in metadata — avoids
+      // false-positive against the attempt-1 escalation comment that also contains the action ID.
+      const capBreachSentinel = `source-scoped recovery has been suspended`;
+      const hasCapBreachComment = await db
+        .select({ id: issueComments.id, body: issueComments.body, metadata: issueComments.metadata })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.issueId, input.issue.id),
+            eq(issueComments.authorType, "system"),
+          ),
+        )
+        .orderBy(desc(issueComments.createdAt))
+        .limit(50)
+        .then((rows) => rows.some((row) =>
+          (row.body ?? "").includes(capBreachSentinel) &&
+          noticeMetadataReferencesRecoveryAction(row.metadata, input.action.id),
+        ));
+
+      if (!hasCapBreachComment) {
+        const capBreachBody = [
+          "Automatic source-scoped recovery has been suspended for this issue.",
+          "",
+          `- Recovery action: \`${input.action.id}\``,
+          `- Attempts: \`${input.action.attemptCount}\` (cap: \`${SOURCE_SCOPED_RECOVERY_DISPATCH_CAP}\`)`,
+          `- Cause: \`${input.recoveryCause}\``,
+          "- Next action: a board operator should restore auth, clear the recovery action, or record an intentional manual resolution — then reassign this issue to resume normal execution.",
+        ].join("\n");
+
+        await issuesSvc.addComment(input.issue.id, capBreachBody, {}, {
+          authorType: "system",
+          metadata: {
+            version: 1,
+            sections: [
+              {
+                rows: [
+                  { type: "key_value", label: "Recovery action", value: input.action.id },
+                  { type: "key_value", label: "Cause", value: input.recoveryCause },
+                ],
+              },
+            ],
+          },
+        });
+      }
+
       return;
     }
     await deps.enqueueWakeup(input.action.ownerAgentId, {
