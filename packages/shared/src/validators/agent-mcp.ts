@@ -85,9 +85,9 @@ export type RequestSkillInstall = z.infer<typeof requestSkillInstallSchema>;
  */
 export const requestPluginInstallSchema = z.object({
   packageName: z.string().trim().min(1).max(214).regex(/^[^<>:"|?*\s]+$/, "Invalid package name"),
-  // Pinned version is required: a privileged, instance-wide install must target a
-  // fixed package@version for determinism and auditability, not a moving artifact.
-  version: z.string().trim().min(1).max(64),
+  // Optional: first-party plugins are bundled (no npm version). Pin a version for
+  // real npm packages when auditability matters; the board reviews the package name.
+  version: z.string().trim().min(1).max(64).optional(),
   reason: z.string().trim().min(1).max(2000),
 });
 export type RequestPluginInstall = z.infer<typeof requestPluginInstallSchema>;

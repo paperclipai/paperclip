@@ -341,6 +341,20 @@ async function listBundledPlugins(): Promise<AvailableBundledPlugin[]> {
 }
 
 /**
+ * Resolve a requested plugin packageName against the bundled plugin set so the
+ * capability-install flow (issue #2) can install first-party plugins by name even
+ * though they are shipped in the image rather than published to npm. Returns the
+ * local install path when the name matches a bundled plugin, else null (npm path).
+ */
+export async function findBundledPluginByPackageName(
+  packageName: string,
+): Promise<{ packageName: string; localPath: string } | null> {
+  const bundled = await listBundledPlugins();
+  const match = bundled.find((plugin) => plugin.packageName === packageName);
+  return match ? { packageName: match.packageName, localPath: match.localPath } : null;
+}
+
+/**
  * Resolve a plugin by either database ID or plugin key.
  *
  * Lookup order:

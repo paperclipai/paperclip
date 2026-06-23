@@ -46,7 +46,7 @@ import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
-import { pluginRoutes } from "./routes/plugins.js";
+import { pluginRoutes, findBundledPluginByPackageName } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
@@ -331,7 +331,12 @@ export async function createApp(
     approvalRoutes(db, {
       pluginWorkerManager: workerManager,
       installPlugin: async ({ packageName, version }) => {
-        const discovered = await loader.installPlugin({ packageName, version });
+        // First-party plugins are bundled in the image (not on npm); install those
+        // from their local path. Everything else goes through npm by name+version.
+        const bundled = await findBundledPluginByPackageName(packageName).catch(() => null);
+        const discovered = bundled
+          ? await loader.installPlugin({ localPath: bundled.localPath })
+          : await loader.installPlugin({ packageName, version });
         if (!discovered.manifest) throw new Error("Plugin installed but manifest is missing");
         const installed = await pluginRegistry.getByKey(discovered.manifest.id);
         if (!installed) throw new Error("Plugin installed but not found in registry");
