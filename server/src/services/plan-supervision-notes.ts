@@ -69,7 +69,7 @@ export async function buildMonitorContext(
   companyId: string,
   since: Date | null,
 ) {
-  const health = await diagnosePlanHealth(planIssueId, db);
+  const health = await diagnosePlanHealth(planIssueId, companyId, db);
 
   // Collect subtree issue ids via recursive CTE (same approach as plans.subtreeIssueIds)
   const rows = await db.execute<{ id: string }>(sql`

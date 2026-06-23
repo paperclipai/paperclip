@@ -459,7 +459,7 @@ export function planRoutes(
       res.status(404).json({ error: "Issue is not a plan" });
       return;
     }
-    const health = await diagnosePlanHealth(req.params.issueId as string, db);
+    const health = await diagnosePlanHealth(req.params.issueId as string, existing.companyId, db);
     res.json({ health });
   });
 

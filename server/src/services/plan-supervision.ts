@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, isNull, lt } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns, issues, planDetails } from "@paperclipai/db";
 import { agentService } from "./agents.js";
@@ -20,6 +20,7 @@ export interface AgentHealthEntry {
   agentId: string;
   agentName: string | null;
   issueId: string;
+  runId?: string;
   health: AgentHealth;
   severity: "info" | "warning" | "critical";
   lastOutputAt: Date | null;
@@ -70,6 +71,7 @@ function buildDetail(
 
 export async function diagnosePlanHealth(
   planRootIssueId: string,
+  companyId: string,
   db: Db,
   now: Date = new Date(),
 ): Promise<PlanHealthDiagnosis> {
@@ -121,26 +123,37 @@ export async function diagnosePlanHealth(
 
   const agentMap = new Map(agentRows.map((a) => [a.id, a]));
 
-  // Step 4: load latest heartbeat run per agent.
-  const runRows = await db
-    .select({
-      agentId: heartbeatRuns.agentId,
-      status: heartbeatRuns.status,
-      lastOutputAt: heartbeatRuns.lastOutputAt,
-      livenessState: heartbeatRuns.livenessState,
-      startedAt: heartbeatRuns.startedAt,
-    })
-    .from(heartbeatRuns)
-    .where(inArray(heartbeatRuns.agentId, agentIds))
-    .orderBy(desc(heartbeatRuns.startedAt));
+  // Step 4: load latest heartbeat run per agent via window CTE.
+  // ROW_NUMBER() PARTITION BY agent_id hits heartbeat_runs_company_agent_started_idx.
+  const latestRunCte = db.$with("latest_run").as(
+    db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        lastOutputAt: heartbeatRuns.lastOutputAt,
+        livenessState: heartbeatRuns.livenessState,
+        startedAt: heartbeatRuns.startedAt,
+        rn: sql<number>`ROW_NUMBER() OVER (PARTITION BY ${heartbeatRuns.agentId} ORDER BY ${heartbeatRuns.startedAt} DESC NULLS FIRST)`.as(
+          "rn",
+        ),
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.agentId, agentIds),
+        ),
+      ),
+  );
 
-  // Keep only the latest run per agent.
-  const latestRunMap = new Map<string, (typeof runRows)[number]>();
-  for (const row of runRows) {
-    if (!latestRunMap.has(row.agentId)) {
-      latestRunMap.set(row.agentId, row);
-    }
-  }
+  const runRows = await db
+    .with(latestRunCte)
+    .select()
+    .from(latestRunCte)
+    .where(eq(latestRunCte.rn, 1));
+
+  const latestRunMap = new Map(runRows.map((r) => [r.agentId, r]));
 
   // Step 5: classify each agent.
   const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
@@ -177,10 +190,12 @@ export async function diagnosePlanHealth(
       health = "working";
     }
 
+    const isTerminal = !run || TERMINAL_RUN_STATUSES.has(run.status);
     entries.push({
       agentId,
       agentName: agent?.name ?? null,
       issueId,
+      runId: !isTerminal ? run?.id : undefined,
       health,
       severity: classifySeverity(health),
       lastOutputAt: run?.lastOutputAt ?? null,

@@ -151,7 +151,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
       lastOutputAt: new Date(Date.now() - 5 * 60 * 1000), // 5 min ago
     });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents).toHaveLength(1);
     expect(result.agents[0].health).toBe("working");
     expect(result.agents[0].severity).toBe("info");
@@ -168,7 +168,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
       lastOutputAt: silentSince,
     });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents[0].health).toBe("stuck");
     expect(result.agents[0].severity).toBe("warning");
   });
@@ -184,7 +184,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
       lastOutputAt: silentSince,
     });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents[0].health).toBe("stuck_critical");
     expect(result.agents[0].severity).toBe("critical");
   });
@@ -200,7 +200,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
       livenessState: "execution_loop_likely",
     });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents[0].health).toBe("looping");
     expect(result.agents[0].severity).toBe("critical");
   });
@@ -212,7 +212,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     await seedSubtreeIssue(companyId, rootId, agentId);
     await seedRun(companyId, agentId, { status: "failed" });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents[0].health).toBe("needs_rewake");
     expect(result.agents[0].severity).toBe("warning");
   });
@@ -224,7 +224,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     await seedSubtreeIssue(companyId, rootId, agentId);
     await seedRun(companyId, agentId, { status: "succeeded" });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents[0].health).toBe("needs_rewake");
   });
 
@@ -235,7 +235,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     await seedSubtreeIssue(companyId, rootId, agentId);
     // No heartbeat run inserted.
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents[0].health).toBe("needs_rewake");
   });
 
@@ -246,7 +246,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     await seedSubtreeIssue(companyId, rootId, agentId);
     await seedRun(companyId, agentId, { status: "running" });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents[0].health).toBe("paused");
   });
 
@@ -256,7 +256,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     const rootId = await seedPlanRoot(companyId);
     await seedSubtreeIssue(companyId, rootId, agentId);
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents[0].health).toBe("paused");
   });
 
@@ -272,7 +272,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
       status: "in_progress",
     });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents).toHaveLength(0);
   });
 
@@ -282,7 +282,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     const rootId = await seedPlanRoot(companyId);
     await seedSubtreeIssue(companyId, rootId, agentId, "done");
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents).toHaveLength(0);
   });
 
@@ -290,7 +290,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     const companyId = await seedCompany();
     const rootId = await seedPlanRoot(companyId);
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents).toHaveLength(0);
     expect(result.overdue).toBe(false);
   });
@@ -299,7 +299,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     const companyId = await seedCompany();
     const fakeId = randomUUID();
 
-    const result = await diagnosePlanHealth(fakeId, db);
+    const result = await diagnosePlanHealth(fakeId, companyId, db);
     expect(result).toEqual({ planIssueId: fakeId, overdue: false, agents: [] });
   });
 
@@ -308,7 +308,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     const pastDate = new Date(Date.now() - 60 * 60 * 1000); // 1 hour ago
     const rootId = await seedPlanRoot(companyId, { estimatedCompletionAt: pastDate });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.overdue).toBe(true);
   });
 
@@ -317,7 +317,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     const futureDate = new Date(Date.now() + 60 * 60 * 1000); // 1 hour ahead
     const rootId = await seedPlanRoot(companyId, { estimatedCompletionAt: futureDate });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.overdue).toBe(false);
   });
 
@@ -325,7 +325,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     const companyId = await seedCompany();
     const rootId = await seedPlanRoot(companyId);
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.overdue).toBe(false);
   });
 
@@ -338,7 +338,7 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     await seedSubtreeIssue(companyId, rootId, agentId);
     await seedRun(companyId, agentId, { status: "running" });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents).toHaveLength(1);
     expect(result.agents[0].agentId).toBe(agentId);
   });
@@ -350,7 +350,89 @@ describeEmbeddedPostgres("diagnosePlanHealth", () => {
     await seedSubtreeIssue(companyId, rootId, agentId);
     await seedRun(companyId, agentId, { status: "queued", lastOutputAt: null });
 
-    const result = await diagnosePlanHealth(rootId, db);
+    const result = await diagnosePlanHealth(rootId, companyId, db);
     expect(result.agents[0].health).toBe("working");
+  });
+
+  it("classifies a queued run with null startedAt alongside an older terminal run as 'working'", async () => {
+    // A freshly-queued run has startedAt = NULL (process not yet started).
+    // If an older terminal run exists, NULLS FIRST ensures the queued run wins rn=1,
+    // so the agent is correctly classified as working (not needs_rewake).
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "idle");
+    const rootId = await seedPlanRoot(companyId);
+    await seedSubtreeIssue(companyId, rootId, agentId);
+    // Older terminal run (startedAt set)
+    await seedRun(companyId, agentId, {
+      status: "succeeded",
+      startedAt: new Date(Date.now() - 30 * 60 * 1000),
+      lastOutputAt: new Date(Date.now() - 25 * 60 * 1000),
+    });
+    // Newer queued run with startedAt = NULL (process not started yet)
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      startedAt: null,
+      status: "queued",
+      lastOutputAt: null,
+    });
+
+    const result = await diagnosePlanHealth(rootId, companyId, db);
+    expect(result.agents[0].health).toBe("working");
+  });
+
+  it("classifies scheduled_retry runs as 'working'", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "idle");
+    const rootId = await seedPlanRoot(companyId);
+    await seedSubtreeIssue(companyId, rootId, agentId);
+    await seedRun(companyId, agentId, { status: "scheduled_retry", lastOutputAt: null });
+
+    const result = await diagnosePlanHealth(rootId, companyId, db);
+    expect(result.agents[0].health).toBe("working");
+  });
+
+  it("does not return runs from another tenant", async () => {
+    // Company A: agent with a failed run → should be needs_rewake
+    const companyIdA = await seedCompany();
+    const agentId = await seedAgent(companyIdA, "idle");
+    const rootId = await seedPlanRoot(companyIdA);
+    await seedSubtreeIssue(companyIdA, rootId, agentId);
+    await seedRun(companyIdA, agentId, { status: "failed" });
+
+    // Company B: seed a NEWER running run with same agentId but different companyId.
+    // A cross-tenant run should be invisible to Company A's query.
+    const companyIdB = await seedCompany();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: companyIdB,
+      agentId,
+      startedAt: new Date(), // newer than the Company A run
+      status: "running",
+      lastOutputAt: new Date(),
+    });
+
+    // With companyId filter: only the Company A failed run is visible → needs_rewake
+    const result = await diagnosePlanHealth(rootId, companyIdA, db);
+    expect(result.agents).toHaveLength(1);
+    expect(result.agents[0].health).toBe("needs_rewake");
+  });
+
+  it("populates runId for non-terminal runs and omits it for terminal runs", async () => {
+    const companyId = await seedCompany();
+    const agentRunning = await seedAgent(companyId, "running");
+    const agentFailed = await seedAgent(companyId, "idle");
+    const rootId = await seedPlanRoot(companyId);
+    await seedSubtreeIssue(companyId, rootId, agentRunning);
+    await seedSubtreeIssue(companyId, rootId, agentFailed);
+    const runId = await seedRun(companyId, agentRunning, { status: "running" });
+    await seedRun(companyId, agentFailed, { status: "failed" });
+
+    const result = await diagnosePlanHealth(rootId, companyId, db);
+    const runningEntry = result.agents.find((a) => a.agentId === agentRunning);
+    const failedEntry = result.agents.find((a) => a.agentId === agentFailed);
+    expect(runningEntry?.runId).toBe(runId);
+    expect(failedEntry?.runId).toBeUndefined();
   });
 });
