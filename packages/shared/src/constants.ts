@@ -1207,6 +1207,11 @@ export const PLUGIN_EVENT_TYPES = [
   "agent.run.finished",
   "agent.run.failed",
   "agent.run.cancelled",
+  "agent.session.created",
+  "agent.session.chunk",
+  "agent.session.status",
+  "agent.session.done",
+  "agent.session.error",
   "goal.created",
   "goal.updated",
   "approval.created",
@@ -1215,6 +1220,7 @@ export const PLUGIN_EVENT_TYPES = [
   "budget.incident.resolved",
   "cost_event.created",
   "activity.logged",
+  "db.query.completed",
 ] as const;
 export type PluginEventType = (typeof PLUGIN_EVENT_TYPES)[number];
 

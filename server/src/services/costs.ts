@@ -4,6 +4,8 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { logActivity } from "./activity-log.js";
+import { logger } from "../middleware/logger.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -97,6 +99,40 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(eq(companies.id, companyId));
 
       await budgets.evaluateCostEvent(event);
+
+      // Generic, vendor-neutral bus event consumed by the observability plugin.
+      // Fire-and-forget so telemetry never blocks (or fails) cost recording, but
+      // catch the rejection: logActivity awaits instanceSettingsService + db.insert,
+      // and a bare `void` would surface a transient DB error as an unhandled
+      // promise rejection (process-fatal on Node >= 15).
+      void logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "cost-service",
+        action: "cost_event.created",
+        entityType: "cost_event",
+        entityId: event.id,
+        agentId: event.agentId,
+        runId: event.heartbeatRunId ?? undefined,
+        details: {
+          costCents: event.costCents,
+          model: event.model,
+          provider: event.provider,
+          biller: event.biller,
+          billingType: event.billingType,
+          inputTokens: event.inputTokens,
+          cachedInputTokens: event.cachedInputTokens,
+          outputTokens: event.outputTokens,
+          heartbeatRunId: event.heartbeatRunId,
+          agentId: event.agentId,
+          companyId,
+        },
+      }).catch((err) => {
+        logger.warn(
+          { err, companyId, costEventId: event.id },
+          "cost_event.created activity-log emit failed (telemetry only, non-fatal)",
+        );
+      });
 
       return event;
     },
