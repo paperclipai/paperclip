@@ -564,9 +564,24 @@ describe("Secrets page layout", () => {
   });
 
   it("shows AWS discovery errors without replacing manual vault form values", async () => {
+    const rawProviderMessage =
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized";
     mockSecretsApi.providerConfigDiscoveryPreview.mockRejectedValueOnce(
       new ApiError("AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.", 403, {
-        details: { code: "access_denied" },
+        details: {
+          code: "access_denied",
+          provider: "aws_secrets_manager",
+          operation: "secret_provider_config.discovery.preview",
+          providerConfigId: "discovery-preview",
+          providerVaultContext: "draft_config",
+          region: "us-west-2",
+          credentialPath: "Paperclip server runtime/provider credential path",
+          requiredCapability: "secretsmanager:ListSecrets",
+          actionableMessage:
+            "AWS discovery preview needs secretsmanager:ListSecrets in the selected region for the Paperclip server runtime/provider credential path.",
+          safeAlternative:
+            "If the operator already knows the exact AWS Secrets Manager ARN, paste/link that ARN instead of using discovery. Exact-resource DescribeSecret and runtime read permissions are still required.",
+        },
       }),
     );
     const root = createRoot(container);
@@ -604,7 +619,20 @@ describe("Secrets page layout", () => {
     await flushReact();
     await flushReact();
 
-    expect(document.body.textContent).toContain("AWS Secrets Manager denied the request");
+    const errorBanner = document.querySelector('[data-testid="aws-vault-discovery-error"]');
+    expect(errorBanner).not.toBeNull();
+    expect(errorBanner?.textContent).toContain("AWS discovery needs ListSecrets permission");
+    expect(errorBanner?.textContent).toContain("secretsmanager:ListSecrets");
+    expect(errorBanner?.textContent).toContain("Paperclip server runtime/provider credential path");
+    expect(errorBanner?.textContent).toContain("paste/link that ARN");
+    expect(errorBanner?.textContent).toContain("DescribeSecret");
+    expect(errorBanner?.textContent).toContain("us-west-2");
+    expect(errorBanner?.textContent).toContain("secret_provider_config.discovery.preview");
+    expect(errorBanner?.textContent).toContain("aws_secrets_manager");
+    expect(errorBanner?.textContent).toContain("Safe request/error details");
+    expect(errorBanner?.textContent).not.toContain(rawProviderMessage);
+    expect(errorBanner?.textContent).not.toContain("arn:aws");
+    expect(errorBanner?.textContent).not.toContain("123456789012");
     expect(regionInput.value).toBe("us-west-2");
     expect(namespaceInput.value).toBe("manual-prod");
 
