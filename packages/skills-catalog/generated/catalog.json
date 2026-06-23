@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-06-04T19:57:14.020Z",
+  "generatedAt": "2026-06-23T02:28:05.422Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -102,11 +102,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4649,
-          "sha256": "2ff61e12dfaa4cf8cc548529fd176f55f1b1f5292ff9dd3eb2cb331417ab5e4e"
+          "sizeBytes": 5634,
+          "sha256": "47fdc2c6c6f176c97f80054c6e9b7c0c586ed3ed976767c39b137481b7590c10"
         }
       ],
-      "contentHash": "sha256:4fb46a4bcefad4fd46fae48c433ee497112509a8e19fb8a7745ead44d219b498"
+      "contentHash": "sha256:aebe011852858d1b5ff45acd25bbf859bddb55d28b4c00643a0bee41e37074df"
     },
     {
       "id": "paperclipai:bundled:product:wireframe",
@@ -209,11 +209,47 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 3861,
-          "sha256": "c631b437ab26d104af6cdb963d8f679a9341439041b3cb3ec8835f4ff551b378"
+          "sizeBytes": 4067,
+          "sha256": "0cb6a00483efe0a84ac83030b9ddd3a8174feab9a3763729e8ef664e15af53b8"
         }
       ],
-      "contentHash": "sha256:32372dacaf62e93454b9855968c4eec96456ba78b509f450b3dfaa48e31ef356"
+      "contentHash": "sha256:a10983d8d941c97942a98443bf77e878d77fe27247e21742a40680d678a7b0a0"
+    },
+    {
+      "id": "paperclipai:bundled:software-development:engineering-delivery-flow",
+      "key": "paperclipai/bundled/software-development/engineering-delivery-flow",
+      "kind": "bundled",
+      "category": "software-development",
+      "slug": "engineering-delivery-flow",
+      "name": "engineering-delivery-flow",
+      "description": "Enforce the Planner → Executor → Reviewer software delivery loop: isolated git worktree, reviewable PR, private preview URL, and QA evidence before merge.",
+      "path": "catalog/bundled/software-development/engineering-delivery-flow",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "manager",
+        "engineer",
+        "qa"
+      ],
+      "requires": [],
+      "tags": [
+        "software-development",
+        "worktrees",
+        "pull-requests",
+        "preview",
+        "qa"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 5887,
+          "sha256": "382fe7ca3d887a92c6f581d3e79ed6b04c2c762d8c28f17beb08205a4f830715"
+        }
+      ],
+      "contentHash": "sha256:4c0c2faaee8ca59f20cff10ec3f50a157f3592de1bae6d23e69427b71e0942e9"
     },
     {
       "id": "paperclipai:bundled:software-development:github-pr-workflow",
@@ -242,11 +278,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 3970,
-          "sha256": "f498ec4ebb1779dea37adeb1db8a8b22316282798e35ee02e2fc5ff627d7e261"
+          "sizeBytes": 4494,
+          "sha256": "0fad8fa93644a760c249823595d67875aa5015491cea4cbe34315291eb883143"
         }
       ],
-      "contentHash": "sha256:90f278c89aa0711be150c1cd2456ca25620d02f36995b113ca9837d756a37f6c"
+      "contentHash": "sha256:837adf33ee0f8daa381af3e57e22f01ce6c0cf65b6ab1ab8ee9f65f28661845d"
     },
     {
       "id": "paperclipai:optional:browser:agent-browser",

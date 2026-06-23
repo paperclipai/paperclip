@@ -24,6 +24,7 @@ requiredSkills:
   - paperclipai/bundled/paperclip-operations/task-planning
   - paperclipai/bundled/paperclip-operations/issue-triage
   - paperclipai/bundled/software-development/github-pr-workflow
+  - paperclipai/bundled/software-development/engineering-delivery-flow
   - paperclipai/bundled/quality/qa-acceptance
 ---
 
@@ -34,8 +35,8 @@ The Core Exec Team is the bundled default install for a new Paperclip company. I
 ## Contents
 
 - `CEO` — strategy, prioritization, delegation. Uses `task-planning` and `issue-triage` to keep the inbox moving.
-- `CTO` — technical execution and engineering oversight. Reports to CEO. Uses `github-pr-workflow` for code review and merge hygiene.
-- `QA` — verifies fixes and captures evidence. Reports to CTO. Uses `qa-acceptance` for structured acceptance reports.
+- `CTO` — technical execution and engineering oversight. Reports to CEO. Uses `github-pr-workflow` and `engineering-delivery-flow` for worktree, PR, preview, and merge hygiene.
+- `QA` — verifies fixes and captures evidence. Reports to CTO. Uses `qa-acceptance` and `engineering-delivery-flow` for structured PR/preview acceptance reports.
 - `first-project` — starter project under the CTO for converting the company goal into the first implementation task.
 - `first-heartbeat` — recurring CEO heartbeat to review priorities and confirm the next useful task.
 

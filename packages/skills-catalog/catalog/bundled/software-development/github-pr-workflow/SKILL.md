@@ -28,6 +28,7 @@ Ship a PR a reviewer can land without follow-up clarifying questions. The aim is
 
 ## Branch hygiene before opening
 
+- Confirm you are in the assigned git worktree/execution workspace, not the canonical shared checkout: run `git status --short --branch`, `git rev-parse --show-toplevel`, and `git worktree list` before editing. Stop if you are on the base branch or in the wrong checkout.
 - Rebase or merge from the target base so the diff is current.
 - Squash WIP commits into reviewable units. Prefer one commit per logical change; do not force one-commit-per-PR if the work is genuinely multi-step.
 - Confirm tests, typecheck, and lint pass locally. Note any deliberate skips in the PR body.
@@ -66,7 +67,7 @@ Skip the `Risk and rollback` section only for clearly trivial PRs (typos, docs).
 ## Verification evidence
 
 - Tests passing in CI is necessary, not sufficient. Reviewers also need to know the change behaves correctly end to end.
-- For UI work, include screenshots of the golden path and one edge case. Tag dark and light mode if the project supports both.
+- For UI, dashboard, report, or data-review work, include the private preview URL and screenshots of the golden path plus one edge case. Tag dark and light mode if the project supports both.
 - For migrations, include a dry-run plan and reversal steps.
 - For performance changes, include a before/after measurement, not adjectives.
 
@@ -88,6 +89,8 @@ Skip the `Risk and rollback` section only for clearly trivial PRs (typos, docs).
 ## Anti-patterns
 
 - PR description that says "see commits". Reviewers should not need to read the log.
+- Opening a PR from the canonical checkout after editing `master`/`main` locally. Move the patch to a worktree branch first.
+- User-visible PRs with no preview URL or screenshot evidence.
 - Mixing refactor and behavior change in the same PR with no separation in the body.
 - "Address feedback" commits that bundle unrelated edits. One commit per round of feedback is fine; one commit for everything in flight is not.
 - Force-pushing during active review without telling the reviewer.

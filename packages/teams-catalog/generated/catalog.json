@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-06-04T18:03:41.262Z",
+  "generatedAt": "2026-06-23T02:28:08.457Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -33,7 +33,7 @@
         "tasks": 0,
         "routines": 1,
         "localSkills": 0,
-        "catalogSkills": 4,
+        "catalogSkills": 5,
         "externalSkillSources": 0
       },
       "rootAgentSlugs": [
@@ -48,6 +48,18 @@
         "first-project"
       ],
       "requiredSkills": [
+        {
+          "type": "catalog",
+          "ref": "engineering-delivery-flow",
+          "agentSlugs": [
+            "ceo",
+            "cto",
+            "qa"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:software-development:engineering-delivery-flow",
+          "catalogSkillKey": "paperclipai/bundled/software-development/engineering-delivery-flow"
+        },
         {
           "type": "catalog",
           "ref": "github-pr-workflow",
@@ -96,26 +108,26 @@
         {
           "path": "TEAM.md",
           "kind": "team",
-          "sizeBytes": 2144,
-          "sha256": "4ab4f57f147e89a56a6753755d7ef142d91741b3c0159f2e53fb333cd2779eaf"
+          "sizeBytes": 2301,
+          "sha256": "b856c46b3b40b9e4c4710672264b929743f273cc31e38fff74455807d7c23f66"
         },
         {
           "path": "agents/ceo/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 2492,
-          "sha256": "50f580c51807762265f09c6fe7bf32d7701d64caeb30595bfd577b2f5087c21b"
+          "sizeBytes": 2973,
+          "sha256": "0823b2fffa61602655aa5b68072a15e6cf43138621776758f0b16cdb4be58c7d"
         },
         {
           "path": "agents/cto/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1449,
-          "sha256": "596e2e9fe08d7368b3b0cfe72c2635ea80444d92a2c0414157bfb0a17773fcaf"
+          "sizeBytes": 1707,
+          "sha256": "4fb205549d0a49051761caaba44b98a424093fe85a4e0455f4fe3b20b88a2b6c"
         },
         {
           "path": "agents/qa/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1307,
-          "sha256": "2a139b88b4b98516048395c569c1bc74fd31cdc2da65db410e9779b8d92c0343"
+          "sizeBytes": 1631,
+          "sha256": "2be7281202370e68e0d132b7e21ed5d37b42f7702604096990667ea8eeaeb6f3"
         },
         {
           "path": "projects/first-project/PROJECT.md",
@@ -132,7 +144,7 @@
       ],
       "trustLevel": "markdown_only",
       "compatibility": "compatible",
-      "contentHash": "sha256:0f20e9d56124c1dc90a1e4b128fabd863538bcc935117220f719d9620f7c89f1"
+      "contentHash": "sha256:8914a9679a644b2ca7c3da77d44e0e29db53c04836661b742e69752ef84753ab"
     },
     {
       "id": "paperclipai:bundled:product:product-design",
@@ -267,7 +279,7 @@
         "tasks": 0,
         "routines": 1,
         "localSkills": 0,
-        "catalogSkills": 4,
+        "catalogSkills": 5,
         "externalSkillSources": 0
       },
       "rootAgentSlugs": [
@@ -292,6 +304,18 @@
           "resolved": true,
           "catalogSkillId": "paperclipai:bundled:docs:doc-maintenance",
           "catalogSkillKey": "paperclipai/bundled/docs/doc-maintenance"
+        },
+        {
+          "type": "catalog",
+          "ref": "engineering-delivery-flow",
+          "agentSlugs": [
+            "cto",
+            "qa",
+            "senior-coder"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:software-development:engineering-delivery-flow",
+          "catalogSkillKey": "paperclipai/bundled/software-development/engineering-delivery-flow"
         },
         {
           "type": "catalog",
@@ -331,8 +355,8 @@
         {
           "path": "TEAM.md",
           "kind": "team",
-          "sizeBytes": 2583,
-          "sha256": "7204eeef78a48714dd3f82b82e171a4039adc6325e91a6bdf51a442105ee33b0"
+          "sizeBytes": 2795,
+          "sha256": "b8446188abfe0df390c806e100a6786167e59306da44fda714574b331fc9c0c3"
         },
         {
           "path": ".paperclip.yaml",
@@ -343,20 +367,20 @@
         {
           "path": "agents/cto/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1499,
-          "sha256": "0a1a73ec9e5008056bca0a26325131ded2fcf4c4680a5014ba1e13400b32c173"
+          "sizeBytes": 1721,
+          "sha256": "0d0d66de28aef25c3afad10b9f6c8d876b7b6e8665ff11221e508834dcab456e"
         },
         {
           "path": "agents/qa/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1223,
-          "sha256": "2d5738f831aa772befa3471c844a0c9e611584be668e3ec82580ca9e92dc13fc"
+          "sizeBytes": 1473,
+          "sha256": "f067a638b34c39798ab84eb299127f0f4bc473a1d11d12319edac12bd131b5a1"
         },
         {
           "path": "agents/senior-coder/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1413,
-          "sha256": "b61071518755d9e584c099ae2082c7a78448d09586093ee91393082fe10872b5"
+          "sizeBytes": 1824,
+          "sha256": "d8134013ddfb0bf7bb3dd66062acefee128346053fa012ca62c740d1fec651a3"
         },
         {
           "path": "projects/product-engineering/PROJECT.md",
@@ -373,7 +397,7 @@
       ],
       "trustLevel": "assets",
       "compatibility": "compatible",
-      "contentHash": "sha256:74ddeaeb11805835a4a67fc4530b048ab7f8aa1dc7d2b80acea139a933d158d3"
+      "contentHash": "sha256:4bc76754a67a31d656745f9082753087ae798233e6104fdd9bffd6475b2c78dc"
     },
     {
       "id": "paperclipai:optional:content:content-machine",

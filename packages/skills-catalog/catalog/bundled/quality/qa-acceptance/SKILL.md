@@ -62,6 +62,7 @@ If a section is genuinely not applicable, write "N/A: <why>" — do not silently
 
 Each criterion needs evidence on the verification pass:
 
+- PR URL, checked branch/commit, and private preview URL for code-bearing user-visible work.
 - Screenshot or short clip for UI behavior.
 - Copied console / network output for API behavior.
 - Log snippet or activity row for telemetry.
@@ -81,7 +82,7 @@ Return the validation plan with three sections:
 
 - **Pass.** Criteria that passed, with one-line evidence summaries.
 - **Fail.** Criteria that failed, with the exact reproduction.
-- **Blocked.** Criteria you could not run, with why.
+- **Blocked.** Criteria you could not run, with why. Missing PR URL, missing required preview URL, or a stale preview not tied to the PR branch is blocked, not pass.
 
 The author owns turning failures into either fixes or accepted deferrals.
 

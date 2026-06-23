@@ -35,8 +35,9 @@ Produce implementation plans that the Paperclip executor can actually run: expli
 1. An updated issue document with key `plan` (markdown).
 2. A short comment on the issue that links to the plan document and names the next action.
 3. Where the plan requires approval, an issue-thread interaction of kind `request_confirmation` bound to the latest plan revision.
+4. For code-bearing work, a Workspace + Review Contract using `engineering-delivery-flow` before implementation subtasks are created.
 
-Do not create implementation subtasks until the plan is accepted.
+Do not create implementation subtasks until the plan is accepted. For software work, also do not create implementation subtasks until the worktree/branch/PR/preview/reviewer contract is explicit.
 
 ## Plan structure
 
@@ -52,9 +53,10 @@ Required sections, in order:
    - Scope and deliverables.
    - Acceptance criteria.
    - Blocks/blocked-by relationships expressed by phase letter or child title.
-6. **Acceptance** — the bar for the parent issue. How the user knows the whole thing is done.
-7. **Risks and mitigations** — short list. Skip if there are none.
-8. **Deferrals** — what is intentionally pushed to follow-up issues, with why.
+6. **Workspace + Review Contract** — required for code-bearing work. Name repo, base branch, worktree/execution workspace, task branch, PR requirement, preview requirement/command/URL, reviewer/QA owner, and acceptance evidence. Write `N/A` only when no repo-managed artifact will be changed.
+7. **Acceptance** — the bar for the parent issue. How the user knows the whole thing is done.
+8. **Risks and mitigations** — short list. Skip if there are none.
+9. **Deferrals** — what is intentionally pushed to follow-up issues, with why.
 
 ## Rules of thumb for splitting
 
@@ -81,4 +83,5 @@ When the plan is accepted, see the companion skill for converting accepted plans
 - "Phases A–Z" with no work breakdown inside the phases.
 - Children with descriptions that say "see parent" — they fail at delegation time.
 - Acceptance written as "code review approval". Reviewers need a behavior bar, not a process bar.
+- Software implementation tasks without a named worktree/branch and PR/preview expectation. That is how agents dirty the canonical repo.
 - Plans that bury blocker chains in prose. Use explicit blocked-by lines.
