@@ -6,7 +6,7 @@
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
@@ -31,7 +31,7 @@ import {
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, type Config } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
@@ -52,12 +52,14 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { cleanupOrphanedPaperclipRuntimeProcesses } from "./services/local-service-supervisor.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { resolvePaperclipConfigPath } from "./paths.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -100,6 +102,48 @@ export interface StartedServer {
   databaseUrl: string;
 }
 
+function collectPreDatabaseRuntimeCleanupRoots(config: Config): string[] {
+  const roots = new Set<string>();
+  roots.add(process.cwd());
+  roots.add(dirname(resolve(config.embeddedPostgresDataDir)));
+
+  const configPath = resolvePaperclipConfigPath();
+  const configDir = dirname(configPath);
+  roots.add(configDir);
+  if (basename(configDir) === ".paperclip") {
+    roots.add(resolve(configDir, ".."));
+  }
+
+  return Array.from(roots);
+}
+
+async function cleanupStaleRuntimeProcessesBeforeDatabaseStartup(config: Config) {
+  if (config.databaseUrl) return;
+  if (process.env.PAPERCLIP_STALE_RUNTIME_CLEANUP === "false") return;
+
+  const result = await cleanupOrphanedPaperclipRuntimeProcesses({
+    containmentRoots: collectPreDatabaseRuntimeCleanupRoots(config),
+  });
+  if (result.matched === 0) return;
+
+  logger.warn(
+    {
+      matched: result.matched,
+      terminated: result.terminated,
+      candidates: result.candidates.map((candidate) => ({
+        pid: candidate.pid,
+        processGroupId: candidate.processGroupId,
+        commandName: candidate.commandName,
+        cwd: candidate.cwd,
+        matchedRoot: candidate.matchedRoot,
+        containmentEvidence: candidate.containmentEvidence,
+        ownershipEvidence: candidate.ownershipEvidence,
+      })),
+    },
+    "Cleaned stale Paperclip-owned runtime processes before embedded PostgreSQL startup",
+  );
+}
+
 export async function startServer(): Promise<StartedServer> {
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
@@ -115,7 +159,8 @@ export async function startServer(): Promise<StartedServer> {
   if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
   }
-  
+  await cleanupStaleRuntimeProcessesBeforeDatabaseStartup(config);
+
   type MigrationSummary =
     | "skipped"
     | "already applied"
@@ -698,7 +743,7 @@ export async function startServer(): Promise<StartedServer> {
   process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
-  
+
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
@@ -708,8 +753,26 @@ export async function startServer(): Promise<StartedServer> {
     .then((result) => {
       if (result.reconciled > 0) {
         logger.warn(
-          { reconciled: result.reconciled },
+          { reconciled: result.reconciled, adopted: result.adopted, stopped: result.stopped },
           "reconciled persisted runtime services from a previous server process",
+        );
+      }
+      if (result.orphanedProcessesCleaned > 0) {
+        logger.warn(
+          {
+            matched: result.orphanedProcessesMatched,
+            cleaned: result.orphanedProcessesCleaned,
+            candidates: result.orphanedProcessCandidates.map((candidate) => ({
+              pid: candidate.pid,
+              processGroupId: candidate.processGroupId,
+              commandName: candidate.commandName,
+              cwd: candidate.cwd,
+              matchedRoot: candidate.matchedRoot,
+              containmentEvidence: candidate.containmentEvidence,
+              ownershipEvidence: candidate.ownershipEvidence,
+            })),
+          },
+          "cleaned stale unregistered workspace runtime processes during startup reconciliation",
         );
       }
     })

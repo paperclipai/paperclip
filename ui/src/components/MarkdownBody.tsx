@@ -1,4 +1,4 @@
-import { isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { isValidElement, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, Github, WrapText } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
@@ -563,7 +563,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({
+function MarkdownBodyImpl({
   children,
   className,
   style,
@@ -581,23 +581,37 @@ export function MarkdownBody({
   // may lack a CompanyProvider. A null context (or no companies yet) leaves
   // knownPrefixes undefined, which keeps issue auto-linking permissive.
   const company = useOptionalCompany();
-  const knownPrefixes = company?.companies.length
-    ? company.companies.map((c) => c.issuePrefix)
-    : undefined;
-  const remarkPlugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
-  if (enableWikiLinks) {
-    remarkPlugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
-  }
-  if (linkWorkspaceFileRefs) {
-    remarkPlugins.push(remarkWorkspaceFileRefs);
-  }
-  if (linkIssueReferences) {
-    remarkPlugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
-  }
-  if (softBreaks) {
-    remarkPlugins.push(remarkSoftBreaks);
-  }
-  const components: Components = {
+  const companies = company?.companies;
+  // Stable identity so it can feed the memoized remark plugins without
+  // re-creating them (and forcing a full markdown re-parse) every render.
+  const knownPrefixes = useMemo(
+    () => (companies?.length ? companies.map((c) => c.issuePrefix) : undefined),
+    [companies],
+  );
+  // react-markdown treats the values of `components` as component *types* and
+  // the `remarkPlugins` array by identity. Rebuilding either on every render
+  // forces react-markdown to unmount/remount the rendered tree, which discards
+  // scroll position and text selection and causes visible flashing when a
+  // parent re-renders frequently (see PAP-10767). Memoize both so re-renders
+  // that don't change the inputs are cheap and non-destructive.
+  const remarkPlugins = useMemo<NonNullable<Options["remarkPlugins"]>>(() => {
+    const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
+    if (enableWikiLinks) {
+      plugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
+    }
+    if (linkWorkspaceFileRefs) {
+      plugins.push(remarkWorkspaceFileRefs);
+    }
+    if (linkIssueReferences) {
+      plugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
+    }
+    if (softBreaks) {
+      plugins.push(remarkSoftBreaks);
+    }
+    return plugins;
+  }, [enableWikiLinks, wikiLinkRoot, resolveWikiLinkHref, linkWorkspaceFileRefs, linkIssueReferences, knownPrefixes, softBreaks]);
+  const components = useMemo<Components>(() => {
+    const map: Components = {
     p: ({ node: _node, style: paragraphStyle, children: paragraphChildren, ...paragraphProps }) => (
       <p {...paragraphProps} style={mergeWrapStyle(paragraphStyle as React.CSSProperties | undefined)}>
         {paragraphChildren}
@@ -726,22 +740,24 @@ export function MarkdownBody({
         </a>
       );
     },
-  };
-  if (resolveImageSrc || onImageClick) {
-    components.img = ({ node: _node, src, alt, ...imgProps }) => {
-      const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
-      const finalSrc = resolved ?? src;
-      return (
-        <img
-          {...imgProps}
-          src={finalSrc}
-          alt={alt ?? ""}
-          onClick={onImageClick && finalSrc ? (e) => { e.preventDefault(); onImageClick(finalSrc); } : undefined}
-          style={onImageClick ? { cursor: "pointer", ...(imgProps.style as React.CSSProperties | undefined) } : imgProps.style as React.CSSProperties | undefined}
-        />
-      );
     };
-  }
+    if (resolveImageSrc || onImageClick) {
+      map.img = ({ node: _node, src, alt, ...imgProps }) => {
+        const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
+        const finalSrc = resolved ?? src;
+        return (
+          <img
+            {...imgProps}
+            src={finalSrc}
+            alt={alt ?? ""}
+            onClick={onImageClick && finalSrc ? (e) => { e.preventDefault(); onImageClick(finalSrc); } : undefined}
+            style={onImageClick ? { cursor: "pointer", ...(imgProps.style as React.CSSProperties | undefined) } : imgProps.style as React.CSSProperties | undefined}
+          />
+        );
+      };
+    }
+    return map;
+  }, [theme, linkIssueReferences, resolveImageSrc, onImageClick]);
 
   return (
     <div
@@ -762,3 +778,5 @@ export function MarkdownBody({
     </div>
   );
 }
+
+export const MarkdownBody = memo(MarkdownBodyImpl);

@@ -17,6 +17,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import {
+  cleanupOrphanedPaperclipRuntimeProcesses,
   createLocalServiceKey,
   findLocalServiceRegistryRecordByRuntimeServiceId,
   findAdoptableLocalService,
@@ -2363,6 +2364,12 @@ async function startLocalRuntimeService(input: {
       reuseKey: input.reuseKey,
     },
   });
+  const runtimeServiceId = stoppedReuseCandidate?.id ?? randomUUID();
+  env.PAPERCLIP_MANAGED_RUNTIME = "workspace-runtime";
+  env.PAPERCLIP_LOCAL_SERVICE_KEY = serviceKey;
+  env.PAPERCLIP_RUNTIME_SERVICE_ID = runtimeServiceId;
+  env.PAPERCLIP_RUNTIME_SERVICE_NAME = serviceName;
+
   const adoptedRecord = await findAdoptableLocalService({
     serviceKey,
     profileKind: "workspace-runtime",
@@ -2468,7 +2475,7 @@ async function startLocalRuntimeService(input: {
   }
 
   const record: RuntimeServiceRecord = {
-    id: stoppedReuseCandidate?.id ?? randomUUID(),
+    id: runtimeServiceId,
     companyId: input.agent.companyId,
     projectId: input.workspace.projectId,
     projectWorkspaceId: input.workspace.workspaceId,
@@ -3017,6 +3024,38 @@ export async function listWorkspaceRuntimeServicesForProjectWorkspaces(
   return grouped;
 }
 
+async function listKnownWorkspaceRuntimeRoots(db: Db) {
+  const roots = new Set<string>();
+  const projectRows = await db
+    .select({ cwd: projectWorkspaces.cwd })
+    .from(projectWorkspaces);
+  for (const row of projectRows) {
+    if (row.cwd) roots.add(row.cwd);
+  }
+
+  const executionRows = await db
+    .select({ cwd: executionWorkspaces.cwd })
+    .from(executionWorkspaces);
+  for (const row of executionRows) {
+    if (row.cwd) roots.add(row.cwd);
+  }
+
+  return Array.from(roots);
+}
+
+function listInMemoryRuntimeServiceProcessIds() {
+  const ids: number[] = [];
+  for (const record of runtimeServicesById.values()) {
+    if (record.child?.pid) ids.push(record.child.pid);
+    if (record.providerRef) {
+      const providerPid = Number.parseInt(record.providerRef, 10);
+      if (Number.isInteger(providerPid) && providerPid > 0) ids.push(providerPid);
+    }
+    if (record.processGroupId) ids.push(record.processGroupId);
+  }
+  return ids;
+}
+
 export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
   const rows = await db
     .select()
@@ -3027,8 +3066,6 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
         inArray(workspaceRuntimeServices.status, ["starting", "running"]),
       ),
     );
-
-  if (rows.length === 0) return { reconciled: 0, adopted: 0, stopped: 0 };
 
   let adopted = 0;
   let stopped = 0;
@@ -3135,7 +3172,19 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
     stopped += 1;
   }
 
-  return { reconciled: rows.length, adopted, stopped };
+  const orphanedProcesses = await cleanupOrphanedPaperclipRuntimeProcesses({
+    containmentRoots: await listKnownWorkspaceRuntimeRoots(db),
+    additionalManagedProcessIds: listInMemoryRuntimeServiceProcessIds(),
+  });
+
+  return {
+    reconciled: rows.length,
+    adopted,
+    stopped,
+    orphanedProcessesMatched: orphanedProcesses.matched,
+    orphanedProcessesCleaned: orphanedProcesses.terminated,
+    orphanedProcessCandidates: orphanedProcesses.candidates,
+  };
 }
 
 export async function restartDesiredRuntimeServicesOnStartup(db: Db) {

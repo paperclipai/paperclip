@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
+import type { Issue, IssueLabel, Project } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
@@ -59,6 +60,11 @@ import {
   type HandoffChipResolvers,
 } from "./interrupt-handoff/InterruptHandoffViews";
 import { describeReassignInterrupt } from "../lib/interrupt-handoff";
+import {
+  buildWorkspaceRuntimeControlSections,
+  WorkspaceRuntimeQuickControls,
+  type WorkspaceRuntimeControlRequest,
+} from "./WorkspaceRuntimeControls";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
   const [copied, setCopied] = useState(false);
@@ -80,11 +86,17 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.C
         type="button"
         className="text-sm font-mono min-w-0 break-all text-left cursor-pointer hover:text-foreground transition-colors"
         onClick={handleCopy}
-        title={copied ? "Copied!" : "Click to copy"}
+        title={copied ? "Copied" : "Copy to clipboard"}
+        aria-label={`Copy ${value} to clipboard`}
       >
         {value}
       </button>
-      {copied && <Check className="h-3 w-3 text-green-500 shrink-0 mt-0.5" />}
+      {copied && (
+        <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-300" role="status">
+          <Check className="h-3 w-3 shrink-0" />
+          Copied
+        </span>
+      )}
     </div>
   );
 }
@@ -128,12 +140,6 @@ function isMainIssueWorkspace(input: {
   }
   if (!linkedProjectWorkspaceId || !primaryWorkspaceId) return true;
   return linkedProjectWorkspaceId === primaryWorkspaceId;
-}
-
-function runningRuntimeServiceWithUrl(
-  runtimeServices: WorkspaceRuntimeService[] | null | undefined,
-) {
-  return runtimeServices?.find((service) => service.status === "running" && service.url?.trim()) ?? null;
 }
 
 function toDateTimeLocalValue(value: string | null | undefined) {
@@ -253,6 +259,11 @@ function RemovableIssueReferencePill({
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const issueLabel = issue.identifier ?? issue.title;
   const confirmLabel = issue.identifier ? `${issue.identifier}: ${issue.title}` : issue.title;
+  const chipClassName = cn(
+    "paperclip-mention-chip paperclip-mention-chip--issue",
+    "inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs no-underline",
+    issue.identifier && "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+  );
   const content = (
     <>
       <StatusIcon status={issue.status} className="h-3 w-3 shrink-0" />
@@ -272,18 +283,10 @@ function RemovableIssueReferencePill({
 
   return (
     <>
-      <span
-        data-mention-kind="issue"
-        className={cn(
-          "paperclip-mention-chip paperclip-mention-chip--issue group",
-          "inline-flex items-center gap-1 rounded-full border border-border py-0.5 pl-1 pr-2 text-xs",
-        )}
-        title={issue.title}
-        aria-label={`Task ${issueLabel}: ${issue.title}`}
-      >
+      <span className="group relative inline-flex">
         <button
           type="button"
-          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-colors transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring group-hover:opacity-100"
+          className="absolute -right-1 -top-1 z-10 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground opacity-0 shadow-sm transition-colors transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring group-hover:opacity-100"
           aria-label={removeLabel}
           title={removeLabel}
           onClick={handleRemove}
@@ -293,13 +296,22 @@ function RemovableIssueReferencePill({
         {issue.identifier ? (
           <Link
             to={`/issues/${issueLabel}`}
-            className="inline-flex min-w-0 items-center gap-1 no-underline hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
+            data-mention-kind="issue"
+            className={chipClassName}
+            title={issue.title}
             aria-label={`Task ${issueLabel}: ${issue.title}`}
           >
             {content}
           </Link>
         ) : (
-          <span className="inline-flex min-w-0 items-center gap-1">{content}</span>
+          <span
+            data-mention-kind="issue"
+            className={chipClassName}
+            title={issue.title}
+            aria-label={`Task: ${issue.title}`}
+          >
+            {content}
+          </span>
         )}
       </span>
       <Dialog open={isConfirmOpen} onOpenChange={setIsConfirmOpen}>
@@ -455,6 +467,8 @@ export function IssueProperties({
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
+  const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
+  const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [watchdogOpen, setWatchdogOpen] = useState(false);
   const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
   const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
@@ -564,10 +578,54 @@ export function IssueProperties({
     [issue, issueProject],
   );
   const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace;
-  const liveWorkspaceService = useMemo(() => {
-    if (issueUsesMainWorkspace) return null;
-    return runningRuntimeServiceWithUrl(issue.currentExecutionWorkspace?.runtimeServices);
-  }, [issue.currentExecutionWorkspace?.runtimeServices, issueUsesMainWorkspace]);
+  const workspaceRuntimeConfig = issueUsesMainWorkspace
+    ? null
+    : issue.currentExecutionWorkspace?.config?.workspaceRuntime ?? null;
+  const workspaceRuntimeServices = issue.currentExecutionWorkspace?.runtimeServices ?? [];
+  const workspaceCanRunCommands = Boolean(issue.currentExecutionWorkspace?.cwd);
+  const workspaceCanStartServices = Boolean(workspaceRuntimeConfig) && workspaceCanRunCommands;
+  const workspaceRuntimeSections = useMemo(() => buildWorkspaceRuntimeControlSections({
+    runtimeConfig: workspaceRuntimeConfig,
+    runtimeServices: workspaceRuntimeServices,
+    canStartServices: workspaceCanStartServices,
+    canRunJobs: workspaceCanRunCommands,
+  }), [workspaceCanRunCommands, workspaceCanStartServices, workspaceRuntimeConfig, workspaceRuntimeServices]);
+  const hasWorkspaceRuntimeControls = !issueUsesMainWorkspace && (
+    workspaceRuntimeSections.services.length > 0
+    || workspaceRuntimeSections.otherServices.length > 0
+  );
+  const controlWorkspaceRuntime = useMutation({
+    mutationFn: (request: WorkspaceRuntimeControlRequest) => {
+      const workspaceId = issue.currentExecutionWorkspace?.id ?? issue.executionWorkspaceId;
+      if (!workspaceId) throw new Error("This task is not attached to a workspace.");
+      return executionWorkspacesApi.controlRuntimeCommands(workspaceId, request.action, request);
+    },
+    onSuccess: (result, request) => {
+      queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
+      if (companyId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId) });
+      }
+      setRuntimeActionErrorMessage(null);
+      setRuntimeActionMessage(
+        request.action === "run"
+          ? "Workspace job completed."
+          : request.action === "stop"
+            ? "Workspace service stopped."
+            : request.action === "restart"
+              ? "Workspace service restarted."
+              : "Workspace service started.",
+      );
+    },
+    onError: (error) => {
+      setRuntimeActionMessage(null);
+      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
+    },
+  });
+  const pendingWorkspaceRuntimeAction = controlWorkspaceRuntime.isPending ? controlWorkspaceRuntime.variables ?? null : null;
   const referencedIssueIdentifiers = issue.referencedIssueIdentifiers ?? [];
   const relatedTasks = useMemo(() => {
     const excluded = new Set<string>();
@@ -2380,32 +2438,41 @@ export function IssueProperties({
         )}
       </div>
 
-      {liveWorkspaceService || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
+      {hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
         <>
           <Separator />
           <div className="space-y-1">
-            {liveWorkspaceService?.url && (
-              <PropertyRow label="Service">
-                <a
-                  href={liveWorkspaceService.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex min-w-0 items-start gap-1 text-sm font-mono text-emerald-700 hover:text-emerald-800 hover:underline dark:text-emerald-300 dark:hover:text-emerald-200"
-                >
-                  <span className="min-w-0 break-all">{liveWorkspaceService.url}</span>
-                  <ExternalLink className="mt-1 h-3 w-3 shrink-0" />
-                </a>
-              </PropertyRow>
-            )}
             {showWorkspaceDetailLink && issue.executionWorkspaceId && (
               <PropertyRow label="Workspace">
                 <Link
                   to={`/execution-workspaces/${issue.executionWorkspaceId}`}
-                  className="text-sm text-primary hover:underline inline-flex items-center gap-1"
+                  className="text-sm text-primary hover:underline inline-flex min-w-0 items-center gap-1.5"
                 >
+                  <Hexagon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   View workspace
-                  <ExternalLink className="h-3 w-3" />
+                  <ExternalLink className="h-3 w-3 shrink-0" />
                 </Link>
+              </PropertyRow>
+            )}
+            {hasWorkspaceRuntimeControls && (
+              <PropertyRow label="Service">
+                <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <WorkspaceRuntimeQuickControls
+                    sections={workspaceRuntimeSections}
+                    isPending={controlWorkspaceRuntime.isPending}
+                    pendingRequest={pendingWorkspaceRuntimeAction}
+                    onAction={(request) => controlWorkspaceRuntime.mutate(request)}
+                    square
+                    align="start"
+                    iconOnly
+                  />
+                  {runtimeActionMessage ? (
+                    <span className="text-xs text-muted-foreground" role="status">{runtimeActionMessage}</span>
+                  ) : null}
+                  {runtimeActionErrorMessage ? (
+                    <span className="text-xs text-destructive" role="alert">{runtimeActionErrorMessage}</span>
+                  ) : null}
+                </div>
               </PropertyRow>
             )}
             {issue.currentExecutionWorkspace?.branchName && (

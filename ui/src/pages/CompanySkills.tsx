@@ -3672,7 +3672,7 @@ export function CompanySkills() {
     : "all";
   const detailTab: SkillDetailTab = (["overview", "files", "versions", "agents"] as SkillDetailTab[]).includes(tabParam as SkillDetailTab)
     ? (tabParam as SkillDetailTab)
-    : selectedPath !== "SKILL.md"
+    : parsedRoute.hasExplicitFilePath || selectedPath !== "SKILL.md"
       ? "files"
       : "overview";
   const discoveryCategory = searchParams.get("category");

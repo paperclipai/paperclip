@@ -743,6 +743,20 @@
       "when": 1781902000000,
       "tag": "0105_instance_scoped_environments",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1781902100000,
+      "tag": "0106_workspace_operations_issue_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1781902200000,
+      "tag": "0107_routine_description_annotations",
+      "breakpoints": true
     }
   ]
 }

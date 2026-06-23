@@ -122,6 +122,8 @@ export const queryKeys = {
     runs: (id: string) => ["routines", "runs", id] as const,
     revisions: (id: string) => ["routines", "revisions", id] as const,
     activity: (companyId: string, id: string) => ["routines", "activity", companyId, id] as const,
+    documentAnnotations: (routineId: string, key: "description", status: "open" | "resolved" | "all" = "all") =>
+      ["routines", "document-annotations", routineId, key, status] as const,
   },
   executionWorkspaces: {
     list: (companyId: string, filters?: Record<string, string | boolean | undefined>) =>

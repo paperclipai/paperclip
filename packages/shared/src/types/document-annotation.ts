@@ -55,7 +55,8 @@ export interface DocumentAnnotationAnchorSnapshot {
 export interface DocumentAnnotationThread {
   id: string;
   companyId: string;
-  issueId: string;
+  issueId: string | null;
+  routineId?: string | null;
   documentId: string;
   documentKey: string;
   status: DocumentAnnotationThreadStatus;
@@ -86,7 +87,8 @@ export interface DocumentAnnotationComment {
   id: string;
   companyId: string;
   threadId: string;
-  issueId: string;
+  issueId: string | null;
+  routineId?: string | null;
   documentId: string;
   body: string;
   authorType: IssueCommentAuthorType;

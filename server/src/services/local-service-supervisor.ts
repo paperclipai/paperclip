@@ -1,12 +1,27 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 const execFileAsync = promisify(execFile);
+const PAPERCLIP_RUNTIME_MARKER_KEYS = [
+  "PAPERCLIP_MANAGED_RUNTIME",
+  "PAPERCLIP_LOCAL_SERVICE_KEY",
+  "PAPERCLIP_RUNTIME_SERVICE_ID",
+  "PAPERCLIP_RUNTIME_SERVICE_NAME",
+] as const;
+const PAPERCLIP_RUNTIME_MARKER_KEY_SET = new Set<string>(PAPERCLIP_RUNTIME_MARKER_KEYS);
+const PAPERCLIP_RUNTIME_ENTRYPOINTS = new Set([
+  "scripts/dev-runner.ts",
+  "server/scripts/dev-watch.ts",
+  "server/src/index.ts",
+]);
+
+export type PaperclipRuntimeMarkers = Partial<Record<(typeof PAPERCLIP_RUNTIME_MARKER_KEYS)[number], string>>;
 
 export interface LocalServiceRegistryRecord {
   version: 1;
@@ -38,6 +53,35 @@ export interface LocalServiceIdentityInput {
   scope: Record<string, unknown> | null;
 }
 
+export interface LocalProcessSnapshot {
+  pid: number;
+  parentPid: number | null;
+  processGroupId: number | null;
+  commandName: string;
+  commandLine: string;
+  cwd: string | null;
+  paperclipRuntimeMarkers?: PaperclipRuntimeMarkers | null;
+}
+
+export interface OrphanedPaperclipRuntimeProcess {
+  pid: number;
+  processGroupId: number | null;
+  commandName: string;
+  commandLine: string;
+  cwd: string | null;
+  matchedRoot: string;
+  containmentEvidence: "cwd" | "command";
+  ownershipEvidence: "paperclip_runtime_env" | "paperclip_entrypoint";
+}
+
+export interface OrphanedPaperclipRuntimeCleanupResult {
+  scanned: number;
+  matched: number;
+  terminated: number;
+  dryRun: boolean;
+  candidates: OrphanedPaperclipRuntimeProcess[];
+}
+
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
@@ -47,6 +91,236 @@ function stableStringify(value: unknown): string {
     return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(rec[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function normalizeWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeProcessPath(value: string) {
+  return path.resolve(value);
+}
+
+function isUsableContainmentRoot(root: string) {
+  const parsed = path.parse(root);
+  if (root === parsed.root) return false;
+  if (root === os.homedir()) return false;
+  return root.length >= parsed.root.length + 6;
+}
+
+function isPathContainedByRoot(candidatePath: string | null | undefined, root: string) {
+  if (!candidatePath) return false;
+  const relative = path.relative(root, normalizeProcessPath(candidatePath));
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function tokenizeCommandLine(commandLine: string) {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  let escaped = false;
+
+  for (const char of commandLine) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (escaped) current += "\\";
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function cleanCommandLinePathToken(token: string) {
+  return token.replace(/[,;]+$/g, "");
+}
+
+function commandLineHasContainedPath(commandLine: string, root: string) {
+  if (!commandLine || !root) return false;
+  for (const token of tokenizeCommandLine(commandLine)) {
+    const candidates = [token];
+    const equalsIndex = token.indexOf("=");
+    if (equalsIndex >= 0) candidates.push(token.slice(equalsIndex + 1));
+
+    for (const candidate of candidates) {
+      const cleaned = cleanCommandLinePathToken(candidate);
+      if (!path.isAbsolute(cleaned)) continue;
+      if (isPathContainedByRoot(cleaned, root)) return true;
+    }
+  }
+  return false;
+}
+
+function looksLikeNodeRuntimeProcess(snapshot: LocalProcessSnapshot) {
+  const commandName = path.basename(snapshot.commandName || "").toLowerCase();
+  const commandLine = normalizeWhitespace(snapshot.commandLine).toLowerCase();
+
+  return (
+    commandName === "node" ||
+    commandName === "tsx" ||
+    commandName === "esbuild" ||
+    commandName === "vite" ||
+    commandName === "next" ||
+    commandName === "astro" ||
+    commandName === "webpack" ||
+    commandName === "turbo" ||
+    commandName === "pnpm" ||
+    commandName === "npm" ||
+    commandName === "yarn" ||
+    commandName === "bun" ||
+    /(^|[/\s])(?:node|tsx|esbuild|vite|next|astro|webpack|turbo|pnpm|npm|yarn|bun)(?:$|[\s/'"])/.test(commandLine)
+  );
+}
+
+function hasPaperclipRuntimeEnvMarker(snapshot: LocalProcessSnapshot) {
+  const markers = snapshot.paperclipRuntimeMarkers;
+  if (!markers) return false;
+  return PAPERCLIP_RUNTIME_MARKER_KEYS.some((key) => typeof markers[key] === "string" && markers[key]!.trim().length > 0);
+}
+
+function resolveCommandLinePathToken(token: string, cwd: string | null | undefined) {
+  const cleaned = cleanCommandLinePathToken(token);
+  if (!cleaned) return null;
+  if (path.isAbsolute(cleaned)) return normalizeProcessPath(cleaned);
+  if (!cwd || !/[\\/]/.test(cleaned)) return null;
+  return normalizeProcessPath(path.resolve(cwd, cleaned));
+}
+
+function commandLineHasPaperclipEntrypoint(commandLine: string, root: string, cwd: string | null | undefined) {
+  if (!commandLine || !root) return false;
+  for (const token of tokenizeCommandLine(commandLine)) {
+    const candidates = [token];
+    const equalsIndex = token.indexOf("=");
+    if (equalsIndex >= 0) candidates.push(token.slice(equalsIndex + 1));
+
+    for (const candidate of candidates) {
+      const resolved = resolveCommandLinePathToken(candidate, cwd);
+      if (!resolved || !isPathContainedByRoot(resolved, root)) continue;
+      const relative = path.relative(root, resolved).split(path.sep).join("/");
+      if (PAPERCLIP_RUNTIME_ENTRYPOINTS.has(relative)) return true;
+    }
+  }
+  return false;
+}
+
+function getPaperclipOwnershipEvidence(snapshot: LocalProcessSnapshot, root: string) {
+  if (hasPaperclipRuntimeEnvMarker(snapshot)) return "paperclip_runtime_env" as const;
+  if (commandLineHasPaperclipEntrypoint(snapshot.commandLine, root, snapshot.cwd)) return "paperclip_entrypoint" as const;
+  return null;
+}
+
+function normalizeManagedProcessIds(input?: Iterable<number | null | undefined>) {
+  const ids = new Set<number>();
+  for (const value of input ?? []) {
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+      ids.add(value);
+    }
+  }
+  return ids;
+}
+
+function collectManagedProcessIdsFromRegistry(records: LocalServiceRegistryRecord[]) {
+  const ids = new Set<number>();
+  for (const record of records) {
+    ids.add(record.pid);
+    if (record.processGroupId) ids.add(record.processGroupId);
+    const childPid = record.metadata?.childPid;
+    if (typeof childPid === "number" && Number.isInteger(childPid) && childPid > 0) {
+      ids.add(childPid);
+    }
+  }
+  return ids;
+}
+
+export function selectOrphanedPaperclipRuntimeProcesses(input: {
+  processes: LocalProcessSnapshot[];
+  containmentRoots: string[];
+  managedProcessIds?: Iterable<number | null | undefined>;
+  currentProcessId?: number;
+  currentProcessGroupId?: number | null;
+}): OrphanedPaperclipRuntimeProcess[] {
+  const roots = Array.from(
+    new Set(
+      input.containmentRoots
+        .map((root) => normalizeProcessPath(root))
+        .filter(isUsableContainmentRoot),
+    ),
+  ).sort((left, right) => right.length - left.length);
+  if (roots.length === 0) return [];
+
+  const managedProcessIds = normalizeManagedProcessIds(input.managedProcessIds);
+  const currentProcessId = input.currentProcessId ?? process.pid;
+  const currentProcessGroupId = input.currentProcessGroupId ?? null;
+  const selected: OrphanedPaperclipRuntimeProcess[] = [];
+
+  for (const processSnapshot of input.processes) {
+    if (!Number.isInteger(processSnapshot.pid) || processSnapshot.pid <= 0) continue;
+    if (processSnapshot.pid === currentProcessId) continue;
+    if (managedProcessIds.has(processSnapshot.pid)) continue;
+    if (processSnapshot.processGroupId && managedProcessIds.has(processSnapshot.processGroupId)) continue;
+    if (currentProcessGroupId && processSnapshot.processGroupId === currentProcessGroupId) continue;
+    if (!looksLikeNodeRuntimeProcess(processSnapshot)) continue;
+
+    let matchedRoot: string | null = null;
+    let containmentEvidence: "cwd" | "command" | null = null;
+    let ownershipEvidence: OrphanedPaperclipRuntimeProcess["ownershipEvidence"] | null = null;
+    for (const root of roots) {
+      const evidence = getPaperclipOwnershipEvidence(processSnapshot, root);
+      if (!evidence) continue;
+      if (isPathContainedByRoot(processSnapshot.cwd, root)) {
+        matchedRoot = root;
+        containmentEvidence = "cwd";
+        ownershipEvidence = evidence;
+        break;
+      }
+      if (commandLineHasContainedPath(processSnapshot.commandLine, root)) {
+        matchedRoot = root;
+        containmentEvidence = "command";
+        ownershipEvidence = evidence;
+        break;
+      }
+    }
+    if (!matchedRoot || !containmentEvidence || !ownershipEvidence) continue;
+
+    selected.push({
+      pid: processSnapshot.pid,
+      processGroupId: processSnapshot.processGroupId,
+      commandName: processSnapshot.commandName,
+      commandLine: normalizeWhitespace(processSnapshot.commandLine),
+      cwd: processSnapshot.cwd,
+      matchedRoot,
+      containmentEvidence,
+      ownershipEvidence,
+    });
+  }
+
+  return selected.sort((left, right) => left.pid - right.pid);
 }
 
 function sanitizeServiceKeySegment(value: string, fallback: string): string {
@@ -175,6 +449,144 @@ export async function listLocalServiceRegistryRecords(filter?: {
   } catch {
     return [];
   }
+}
+
+async function readProcessCwd(pid: number) {
+  if (process.platform !== "linux") return null;
+  try {
+    return await fs.realpath(`/proc/${pid}/cwd`);
+  } catch {
+    return null;
+  }
+}
+
+async function readProcessPaperclipRuntimeMarkers(pid: number): Promise<PaperclipRuntimeMarkers | null> {
+  if (process.platform !== "linux") return null;
+  try {
+    const raw = await fs.readFile(`/proc/${pid}/environ`, "utf8");
+    const markers: PaperclipRuntimeMarkers = {};
+    for (const entry of raw.split("\0")) {
+      const equalsIndex = entry.indexOf("=");
+      if (equalsIndex <= 0) continue;
+      const key = entry.slice(0, equalsIndex);
+      if (!PAPERCLIP_RUNTIME_MARKER_KEY_SET.has(key)) continue;
+      const value = entry.slice(equalsIndex + 1);
+      if (value.trim().length > 0) {
+        markers[key as keyof PaperclipRuntimeMarkers] = value;
+      }
+    }
+    return Object.keys(markers).length > 0 ? markers : null;
+  } catch {
+    return null;
+  }
+}
+
+function parsePsProcessLine(line: string): LocalProcessSnapshot | null {
+  const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/);
+  if (!match) return null;
+  const pid = Number.parseInt(match[1]!, 10);
+  const parentPid = Number.parseInt(match[2]!, 10);
+  const processGroupId = Number.parseInt(match[3]!, 10);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return {
+    pid,
+    parentPid: Number.isInteger(parentPid) && parentPid > 0 ? parentPid : null,
+    processGroupId: Number.isInteger(processGroupId) && processGroupId > 0 ? processGroupId : null,
+    commandName: match[4] ?? "",
+    commandLine: match[5]?.trim() || match[4] || "",
+    cwd: null,
+  };
+}
+
+export async function listLocalProcessSnapshots(): Promise<LocalProcessSnapshot[]> {
+  if (process.platform === "win32") return [];
+  try {
+    const { stdout } = await execFileAsync("ps", ["-axo", "pid=,ppid=,pgid=,comm=,args="]);
+    const parsed = stdout
+      .split(/\r?\n/)
+      .map(parsePsProcessLine)
+      .filter((entry): entry is LocalProcessSnapshot => entry !== null);
+    return await Promise.all(
+      parsed.map(async (entry) => ({
+        ...entry,
+        cwd: await readProcessCwd(entry.pid),
+        paperclipRuntimeMarkers: await readProcessPaperclipRuntimeMarkers(entry.pid),
+      })),
+    );
+  } catch {
+    return [];
+  }
+}
+
+async function readCurrentProcessGroupId() {
+  if (process.platform === "win32") return null;
+  try {
+    const { stdout } = await execFileAsync("ps", ["-o", "pgid=", "-p", String(process.pid)]);
+    const parsed = Number.parseInt(stdout.trim(), 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function cleanupOrphanedPaperclipRuntimeProcesses(input: {
+  containmentRoots: string[];
+  dryRun?: boolean;
+  additionalManagedProcessIds?: Iterable<number | null | undefined>;
+  processSnapshots?: LocalProcessSnapshot[];
+  registryRecords?: LocalServiceRegistryRecord[];
+  currentProcessId?: number;
+  currentProcessGroupId?: number | null;
+  terminate?: (record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId">) => Promise<void>;
+}): Promise<OrphanedPaperclipRuntimeCleanupResult> {
+  const processSnapshots = input.processSnapshots ?? await listLocalProcessSnapshots();
+  const registryRecords = input.registryRecords ?? await listLocalServiceRegistryRecords();
+  const managedProcessIds = collectManagedProcessIdsFromRegistry(registryRecords);
+  for (const id of input.additionalManagedProcessIds ?? []) {
+    if (typeof id === "number" && Number.isInteger(id) && id > 0) {
+      managedProcessIds.add(id);
+    }
+  }
+  const currentProcessGroupId = input.currentProcessGroupId ?? await readCurrentProcessGroupId();
+  const candidates = selectOrphanedPaperclipRuntimeProcesses({
+    processes: processSnapshots,
+    containmentRoots: input.containmentRoots,
+    managedProcessIds,
+    currentProcessId: input.currentProcessId,
+    currentProcessGroupId,
+  });
+
+  if (input.dryRun) {
+    return {
+      scanned: processSnapshots.length,
+      matched: candidates.length,
+      terminated: 0,
+      dryRun: true,
+      candidates,
+    };
+  }
+
+  const terminate = input.terminate ?? ((record) => terminateLocalService(record));
+  const seenTargets = new Set<string>();
+  let terminated = 0;
+  for (const candidate of candidates) {
+    const targetKey = candidate.processGroupId ? `pgid:${candidate.processGroupId}` : `pid:${candidate.pid}`;
+    if (seenTargets.has(targetKey)) continue;
+    seenTargets.add(targetKey);
+    await terminate({
+      pid: candidate.pid,
+      processGroupId: candidate.processGroupId,
+    });
+    terminated += 1;
+  }
+
+  return {
+    scanned: processSnapshots.length,
+    matched: candidates.length,
+    terminated,
+    dryRun: false,
+    candidates,
+  };
 }
 
 export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {

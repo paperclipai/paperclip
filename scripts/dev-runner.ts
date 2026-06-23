@@ -189,6 +189,9 @@ const devService = createDevServiceIdentity({
   networkProfile: tailscaleAuth ? `legacy:${bindMode ?? "lan"}` : (bindMode ?? "default"),
   port: serverPort,
 });
+env.PAPERCLIP_MANAGED_RUNTIME = "paperclip-dev";
+env.PAPERCLIP_LOCAL_SERVICE_KEY = devService.serviceKey;
+env.PAPERCLIP_RUNTIME_SERVICE_NAME = devService.serviceName;
 
 const existingRunner = await findAdoptableLocalService({
   serviceKey: devService.serviceKey,

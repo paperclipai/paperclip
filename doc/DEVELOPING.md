@@ -63,6 +63,17 @@ pnpm dev:list
 pnpm dev:stop
 ```
 
+When embedded PostgreSQL is used, server startup also performs a conservative
+stale-runtime cleanup before opening the database. It only targets unregistered
+Node-family runtime processes with Paperclip ownership evidence: an allowlisted
+Paperclip runtime env marker or a known Paperclip server/dev-runner entrypoint,
+plus cwd or command-line containment under the current Paperclip repo/worktree
+or instance roots. It skips the current process group plus registered runtime
+services. This is the automatic repair path for worktree-local `too many
+clients` failures caused by orphaned Paperclip dev servers holding embedded
+Postgres connections. Set
+`PAPERCLIP_STALE_RUNTIME_CLEANUP=false` to disable this startup repair.
+
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
 Tailscale/private-auth dev mode:

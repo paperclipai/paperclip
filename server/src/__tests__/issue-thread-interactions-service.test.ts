@@ -1345,13 +1345,23 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   });
 
   describe("workspace_finalize accept gate", () => {
-    async function seedAcceptGateFixture() {
+    type AcceptGateInteractionKind = "request_confirmation" | "request_checkbox_confirmation";
+
+    async function seedAcceptGateFixture(options?: {
+      kind?: AcceptGateInteractionKind;
+      sourceRunId?: string | null;
+    }) {
       const companyId = randomUUID();
       const projectId = randomUUID();
       const projectWorkspaceId = randomUUID();
       const executionWorkspaceId = randomUUID();
       const issueId = randomUUID();
       const goalId = randomUUID();
+      const agentId = randomUUID();
+      const sourceRunId =
+        options?.sourceRunId === null ? null : options?.sourceRunId ?? randomUUID();
+      const foreignRunId = randomUUID();
+      const kind = options?.kind ?? "request_confirmation";
 
       await db.insert(companies).values({
         id: companyId,
@@ -1375,6 +1385,40 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         visibility: "default",
         isPrimary: true,
       });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(heartbeatRuns).values([
+        ...(sourceRunId
+          ? [
+              {
+                id: sourceRunId,
+                companyId,
+                agentId,
+                invocationSource: "manual",
+                status: "succeeded",
+                startedAt: new Date("2026-05-23T21:55:00.000Z"),
+                finishedAt: new Date("2026-05-23T22:05:00.000Z"),
+              },
+            ]
+          : []),
+        {
+          id: foreignRunId,
+          companyId,
+          agentId,
+          invocationSource: "manual",
+          status: "running",
+          startedAt: new Date("2026-05-23T22:10:00.000Z"),
+        },
+      ]);
       await db.insert(executionWorkspaces).values({
         id: executionWorkspaceId,
         companyId,
@@ -1404,107 +1448,63 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         executionWorkspaceId,
       });
 
+      const payload = kind === "request_checkbox_confirmation"
+        ? {
+            version: 1 as const,
+            prompt: "Which files should be accepted?",
+            options: [
+              { id: "file-a", label: "a.txt" },
+              { id: "file-b", label: "b.txt" },
+            ],
+            minSelected: 0,
+            maxSelected: 2,
+          }
+        : {
+            version: 1 as const,
+            prompt: "Mark this issue done?",
+          };
+
       const created = await interactionsSvc.create({
         id: issueId,
         companyId,
       }, {
-        kind: "request_confirmation",
+        kind,
         continuationPolicy: "wake_assignee",
-        payload: {
-          version: 1,
-          prompt: "Mark this issue done?",
-        },
+        sourceRunId,
+        payload,
       }, {
         userId: "local-board",
       });
 
-      return { companyId, projectId, executionWorkspaceId, issueId, goalId, interactionId: created.id };
+      return {
+        companyId,
+        projectId,
+        executionWorkspaceId,
+        issueId,
+        goalId,
+        interactionId: created.id,
+        sourceRunId,
+        foreignRunId,
+      };
     }
 
-    it("refuses accept when the issue's latest workspace operation is not a successful workspace_finalize", async () => {
-      const { companyId, executionWorkspaceId, issueId, goalId, interactionId } = await seedAcceptGateFixture();
-
-      // A run touched the workspace (prepare) but never recorded workspace_finalize.
-      await db.insert(workspaceOperations).values({
-        companyId,
-        executionWorkspaceId,
-        phase: "worktree_prepare",
-        status: "succeeded",
-        startedAt: new Date("2026-05-23T22:00:00.000Z"),
-      });
-
-      await expect(
-        interactionsSvc.acceptInteraction(
-          { id: issueId, companyId, goalId, projectId: null },
-          interactionId,
-          {},
-          { userId: "local-board" },
-        ),
-      ).rejects.toMatchObject({
-        status: 409,
-        details: { executionWorkspaceId },
-      });
-
-      const row = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.id, interactionId))
-        .then((rows) => rows[0]);
-      expect(row?.status).toBe("pending");
-    });
-
-    it("refuses accept when the latest workspace operation is a failed workspace_finalize", async () => {
-      const { companyId, executionWorkspaceId, issueId, goalId, interactionId } = await seedAcceptGateFixture();
+    it("allows request_confirmation accept when the source run finalized but a foreign run is mid-flight", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId, sourceRunId, foreignRunId } =
+        await seedAcceptGateFixture();
 
       await db.insert(workspaceOperations).values({
         companyId,
         executionWorkspaceId,
-        phase: "worktree_prepare",
+        heartbeatRunId: sourceRunId,
+        phase: "workspace_finalize",
         status: "succeeded",
         startedAt: new Date("2026-05-23T22:00:00.000Z"),
       });
       await db.insert(workspaceOperations).values({
         companyId,
         executionWorkspaceId,
-        phase: "workspace_finalize",
-        status: "failed",
-        startedAt: new Date("2026-05-23T22:05:00.000Z"),
-      });
-
-      await expect(
-        interactionsSvc.acceptInteraction(
-          { id: issueId, companyId, goalId, projectId: null },
-          interactionId,
-          {},
-          { userId: "local-board" },
-        ),
-      ).rejects.toMatchObject({
-        status: 409,
-        details: { executionWorkspaceId },
-      });
-
-      const row = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.id, interactionId))
-        .then((rows) => rows[0]);
-      expect(row?.status).toBe("pending");
-    });
-
-    it("allows accept once a successful workspace_finalize lands as the latest operation", async () => {
-      const { companyId, executionWorkspaceId, issueId, goalId, interactionId } = await seedAcceptGateFixture();
-
-      await db.insert(workspaceOperations).values({
-        companyId,
-        executionWorkspaceId,
-        phase: "workspace_finalize",
-        status: "failed",
-        startedAt: new Date("2026-05-23T22:05:00.000Z"),
-      });
-      await db.insert(workspaceOperations).values({
-        companyId,
-        executionWorkspaceId,
-        phase: "workspace_finalize",
+        heartbeatRunId: foreignRunId,
+        phase: "worktree_prepare",
         status: "succeeded",
         startedAt: new Date("2026-05-23T22:10:00.000Z"),
       });
@@ -1518,6 +1518,208 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
       expect(accepted.interaction).toMatchObject({
         id: interactionId,
+        kind: "request_confirmation",
+        status: "accepted",
+      });
+    });
+
+    it("refuses request_confirmation accept until the source run records a successful workspace_finalize", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId, sourceRunId } =
+        await seedAcceptGateFixture();
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: sourceRunId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      });
+
+      await expect(
+        interactionsSvc.acceptInteraction(
+          { id: issueId, companyId, goalId, projectId: null },
+          interactionId,
+          {},
+          { userId: "local-board" },
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining(
+          "the run that created this interaction has not finished syncing its workspace",
+        ),
+        details: { executionWorkspaceId, sourceRunId },
+      });
+
+      const row = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0]);
+      expect(row?.status).toBe("pending");
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: sourceRunId,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        {},
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: interactionId,
+        kind: "request_confirmation",
+        status: "accepted",
+      });
+    });
+
+    it("allows request_confirmation accept when sourceRunId is null", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId, foreignRunId } =
+        await seedAcceptGateFixture({ sourceRunId: null });
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: foreignRunId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:10:00.000Z"),
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        {},
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: interactionId,
+        kind: "request_confirmation",
+        status: "accepted",
+      });
+    });
+
+    it("allows request_checkbox_confirmation accept when the source run finalized but a foreign run is mid-flight", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId, sourceRunId, foreignRunId } =
+        await seedAcceptGateFixture({ kind: "request_checkbox_confirmation" });
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: sourceRunId,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      });
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: foreignRunId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:10:00.000Z"),
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        { selectedOptionIds: ["file-b"] },
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: interactionId,
+        kind: "request_checkbox_confirmation",
+        status: "accepted",
+        result: {
+          selectedOptionIds: ["file-b"],
+        },
+      });
+    });
+
+    it("refuses request_checkbox_confirmation accept until the source run records a successful workspace_finalize", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId, sourceRunId } =
+        await seedAcceptGateFixture({ kind: "request_checkbox_confirmation" });
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: sourceRunId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      });
+
+      await expect(
+        interactionsSvc.acceptInteraction(
+          { id: issueId, companyId, goalId, projectId: null },
+          interactionId,
+          { selectedOptionIds: ["file-a"] },
+          { userId: "local-board" },
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining(
+          "the run that created this interaction has not finished syncing its workspace",
+        ),
+        details: { executionWorkspaceId, sourceRunId },
+      });
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: sourceRunId,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:10:00.000Z"),
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        { selectedOptionIds: ["file-a"] },
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: interactionId,
+        kind: "request_checkbox_confirmation",
+        status: "accepted",
+      });
+    });
+
+    it("allows request_checkbox_confirmation accept when sourceRunId is null", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId, foreignRunId } =
+        await seedAcceptGateFixture({ kind: "request_checkbox_confirmation", sourceRunId: null });
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: foreignRunId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:10:00.000Z"),
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        { selectedOptionIds: ["file-a"] },
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: interactionId,
+        kind: "request_checkbox_confirmation",
         status: "accepted",
       });
     });
@@ -1528,11 +1730,12 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       // workspace_finalize gate (PAPA-440) must not apply here. Without this
       // carve-out the board cannot triage suggested tasks on an issue whose
       // latest workspace op is still worktree_prepare.
-      const { companyId, executionWorkspaceId, issueId, goalId } = await seedAcceptGateFixture();
+      const { companyId, executionWorkspaceId, issueId, goalId, foreignRunId } = await seedAcceptGateFixture();
 
       await db.insert(workspaceOperations).values({
         companyId,
         executionWorkspaceId,
+        heartbeatRunId: foreignRunId,
         phase: "worktree_prepare",
         status: "succeeded",
         startedAt: new Date("2026-05-28T22:00:00.000Z"),

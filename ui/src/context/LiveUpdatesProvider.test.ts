@@ -140,6 +140,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       queryKey: queryKeys.issues.documentRevisions("issue-1", "plan"),
     });
     expect(invalidations).toContainEqual({
+      queryKey: ["issues", "document-annotations", "issue-1", "plan"],
+    });
+    expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.documents("PAP-9403"),
     });
     expect(invalidations).toContainEqual({
@@ -147,6 +150,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.documentRevisions("PAP-9403", "plan"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: ["issues", "document-annotations", "PAP-9403", "plan"],
     });
     expect(invalidations).not.toContainEqual({
       queryKey: queryKeys.issues.documents("issue-1"),
@@ -185,6 +191,83 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
     expect(invalidations).toContainEqual({
       queryKey: ["issues", "document-revisions", "issue-1"],
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: ["issues", "document-annotations", "issue-1"],
+    });
+  });
+
+  it("refreshes document annotation caches when annotation activity arrives", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        action: "issue.document_annotation_comment_added",
+        actorType: "user",
+        actorId: "user-2",
+        details: {
+          identifier: "PAP-9403",
+          documentKey: "plan",
+          threadId: "thread-1",
+          commentId: "comment-1",
+        },
+      },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: ["issues", "document-annotations", "issue-1", "plan"],
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: ["issues", "document-annotations", "PAP-9403", "plan"],
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.documents("issue-1"),
+    });
+  });
+
+  it("refreshes routine description annotation caches when routine annotation activity arrives", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "routine",
+        entityId: "routine-1",
+        action: "routine.document_annotation_comment_added",
+        actorType: "user",
+        actorId: "user-2",
+        details: {
+          documentKey: "description",
+          threadId: "thread-1",
+          commentId: "comment-1",
+        },
+      },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: ["routines"],
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: ["routines", "document-annotations", "routine-1", "description"],
     });
   });
 

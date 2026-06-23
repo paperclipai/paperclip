@@ -689,6 +689,94 @@ export async function listUnfinalizedExecutionWorkspaceIds(
   return unfinalized;
 }
 
+async function listPendingFinalizeBlockerIssueIds(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  blockerWorkspacePairs: Array<{ blockerIssueId: string; executionWorkspaceId: string }>,
+): Promise<Set<string>> {
+  const pending = new Set<string>();
+  const blockerIssueIds = [...new Set(blockerWorkspacePairs.map((pair) => pair.blockerIssueId))];
+  const executionWorkspaceIds = [...new Set(blockerWorkspacePairs.map((pair) => pair.executionWorkspaceId))];
+  if (blockerIssueIds.length === 0 || executionWorkspaceIds.length === 0) return pending;
+
+  const rows = await dbOrTx
+    .select({
+      issueId: workspaceOperations.issueId,
+      executionWorkspaceId: workspaceOperations.executionWorkspaceId,
+      phase: workspaceOperations.phase,
+      status: workspaceOperations.status,
+      startedAt: workspaceOperations.startedAt,
+    })
+    .from(workspaceOperations)
+    .where(
+      and(
+        eq(workspaceOperations.companyId, companyId),
+        inArray(workspaceOperations.issueId, blockerIssueIds),
+        inArray(workspaceOperations.executionWorkspaceId, executionWorkspaceIds),
+      ),
+    );
+
+  const latestByBlockerWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
+  for (const row of rows) {
+    if (!row.issueId || !row.executionWorkspaceId) continue;
+    const key = `${row.issueId}:${row.executionWorkspaceId}`;
+    const current = latestByBlockerWorkspace.get(key);
+    if (!current || row.startedAt > current.startedAt) {
+      latestByBlockerWorkspace.set(key, {
+        phase: row.phase,
+        status: row.status,
+        startedAt: row.startedAt,
+      });
+    }
+  }
+
+  for (const pair of blockerWorkspacePairs) {
+    const latest = latestByBlockerWorkspace.get(`${pair.blockerIssueId}:${pair.executionWorkspaceId}`);
+    if (!latest) continue; // no attributed ops recorded -> nothing to finalize for this blocker
+    if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
+    pending.add(pair.blockerIssueId);
+  }
+
+  return pending;
+}
+
+/**
+ * Returns whether a specific run's operations on a specific execution workspace
+ * reached the workspace_finalize barrier.
+ *
+ * Runs with no operations on the workspace are considered finalized because
+ * they never touched the workspace state that accept/review gates protect.
+ */
+export async function runWorkspaceIsFinalized(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  executionWorkspaceId: string,
+  runId: string,
+): Promise<boolean> {
+  const rows = await dbOrTx
+    .select({
+      phase: workspaceOperations.phase,
+      status: workspaceOperations.status,
+      startedAt: workspaceOperations.startedAt,
+    })
+    .from(workspaceOperations)
+    .where(
+      and(
+        eq(workspaceOperations.companyId, companyId),
+        eq(workspaceOperations.executionWorkspaceId, executionWorkspaceId),
+        eq(workspaceOperations.heartbeatRunId, runId),
+      ),
+    );
+
+  let latest: { phase: string; status: string; startedAt: Date } | null = null;
+  for (const row of rows) {
+    if (!latest || row.startedAt > latest.startedAt) latest = row;
+  }
+
+  if (!latest) return true;
+  return latest.phase === "workspace_finalize" && latest.status === "succeeded";
+}
+
 async function listIssueDependencyReadinessMap(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -718,19 +806,22 @@ async function listIssueDependencyReadinessMap(
       ),
     );
 
-  // Collect executionWorkspaceIds of "done" blockers — these are the only ones
+  // Collect issue/workspace pairs of "done" blockers — these are the only ones
   // subject to the workspace-finalize barrier. Blockers that aren't done already
   // mark the dependent as not-ready and don't need a finalize check.
-  const doneBlockerWorkspaceIds = new Set<string>();
+  const doneBlockerWorkspacePairs: Array<{ blockerIssueId: string; executionWorkspaceId: string }> = [];
   for (const row of blockerRows) {
     if (row.blockerStatus === "done" && row.blockerExecutionWorkspaceId) {
-      doneBlockerWorkspaceIds.add(row.blockerExecutionWorkspaceId);
+      doneBlockerWorkspacePairs.push({
+        blockerIssueId: row.blockerIssueId,
+        executionWorkspaceId: row.blockerExecutionWorkspaceId,
+      });
     }
   }
-  const unfinalizedWorkspaceIds = await listUnfinalizedExecutionWorkspaceIds(
+  const pendingFinalizeBlockerIssueIds = await listPendingFinalizeBlockerIssueIds(
     dbOrTx,
     companyId,
-    [...doneBlockerWorkspaceIds],
+    doneBlockerWorkspacePairs,
   );
 
   for (const row of blockerRows) {
@@ -745,7 +836,7 @@ async function listIssueDependencyReadinessMap(
       current.isDependencyReady = false;
     } else if (
       row.blockerExecutionWorkspaceId &&
-      unfinalizedWorkspaceIds.has(row.blockerExecutionWorkspaceId)
+      pendingFinalizeBlockerIssueIds.has(row.blockerIssueId)
     ) {
       // Workspace-finalize barrier: the blocker's most recent run on its
       // execution workspace hasn't recorded a successful workspace_finalize.

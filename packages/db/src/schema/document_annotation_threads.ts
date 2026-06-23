@@ -10,13 +10,15 @@ import { companies } from "./companies.js";
 import { documentRevisions } from "./document_revisions.js";
 import { documents } from "./documents.js";
 import { issues } from "./issues.js";
+import { routines } from "./routines.js";
 
 export const documentAnnotationThreads = pgTable(
   "document_annotation_threads",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
-    issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
+    issueId: uuid("issue_id").references(() => issues.id, { onDelete: "cascade" }),
+    routineId: uuid("routine_id").references(() => routines.id, { onDelete: "cascade" }),
     documentId: uuid("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
     documentKey: text("document_key").notNull(),
     status: text("status").$type<DocumentAnnotationThreadStatus>().notNull().default("open"),
@@ -54,6 +56,11 @@ export const documentAnnotationThreads = pgTable(
     companyIssueStatusIdx: index("document_annotation_threads_company_issue_status_idx").on(
       table.companyId,
       table.issueId,
+      table.status,
+    ),
+    companyRoutineStatusIdx: index("document_annotation_threads_company_routine_status_idx").on(
+      table.companyId,
+      table.routineId,
       table.status,
     ),
     companyCurrentRevisionOpenIdx: index("document_annotation_threads_company_current_revision_open_idx").on(

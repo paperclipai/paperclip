@@ -101,6 +101,7 @@ const mockRoutineService = vi.hoisted(() => ({
   list: vi.fn(),
   get: vi.fn(),
   getDetail: vi.fn(),
+  getDescriptionDocument: vi.fn(),
   update: vi.fn(),
   create: vi.fn(),
   listRevisions: vi.fn(),
@@ -113,6 +114,15 @@ const mockRoutineService = vi.hoisted(() => ({
   rotateTriggerSecret: vi.fn(),
   runRoutine: vi.fn(),
   firePublicTrigger: vi.fn(),
+}));
+
+const mockAnnotationService = vi.hoisted(() => ({
+  listThreadsForRoutineDocument: vi.fn(),
+  getThreadForRoutineDocument: vi.fn(),
+  createRoutineThread: vi.fn(),
+  addRoutineComment: vi.fn(),
+  updateRoutineThread: vi.fn(),
+  remapOpenThreadsForRoutineDocument: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -149,6 +159,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
+    documentAnnotationService: () => mockAnnotationService,
     logActivity: mockLogActivity,
     routineService: () => mockRoutineService,
   }));
@@ -205,6 +216,96 @@ describe("routine routes", () => {
     });
     mockAccessService.canUser.mockResolvedValue(false);
     mockLogActivity.mockResolvedValue(undefined);
+    mockRoutineService.getDescriptionDocument.mockResolvedValue({
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId,
+      routineId,
+      key: "description",
+      title: "Routine description",
+      format: "markdown",
+      body: "Alpha selected text omega",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: null,
+      createdByUserId: null,
+      updatedByAgentId: null,
+      updatedByUserId: null,
+      createdAt: new Date("2026-03-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-20T00:00:00.000Z"),
+    });
+    mockAnnotationService.listThreadsForRoutineDocument.mockResolvedValue([]);
+    mockAnnotationService.getThreadForRoutineDocument.mockResolvedValue(null);
+    const annotationThread = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      issueId: null,
+      routineId,
+      documentId: "99999999-9999-4999-8999-999999999999",
+      documentKey: "description",
+      status: "open",
+      anchorState: "active",
+      anchorConfidence: "exact",
+      originalRevisionId: revisionId,
+      originalRevisionNumber: 1,
+      currentRevisionId: revisionId,
+      currentRevisionNumber: 1,
+      selectedText: "selected text",
+      prefixText: "Alpha ",
+      suffixText: " omega",
+      normalizedStart: 6,
+      normalizedEnd: 19,
+      markdownStart: 6,
+      markdownEnd: 19,
+      anchorSelector: {
+        quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+        position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+      },
+      createdByAgentId: null,
+      createdByUserId: "board-user",
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-03-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-20T00:00:00.000Z"),
+      comments: [{
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        companyId,
+        threadId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        issueId: null,
+        routineId,
+        documentId: "99999999-9999-4999-8999-999999999999",
+        body: "Please review",
+        authorType: "user",
+        authorAgentId: null,
+        authorUserId: "board-user",
+        createdByRunId: null,
+        issueCommentId: null,
+        createdAt: new Date("2026-03-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-20T00:00:00.000Z"),
+      }],
+    };
+    mockAnnotationService.createRoutineThread.mockResolvedValue(annotationThread);
+    mockAnnotationService.addRoutineComment.mockResolvedValue({
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      companyId,
+      threadId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      issueId: null,
+      routineId,
+      documentId: "99999999-9999-4999-8999-999999999999",
+      body: "Reply",
+      authorType: "user",
+      authorAgentId: null,
+      authorUserId: "board-user",
+      createdByRunId: null,
+      issueCommentId: null,
+      createdAt: new Date("2026-03-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-20T00:00:00.000Z"),
+    });
+    mockAnnotationService.updateRoutineThread.mockResolvedValue({
+      ...annotationThread,
+      status: "resolved",
+    });
+    mockAnnotationService.remapOpenThreadsForRoutineDocument.mockResolvedValue([]);
   });
 
   it("passes project filters to the routine list service", async () => {
@@ -238,6 +339,86 @@ describe("routine routes", () => {
     expect(res.status).toBe(200);
     expect(mockRoutineService.listRevisions).toHaveBeenCalledWith(routineId);
     expect(res.body[0]).toMatchObject({ id: revisionId, revisionNumber: 1 });
+  });
+
+  it("creates, replies to, and resolves routine description annotation threads", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const selector = {
+      quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+      position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+    };
+
+    const created = await request(app)
+      .post(`/api/routines/${routineId}/description/annotations`)
+      .send({
+        baseRevisionId: revisionId,
+        baseRevisionNumber: 1,
+        selector,
+        body: "Please review",
+      })
+      .expect(201);
+
+    expect(created.body).toMatchObject({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      routineId,
+      issueId: null,
+      documentKey: "description",
+    });
+    expect(mockAnnotationService.createRoutineThread).toHaveBeenCalledWith(
+      routineId,
+      "description",
+      expect.objectContaining({ body: "Please review" }),
+      expect.objectContaining({ actorType: "user", userId: "board-user" }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "routine.document_annotation_thread_created",
+      entityType: "routine",
+      entityId: routineId,
+      details: expect.objectContaining({ documentKey: "description" }),
+    }));
+
+    await request(app)
+      .post(`/api/routines/${routineId}/description/annotations/${created.body.id}/comments`)
+      .send({ body: "Reply" })
+      .expect(201);
+    expect(mockAnnotationService.addRoutineComment).toHaveBeenCalledWith(
+      routineId,
+      "description",
+      created.body.id,
+      expect.objectContaining({ body: "Reply" }),
+      expect.objectContaining({ actorType: "user", userId: "board-user" }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "routine.document_annotation_comment_added",
+      entityType: "routine",
+      entityId: routineId,
+    }));
+
+    const resolved = await request(app)
+      .patch(`/api/routines/${routineId}/description/annotations/${created.body.id}`)
+      .send({ status: "resolved" })
+      .expect(200);
+
+    expect(resolved.body.status).toBe("resolved");
+    expect(mockAnnotationService.updateRoutineThread).toHaveBeenCalledWith(
+      routineId,
+      "description",
+      created.body.id,
+      expect.objectContaining({ status: "resolved" }),
+      expect.objectContaining({ actorType: "user", userId: "board-user" }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "routine.document_annotation_thread_resolved",
+      entityType: "routine",
+      entityId: routineId,
+    }));
   });
 
   it("blocks routine revision reads across company scope", async () => {

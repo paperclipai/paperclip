@@ -421,6 +421,7 @@ export type {
   Routine,
   RoutineEnvConfig,
   RoutineManagedByPlugin,
+  RoutineDescriptionDocument,
   RoutineVariable,
   RoutineVariableDefaultValue,
   RoutineRevisionSnapshotRoutineV1,

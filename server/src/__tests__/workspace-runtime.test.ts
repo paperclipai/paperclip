@@ -200,6 +200,7 @@ function createWorkspaceOperationRecorderDouble() {
         companyId: "company-1",
         executionWorkspaceId,
         heartbeatRunId: "run-1",
+        issueId: null,
         phase: input.phase,
         command: input.command ?? null,
         cwd: input.cwd ?? null,
