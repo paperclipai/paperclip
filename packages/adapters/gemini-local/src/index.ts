@@ -12,20 +12,22 @@ export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
 export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
-  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
-  { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
+  { id: "gemini-3.5-flash-high", label: "Gemini 3.5 Flash (High)" },
+  { id: "gemini-3.5-flash-medium", label: "Gemini 3.5 Flash (Medium)" },
+  { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
+  { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+  { id: "claude-sonnet-4.6-thinking", label: "Claude Sonnet 4.6 (Thinking)" },
+  { id: "claude-opus-4.6-thinking", label: "Claude Opus 4.6 (Thinking)" },
+  { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (medium)" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use Gemini Flash Lite as the budget Gemini CLI lane while preserving the primary model.",
+    description: "Use Gemini 3.1 Pro (Low) as the budget lane while preserving the primary model.",
     adapterConfig: {
-      model: "gemini-2.5-flash-lite",
+      model: "gemini-3.1-pro-low",
     },
     source: "adapter_default",
   },
