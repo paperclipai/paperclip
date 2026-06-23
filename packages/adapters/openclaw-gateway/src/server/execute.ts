@@ -86,7 +86,7 @@ type GatewayClientRequestOptions = {
   expectFinal?: boolean;
 };
 
-const PROTOCOL_VERSION = 3;
+const PROTOCOL_VERSION = 4;
 const DEFAULT_SCOPES = ["operator.admin"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
@@ -337,7 +337,7 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
 
 const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
 
-function resolveClaimedApiKeyPath(value: unknown): string {
+export function resolveClaimedApiKeyPath(value: unknown): string {
   return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
 }
 
@@ -369,8 +369,8 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
+  claimedApiKeyPath: string,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -1114,12 +1114,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath);
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
+    claimedApiKeyPath,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1144,7 +1146,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  // Paperclip metadata requires protocol 5+ (OpenClaw ≤2026.6.x rejects unknown root properties).
+  // TODO: Re-enable when gateway supports protocol 5:
+  //   if (PROTOCOL_VERSION >= 5) {
+  //     agentParams.paperclip = paperclipPayload;
+  //   }
 
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
