@@ -10257,6 +10257,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
+
+      // Pre-fetch all agents that already have an active run (any task scope).
+      // A timer fire must not launch a concurrent run; it should be skipped until
+      // the prior run finishes. The coalescing logic inside enqueueWakeup uses
+      // isSameTaskScope which requires an exact taskKey match — it fails when the
+      // running run is issue-scoped (non-null taskKey) but the timer wakeup has
+      // null taskKey, causing a spurious concurrent run (CAR-941).
+      const activeRunRows = await db
+        .selectDistinct({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]));
+      const agentsWithActiveRun = new Set(activeRunRows.map((r) => r.agentId));
+
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
@@ -10270,6 +10283,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        if (agentsWithActiveRun.has(agent.id)) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
