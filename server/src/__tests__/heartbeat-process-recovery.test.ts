@@ -1039,6 +1039,49 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
+  it("escalates process_detached to process termination after grace period", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${child.pid} is still alive`,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Run was updated in March 2026; current time is well past the 5-minute grace period
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const updatedRun = await heartbeat.getRun(runId);
+    expect(updatedRun?.status).toBe("failed");
+    expect(updatedRun?.errorCode).toBe("process_detached");
+    expect(updatedRun?.error).toContain("exceeded grace period");
+    expect(updatedRun?.livenessState).toBe("failed");
+    expect(updatedRun?.livenessReason).toContain("process_detached");
+    expect(mockTerminateLocalService).toHaveBeenCalledWith(
+      expect.objectContaining({ pid: child.pid, processGroupId: null }),
+      { forceAfterMs: 1000 },
+    );
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, updatedRun!.wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("failed");
+
+    const stillActive = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")));
+    expect(stillActive).toHaveLength(0);
+  });
+
   it("releases active environment leases when an orphaned run is reaped", async () => {
     const { runId, issueId, companyId } = await seedRunFixture({
       processPid: 999_999_999,

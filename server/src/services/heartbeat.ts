@@ -7969,6 +7969,76 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+        } else {
+          // Check if the detached run has been orphaned for more than 5 minutes
+          const gracePeriodMs = 5 * 60 * 1000; // 5 minutes
+          const runUpdatedAt = run.updatedAt ? new Date(run.updatedAt).getTime() : now.getTime();
+          if (now.getTime() - runUpdatedAt > gracePeriodMs) {
+            // Escalate detached to process termination after grace period
+            await terminateHeartbeatRunProcess({
+              pid: run.processPid,
+              processGroupId: run.processGroupId,
+              graceMs: 1000, // 1 second grace for SIGTERM before SIGKILL
+            });
+            const escalationMessage = `Orphaned process_detached run exceeded grace period (${Math.round(gracePeriodMs / 60000)} min); terminating child pid ${run.processPid}`;
+            let finalizedRun = await setRunStatus(run.id, "failed", {
+              error: escalationMessage,
+              errorCode: DETACHED_PROCESS_ERROR_CODE,
+              finishedAt: now,
+              resultJson: mergeRunStopMetadataForAgent(
+                { adapterType, adapterConfig },
+                "failed",
+                {
+                  resultJson: parseObject(run.resultJson),
+                  errorCode: DETACHED_PROCESS_ERROR_CODE,
+                  errorMessage: escalationMessage,
+                },
+              ),
+            });
+            await setWakeupStatus(run.wakeupRequestId, "failed", {
+              finishedAt: now,
+              error: escalationMessage,
+            });
+            if (!finalizedRun) finalizedRun = await getRun(run.id);
+            if (!finalizedRun) continue;
+            finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+            await releaseEnvironmentLeasesForRun({
+              runId: finalizedRun.id,
+              companyId: finalizedRun.companyId,
+              agentId: finalizedRun.agentId,
+              status: finalizedRun.status,
+              failureReason: escalationMessage,
+            });
+            // Enqueue one retry matching processLossRetryCount logic
+            const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+            let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
+            if (shouldRetry) {
+              const agent = await getAgent(run.agentId);
+              if (agent) {
+                retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
+              }
+            } else {
+              await releaseIssueExecutionAndPromote(finalizedRun);
+            }
+            await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "error",
+              message: shouldRetry
+                ? `${escalationMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
+                : escalationMessage,
+              payload: {
+                processPid: run.processPid,
+                processGroupId: run.processGroupId,
+                ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+              },
+            });
+            await finalizeAgentStatus(run.agentId, "failed");
+            await startNextQueuedRunForAgent(run.agentId);
+            runningProcesses.delete(run.id);
+            reaped.push(run.id);
+            continue;
+          }
         }
         continue;
       }
