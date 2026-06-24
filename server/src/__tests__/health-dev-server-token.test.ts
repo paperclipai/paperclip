@@ -6,6 +6,7 @@ import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
+import { serverVersion } from "../version.js";
 
 const tempDirs: string[] = [];
 
@@ -95,8 +96,10 @@ describe("GET /health dev-server supervisor access", () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({
         status: "ok",
+        version: serverVersion,
         deploymentMode: "authenticated",
         deploymentExposure: "private",
+        authReady: true,
         bootstrapStatus: "ready",
         bootstrapInviteActive: false,
         devServer: {

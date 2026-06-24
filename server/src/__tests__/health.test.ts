@@ -96,8 +96,10 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       status: "ok",
+      version: serverVersion,
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      authReady: true,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -131,8 +133,10 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       status: "ok",
+      version: serverVersion,
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      authReady: true,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
