@@ -85,6 +85,7 @@ export function SearchableSelect<
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const pointerFocusRef = useRef(false);
+  const suppressNextTriggerFocusRef = useRef(false);
 
   const selectedOption = useMemo(() => {
     for (const group of groups) {
@@ -106,11 +107,19 @@ export function SearchableSelect<
 
   const hasOptions = filteredGroups.some((group) => group.options.length > 0);
 
-  function selectOption(option: TOption) {
-    if (option.disabled) return;
-    onValueChange(option.value, option);
+  function closePopover({ suppressTriggerFocus = false }: { suppressTriggerFocus?: boolean } = {}) {
+    if (suppressTriggerFocus) {
+      suppressNextTriggerFocusRef.current = true;
+    }
     setOpen(false);
     setQuery("");
+  }
+
+  function selectOption(option: TOption) {
+    if (option.disabled) return;
+    suppressNextTriggerFocusRef.current = true;
+    onValueChange(option.value, option);
+    closePopover();
   }
 
   return (
@@ -130,11 +139,19 @@ export function SearchableSelect<
             pointerFocusRef.current = true;
           }}
           onFocus={() => {
-            if (pointerFocusRef.current) {
-              pointerFocusRef.current = false;
+            const shouldIgnoreFocus = pointerFocusRef.current || suppressNextTriggerFocusRef.current;
+            pointerFocusRef.current = false;
+            suppressNextTriggerFocusRef.current = false;
+            if (shouldIgnoreFocus) {
               return;
             }
             setOpen(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && open) {
+              event.preventDefault();
+              closePopover();
+            }
           }}
           aria-expanded={open}
           role="combobox"
@@ -157,13 +174,15 @@ export function SearchableSelect<
             : "w-72 max-w-[min(32rem,calc(100vw-2rem))]",
           contentClassName,
         )}
+        onKeyDownCapture={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            closePopover({ suppressTriggerFocus: true });
+          }
+        }}
       >
-        <Command
-          shouldFilter={false}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") setOpen(false);
-          }}
-        >
+        <Command shouldFilter={false}>
           <CommandInput
             value={query}
             onValueChange={setQuery}

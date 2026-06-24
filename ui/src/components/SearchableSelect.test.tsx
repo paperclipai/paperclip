@@ -277,6 +277,17 @@ describe("SearchableSelect", () => {
 
     expect(container.querySelector("input[placeholder='Search options...']")).not.toBeNull();
     expect(trigger?.getAttribute("aria-expanded")).toBe("true");
+
+    const reopenedInput = container.querySelector("input[placeholder='Search options...']") as HTMLInputElement | null;
+    expect(reopenedInput).not.toBeNull();
+    setInputValue(reopenedInput!, "alp");
+    await flush();
+
+    keyDown(reopenedInput!, "Escape");
+    await flush();
+
+    expect(container.querySelector("input[placeholder='Search options...']")).toBeNull();
+    expect(trigger?.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("filters workspace options, moves with arrows, and selects the workspace id with Enter", async () => {
@@ -361,5 +372,15 @@ describe("SearchableSelect", () => {
         workspaceId: "workspace-paperclip",
       }),
     );
+    expect(container.querySelector("input[placeholder='Search workspaces...']")).toBeNull();
+    expect(trigger?.getAttribute("aria-expanded")).toBe("false");
+
+    act(() => {
+      trigger?.focus();
+    });
+    await flush();
+
+    expect(container.querySelector("input[placeholder='Search workspaces...']")).toBeNull();
+    expect(trigger?.getAttribute("aria-expanded")).toBe("false");
   });
 });
