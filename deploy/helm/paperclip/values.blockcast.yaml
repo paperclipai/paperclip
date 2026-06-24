@@ -226,25 +226,34 @@ env:
     # #216 per-worker backlog cap to shrink the burst envelope further.
     - name: NODE_OPTIONS
       value: "--max-old-space-size=6144"
-    # Anthropic routing for paperclip-spawned agent Job pods. Point Claude Code
-    # directly at ccrotate-serve inside the cluster; the public /ccrotate
-    # auth-proxy expects board-session auth and rejects the serve bearer.
+    # Anthropic routing for paperclip-spawned agent Job pods. Routed through the
+    # managed Penstock proxy (ns penstock) instead of legacy ccrotate-serve.
     # The claude_k8s adapter copies these env entries onto every Job pod it
-    # creates (inheritedEnvValueFrom).
+    # creates (inheritedEnvValueFrom) -- so this is an ALL-AGENTS cutover.
+    #
+    # PREREQUISITES before this is merged/deployed (CI deploys values.blockcast.yaml
+    # on push to master, gated on PAPERCLIP_CI_DEPLOY):
+    #   1. Secret `paperclip-penstock-org-key` (key `token`) exists in ns paperclip
+    #      -- the Penstock org API key (psk_... Bearer for api.penstock.run).
+    #   2. Egress NetworkPolicy permits paperclip Job pods -> penstock-proxy.penstock.svc:80.
+    #   3. Live provider verification through the proxy has passed (PEN-1075),
+    #      and PEN-1039 is ready to scale legacy ccrotate-serve to 0.
+    # ROLLBACK: revert this block to http://ccrotate-serve.paperclip.svc:4001 +
+    #   paperclip-ccrotate-serve-secrets/serveToken.
     # ANTHROPIC_AUTH_TOKEN is the Bearer-style var preferred by Claude Code /
     # Anthropic SDK >=0.30; ANTHROPIC_API_KEY mirrors it for older SDK paths.
     - name: ANTHROPIC_BASE_URL
-      value: "http://ccrotate-serve.paperclip.svc:4001"
+      value: "http://penstock-proxy.penstock.svc.cluster.local/anthropic"
     - name: ANTHROPIC_AUTH_TOKEN
       valueFrom:
         secretKeyRef:
-          name: paperclip-ccrotate-serve-secrets
-          key: serveToken
+          name: paperclip-penstock-org-key
+          key: token
     - name: ANTHROPIC_API_KEY
       valueFrom:
         secretKeyRef:
-          name: paperclip-ccrotate-serve-secrets
-          key: serveToken
+          name: paperclip-penstock-org-key
+          key: token
 
 # Worker tier also runs plugin workers and scheduled plugin jobs. Linear's
 # periodic sync can transiently burn CPU over large BLO backlogs; keep enough
