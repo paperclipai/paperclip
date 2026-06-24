@@ -281,6 +281,10 @@ export async function buildBundleFromLocalCompany(input: {
         skills: true,
       },
       expandReferencedSkills: true,
+      // Cloud upload is a non-interactive pipe — redact secret-shaped values
+      // in place rather than aborting the transfer. The receiving instance
+      // never sees the raw token.
+      allowSecrets: true,
     },
   );
   if (!exported) throw new Error("Local company export returned no data.");
