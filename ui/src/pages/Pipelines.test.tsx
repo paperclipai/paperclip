@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import {
   getPipelineStageColumnTone,
+  pipelineStageAutomationSettingsHref,
+} from "../lib/pipeline-stage-presentation";
+import {
   groupCasesByBuiltFor,
   normalizePipelineConversationComments,
-  pipelineStageAutomationSettingsHref,
   pipelineBoardGroupByStorageKey,
   readStoredPipelineBoardGroupBy,
   readPipelineStageAutomationAssigneeAgentId,
