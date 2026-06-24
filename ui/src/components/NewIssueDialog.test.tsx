@@ -48,6 +48,8 @@ const mockIssuesApi = vi.hoisted(() => ({
   create: vi.fn(),
   upsertDocument: vi.fn(),
   uploadAttachment: vi.fn(),
+  listLabels: vi.fn(),
+  createLabel: vi.fn(),
 }));
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
@@ -311,6 +313,9 @@ describe("NewIssueDialog", () => {
     mockIssuesApi.create.mockReset();
     mockIssuesApi.upsertDocument.mockReset();
     mockIssuesApi.uploadAttachment.mockReset();
+    mockIssuesApi.listLabels.mockReset();
+    mockIssuesApi.listLabels.mockResolvedValue([]);
+    mockIssuesApi.createLabel.mockReset();
     mockExecutionWorkspacesApi.list.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
@@ -653,6 +658,58 @@ describe("NewIssueDialog", () => {
         title: "Typed issue",
         description: "Typed description",
         workMode: "standard",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("submits selected label ids chosen from the labels picker", async () => {
+    mockIssuesApi.listLabels.mockResolvedValue([
+      { id: "label-1", companyId: "company-1", name: "Bug", color: "#ef4444" },
+      { id: "label-2", companyId: "company-1", name: "Feature", color: "#22c55e" },
+    ]);
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    await typeTextareaValue(titleInput!, "Labelled task");
+
+    const labelButton = await (async () => {
+      let found: HTMLButtonElement | undefined;
+      await waitForAssertion(() => {
+        found = Array.from(container.querySelectorAll("button")).find(
+          (button) => button.textContent?.trim() === "Bug",
+        ) as HTMLButtonElement | undefined;
+        expect(found).not.toBeUndefined();
+      });
+      return found!;
+    })();
+
+    await act(async () => {
+      labelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Labelled task",
+        labelIds: ["label-1"],
       }),
     );
 
