@@ -112,7 +112,16 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  | "id"
+  | "agentId"
+  | "status"
+  | "error"
+  | "errorCode"
+  | "contextSnapshot"
+  | "livenessState"
+  | "finishedAt"
+  | "updatedAt"
+  | "createdAt"
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -175,6 +184,39 @@ function didAutomaticRecoveryFail(
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     );
+}
+
+function isTodoIdleCadenceTracker(issue: Pick<typeof issues.$inferSelect, "title" | "description">) {
+  const text = `${issue.title}\n${issue.description ?? ""}`.toLowerCase();
+  if (!text.includes("cadence")) return false;
+  if (
+    !text.includes("long-lived tracking issue") &&
+    !text.includes("long-lived tracker") &&
+    !text.includes("rolling tracker")
+  ) {
+    return false;
+  }
+  return /todo`?\s+while idle/.test(text) ||
+    /while idle[\s\S]{0,120}`?todo`?/.test(text) ||
+    /return (it|this issue|the tracker)[\s\S]{0,120}`?todo`?/.test(text);
+}
+
+const MANUAL_CADENCE_RECOVERY_COMMENT_SCAN_LIMIT = 50;
+
+function isManualCadenceRecoveryDispositionComment(body: string) {
+  return [
+    /\brecovery note\b[\s\S]{0,160}\b(todo|idle|digest|report|no-duplicate|acknowledg)/i,
+    /\bmanual\b[\s\S]{0,80}\brecovery\b[\s\S]{0,160}\b(todo|idle|digest|report)/i,
+    /\brecovered\b[\s\S]{0,160}\b(todo|idle|digest|report)/i,
+    /\b(digest|report)\b[\s\S]{0,160}\brecovered\b/i,
+    /\b(restored|returned)\b[\s\S]{0,80}\b(todo|idle)\b/i,
+    /\bno-duplicate\b[\s\S]{0,80}\backnowledg/i,
+    /^#{1,6}\s+.*\b(digest|report)\b[\s\S]{0,160}\b(recovered|recovery|returned|restored|todo|idle|no-duplicate|acknowledg)/im,
+  ].some((pattern) => pattern.test(body));
+}
+
+function isCadenceTriggerComment(body: string) {
+  return /\bCadence trigger fired\b/.test(body) && /\(cadence=/.test(body);
 }
 
 const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
@@ -497,6 +539,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        finishedAt: heartbeatRuns.finishedAt,
+        updatedAt: heartbeatRuns.updatedAt,
+        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -508,6 +553,90 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function findManualCadenceRecoveryCommentAfterRun(
+    issue: typeof issues.$inferSelect,
+    latestRun: NonNullable<LatestIssueRun>,
+  ) {
+    const after = latestRun.finishedAt ?? latestRun.updatedAt ?? latestRun.createdAt;
+    const rows = await db
+      .select({
+        id: issueComments.id,
+        body: issueComments.body,
+        authorType: issueComments.authorType,
+        createdByRunId: issueComments.createdByRunId,
+        createdAt: issueComments.createdAt,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, issue.companyId),
+          eq(issueComments.issueId, issue.id),
+          isNull(issueComments.deletedAt),
+          gt(issueComments.createdAt, after),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt))
+      .limit(MANUAL_CADENCE_RECOVERY_COMMENT_SCAN_LIMIT);
+
+    const recoveryComment = rows.find((comment) =>
+      comment.authorType !== "system" &&
+      comment.createdByRunId !== latestRun.id &&
+      isManualCadenceRecoveryDispositionComment(comment.body)
+    ) ?? null;
+    if (!recoveryComment) return null;
+
+    const hasLaterCadenceTrigger = rows.some((comment) =>
+      comment.createdAt > recoveryComment.createdAt &&
+      isCadenceTriggerComment(comment.body)
+    );
+    return hasLaterCadenceTrigger ? null : recoveryComment;
+  }
+
+  async function returnManuallyRecoveredCadenceTrackerToIdleIfNeeded(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+  ) {
+    if (!latestRun) return false;
+    if (!isTodoIdleCadenceTracker(issue)) return false;
+
+    const recoveryComment = await findManualCadenceRecoveryCommentAfterRun(issue, latestRun);
+    if (!recoveryComment) return false;
+
+    if (
+      issue.status !== "todo" ||
+      issue.checkoutRunId ||
+      issue.executionRunId ||
+      issue.executionAgentNameKey ||
+      issue.executionLockedAt
+    ) {
+      const updated = await issuesSvc.update(issue.id, { status: "todo" });
+      if (!updated) return false;
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          status: "todo",
+          previousStatus: issue.status,
+          source: "recovery.reconcile_cadence_tracker_manual_recovery",
+          latestRunId: latestRun.id,
+          latestRunStatus: latestRun.status,
+          latestRunErrorCode: latestRun.errorCode,
+          recoveryCommentId: recoveryComment.id,
+        },
+      });
+    }
+
+    return true;
   }
 
   async function summarizeRecentContinuationRetries(
@@ -2778,6 +2907,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         } else {
           result.skipped += 1;
         }
+        continue;
+      }
+
+      if (await returnManuallyRecoveredCadenceTrackerToIdleIfNeeded(issue, latestRun)) {
+        result.skipped += 1;
         continue;
       }
 
