@@ -429,6 +429,97 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(remoteWorkspaceDir, "src", "main.ts"), "utf8")).resolves.toBe("x\n");
   });
 
+  it("excludes transient symlinked home dirs from the asset tar while keeping required content", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-home-tmp-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const homeDir = path.join(rootDir, "codex-home");
+    await mkdir(localWorkspaceDir, { recursive: true });
+
+    // Simulate a host Codex binary that a stale `tmp/arg0` symlink points at.
+    // With followSymlinks the archive would otherwise inline this whole file.
+    const hostBinary = path.join(rootDir, "codex-host-binary");
+    const binaryMarker = "HOST_CODEX_BINARY_BYTES";
+    await writeFile(hostBinary, `${binaryMarker}\n`.repeat(4096), "utf8");
+
+    // Required managed-home content that MUST still reach the sandbox.
+    await mkdir(path.join(homeDir, "skills"), { recursive: true });
+    await writeFile(path.join(homeDir, "auth.json"), "{\"OPENAI_API_KEY\":\"sk-test\"}\n", "utf8");
+    await writeFile(path.join(homeDir, "config.toml"), "model = \"gpt\"\n", "utf8");
+    await writeFile(path.join(homeDir, "skills", "demo.md"), "skill body\n", "utf8");
+
+    // Transient dirs holding symlinks to the host binary (the bloat source).
+    await mkdir(path.join(homeDir, "tmp", "arg0"), { recursive: true });
+    await mkdir(path.join(homeDir, ".tmp"), { recursive: true });
+    await symlink(hostBinary, path.join(homeDir, "tmp", "arg0", "codex"));
+    await symlink(hostBinary, path.join(homeDir, ".tmp", "codex"));
+
+    const uploadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        const buffer = Buffer.from(bytes);
+        if (remotePath.endsWith("-upload.tar")) uploadedTars.push({ remotePath, bytes: buffer });
+        await writeFile(remotePath, buffer);
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{
+        key: "home",
+        localDir: homeDir,
+        followSymlinks: true,
+        exclude: ["tmp", ".tmp"],
+      }],
+    });
+
+    const homeTar = uploadedTars.find(({ remotePath }) => path.basename(remotePath) === "home-upload.tar");
+    expect(homeTar).toBeDefined();
+    const members = await listTarMembers(rootDir, "home-members.tar", homeTar!.bytes);
+
+    // Transient symlink trees must be filtered out entirely.
+    expect(members.some((entry) => entry === "tmp" || entry.startsWith("tmp/"))).toBe(false);
+    expect(members.some((entry) => entry === ".tmp" || entry.startsWith(".tmp/"))).toBe(false);
+    // Required managed-home content must survive.
+    expect(members).toContain("auth.json");
+    expect(members).toContain("config.toml");
+    expect(members.some((entry) => entry === "skills/demo.md")).toBe(true);
+
+    // The host binary bytes must not have been inlined into the upload.
+    expect(homeTar!.bytes.includes(Buffer.from(binaryMarker))).toBe(false);
+
+    // The extracted sandbox home keeps required content and omits the transient dirs.
+    await expect(readFile(path.join(prepared.assetDirs.home, "auth.json"), "utf8"))
+      .resolves.toBe("{\"OPENAI_API_KEY\":\"sk-test\"}\n");
+    await expect(readFile(path.join(prepared.assetDirs.home, "skills", "demo.md"), "utf8"))
+      .resolves.toBe("skill body\n");
+    await expect(lstat(path.join(prepared.assetDirs.home, "tmp"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(path.join(prepared.assetDirs.home, ".tmp"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("emits throttled, labeled upload and restore progress with direction and percentages", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-progress-"));
     cleanupDirs.push(rootDir);
