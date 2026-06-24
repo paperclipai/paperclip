@@ -40,6 +40,8 @@ async function flushReact() {
 
 const CONFERENCE_TOGGLE_SELECTOR =
   'button[aria-label="Toggle conference room chat experimental setting"]';
+const STREAMLINED_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle streamlined left navigation experimental setting"]';
 const TASK_WATCHDOGS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task watchdogs experimental setting"]';
 
@@ -47,10 +49,11 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
-    enableStreamlinedLeftNavigation: false,
+    enableStreamlinedLeftNavigation: true,
     enableConferenceRoomChat: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
+    enableExternalObjects: false,
     enableTaskWatchdogs: false,
     enableCloudSync: false,
     autoRestartDevServerWhenIdle: false,
@@ -130,6 +133,23 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     const toggle = container.querySelector(CONFERENCE_TOGGLE_SELECTOR);
     expect(toggle).toBeNull();
     expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("renders the Streamlined Left Navigation toggle on by default and patches opt-out", async () => {
+    await renderPage();
+
+    const toggle = container.querySelector<HTMLButtonElement>(STREAMLINED_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableStreamlinedLeftNavigation: false,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
   });
 
   it("renders and patches the Task Watchdogs experimental toggle on and off", async () => {

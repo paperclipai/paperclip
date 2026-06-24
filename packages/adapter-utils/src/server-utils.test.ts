@@ -213,8 +213,6 @@ describe("adapter skill snapshots", () => {
     key: "paperclipai/paperclip/paperclip",
     runtimeName: "paperclip",
     source: "/runtime/paperclip",
-    required: true,
-    requiredReason: "Required for Paperclip heartbeats.",
   };
   const optionalEntry = {
     key: "company/ascii-heart",
@@ -245,8 +243,7 @@ describe("adapter skill snapshots", () => {
       expect.objectContaining({
         key: requiredEntry.key,
         state: "configured",
-        origin: "paperclip_required",
-        required: true,
+        origin: "company_managed",
         detail: "Mounted on next run.",
       }),
     ]);
@@ -345,7 +342,7 @@ describe("adapter skill snapshots", () => {
       key: requiredEntry.key,
       state: "installed",
       managed: true,
-      origin: "paperclip_required",
+      origin: "company_managed",
     }));
     expect(snapshot.entries).toContainEqual(expect.objectContaining({
       key: optionalEntry.key,

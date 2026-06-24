@@ -100,6 +100,7 @@ describe("instance settings routes", () => {
       enableExperimentalFileViewer: false,
       enableTaskWatchdogs: false,
       enableCloudSync: false,
+      enableExternalObjects: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -142,6 +143,7 @@ describe("instance settings routes", () => {
         enableExperimentalFileViewer: true,
         enableTaskWatchdogs: true,
         enableCloudSync: true,
+        enableExternalObjects: false,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: true,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -194,6 +196,7 @@ describe("instance settings routes", () => {
       enableExperimentalFileViewer: false,
       enableTaskWatchdogs: false,
       enableCloudSync: false,
+      enableExternalObjects: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -269,6 +272,24 @@ describe("instance settings routes", () => {
         ([patch]) => patch?.autoRestartDevServerWhenIdle === true,
       ),
     ).toBe(true);
+  });
+
+  it("allows local board users to update external object detection", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableExternalObjects: true })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableExternalObjects: true,
+    });
   });
 
   it("allows local board users to update issue graph liveness auto-recovery", async () => {

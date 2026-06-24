@@ -36,7 +36,6 @@ These almost always get merged quickly when they're clean.
   → Share rough ideas / approach
 - Once there's rough agreement, build it
 - In your PR include:
-  - Before / After screenshots (or short video if UI/behavior change)
   - Clear description of what & why
   - Proof it works (manual testing notes)
   - All tests passing and CI green
@@ -179,8 +178,6 @@ Your PR description must follow the [PR template](.github/PULL_REQUEST_TEMPLATE.
 Then have the rest of your normal PR message after the Thinking Path.
 
 This should include details about what you did, why you did it, why it matters & the benefits, how we can verify it works, and any risks.
-
-Please include screenshots if possible if you have a visible change. (use something like the [agent-browser skill](https://github.com/vercel-labs/agent-browser/blob/main/skills/agent-browser/SKILL.md) or similar to take screenshots). Ideally, you include before and after screenshots.
 
 Questions? Just ask in #dev — we're happy to help.
 

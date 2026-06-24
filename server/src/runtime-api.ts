@@ -61,6 +61,11 @@ export function choosePrimaryRuntimeApiUrl(input: {
     }
   }
 
+  const bindHost = normalizeHost(input.bindHost);
+  if (bindHost && !isWildcardHost(bindHost) && isLoopbackHost(bindHost)) {
+    return formatOrigin("http:", bindHost, input.port);
+  }
+
   const allowedHostname = input.allowedHostnames
     .map((value) => value.trim())
     .find(Boolean);
@@ -68,7 +73,6 @@ export function choosePrimaryRuntimeApiUrl(input: {
     return formatOrigin("http:", allowedHostname, input.port);
   }
 
-  const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost)) {
     return formatOrigin("http:", bindHost, input.port);
   }

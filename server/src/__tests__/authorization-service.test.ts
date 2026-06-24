@@ -1021,6 +1021,25 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("denies active-checkout management outside the CEO caller company scope", async () => {
+    const sourceCompany = await createCompany(db, "CheckoutSource");
+    const targetCompany = await createCompany(db, "CheckoutTarget");
+    const actorAgent = await createAgent(db, sourceCompany.id, { role: "ceo" });
+    const targetAgent = await createAgent(db, targetCompany.id, { role: "engineer" });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: sourceCompany.id, source: "agent_jwt" },
+      action: "tasks:manage_active_checkouts",
+      resource: { type: "issue", companyId: targetCompany.id, assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_company_boundary",
+    });
+    expect(decision.explanation).toContain("another company");
+  });
+
   it("allows scoped assignment inside a granted project and denies other projects", async () => {
     const company = await createCompany(db, "ProjectScope");
     const project = await createProject(db, company.id, "Allowed");

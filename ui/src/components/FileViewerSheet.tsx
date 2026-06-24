@@ -517,20 +517,6 @@ export function FileViewerSheet({
   const copyFeedbackTimerRef = useRef<number | null>(null);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
 
-  useEffect(() => {
-    if (!state) {
-      setElapsedMs(0);
-      return;
-    }
-    const now = Date.now();
-    setElapsedMs(0);
-    const interval = window.setInterval(() => {
-      setElapsedMs(Date.now() - now);
-    }, 75);
-    return () => window.clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.path, state?.workspace, state?.projectId, state?.workspaceId]);
-
   const resolveQuery = useQuery({
     queryKey: state
       ? queryKeys.issues.fileResource(issueId, state)
@@ -553,6 +539,30 @@ export function FileViewerSheet({
     retry: false,
     staleTime: 30_000,
   });
+
+  // `elapsedMs` only drives the progressive loading skeleton (see LoadingView).
+  // Run the 75ms ticker *only* while a preview is still loading — leaving it
+  // running after content arrives would re-render the whole sheet ~13x/second,
+  // which forces the markdown body to re-render and discards scroll position
+  // and text selection, producing visible flashing (PAP-10767).
+  const isLoadingPreview =
+    (resolveQuery.isFetching && !resolveQuery.data) ||
+    (canPreview && contentQuery.isFetching && !contentQuery.data);
+
+  useEffect(() => {
+    if (!state) {
+      setElapsedMs(0);
+      return;
+    }
+    if (!isLoadingPreview) return;
+    const now = Date.now();
+    setElapsedMs(0);
+    const interval = window.setInterval(() => {
+      setElapsedMs(Date.now() - now);
+    }, 75);
+    return () => window.clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.path, state?.workspace, state?.projectId, state?.workspaceId, isLoadingPreview]);
 
   useEffect(() => {
     if (resolveQuery.isError) {
