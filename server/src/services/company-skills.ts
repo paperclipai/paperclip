@@ -1064,7 +1064,7 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
       ...(parsedMetadata ?? {}),
       sourceKind: "local_path",
     };
-    const inventory = await collectLocalSkillInventory(sourceDir);
+    const inventory = await collectLocalSkillInventory(sourceDir, "project_root");
     return [{
       key: deriveCanonicalSkillKey(companyId, {
         slug,

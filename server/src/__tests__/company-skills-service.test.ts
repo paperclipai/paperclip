@@ -656,6 +656,37 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     ]));
   });
 
+  it("bounds direct root SKILL.md imports to known support directories", async () => {
+    const companyId = randomUUID();
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-root-skill-"));
+    cleanupDirs.add(repoDir);
+    await fs.mkdir(path.join(repoDir, "references"), { recursive: true });
+    await fs.mkdir(path.join(repoDir, "server", "src"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoDir, "SKILL.md"),
+      "---\nname: Root Skill\n---\n\n# Root Skill\n",
+      "utf8",
+    );
+    await fs.writeFile(path.join(repoDir, "references", "guide.md"), "# Guide\n", "utf8");
+    await fs.writeFile(path.join(repoDir, "README.md"), "# Repo readme\n", "utf8");
+    await fs.writeFile(path.join(repoDir, "server", "src", "index.ts"), "export {};\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const result = await svc.importFromSource(companyId, path.join(repoDir, "SKILL.md"));
+
+    expect(result.imported).toHaveLength(1);
+    expect(result.imported[0]?.fileInventory.map((entry) => entry.path).sort()).toEqual([
+      "SKILL.md",
+      "references/guide.md",
+    ]);
+  });
+
   it("rejects executable external package skills before persistence", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
