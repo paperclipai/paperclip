@@ -3353,6 +3353,7 @@ describe("IssueChatThread", () => {
 
     expect(container.textContent).toContain("Working...");
     expect(container.textContent).toContain("Syncing git worktree to sandbox");
+    expect(container.querySelector('[title="Syncing git worktree to sandbox"]')).not.toBeNull();
 
     act(() => {
       root.unmount();

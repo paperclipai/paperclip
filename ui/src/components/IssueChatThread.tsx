@@ -939,7 +939,10 @@ function IssueChatChainOfThought({
             ) : null}
           </div>
           {isActive && currentStatusMessage ? (
-            <span className="mt-0.5 block truncate pl-6 text-xs leading-4 text-muted-foreground/70">
+            <span
+              className="mt-0.5 block truncate pl-6 text-xs leading-4 text-muted-foreground/70"
+              title={currentStatusMessage}
+            >
               {currentStatusMessage}
             </span>
           ) : null}
@@ -1880,7 +1883,10 @@ function IssueChatAssistantMessage({
                       </span>
                     </div>
                     {isRunning && currentStatusMessage ? (
-                      <div className="mt-0.5 truncate pl-6 text-xs leading-4 text-muted-foreground/70">
+                      <div
+                        className="mt-0.5 truncate pl-6 text-xs leading-4 text-muted-foreground/70"
+                        title={currentStatusMessage}
+                      >
                         {currentStatusMessage}
                       </div>
                     ) : null}
