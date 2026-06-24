@@ -20,16 +20,13 @@ function shouldExposeFullHealthDetails(
 function publicHealthPayload(opts: {
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
-  authReady: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;
 }) {
   return {
     status: "ok",
-    version: serverVersion,
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
-    authReady: opts.authReady,
     ...(opts.bootstrapStatus ? { bootstrapStatus: opts.bootstrapStatus } : {}),
     ...(opts.bootstrapInviteActive !== undefined ? { bootstrapInviteActive: opts.bootstrapInviteActive } : {}),
   };
