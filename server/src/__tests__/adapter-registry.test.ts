@@ -19,8 +19,8 @@ vi.mock("@paperclipai/adapter-gemini-local/server", () => ({
     testedAt: new Date(0).toISOString(),
   }),
   sessionCodec: null,
-  listSkills: async () => [],
-  syncSkills: async () => ({ entries: [] }),
+  listGeminiSkills: async () => [],
+  syncGeminiSkills: async () => ({ entries: [] }),
   detectModel: async () => null,
 }));
 
