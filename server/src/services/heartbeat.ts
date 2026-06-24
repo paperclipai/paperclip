@@ -3621,6 +3621,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function recordCurrentHeartbeatRunRuntimeProgress(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "status" | "contextSnapshot">,
+    update: RuntimeStatusUpdate,
+    issueId: string | null,
+  ) {
+    if (!isHeartbeatRunRuntimeStatusActive(run.status)) {
+      clearHeartbeatRunRuntimeStatus(run.id);
+      return null;
+    }
+
+    const currentRun = await getRun(run.id);
+    if (!currentRun || !isHeartbeatRunRuntimeStatusActive(currentRun.status)) {
+      clearHeartbeatRunRuntimeStatus(run.id);
+      return null;
+    }
+
+    return recordHeartbeatRunRuntimeProgress(currentRun, update, issueId);
+  }
+
   async function getRunLogAccess(runId: string) {
     return db
       .select(heartbeatRunLogAccessColumns)
@@ -9671,7 +9690,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           onLog,
           onMeta: onAdapterMeta,
           onRuntimeProgress: async (progress) => {
-            recordHeartbeatRunRuntimeProgress(run, progress, issueId);
+            await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },
           onSpawn: async (meta) => {
             await persistRunProcessMetadata(run.id, {
@@ -12153,7 +12172,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     getRun,
 
     decorateActiveRunStatus: decorateHeartbeatRunRuntimeStatus,
-    recordRuntimeProgress: recordHeartbeatRunRuntimeProgress,
+    recordRuntimeProgress: recordCurrentHeartbeatRunRuntimeProgress,
 
     getRunLogAccess,
 

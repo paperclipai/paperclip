@@ -145,7 +145,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
     });
     try {
       const heartbeat = heartbeatService(db);
-      const status = heartbeat.recordRuntimeProgress(run, {
+      const status = await heartbeat.recordRuntimeProgress(run, {
         phase: "config_sync",
         message: "Syncing workspace to sandbox",
       }, issueId);
@@ -184,6 +184,84 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
 
       await heartbeat.cancelRun(runId, "test cleanup");
       expect(getHeartbeatRunRuntimeStatus(runId)).toBeNull();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("ignores late runtime progress after the persisted run is terminal", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const [insertedRun] = await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: { issueId },
+    }).returning();
+    const staleRunningRun = insertedRun!;
+
+    const liveEvents: unknown[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+      liveEvents.push(event);
+    });
+    try {
+      const heartbeat = heartbeatService(db);
+      await heartbeat.recordRuntimeProgress(staleRunningRun, {
+        phase: "config_sync",
+        message: "Syncing workspace to sandbox",
+      }, issueId);
+
+      expect(getHeartbeatRunRuntimeStatus(runId)).toMatchObject({
+        runId,
+        phase: "config_sync",
+      });
+
+      liveEvents.length = 0;
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "succeeded",
+          finishedAt: new Date("2026-06-24T00:01:00.000Z"),
+          updatedAt: new Date("2026-06-24T00:01:00.000Z"),
+        })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const lateStatus = await heartbeat.recordRuntimeProgress(staleRunningRun, {
+        phase: "finalize",
+        message: "Finalizing sandbox workspace",
+      }, issueId);
+
+      expect(lateStatus).toBeNull();
+      expect(getHeartbeatRunRuntimeStatus(runId)).toBeNull();
+      expect(liveEvents).not.toContainEqual(expect.objectContaining({
+        type: "heartbeat.run.progress",
+      }));
+      expect(await db.select().from(heartbeatRunEvents)).toHaveLength(0);
     } finally {
       unsubscribe();
     }
