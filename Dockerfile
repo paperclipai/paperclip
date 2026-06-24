@@ -3,7 +3,7 @@ FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 postgresql-client \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 

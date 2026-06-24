@@ -1,7 +1,8 @@
 -- Hotfix: repair environments schema when migration 0065+ drifted on an older volume.
 --
 -- Usage (inside Paperclip container):
---   psql "$DATABASE_URL" -f /app/scripts/ops/hotfix-environments-schema.sql
+--   node /app/scripts/ops/run-hotfix-environments-schema.mjs
+--   # or: pnpm db:hotfix-environments
 --
 -- Then restart Paperclip. With PAPERCLIP_MIGRATION_AUTO_APPLY=true, remaining
 -- migrations apply idempotently on boot.

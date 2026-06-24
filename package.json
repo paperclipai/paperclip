@@ -23,6 +23,7 @@
     "test:run:serialized": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode serialized",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
+    "db:hotfix-environments": "node scripts/ops/run-hotfix-environments-schema.mjs",
     "issue-references:backfill": "pnpm run preflight:workspace-links && tsx scripts/backfill-issue-reference-mentions.ts",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
