@@ -2324,6 +2324,26 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/provider-rate-limits",
+  tags: ["costs"],
+  summary: "List active provider rate-limit blocks",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/provider-rate-limits/{blockId}/release",
+  tags: ["costs"],
+  summary: "Manually release a provider rate-limit block",
+  request: {
+    params: z.object({ companyId: z.string(), blockId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
 // ─── Activity ────────────────────────────────────────────────────────────────
 
 registry.registerPath({
