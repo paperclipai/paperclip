@@ -946,6 +946,52 @@ function diffExecutionParticipants(
   };
 }
 
+/**
+ * Emit the create-time "reviewers/approvers populated" activity for a brand-new issue
+ * whose execution policy already carries review/approval stage participants.
+ *
+ * Reviewers/Approvers are derived from `executionPolicy.stages` (there is no stored
+ * column), so creating a task with a review or approval stage must announce that
+ * population the same way an edit does (`issue.reviewers_updated` / `issue.approvers_updated`).
+ * Diffing against an empty (`null`) previous policy turns every participant into an
+ * "added" entry. When the policy has no matching stage nothing is emitted and the
+ * property correctly stays None.
+ */
+async function logCreatedExecutionParticipantActivity(input: {
+  db: Db;
+  companyId: string;
+  actor: ReturnType<typeof getActorInfo>;
+  issue: { id: string; identifier: string | null };
+  policy: NormalizedExecutionPolicy | null;
+  extraDetails?: Record<string, unknown>;
+}): Promise<void> {
+  const stageActions = [
+    ["review", "issue.reviewers_updated"],
+    ["approval", "issue.approvers_updated"],
+  ] as const;
+  for (const [stageType, action] of stageActions) {
+    const changes = diffExecutionParticipants(null, input.policy, stageType);
+    if (changes.addedParticipants.length === 0) continue;
+    await logActivity(input.db, {
+      companyId: input.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action,
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        ...(input.extraDetails ?? {}),
+        participants: changes.participants,
+        addedParticipants: changes.addedParticipants,
+        removedParticipants: changes.removedParticipants,
+      },
+    });
+  }
+}
+
 function buildExecutionStageWakeup(input: {
   issueId: string;
   previousState: ParsedExecutionState | null;
@@ -5088,6 +5134,14 @@ export function issueRoutes(
       });
     }
 
+    await logCreatedExecutionParticipantActivity({
+      db,
+      companyId,
+      actor,
+      issue,
+      policy: executionPolicy,
+    });
+
     if (issue.watchdog) {
       await logActivity(db, {
         companyId,
@@ -5240,6 +5294,15 @@ export function issueRoutes(
         },
       });
     }
+
+    await logCreatedExecutionParticipantActivity({
+      db,
+      companyId: parent.companyId,
+      actor,
+      issue,
+      policy: executionPolicy,
+      extraDetails: { parentId: parent.id },
+    });
 
     if (issue.watchdog) {
       await logActivity(db, {

@@ -650,4 +650,88 @@ describe("issue execution policy routes", () => {
       }),
     );
   });
+
+  it("populates Reviewers and Approvers activity when a child is created with review and approval stages", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "11111111-1111-4111-8111-111111111111",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Parent issue",
+      executionPolicy: null,
+      executionState: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/children")
+      .send({
+        title: "Child with sign-off",
+        executionPolicy: {
+          stages: [
+            { type: "review", participants: [{ type: "agent", agentId: "11111111-2222-4333-8444-555555555555" }] },
+            { type: "approval", participants: [{ type: "user", userId: "local-board" }] },
+          ],
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.reviewers_updated",
+        entityId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        details: expect.objectContaining({
+          parentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          participants: [{ type: "agent", agentId: "11111111-2222-4333-8444-555555555555", userId: null }],
+          addedParticipants: [{ type: "agent", agentId: "11111111-2222-4333-8444-555555555555", userId: null }],
+          removedParticipants: [],
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.approvers_updated",
+        entityId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        details: expect.objectContaining({
+          parentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          participants: [{ type: "user", agentId: null, userId: "local-board" }],
+          addedParticipants: [{ type: "user", agentId: null, userId: "local-board" }],
+          removedParticipants: [],
+        }),
+      }),
+    );
+  });
+
+  it("leaves Reviewers and Approvers as None when a child is created without review or approval stages", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "11111111-1111-4111-8111-111111111111",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Parent issue",
+      executionPolicy: null,
+      executionState: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/children")
+      .send({ title: "Child without sign-off" });
+
+    expect(res.status).toBe(201);
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.reviewers_updated" }),
+    );
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.approvers_updated" }),
+    );
+  });
 });
