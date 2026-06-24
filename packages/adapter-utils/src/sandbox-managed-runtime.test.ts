@@ -103,6 +103,7 @@ describe("sandbox managed runtime", () => {
         });
       },
     };
+    const runtimeStatuses: string[] = [];
 
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
@@ -118,6 +119,9 @@ describe("sandbox managed runtime", () => {
       workspaceLocalDir: localWorkspaceDir,
       workspaceExclude: [".claude"],
       preserveAbsentOnRestore: [".claude"],
+      onRuntimeProgress: async (status) => {
+        runtimeStatuses.push(`${status.phase}:${status.message}`);
+      },
       assets: [{
         key: "skills",
         localDir: localAssetsDir,
@@ -143,6 +147,12 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "local-stale.txt"), "utf8")).resolves.toBe("remove\n");
     await expect(readFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "utf8")).resolves.toBe("{\"local\":true}\n");
     await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
+    expect(runtimeStatuses).toEqual([
+      "config_sync:Syncing workspace to sandbox",
+      "config_sync:Syncing runtime assets to sandbox",
+      "restore:Restoring workspace from sandbox",
+      "finalize:Finalizing sandbox workspace",
+    ]);
   });
 
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {
@@ -197,6 +207,7 @@ describe("sandbox managed runtime", () => {
         await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
       },
     };
+    const runtimeStatusPhases: string[] = [];
 
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
@@ -210,6 +221,9 @@ describe("sandbox managed runtime", () => {
       adapterKey: "test-adapter",
       client,
       workspaceLocalDir: localWorkspaceDir,
+      onRuntimeProgress: async (status) => {
+        runtimeStatusPhases.push(status.phase);
+      },
     });
 
     expect((await lstat(path.join(remoteWorkspaceDir, ".git"))).isDirectory()).toBe(true);
@@ -254,6 +268,13 @@ describe("sandbox managed runtime", () => {
     const downloadMembers = await listTarMembers(rootDir, "workspace-download-list.tar", downloadedTars[0]!.bytes);
     expect(downloadMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
     expect(downloadMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
+    expect(runtimeStatusPhases).toEqual([
+      "git_sync",
+      "config_sync",
+      "export",
+      "restore",
+      "finalize",
+    ]);
   });
 
   it("excludes unignored dependency trees from git-backed workspace overlay archives", async () => {

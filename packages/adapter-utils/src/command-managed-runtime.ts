@@ -8,7 +8,7 @@ import {
 } from "./sandbox-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
-import type { RuntimeProgressSink } from "./runtime-progress.js";
+import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 
 export interface CommandManagedRuntimeRunner {
   /**
@@ -242,6 +242,7 @@ export async function prepareCommandManagedRuntime(input: {
   // Upload progress sink. Forwarded to prepareSandboxManagedRuntime; the child
   // task wires it into the byte-counting writeFile/readFile transport.
   onProgress?: RuntimeProgressSink;
+  onRuntimeProgress?: RuntimeStatusSink;
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
@@ -290,6 +291,7 @@ export async function prepareCommandManagedRuntime(input: {
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
           onProgress: input.onProgress,
+          onRuntimeProgress: input.onRuntimeProgress,
         });
       }
     }
@@ -325,5 +327,6 @@ export async function prepareCommandManagedRuntime(input: {
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
     onProgress: input.onProgress,
+    onRuntimeProgress: input.onRuntimeProgress,
   });
 }

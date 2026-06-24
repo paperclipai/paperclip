@@ -858,7 +858,11 @@ function handleLiveEvent(
     return;
   }
 
-  if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
+  if (
+    event.type === "heartbeat.run.queued" ||
+    event.type === "heartbeat.run.status" ||
+    event.type === "heartbeat.run.progress"
+  ) {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     if (event.type === "heartbeat.run.status") {
