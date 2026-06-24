@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { environmentLeases, environments } from "@paperclipai/db";
 import {
@@ -85,6 +85,31 @@ function toEnvironment(row: EnvironmentRow): Environment {
   };
 }
 
+function isLocalEnvironmentUniqueViolation(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const maybe = error as { code?: string; constraint?: string; message?: string };
+  if (maybe.code !== "23505") return false;
+  if (maybe.constraint === "environments_company_driver_idx") return true;
+  return typeof maybe.message === "string" && maybe.message.includes("environments_company_driver_idx");
+}
+
+function localEnvironmentValues(companyId: string, now = new Date()) {
+  return {
+    companyId,
+    name: DEFAULT_LOCAL_ENVIRONMENT_NAME,
+    description: DEFAULT_LOCAL_ENVIRONMENT_DESCRIPTION,
+    driver: "local" as const,
+    status: "active" as const,
+    config: {},
+    metadata: {
+      managedByPaperclip: true,
+      defaultForCompany: true,
+    },
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 function toEnvironmentLease(row: EnvironmentLeaseRow): EnvironmentLease {
   return {
     id: row.id,
@@ -148,40 +173,33 @@ export function environmentService(db: Db) {
     },
 
     ensureLocalEnvironment: async (companyId: string): Promise<Environment> => {
-      const now = new Date();
-      const row = await db
-        .insert(environments)
-        .values({
-          companyId,
-          name: DEFAULT_LOCAL_ENVIRONMENT_NAME,
-          description: DEFAULT_LOCAL_ENVIRONMENT_DESCRIPTION,
-          driver: "local",
-          status: "active",
-          config: {},
-          metadata: {
-            managedByPaperclip: true,
-            defaultForCompany: true,
-          },
-          createdAt: now,
-          updatedAt: now,
-        })
-        .onConflictDoNothing({
-          target: [environments.companyId, environments.driver],
-          where: sql`${environments.driver} = 'local'`,
-        })
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (row) return toEnvironment(row);
+      const lookupLocalEnvironment = () =>
+        db
+          .select()
+          .from(environments)
+          .where(and(eq(environments.companyId, companyId), eq(environments.driver, "local")))
+          .then((rows) => rows[0] ?? null);
 
-      const existing = await db
-        .select()
-        .from(environments)
-        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "local")))
-        .then((rows) => rows[0] ?? null);
-      if (!existing) {
+      const existing = await lookupLocalEnvironment();
+      if (existing) return toEnvironment(existing);
+
+      const now = new Date();
+      try {
+        const row = await db
+          .insert(environments)
+          .values(localEnvironmentValues(companyId, now))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (row) return toEnvironment(row);
+      } catch (error) {
+        if (!isLocalEnvironmentUniqueViolation(error)) throw error;
+      }
+
+      const ensured = await lookupLocalEnvironment();
+      if (!ensured) {
         throw new Error("Failed to ensure local environment");
       }
-      return toEnvironment(existing);
+      return toEnvironment(ensured);
     },
 
     /**
