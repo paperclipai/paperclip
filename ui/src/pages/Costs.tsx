@@ -12,6 +12,7 @@ import type {
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
+import { AgentRoiPanel } from "../components/AgentRoiPanel";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -151,7 +152,7 @@ export function Costs() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
-  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
+  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance" | "roi">("overview");
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
 
@@ -624,6 +625,7 @@ export function Costs() {
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="billers">Billers</TabsTrigger>
           <TabsTrigger value="finance">Finance</TabsTrigger>
+          <TabsTrigger value="roi">ROI</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="mt-4 space-y-4">
@@ -1094,6 +1096,22 @@ export function Costs() {
                 <FinanceKindCard rows={financeData?.byKind ?? []} />
               </div>
             </>
+          )}
+        </TabsContent>
+
+        <TabsContent value="roi" className="mt-4">
+          {showCustomPrompt ? (
+            <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
+          ) : spendLoading ? (
+            <PageSkeleton variant="costs" />
+          ) : spendError ? (
+            <p className="text-sm text-destructive">{(spendError as Error).message}</p>
+          ) : (
+            <AgentRoiPanel
+              companyId={companyId}
+              byAgent={spendData?.byAgent ?? []}
+              periodLabel={PRESET_LABELS[preset].toLowerCase()}
+            />
           )}
         </TabsContent>
       </Tabs>
