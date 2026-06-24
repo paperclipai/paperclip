@@ -250,6 +250,7 @@ async function applyPendingMigrationsManually(
     for (const migrationFile of orderedPendingMigrations) {
       const migrationContent = await readMigrationFileContent(migrationFile);
       const hash = createHash("sha256").update(migrationContent).digest("hex");
+      const schemaAlreadyApplied = await migrationContentAlreadyApplied(sql, migrationContent);
       const existingEntry = await migrationHistoryEntryExists(
         sql,
         qualifiedTable,
@@ -257,21 +258,35 @@ async function applyPendingMigrationsManually(
         migrationFile,
         hash,
       );
-      if (existingEntry) continue;
+      if (schemaAlreadyApplied) {
+        if (!existingEntry) {
+          await recordMigrationHistoryEntry(
+            sql,
+            qualifiedTable,
+            columnNames,
+            migrationFile,
+            hash,
+            folderMillisByFileName.get(migrationFile) ?? Date.now(),
+          );
+        }
+        continue;
+      }
 
       await runInTransaction(sql, async () => {
         for (const statement of splitMigrationStatements(migrationContent)) {
           await sql.unsafe(statement);
         }
 
-        await recordMigrationHistoryEntry(
-          sql,
-          qualifiedTable,
-          columnNames,
-          migrationFile,
-          hash,
-          folderMillisByFileName.get(migrationFile) ?? Date.now(),
-        );
+        if (!existingEntry) {
+          await recordMigrationHistoryEntry(
+            sql,
+            qualifiedTable,
+            columnNames,
+            migrationFile,
+            hash,
+            folderMillisByFileName.get(migrationFile) ?? Date.now(),
+          );
+        }
       });
     }
   } finally {
@@ -321,6 +336,26 @@ async function tableExists(
     ) AS exists
   `;
   return rows[0]?.exists ?? false;
+}
+
+const SCHEMA_DRIFT_MIGRATION_MIN_VERSION = 65;
+
+async function findSchemaDriftPendingMigrations(
+  sql: ReturnType<typeof postgres>,
+  availableMigrations: string[],
+): Promise<string[]> {
+  const drifted: string[] = [];
+  for (const migrationFile of availableMigrations) {
+    const match = migrationFile.match(/^(\d+)_/);
+    if (!match) continue;
+    const version = Number.parseInt(match[1] ?? "", 10);
+    if (!Number.isFinite(version) || version < SCHEMA_DRIFT_MIGRATION_MIN_VERSION) continue;
+
+    const migrationContent = await readMigrationFileContent(migrationFile);
+    const alreadyApplied = await migrationContentAlreadyApplied(sql, migrationContent);
+    if (!alreadyApplied) drifted.push(migrationFile);
+  }
+  return drifted;
 }
 
 async function columnExists(
@@ -636,6 +671,18 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
     const appliedMigrations = await loadAppliedMigrations(sql, migrationTableSchema, availableMigrations);
     const pendingMigrations = availableMigrations.filter((name) => !appliedMigrations.includes(name));
     if (pendingMigrations.length === 0) {
+      const driftedMigrations = await findSchemaDriftPendingMigrations(sql, availableMigrations);
+      if (driftedMigrations.length > 0) {
+        return {
+          status: "needsMigrations",
+          tableCount,
+          availableMigrations,
+          appliedMigrations,
+          pendingMigrations: driftedMigrations,
+          reason: "pending-migrations",
+        };
+      }
+
       return {
         status: "upToDate",
         tableCount,

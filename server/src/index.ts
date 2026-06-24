@@ -314,7 +314,9 @@ export async function startServer(): Promise<StartedServer> {
   assertCloudDatabaseContract();
   if (config.databaseUrl) {
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
-    migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
+    migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL", {
+      autoApply: process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true",
+    });
   
     db = createDb(config.databaseUrl);
     pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
@@ -472,11 +474,15 @@ export async function startServer(): Promise<StartedServer> {
   
     const embeddedConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
     const shouldAutoApplyFirstRunMigrations = !clusterAlreadyInitialized || dbStatus === "created";
+    const shouldAutoApplyMigrations =
+      process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true" || shouldAutoApplyFirstRunMigrations;
     if (shouldAutoApplyFirstRunMigrations) {
       logger.info("Detected first-run embedded PostgreSQL setup; applying pending migrations automatically");
+    } else if (process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true") {
+      logger.info("PAPERCLIP_MIGRATION_AUTO_APPLY=true; applying pending migrations automatically");
     }
     migrationSummary = await ensureMigrations(embeddedConnectionString, "Embedded PostgreSQL", {
-      autoApply: shouldAutoApplyFirstRunMigrations,
+      autoApply: shouldAutoApplyMigrations,
     });
   
     db = createDb(embeddedConnectionString);
