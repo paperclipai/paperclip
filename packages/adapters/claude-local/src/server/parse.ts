@@ -185,6 +185,24 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   );
 }
 
+export function isClaudeRefusalResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+
+  // A policy refusal exits the CLI cleanly (exitCode=0, is_error=false), so it
+  // must be detected from the structured fields rather than the failure flag.
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype === "model_refusal" || subtype === "refusal") return true;
+
+  const structuredStopReasons = [
+    parsed.stop_reason,
+    parsed.stopReason,
+    parsed.error_code,
+    parsed.errorCode,
+  ].map((value) => asString(value, "").trim().toLowerCase());
+
+  return structuredStopReasons.some((reason) => reason === "refusal");
+}
+
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
@@ -192,7 +210,31 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
     .filter(Boolean);
 
   return allMessages.some((msg) =>
-    /no conversation found with session id|unknown session|session .* not found/i.test(msg),
+    /no conversation found with session id|unknown session|session .* not found|not a valid UUID|--resume requires a valid session|is not a UUID|does not match any session title/i.test(
+      msg,
+    ),
+  );
+}
+
+export function isClaudePoisonedPreviousMessageIdError(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) =>
+    /diagnostics\.previous_message_id.*starts with `msg_`/i.test(msg),
+  );
+}
+
+export function isClaudeImageProcessingError(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) =>
+    /could not process image/i.test(msg),
   );
 }
 
@@ -375,7 +417,7 @@ export function isClaudeTransientUpstreamError(input: {
 }): boolean {
   const parsed = input.parsed ?? null;
   // Deterministic failures are handled by their own classifiers.
-  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed))) {
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
     return false;
   }
   const loginMeta = detectClaudeLoginRequired({

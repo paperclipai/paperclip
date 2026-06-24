@@ -2,6 +2,8 @@ import { memo, useMemo } from "react";
 import type { TranscriptEntry } from "../adapters";
 import type { LiveRunForIssue } from "../api/heartbeats";
 import { IssueChatThread } from "./IssueChatThread";
+import { IssueChatThreadClassic } from "./IssueChatThreadClassic";
+import { useConferenceRoomChatEnabled } from "../hooks/useConferenceRoomChatEnabled";
 import type { IssueChatLinkedRun } from "../lib/issue-chat-messages";
 
 const EMPTY_COMMENTS: [] = [];
@@ -48,9 +50,13 @@ export const RunChatSurface = memo(function RunChatSurface({
     () => new Map([[run.id, transcript as readonly TranscriptEntry[]]]),
     [run.id, transcript],
   );
+  // Conference Room Chat experimental flag (PAP-136/PAP-139): OFF renders the
+  // frozen master fork so embedded run chat looks exactly like master.
+  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
+  const ThreadComponent = conferenceRoomChatEnabled ? IssueChatThread : IssueChatThreadClassic;
 
   return (
-    <IssueChatThread
+    <ThreadComponent
       comments={EMPTY_COMMENTS}
       linkedRuns={linkedRuns}
       timelineEvents={EMPTY_TIMELINE_EVENTS}

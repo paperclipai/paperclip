@@ -7,6 +7,18 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * Classes for a sidebar row label when the sidebar is collapsed to the icon rail
+ * (PAP-10676). Unlike `sr-only` (which is `position: absolute` and therefore
+ * removes the label from flow), this keeps the label in flow so it still
+ * contributes its line-height to the row. That guarantees a row is the *exact*
+ * same height collapsed as expanded, so the icons never shift vertically between
+ * states. The label is clipped to zero visible width and rendered transparent,
+ * but stays in the DOM and the a11y tree as the link's accessible name.
+ */
+export const SIDEBAR_RAIL_HIDDEN_LABEL =
+  "block w-0 min-w-0 overflow-hidden whitespace-nowrap text-transparent select-none";
+
 export function asObject(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>

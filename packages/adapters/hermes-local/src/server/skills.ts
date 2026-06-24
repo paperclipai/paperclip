@@ -153,16 +153,14 @@ async function buildHermesSkillSnapshot(config: Record<string, unknown>, company
       desired,
       managed: true,
       state: desired ? "configured" : "available",
-      origin: entry.required ? "paperclip_required" : "company_managed",
-      originLabel: entry.required ? "Required by Paperclip" : "Managed by Paperclip",
+      origin: "company_managed",
+      originLabel: "Managed by Paperclip",
       readOnly: false,
       sourcePath: entry.source,
       targetPath: null,
       detail: desired
         ? "Will be available on the next run via Hermes skill loading."
         : null,
-      required: Boolean(entry.required),
-      requiredReason: entry.requiredReason ?? null,
     });
   }
 

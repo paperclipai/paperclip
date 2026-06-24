@@ -7,7 +7,7 @@ import { userProfilesApi } from "../api/userProfiles";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { StatusBadge } from "../components/StatusBadge";
+import { IssueStatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -315,7 +315,7 @@ export function UserProfile() {
                     <span className="font-mono text-xs text-muted-foreground">{issue.identifier ?? issue.id.slice(0, 8)}</span>
                     <span className="truncate text-sm">{issue.title}</span>
                     <span className="flex items-center gap-3 sm:justify-end">
-                      <StatusBadge status={issue.status} />
+                      <IssueStatusBadge status={issue.status} />
                       <span className="text-xs tabular-nums text-muted-foreground">{relativeTime(issue.updatedAt)}</span>
                     </span>
                   </Link>
