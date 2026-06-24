@@ -29,7 +29,9 @@ describe("paperclip agent Dockerfile", () => {
 
   it("bakes the full Go toolchain (go, gofmt, tinygo) onto PATH", () => {
     // Go + gofmt symlinked into /usr/local/bin (on PATH for the node user).
-    expect(dockerfileAgent).toContain("ARG GO_VERSION=");
+    // Pinned to 1.25.6 to match CI / multicast; older versions made agents
+    // self-install go1.25.6 into the PVC home and shadow the image.
+    expect(dockerfileAgent).toContain("ARG GO_VERSION=1.25.6");
     expect(dockerfileAgent).toContain("ln -s /usr/local/go/bin/go /usr/local/bin/go");
     expect(dockerfileAgent).toContain("ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt");
 

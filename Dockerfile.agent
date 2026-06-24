@@ -54,8 +54,13 @@ RUN apt-get update \
 # Languages
 # ---------------------------------------------------------------------------
 
-# Go (matches devbox 05-languages.sh)
-ARG GO_VERSION=1.24.4
+# Go — pinned to 1.25.6 to match what CI workflows use (e.g.
+# ciab-data-plane-uat.yml, multicast's `setup-go` / GO_VERSION) and what
+# multicast's toolchain requires. Keeping the image behind that version made
+# agents self-install go1.25.6 into /paperclip/bin (PVC home) on every run and
+# shadow the image binary — wasteful and lost on workspace reset. Baking the
+# right version here stops the self-install.
+ARG GO_VERSION=1.25.6
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
   | tar -C /usr/local -xzf - \
   && ln -s /usr/local/go/bin/go /usr/local/bin/go \
