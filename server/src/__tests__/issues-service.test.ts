@@ -3177,6 +3177,66 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ]);
   });
 
+  it("does not wake dependents when a done blocker still has unresolved blockers", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const unresolvedGateId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(issues).values([
+      { id: unresolvedGateId, companyId, title: "Restart guard", status: "in_review", priority: "high" },
+      { id: blockerId, companyId, title: "Champion baseline", status: "blocked", priority: "critical" },
+      {
+        id: dependentId,
+        companyId,
+        title: "Replay decision",
+        status: "blocked",
+        priority: "critical",
+        assigneeAgentId,
+      },
+    ]);
+
+    await svc.update(blockerId, { blockedByIssueIds: [unresolvedGateId] });
+    await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
+
+    await expect(
+      svc.update(blockerId, { status: "done" }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { unresolvedBlockerIssueIds: [unresolvedGateId] },
+    });
+    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([]);
+
+    await svc.update(unresolvedGateId, { status: "done" });
+    await svc.update(blockerId, { status: "done" });
+
+    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([
+      expect.objectContaining({
+        id: dependentId,
+        assigneeAgentId,
+        blockerIssueIds: [blockerId],
+      }),
+    ]);
+  });
+
   it("treats done blockers on a shared workspace as ready while a foreign issue is in-flight", async () => {
     const {
       companyId,
