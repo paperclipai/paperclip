@@ -89,6 +89,24 @@ Most tools in the AI agent ecosystem fall into two buckets:
 
 **The relationship:** AutoGen is optimized for collaborative agent conversations — agents talk through a problem together. Paperclip is optimized for *organizational work* — agents have jobs, managers, task inboxes, and heartbeats. In a Paperclip company, agents don't chat aimlessly; they pull assigned tasks, do the work, and report back. AutoGen agents could be used within Paperclip for conversation-heavy workflows, with Paperclip providing the organizational structure around them.
 
+### Paperclip vs. OpenAI Agents SDK
+
+| | Paperclip | OpenAI Agents SDK |
+|---|-----------|-------------------|
+| **What it is** | Company OS for running multi-agent organizations | Lightweight SDK for building, configuring, and running OpenAI-powered agents |
+| **Primary use case** | Running a governed, persistent team of AI agents with company structure | Building single or multi-agent systems with built-in guardrails, tracing, and handoffs |
+| **Agent model** | Persistent agents with roles, managers, task inboxes, budgets, and heartbeats | Agents defined as Python functions with instructions, tools, and optional handoffs to other agents |
+| **Execution model** | Heartbeat-driven: agents wake on schedule, pull work from inbox, report results | SDK-driven: you call `Runner.run()` in your application code; agents execute and return |
+| **Governance** | Built-in: approval gates, budget enforcement, audit trails, role-based access | Guardrails only: input/output validation via configurable checks — no organizational governance |
+| **Persistence** | Full company state: agents, tasks, budgets, projects survive restarts | Stateless — each `Runner.run()` call is independent; state management is left to the developer |
+| **Multi-agent scope** | 2-20+ agents in a real org chart with ongoing work | Multi-agent via handoffs — agents can delegate to other agents within a single run |
+| **Tracing** | Built-in audit trail across all agent actions, task assignments, and approvals | Built-in OpenAI-compatible tracing via the SDK's trace processor |
+| **Vendor lock-in** | Agent-agnostic — works with any LLM, CLI tool, or HTTP endpoint | OpenAI models only (configurable model string but designed for OpenAI API surface) |
+| **Self-hosting** | Yes — `npx paperclipai onboard` | Yes — install via pip, bring your own OpenAI API key |
+| **Open source** | MIT | MIT |
+
+**The relationship:** The OpenAI Agents SDK is the most streamlined way to build agents on OpenAI's infrastructure — it gives you guardrails, tracing, and handoffs out of the box. Paperclip operates at a different layer: where the SDK gives you the *building blocks* for one or a few agents to complete a task, Paperclip gives those agents a *persistent job* with a manager, budget, heartbeat schedule, and audit trail. You can wrap an OpenAI Agents SDK agent in a Paperclip adapter and Paperclip will manage it as an employee — waking it, assigning work, tracking its token costs, and enforcing its spend caps. Think of the SDK as the agent's skills; Paperclip is its employment contract.
+
 ---
 
 ## Comparison: Paperclip vs. Orchestrators
@@ -135,26 +153,26 @@ Most tools in the AI agent ecosystem fall into two buckets:
 
 ## Feature Comparison Matrix
 
-| Feature | Paperclip | LangGraph | CrewAI | AutoGen | Conductor | Enterprise (SFDC/MSFT) |
-|---------|-----------|-----------|--------|---------|-----------|------------------------|
-| **Category** | Company OS | Agent framework | Agent framework | Agent framework | Workflow engine | Agent platform |
-| **Agent-agnostic (BYOAgent)** | ✅ | ❌ Python-only | ❌ Python-only | ❌ Python-only | ❌ Java-first | ❌ Vendor-locked |
-| **Role hierarchy (org chart)** | ✅ | ❌ | Partial (roles) | ❌ | ❌ | ✅ |
-| **Heartbeat scheduling** | ✅ | ❌ (external) | ❌ | ❌ | ❌ | ❌ |
-| **Task inbox per agent** | ✅ | ❌ | ❌ | ❌ | ❌ | Partial |
-| **Budget enforcement** | ✅ Token/cost caps | ❌ | ❌ | ❌ | ❌ | ✅ ($$$) |
-| **Approval governance** | ✅ Approval gates | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Multi-company / multi-tenant** | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Agent-as-employee model** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Open-source** | ✅ MIT | ✅ MIT | ✅ MIT | ✅ MIT | ✅ Apache 2.0 | ❌ |
-| **Self-hosted** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (or $$) |
-| **Zero-config start** | ✅ `npx paperclipai onboard` | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Company export/import** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Goal/project alignment** | ✅ Every task traces to goals | ❌ | ❌ | ❌ | ❌ | Partial |
-| **Governed hiring** | ✅ Approval-gated agent hiring | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Cross-team delegation** | ✅ Billing codes, org boundaries | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Audit trail** | ✅ Full audit log | Partial (LangSmith) | ❌ | ❌ | ✅ (execution history) | ✅ |
-| **Routine/automation triggers** | ✅ Schedule, webhook, API | ❌ | ❌ | ❌ | ✅ (API, scheduler) | ✅ |
+| Feature | Paperclip | LangGraph | CrewAI | AutoGen | OpenAI Agents SDK | Conductor | Enterprise (SFDC/MSFT) |
+|---------|-----------|-----------|--------|---------|-------------------|-----------|------------------------|
+| **Category** | Company OS | Agent framework | Agent framework | Agent framework | Agent SDK | Workflow engine | Agent platform |
+| **Agent-agnostic (BYOAgent)** | ✅ | ❌ Python-only | ❌ Python-only | ❌ Python-only | ❌ OpenAI-only | ❌ Java-first | ❌ Vendor-locked |
+| **Role hierarchy (org chart)** | ✅ | ❌ | Partial (roles) | ❌ | ❌ | ❌ | ✅ |
+| **Heartbeat scheduling** | ✅ | ❌ (external) | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Task inbox per agent** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Partial |
+| **Budget enforcement** | ✅ Token/cost caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ ($$$) |
+| **Approval governance** | ✅ Approval gates | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Multi-company / multi-tenant** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Agent-as-employee model** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Open-source** | ✅ MIT | ✅ MIT | ✅ MIT | ✅ MIT | ✅ MIT | ✅ Apache 2.0 | ❌ |
+| **Self-hosted** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (or $$) |
+| **Zero-config start** | ✅ `npx paperclipai onboard` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Company export/import** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Goal/project alignment** | ✅ Every task traces to goals | ❌ | ❌ | ❌ | ❌ | ❌ | Partial |
+| **Governed hiring** | ✅ Approval-gated agent hiring | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Cross-team delegation** | ✅ Billing codes, org boundaries | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Audit trail** | ✅ Full audit log | Partial (LangSmith) | ❌ | ❌ | ✅ (SDK tracing) | ✅ (execution history) | ✅ |
+| **Routine/automation triggers** | ✅ Schedule, webhook, API | ❌ | ❌ | ❌ | ❌ | ✅ (API, scheduler) | ✅ |
 
 ---
 
@@ -190,6 +208,13 @@ Most tools in the AI agent ecosystem fall into two buckets:
 - You're building conversational multi-agent research or problem-solving
 - You're in the Microsoft/Azure ecosystem
 
+### Use OpenAI Agents SDK when:
+
+- You want the fastest path to a production OpenAI agent with guardrails and tracing
+- You're building agents that hand off work to each other within a single execution
+- You value lightweight, decorator-based agent definitions over heavy framework abstractions
+- You're already on the OpenAI platform and want SDK-native tracing and observability
+
 ### Use Conductor when:
 
 - You're orchestrating deterministic microservice workflows (not AI agents)
@@ -212,11 +237,11 @@ Most tools in the AI agent ecosystem fall into two buckets:
 
 Think of it this way:
 
-- **LangGraph/CrewAI/AutoGen** = the agent's brain and skills
+- **LangGraph/CrewAI/AutoGen/OpenAI Agents SDK** = the agent's brain and skills
 - **Conductor** = the workflow plumbing for deterministic tasks
 - **Enterprise platforms** = the managed, vendor-locked agent workforce
 - **Paperclip** = the company: roles, budgets, tasks, governance, heartbeats
 
-You can use LangGraph to build a smart agent, and then use Paperclip to give that agent a job, a manager, a budget, and a heartbeat — running it as part of a governed, auditable organization.
+You can use LangGraph to build a smart agent, or the OpenAI Agents SDK to spin up a traced, guarded agent — and then use Paperclip to give that agent a job, a manager, a budget, and a heartbeat — running it as part of a governed, auditable organization.
 
 This isn't either/or. It's a stack.
