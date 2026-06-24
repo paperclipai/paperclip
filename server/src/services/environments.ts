@@ -87,10 +87,43 @@ function toEnvironment(row: EnvironmentRow): Environment {
 
 function isLocalEnvironmentUniqueViolation(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  const maybe = error as { code?: string; constraint?: string; message?: string };
-  if (maybe.code !== "23505") return false;
-  if (maybe.constraint === "environments_company_driver_idx") return true;
-  return typeof maybe.message === "string" && maybe.message.includes("environments_company_driver_idx");
+  const maybe = error as { code?: string; constraint?: string; message?: string; cause?: unknown };
+  if (maybe.code === "23505") {
+    if (maybe.constraint === "environments_company_driver_idx") return true;
+    if (typeof maybe.message === "string" && maybe.message.includes("environments_company_driver_idx")) return true;
+  }
+  const cause = maybe.cause;
+  if (cause && typeof cause === "object") {
+    return isLocalEnvironmentUniqueViolation(cause);
+  }
+  return false;
+}
+
+function isMissingEnvironmentsRelation(error: unknown): boolean {
+  const codes: string[] = [];
+  const messages: string[] = [];
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    const maybe = value as { code?: string; message?: string; cause?: unknown };
+    if (typeof maybe.code === "string") codes.push(maybe.code);
+    if (typeof maybe.message === "string") messages.push(maybe.message);
+    if (maybe.cause) visit(maybe.cause);
+  };
+  visit(error);
+  if (codes.includes("42P01")) return true;
+  const combined = messages.join(" ").toLowerCase();
+  return (
+    combined.includes('relation "environments" does not exist') ||
+    (combined.includes("environments") && combined.includes("does not exist"))
+  );
+}
+
+function missingEnvironmentsSchemaError(): Error {
+  return new Error(
+    "Paperclip database is missing the environments schema (migration 0065+). " +
+      "Apply pending migrations (set PAPERCLIP_MIGRATION_AUTO_APPLY=true and restart, or run pnpm db:migrate in the container) " +
+      "or execute scripts/ops/hotfix-environments-schema.sql against the instance database.",
+  );
 }
 
 function localEnvironmentValues(companyId: string, now = new Date()) {
@@ -173,12 +206,18 @@ export function environmentService(db: Db) {
     },
 
     ensureLocalEnvironment: async (companyId: string): Promise<Environment> => {
-      const lookupLocalEnvironment = () =>
-        db
-          .select()
-          .from(environments)
-          .where(and(eq(environments.companyId, companyId), eq(environments.driver, "local")))
-          .then((rows) => rows[0] ?? null);
+      const lookupLocalEnvironment = async () => {
+        try {
+          return await db
+            .select()
+            .from(environments)
+            .where(and(eq(environments.companyId, companyId), eq(environments.driver, "local")))
+            .then((rows) => rows[0] ?? null);
+        } catch (error) {
+          if (isMissingEnvironmentsRelation(error)) throw missingEnvironmentsSchemaError();
+          throw error;
+        }
+      };
 
       const existing = await lookupLocalEnvironment();
       if (existing) return toEnvironment(existing);
@@ -192,6 +231,7 @@ export function environmentService(db: Db) {
           .then((rows) => rows[0] ?? null);
         if (row) return toEnvironment(row);
       } catch (error) {
+        if (isMissingEnvironmentsRelation(error)) throw missingEnvironmentsSchemaError();
         if (!isLocalEnvironmentUniqueViolation(error)) throw error;
       }
 
