@@ -5,6 +5,7 @@ import {
   normalizePipelineConversationComments,
   pipelineBoardGroupByStorageKey,
   readStoredPipelineBoardGroupBy,
+  readPipelineStageAutomationAssigneeAgentId,
   writeStoredPipelineBoardGroupBy,
 } from "./Pipelines";
 
@@ -88,6 +89,31 @@ describe("pipeline board group preference", () => {
     expect(readStoredPipelineBoardGroupBy("pipeline-1", null)).toBe("none");
     expect(readStoredPipelineBoardGroupBy("pipeline-1", { getItem: () => "stage" })).toBe("none");
     expect(readStoredPipelineBoardGroupBy("pipeline-1", { getItem: () => { throw new Error("blocked"); } })).toBe("none");
+  });
+});
+
+describe("readPipelineStageAutomationAssigneeAgentId", () => {
+  it("reads the agent assigned to saved stage automation", () => {
+    expect(readPipelineStageAutomationAssigneeAgentId({
+      config: {
+        automation: {
+          assigneeAgentId: " agent-1 ",
+        },
+      },
+    })).toBe("agent-1");
+  });
+
+  it("keeps legacy top-level assignee configs visible", () => {
+    expect(readPipelineStageAutomationAssigneeAgentId({
+      config: {
+        assigneeAgentId: "agent-legacy",
+      },
+    })).toBe("agent-legacy");
+  });
+
+  it("ignores stages without an agent automation assignee", () => {
+    expect(readPipelineStageAutomationAssigneeAgentId({ config: null })).toBeNull();
+    expect(readPipelineStageAutomationAssigneeAgentId({ config: { automation: { assigneeAgentId: " " } } })).toBeNull();
   });
 });
 

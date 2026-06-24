@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNo
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { groupWarningsByStage, LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import type {
+  Agent,
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
   FeedbackVote,
@@ -82,6 +83,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { EmptyState } from "../components/EmptyState";
+import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueChatThread } from "../components/IssueChatThread";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -127,6 +129,8 @@ type PipelineConversationActionableInteraction =
   | SuggestTasksInteraction
   | RequestConfirmationInteraction
   | RequestCheckboxConfirmationInteraction;
+
+type PipelineBoardAutomationAgent = Pick<Agent, "id" | "name" | "icon" | "urlKey">;
 
 export function normalizePipelineConversationComments(value: unknown): IssueChatComment[] {
   return Array.isArray(value) ? value : [];
@@ -228,6 +232,23 @@ function currentStageAutomation(stage: PipelineStage) {
   return config.type === "run_routine" && typeof config.routineId === "string" && config.routineId.trim()
     ? { routineId: config.routineId }
     : null;
+}
+
+function readNonEmptyConfigString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function readPipelineStageAutomationAssigneeAgentId(stage: Pick<PipelineStage, "config">) {
+  const config = stage.config;
+  if (!config || typeof config !== "object" || Array.isArray(config)) return null;
+
+  const automation = config.automation;
+  if (automation && typeof automation === "object" && !Array.isArray(automation)) {
+    const assigneeAgentId = readNonEmptyConfigString((automation as Record<string, unknown>).assigneeAgentId);
+    if (assigneeAgentId) return assigneeAgentId;
+  }
+
+  return readNonEmptyConfigString(config.assigneeAgentId);
 }
 
 function RetryMetric({
@@ -1270,6 +1291,7 @@ function PipelineBoardColumn({
   settingsHref,
   warningCount,
   breakdownTarget,
+  automationAgent,
   onColumnEmpty,
   isDragTargeted,
   isDragBlocked,
@@ -1280,6 +1302,7 @@ function PipelineBoardColumn({
   settingsHref?: string | null;
   warningCount?: number;
   breakdownTarget?: { pipelineId: string; name: string } | null;
+  automationAgent?: PipelineBoardAutomationAgent | null;
   onColumnEmpty?: (stage: PipelineStage) => string;
   isDragTargeted?: boolean;
   isDragBlocked?: boolean;
@@ -1322,16 +1345,28 @@ function PipelineBoardColumn({
           ) : null}
         </span>
       </div>
-      {breakdownTarget ? (
-        <div className="border-b border-border px-3 py-1.5">
-          <Link
-            to={`/pipelines/${breakdownTarget.pipelineId}`}
-            className="inline-flex max-w-full items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
-            title={`Breaks into ${breakdownTarget.name}`}
-          >
-            <span className="shrink-0">→</span>
-            <span className="truncate">Breaks into {breakdownTarget.name}</span>
-          </Link>
+      {breakdownTarget || automationAgent ? (
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-1.5">
+          {automationAgent ? (
+            <Link
+              to={`/agents/${automationAgent.urlKey || automationAgent.id}`}
+              className="inline-flex max-w-full items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+              title={`${automationAgent.name} runs this step`}
+            >
+              <AgentIcon icon={automationAgent.icon} className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{automationAgent.name}</span>
+            </Link>
+          ) : null}
+          {breakdownTarget ? (
+            <Link
+              to={`/pipelines/${breakdownTarget.pipelineId}`}
+              className="inline-flex max-w-full items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+              title={`Breaks into ${breakdownTarget.name}`}
+            >
+              <span className="shrink-0">→</span>
+              <span className="truncate">Breaks into {breakdownTarget.name}</span>
+            </Link>
+          ) : null}
         </div>
       ) : null}
       <div
@@ -1422,6 +1457,12 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
     enabled: Boolean(selectedCompanyId),
   });
 
+  const agentsQuery = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "pipeline-board", "missing-company"],
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+
   const pipeline = pipelineQuery.data;
   const cases = useMemo<BoardCase[]>(
     () => (casesQuery.data ?? []).map((row) => ({
@@ -1500,6 +1541,11 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
   const pipelineNameById = useMemo(
     () => new Map((allPipelinesQuery.data ?? []).map((entry) => [entry.id, entry.name])),
     [allPipelinesQuery.data],
+  );
+
+  const agentById = useMemo(
+    () => new Map((agentsQuery.data ?? []).map((agent) => [agent.id, agent])),
+    [agentsQuery.data],
   );
 
   // Per-stage outbound chip: "Breaks into <target>" on any stage configured to
@@ -1736,6 +1782,15 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
               const activeTargetStageId = activeOverId
                 ? resolvePipelineTargetStageId(activeOverId, columnsById, boardColumns.caseToColumn)
                 : null;
+              const automationAssigneeAgentId = readPipelineStageAutomationAssigneeAgentId(stage);
+              const automationAgent = automationAssigneeAgentId
+                ? agentById.get(automationAssigneeAgentId) ?? {
+                    id: automationAssigneeAgentId,
+                    name: `Agent ${automationAssigneeAgentId.slice(0, 8)}`,
+                    icon: null,
+                    urlKey: automationAssigneeAgentId,
+                  }
+                : null;
               const isDragTargeted = activeCaseId != null && activeTargetStageId === stage.id;
               const isDragBlocked = isDragTargeted
                 ? stage.id === UNASSIGNED_STAGE_ID || !moveAllowed(activeSourceStageId, stage.id)
@@ -1751,6 +1806,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
                   }
                   warningCount={healthWarningsByStage[stage.id]?.length ?? 0}
                   breakdownTarget={breakdownTargetByStageId.get(stage.id) ?? null}
+                  automationAgent={automationAgent}
                   isDragTargeted={isDragTargeted}
                   isDragBlocked={isDragBlocked}
                   onColumnEmpty={(columnStage) =>
