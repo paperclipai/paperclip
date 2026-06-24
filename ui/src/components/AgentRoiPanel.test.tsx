@@ -117,7 +117,7 @@ describe("AgentRoiPanel", () => {
   it("shows empty state when no byAgent data", async () => {
     mockIssuesApi.list.mockResolvedValue([]);
     const { root } = await render([]);
-    expect(container.textContent).toContain("No cost data");
+    expect(container.textContent).toContain("No agent cost data for the selected period");
     await act(async () => { root.unmount(); });
   });
 
@@ -134,20 +134,21 @@ describe("AgentRoiPanel", () => {
     expect(container.textContent).toContain("Agent 1");
     expect(container.textContent).toContain("Agent 2");
 
-    // KPI tile: total done tasks = 2
-    expect(container.textContent).toMatch(/2\s*Done Tasks/);
+    // KPI tile: label "Done Tasks (all-time)" appears before the count "2"
+    expect(container.textContent).toMatch(/Done Tasks \(all-time\)2/);
 
     await act(async () => { root.unmount(); });
   });
 
   it("computes ROI ratings based on cost-per-done percentile", async () => {
-    // agent-1: $50/done (cheap = Excellent), agent-2: $200/done (expensive = Poor)
+    // 3 agents needed so p66 < max: cheapest=Excellent, mid=Good, priciest=Poor
     mockIssuesApi.list.mockResolvedValue([
       makeIssue("agent-1", "done"),
       makeIssue("agent-2", "done"),
+      makeIssue("agent-3", "done"),
     ]);
 
-    const { root } = await render([makeAgent(1, 5000), makeAgent(2, 20000)]);
+    const { root } = await render([makeAgent(1, 1000), makeAgent(2, 5000), makeAgent(3, 20000)]);
     await flushReact();
 
     expect(container.textContent).toContain("Excellent");

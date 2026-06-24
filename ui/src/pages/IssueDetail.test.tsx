@@ -1035,7 +1035,7 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.querySelector('[aria-label="Open file in this issue"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Open file in this task"]')).toBeNull();
     const latestWorkspaceProps = mockIssueWorkspaceCardRender.mock.calls.at(-1)?.[0];
     expect(latestWorkspaceProps?.onBrowseFiles).toBeUndefined();
     expect(latestWorkspaceProps?.onOpenFileByPath).toBeUndefined();
@@ -1059,7 +1059,7 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.querySelector('[aria-label="Open file in this issue"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Open file in this task"]')).not.toBeNull();
     const latestWorkspaceProps = mockIssueWorkspaceCardRender.mock.calls.at(-1)?.[0];
     expect(latestWorkspaceProps?.onBrowseFiles).toEqual(expect.any(Function));
     expect(latestWorkspaceProps?.onOpenFileByPath).toEqual(expect.any(Function));
