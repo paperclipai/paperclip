@@ -221,7 +221,9 @@ vi.mock("@/components/ui/toggle-switch", () => ({
 vi.mock("@/components/ui/popover", () => ({
   Popover: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   PopoverTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
-  PopoverContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  PopoverContent: ({ children, disablePortal }: { children: ReactNode; disablePortal?: boolean }) => (
+    <div data-disable-portal={String(Boolean(disablePortal))}>{children}</div>
+  ),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -298,9 +300,16 @@ function renderDialog(container: HTMLDivElement) {
 
 describe("NewIssueDialog", () => {
   let container: HTMLDivElement;
+  let originalResizeObserver: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
     vi.useRealTimers();
+    originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
     container = document.createElement("div");
     document.body.appendChild(container);
     dialogState.newIssueOpen = true;
@@ -337,6 +346,7 @@ describe("NewIssueDialog", () => {
   });
 
   afterEach(() => {
+    globalThis.ResizeObserver = originalResizeObserver!;
     document.body.innerHTML = "";
   });
 
@@ -594,6 +604,57 @@ describe("NewIssueDialog", () => {
         },
       }),
     );
+
+    act(() => root.unmount());
+  });
+
+  it("keeps the reusable workspace search popover inside the modal", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Alpha",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        workspaces: [
+          {
+            id: "project-workspace-1",
+            name: "Primary",
+            isPrimary: true,
+          },
+        ],
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+        },
+      },
+    ]);
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+      {
+        id: "workspace-1",
+        name: "PAP-11446-on-mobile-the-agent-chat",
+        mode: "isolated_workspace",
+        status: "active",
+        branchName: "PAP-11446-on-mobile-the-agent-chat",
+        cwd: "/tmp/workspace-1",
+        projectWorkspaceId: "project-workspace-1",
+        lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
+      },
+    ]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    dialogState.newIssueDefaults = {
+      title: "Follow-up issue",
+      projectId: "project-1",
+      executionWorkspaceId: "workspace-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    await waitForAssertion(() => {
+      const workspaceInput = container.querySelector('input[placeholder="Search workspaces..."]');
+      expect(workspaceInput?.closest("[data-disable-portal]")?.getAttribute("data-disable-portal")).toBe("true");
+    });
 
     act(() => root.unmount());
   });

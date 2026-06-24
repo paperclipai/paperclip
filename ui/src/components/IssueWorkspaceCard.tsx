@@ -15,6 +15,7 @@ import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-work
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Check, Copy, FileSearch, FolderOpen, FolderSearch, GitBranch, Pencil, X } from "lucide-react";
+import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
 
 /* -------------------------------------------------------------------------- */
 /*  Utility helpers (mirrored from IssueProperties for self-containment)      */
@@ -219,7 +220,11 @@ export function IssueWorkspaceCard({
     enabled: Boolean(companyId) && environmentsEnabled,
   });
 
-  const { data: reusableExecutionWorkspaces } = useQuery({
+  const {
+    data: reusableExecutionWorkspaces,
+    isLoading: reusableExecutionWorkspacesLoading,
+    isError: reusableExecutionWorkspacesError,
+  } = useQuery({
     queryKey: queryKeys.executionWorkspaces.list(companyId!, {
       projectId: issue.projectId ?? undefined,
       projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
@@ -234,12 +239,10 @@ export function IssueWorkspaceCard({
     enabled: Boolean(companyId) && Boolean(issue.projectId) && editing,
   });
 
-  const deduplicatedReusableWorkspaces = useMemo(() => {
-    return orderReusableExecutionWorkspaces(reusableExecutionWorkspaces ?? []);
-  }, [reusableExecutionWorkspaces]);
+  const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
 
   const selectedReusableExecutionWorkspace =
-    deduplicatedReusableWorkspaces.find((w) => w.id === issue.executionWorkspaceId)
+    selectableReusableWorkspaces.find((w) => w.id === issue.executionWorkspaceId)
     ?? workspace
     ?? null;
 
@@ -277,7 +280,7 @@ export function IssueWorkspaceCard({
   const activeNonDefaultWorkspace = Boolean(workspace && workspace.mode !== "shared_workspace");
 
   const configuredReusableWorkspace =
-    deduplicatedReusableWorkspaces.find((w) => w.id === draftExecutionWorkspaceId)
+    selectableReusableWorkspaces.find((w) => w.id === draftExecutionWorkspaceId)
     ?? (draftExecutionWorkspaceId === issue.executionWorkspaceId ? selectedReusableExecutionWorkspace : null);
 
   const selectedReusableWorkspaceLink = workspaceDetailLink({
@@ -479,20 +482,13 @@ export function IssueWorkspaceCard({
           </select>
 
           {draftSelection === "reuse_existing" && (
-            <select
-              className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+            <ReusableExecutionWorkspaceSelect
               value={draftExecutionWorkspaceId}
-              onChange={(e) => {
-                setDraftExecutionWorkspaceId(e.target.value);
-              }}
-            >
-              <option value="">Choose an existing workspace</option>
-              {deduplicatedReusableWorkspaces.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name} · {w.status} · {w.branchName ?? w.cwd ?? w.id.slice(0, 8)}
-                </option>
-              ))}
-            </select>
+              workspaces={selectableReusableWorkspaces}
+              onValueChange={(workspaceId) => setDraftExecutionWorkspaceId(workspaceId)}
+              loading={reusableExecutionWorkspacesLoading}
+              error={reusableExecutionWorkspacesError}
+            />
           )}
 
           {/* Current workspace summary when editing */}

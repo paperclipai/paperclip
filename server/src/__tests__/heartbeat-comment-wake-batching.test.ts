@@ -19,6 +19,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.ts";
+import { parseWakePayloadFromMessage } from "./helpers/wake-message.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -476,11 +477,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return statusesByRunId.get(firstRun!.id) === "succeeded" && statusesByRunId.get(secondRunId) === "succeeded";
       }, 90_000);
 
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          commentIds: [comment2.id, comment3.id],
-          latestCommentId: comment3.id,
-        },
+      expect(secondPayload.paperclip).toBeUndefined();
+      const secondWake = parseWakePayloadFromMessage(secondPayload.message);
+      expect(secondWake).toMatchObject({
+        commentIds: [comment2.id, comment3.id],
+        latestCommentId: comment3.id,
       });
       expect(String(secondPayload.message ?? "")).toContain("Second comment");
       expect(String(secondPayload.message ?? "")).toContain("Third comment");
@@ -615,30 +616,14 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
       const promotedPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(promotedPayload.paperclip).toMatchObject({
-        wake: {
-          commentIds: [queuedComment.id],
-          latestCommentId: queuedComment.id,
-          comments: [
-            expect.objectContaining({
-              id: queuedComment.id,
-              authorType: "user",
-              body: "Queued follow-up",
-              presentation: expect.objectContaining({
-                kind: "system_notice",
-                tone: "warning",
-              }),
-              metadata: expect.objectContaining({
-                version: 1,
-              }),
-            }),
-          ],
-          commentWindow: {
-            requestedCount: 1,
-            includedCount: 1,
-            missingCount: 0,
-          },
-        },
+      expect(promotedPayload.paperclip).toBeUndefined();
+      const promotedWake = parseWakePayloadFromMessage(promotedPayload.message);
+      expect(promotedWake).toMatchObject({
+        commentIds: [queuedComment.id],
+        latestCommentId: queuedComment.id,
+        requestedCount: 1,
+        includedCount: 1,
+        missingCount: 0,
       });
       expect(String(promotedPayload.message ?? "")).toContain("Queued follow-up");
 
@@ -824,18 +809,18 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_commented",
-          commentIds: [comment2.id],
-          latestCommentId: comment2.id,
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Reopen after deferred comment",
-            status: "in_progress",
-            priority: "medium",
-          },
+      expect(secondPayload.paperclip).toBeUndefined();
+      const secondWake = parseWakePayloadFromMessage(secondPayload.message);
+      expect(secondWake).toMatchObject({
+        reason: "issue_commented",
+        commentIds: [comment2.id],
+        latestCommentId: comment2.id,
+        issue: {
+          id: issueId,
+          identifier: `${issuePrefix}-1`,
+          title: "Reopen after deferred comment",
+          status: "in_progress",
+          priority: "medium",
         },
       });
       expect(String(secondPayload.message ?? "")).toContain("Please handle this follow-up after you finish");
@@ -1024,18 +1009,18 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_comment_mentioned",
-          commentIds: [comment.id],
-          latestCommentId: comment.id,
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Do not reopen from agent mention",
-            status: "done",
-            priority: "medium",
-          },
+      expect(secondPayload.paperclip).toBeUndefined();
+      const secondWake = parseWakePayloadFromMessage(secondPayload.message);
+      expect(secondWake).toMatchObject({
+        reason: "issue_comment_mentioned",
+        commentIds: [comment.id],
+        latestCommentId: comment.id,
+        issue: {
+          id: issueId,
+          identifier: `${issuePrefix}-1`,
+          title: "Do not reopen from agent mention",
+          status: "done",
+          priority: "medium",
         },
       });
       expect(String(secondPayload.message ?? "")).toContain("please review after I finish");
@@ -1401,18 +1386,18 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_commented",
-          commentIds: [selfComment.id, humanComment.id],
-          latestCommentId: humanComment.id,
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Human follow-up must survive mixed deferred batches",
-            status: "in_progress",
-            priority: "medium",
-          },
+      expect(secondPayload.paperclip).toBeUndefined();
+      const secondWake = parseWakePayloadFromMessage(secondPayload.message);
+      expect(secondWake).toMatchObject({
+        reason: "issue_commented",
+        commentIds: [selfComment.id, humanComment.id],
+        latestCommentId: humanComment.id,
+        issue: {
+          id: issueId,
+          identifier: `${issuePrefix}-1`,
+          title: "Human follow-up must survive mixed deferred batches",
+          status: "in_progress",
+          priority: "medium",
         },
       });
       expect(String(secondPayload.message ?? "")).toContain("Real follow-up from a human after the run closes");
@@ -1487,20 +1472,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(firstRun).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1);
       const firstPayload = gateway.getAgentPayloads()[0] ?? {};
-      expect(firstPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_assigned",
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Require a comment",
-            status: "in_progress",
-            priority: "medium",
-          },
-          checkedOutByHarness: true,
-          commentIds: [],
-        },
-      });
+      expect(firstPayload.paperclip).toBeUndefined();
       expect(String(firstPayload.message ?? "")).toContain("## Paperclip Wake Payload");
       expect(String(firstPayload.message ?? "")).toContain("Do not switch to another issue until you have handled this wake.");
       expect(String(firstPayload.message ?? "")).toContain("- checkout: already claimed by the harness for this run");
@@ -1508,6 +1480,16 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         "The harness already checked out this issue for the current run.",
       );
       expect(String(firstPayload.message ?? "")).toContain(`${issuePrefix}-1 Require a comment`);
+      const firstWake = parseWakePayloadFromMessage(firstPayload.message);
+      expect(firstWake).toMatchObject({
+        reason: "issue_assigned",
+        checkedOutByHarness: true,
+        commentIds: [],
+        issue: {
+          id: issueId,
+          identifier: `${issuePrefix}-1`,
+        },
+      });
       const checkedOutIssue = await db
         .select({
           status: issues.status,

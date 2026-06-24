@@ -1432,7 +1432,20 @@ describeEmbeddedPostgres("secretService", () => {
     expect(thrown).toMatchObject({
       status: 403,
       message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
-      details: { code: "access_denied" },
+      details: {
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "secret_provider_config.discovery.preview",
+        providerConfigId: "discovery-preview",
+        providerVaultContext: "draft_config",
+        region: "us-east-1",
+        credentialPath: "Paperclip server runtime/provider credential path",
+        requiredCapability: "secretsmanager:ListSecrets",
+        actionableMessage:
+          "AWS discovery preview needs secretsmanager:ListSecrets in the selected region for the Paperclip server runtime/provider credential path.",
+        safeAlternative:
+          "If the operator already knows the exact AWS Secrets Manager ARN, paste/link that ARN instead of using discovery. Exact-resource DescribeSecret and runtime read permissions are still required.",
+      },
     });
     expect(JSON.stringify(thrown)).not.toContain("arn:aws");
     expect(JSON.stringify(thrown)).not.toContain("123456789012");

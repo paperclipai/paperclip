@@ -52,6 +52,21 @@ type WorkspaceSentinelResult = {
 
 const WORKSPACE_SENTINEL_RELATIVE_PATH = ".paperclip-runtime/reusable-sandbox-lease.json";
 
+// Quota-safety defaults (minutes). Daytona counts *stopped* sandboxes against
+// the storage quota; only *archived* sandboxes move to cold object storage and
+// stop counting. Without these, stopped/leaked sandboxes accumulate until the
+// org quota fills. We apply sane defaults so every sandbox eventually leaves the
+// quota on its own even when our own cleanup fails or never runs (crashed runs,
+// failed lease destroys, orphaned probes). All three stay overridable per
+// environment; an explicit 0/-1 in config is preserved.
+//
+// - autoStop: stop idle *running* sandboxes (frees CPU/RAM, starts the archive clock).
+// - autoArchive: archive *stopped* sandboxes so they leave the disk quota.
+// - autoDelete: backstop reaper for sandboxes nobody resumes.
+const DEFAULT_AUTO_STOP_INTERVAL_MINUTES = 15;
+const DEFAULT_AUTO_ARCHIVE_INTERVAL_MINUTES = 60;
+const DEFAULT_AUTO_DELETE_INTERVAL_MINUTES = 7 * 24 * 60; // 7 days
+
 function parseOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -82,9 +97,9 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     memory: parseOptionalNumber(raw.memory),
     disk: parseOptionalNumber(raw.disk),
     gpu: parseOptionalNumber(raw.gpu),
-    autoStopInterval: parseOptionalInteger(raw.autoStopInterval),
-    autoArchiveInterval: parseOptionalInteger(raw.autoArchiveInterval),
-    autoDeleteInterval: parseOptionalInteger(raw.autoDeleteInterval),
+    autoStopInterval: parseOptionalInteger(raw.autoStopInterval) ?? DEFAULT_AUTO_STOP_INTERVAL_MINUTES,
+    autoArchiveInterval: parseOptionalInteger(raw.autoArchiveInterval) ?? DEFAULT_AUTO_ARCHIVE_INTERVAL_MINUTES,
+    autoDeleteInterval: parseOptionalInteger(raw.autoDeleteInterval) ?? DEFAULT_AUTO_DELETE_INTERVAL_MINUTES,
     reuseLease: raw.reuseLease === true,
   };
 }
@@ -143,6 +158,15 @@ function buildCreateParams(
     ...base,
     snapshot: config.snapshot ?? undefined,
   };
+}
+
+function hasResourceRequest(config: DaytonaDriverConfig): boolean {
+  return config.cpu != null || config.memory != null || config.disk != null || config.gpu != null;
+}
+
+function validateResourceRequest(config: DaytonaDriverConfig): string | null {
+  if (!hasResourceRequest(config) || config.image) return null;
+  return "Daytona resource settings require image-backed sandbox creation; snapshot/default sandbox creation cannot override CPU, memory, disk, or GPU.";
 }
 
 function buildSandboxLabels(input: {
@@ -250,6 +274,13 @@ function workspaceSentinelToken(input: {
       image: input.config.image,
       snapshot: input.config.snapshot,
       target: input.config.target,
+      // Include resource-shaping inputs so changing the requested allocation
+      // expires old reusable leases and forces a fresh sandbox instead of
+      // reusing a previously provisioned (e.g. one-CPU) sandbox.
+      cpu: input.config.cpu,
+      memory: input.config.memory,
+      disk: input.config.disk,
+      gpu: input.config.gpu,
     }))
     .digest("hex");
 }
@@ -349,6 +380,12 @@ function leaseMetadata(input: {
     reuseLease: input.config.reuseLease,
     remoteCwd: input.remoteCwd,
     resumedLease: input.resumedLease,
+    // Record the resources Paperclip attempted to request so future diagnosis
+    // can compare requested allocation against what Daytona provisioned.
+    ...(input.config.cpu != null ? { cpu: input.config.cpu } : {}),
+    ...(input.config.memory != null ? { memory: input.config.memory } : {}),
+    ...(input.config.disk != null ? { disk: input.config.disk } : {}),
+    ...(input.config.gpu != null ? { gpu: input.config.gpu } : {}),
     ...(input.workspaceSentinel ? { workspaceSentinel: input.workspaceSentinel } : {}),
   };
 }
@@ -414,6 +451,10 @@ async function createSandbox(
   params: PluginEnvironmentAcquireLeaseParams | PluginEnvironmentProbeParams,
   config: DaytonaDriverConfig,
 ): Promise<Sandbox> {
+  const resourceRequestError = validateResourceRequest(config);
+  if (resourceRequestError) {
+    throw new Error(resourceRequestError);
+  }
   const client = createDaytonaClient(config);
   const createParams = buildCreateParams(config, buildSandboxLabels({
     companyId: params.companyId,
@@ -421,9 +462,10 @@ async function createSandbox(
     runId: "runId" in params ? params.runId : undefined,
     reuseLease: config.reuseLease,
   }));
-  return await client.create(createParams, {
+  const sandbox = await client.create(createParams, {
     timeout: toTimeoutSeconds(config.timeoutMs),
   });
+  return sandbox;
 }
 
 async function getSandbox(config: DaytonaDriverConfig, sandboxId: string): Promise<Sandbox> {
@@ -545,6 +587,10 @@ const plugin = definePlugin({
     }
     if (!config.apiKey && !(process.env.DAYTONA_API_KEY?.trim())) {
       errors.push("Daytona sandbox environments require an API key in config or DAYTONA_API_KEY.");
+    }
+    const resourceRequestError = validateResourceRequest(config);
+    if (resourceRequestError) {
+      errors.push(resourceRequestError);
     }
     for (const [key, value] of Object.entries({
       cpu: config.cpu,
