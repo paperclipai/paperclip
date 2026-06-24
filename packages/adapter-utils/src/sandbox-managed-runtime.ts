@@ -567,7 +567,10 @@ export async function prepareSandboxManagedRuntime(input: {
             const bundleBytes = await input.client.readFile(remoteGitBundle, gitExport.options);
             await gitExport.finish();
             await input.client.remove(remoteGitBundle).catch(() => undefined);
-            remoteWorkspaceStatus = toBuffer(await input.client.readFile(remoteWorkspaceStatusPath)).toString("utf8").trim();
+            remoteWorkspaceStatus = await input.client.readFile(remoteWorkspaceStatusPath)
+              .then((bytes) => toBuffer(bytes).toString("utf8").trim())
+              .catch(() => "dirty");
+            remoteWorkspaceStatus = remoteWorkspaceStatus === "clean" ? "clean" : "dirty";
             await input.client.remove(remoteWorkspaceStatusPath).catch(() => undefined);
             const bundlePath = path.join(tempDir, "git-delta.bundle");
             await fs.writeFile(bundlePath, toBuffer(bundleBytes));

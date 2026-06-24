@@ -369,8 +369,8 @@ export async function resetLocalGitIndexToHead(input: {
     maxBuffer: 1024 * 1024,
   });
   if (workingTreeDiff.stdout.trim().length > 0) {
-    throw new Error(
-      `Workspace restore left working tree git changes after reset:\n${workingTreeDiff.stdout.trim()}`,
+    console.warn(
+      "[paperclip] Workspace restore preserved local working tree changes after clean sandbox restore.",
     );
   }
 }
