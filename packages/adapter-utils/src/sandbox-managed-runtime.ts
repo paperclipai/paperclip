@@ -12,6 +12,7 @@ import {
   GIT_ARCHIVE_EXCLUDES,
   integrateImportedGitHead,
   readGitWorkspaceSnapshot,
+  resetLocalGitIndexToHead,
   withShallowGitWorkspaceClone,
 } from "./git-workspace-sync.js";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
@@ -605,6 +606,13 @@ export async function prepareSandboxManagedRuntime(input: {
                 await integrateImportedGitHead({
                   localDir: input.workspaceLocalDir,
                   importedHead: gitHeadToIntegrate,
+                });
+              }
+              : undefined,
+            afterApply: gitSnapshot
+              ? async () => {
+                await resetLocalGitIndexToHead({
+                  localDir: input.workspaceLocalDir,
                 });
               }
               : undefined,

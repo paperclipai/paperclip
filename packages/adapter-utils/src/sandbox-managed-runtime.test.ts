@@ -277,6 +277,70 @@ describe("sandbox managed runtime", () => {
     ]);
   });
 
+  it("repairs stale host index deletions when the sandbox restores a clean git worktree", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-clean-restore-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-worktree");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "kept.txt"), "kept\n", "utf8");
+    await writeFile(path.join(sourceRepoDir, "restored.txt"), "restored\n", "utf8");
+    await git(sourceRepoDir, ["add", "kept.txt", "restored.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+
+    await git(localWorkspaceDir, ["rm", "restored.txt"]);
+    expect(await git(localWorkspaceDir, ["status", "--short"])).toContain("D  restored.txt");
+
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    expect(await git(remoteWorkspaceDir, ["status", "--short"])).toContain("D restored.txt");
+    await git(remoteWorkspaceDir, ["reset", "--hard", "HEAD"]);
+    expect(await git(remoteWorkspaceDir, ["status", "--short"])).toBe("");
+
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(localWorkspaceDir, "restored.txt"), "utf8")).resolves.toBe("restored\n");
+    expect(await git(localWorkspaceDir, ["ls-files", "restored.txt"])).toBe("restored.txt");
+    expect(await git(localWorkspaceDir, ["status", "--short"])).toBe("");
+  });
+
   it("excludes unignored dependency trees from git-backed workspace overlay archives", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-unignored-deps-"));
     cleanupDirs.push(rootDir);

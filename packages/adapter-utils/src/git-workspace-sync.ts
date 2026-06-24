@@ -319,3 +319,33 @@ export async function integrateImportedGitHead(input: {
 
   throw new Error(`Failed to integrate concurrent remote git history for ${input.importedHead.slice(0, 12)} after multiple retries.`);
 }
+
+export async function resetLocalGitIndexToHead(input: {
+  localDir: string;
+}): Promise<void> {
+  try {
+    await runLocalGit(input.localDir, ["reset", "--quiet", "HEAD", "--", "."], {
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (error) {
+    const detail = error && typeof error === "object"
+      ? [
+        (error as { message?: unknown }).message,
+        (error as { stderr?: unknown }).stderr,
+        (error as { stdout?: unknown }).stdout,
+      ].filter((value): value is string => typeof value === "string" && value.trim().length > 0).join("\n")
+      : String(error);
+    throw new Error(`Failed to reset local git index to HEAD after workspace restore: ${detail}`);
+  }
+
+  const stagedDiff = await runLocalGit(input.localDir, ["diff", "--cached", "--name-status", "HEAD", "--"], {
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024,
+  });
+  if (stagedDiff.stdout.trim().length > 0) {
+    throw new Error(
+      `Workspace restore left staged git index changes after reset:\n${stagedDiff.stdout.trim()}`,
+    );
+  }
+}
