@@ -200,6 +200,7 @@ import {
   clearHeartbeatRunRuntimeStatus,
   getHeartbeatRunRuntimeStatus,
   setHeartbeatRunRuntimeStatus,
+  sweepExpiredHeartbeatRunRuntimeStatuses,
 } from "./heartbeat-run-runtime-status.js";
 import {
   assertLowTrustRuntimeServicesAllowed,
@@ -12173,6 +12174,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     decorateActiveRunStatus: decorateHeartbeatRunRuntimeStatus,
     recordRuntimeProgress: recordCurrentHeartbeatRunRuntimeProgress,
+    sweepExpiredRuntimeStatuses: sweepExpiredHeartbeatRunRuntimeStatuses,
 
     getRunLogAccess,
 

@@ -100,6 +100,49 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("keeps heartbeat progress invalidation scoped to live run data", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+    };
+
+    __liveUpdatesTestUtils.invalidateHeartbeatProgressQueries(
+      queryClient as never,
+      "company-1",
+      {
+        agentId: "agent-1",
+        runId: "run-1",
+      },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.liveRuns("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.heartbeats("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.agents.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.agents.detail("agent-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.heartbeats("company-1", "agent-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.dashboard("company-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.costs("company-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.sidebarBadges("company-1"),
+    });
+  });
+
   it("refreshes issue document caches when a document activity event arrives", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

@@ -5,6 +5,7 @@ import {
   getHeartbeatRunRuntimeStatus,
   MAX_HEARTBEAT_RUN_RUNTIME_STATUS_MESSAGE_CHARS,
   setHeartbeatRunRuntimeStatus,
+  sweepExpiredHeartbeatRunRuntimeStatuses,
 } from "./heartbeat-run-runtime-status.js";
 
 describe("heartbeat run runtime status store", () => {
@@ -58,5 +59,31 @@ describe("heartbeat run runtime status store", () => {
 
     expect(clearHeartbeatRunRuntimeStatus("run-1")).toBe(true);
     expect(getHeartbeatRunRuntimeStatus("run-1")).toBeNull();
+  });
+
+  it("sweeps expired statuses without touching fresh entries", () => {
+    setHeartbeatRunRuntimeStatus({
+      companyId: "company-1",
+      issueId: null,
+      agentId: "agent-1",
+      runId: "stale-run",
+      phase: "git_sync",
+      message: "Syncing stale workspace",
+      updatedAt: new Date("2026-06-24T00:00:00.000Z"),
+    });
+    setHeartbeatRunRuntimeStatus({
+      companyId: "company-1",
+      issueId: null,
+      agentId: "agent-1",
+      runId: "fresh-run",
+      phase: "git_sync",
+      message: "Syncing fresh workspace",
+      updatedAt: new Date("2026-06-24T00:01:00.000Z"),
+    });
+
+    const now = new Date("2026-06-24T00:01:31.000Z");
+    expect(sweepExpiredHeartbeatRunRuntimeStatuses(now)).toBe(1);
+    expect(getHeartbeatRunRuntimeStatus("stale-run")).toBeNull();
+    expect(getHeartbeatRunRuntimeStatus("fresh-run", { now })).toMatchObject({ runId: "fresh-run" });
   });
 });
