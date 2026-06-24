@@ -131,6 +131,9 @@ type ResolvedDependencyWakeBackstopOptions = {
   source?: ResolvedDependencyWakeBackstopSource;
 };
 
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DbOrTransaction = Db | DbTransaction;
+
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
   "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
@@ -1291,8 +1294,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return null;
   }
 
-  async function nextRunEventSeq(runId: string) {
-    const [row] = await db
+  async function nextRunEventSeq(runId: string, dbOrTx: DbOrTransaction = db) {
+    const [row] = await dbOrTx
       .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
       .from(heartbeatRunEvents)
       .where(eq(heartbeatRunEvents.runId, runId));
@@ -1306,12 +1309,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       message: string;
       payload?: Record<string, unknown>;
     },
+    dbOrTx: DbOrTransaction = db,
   ) {
-    await db.insert(heartbeatRunEvents).values({
+    await dbOrTx.insert(heartbeatRunEvents).values({
       companyId: run.companyId,
       runId: run.id,
       agentId: run.agentId,
-      seq: await nextRunEventSeq(run.id),
+      seq: await nextRunEventSeq(run.id, dbOrTx),
       eventType: "lifecycle",
       stream: "system",
       level: event.level,
@@ -1562,13 +1566,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (!input.run.lastOutputAt) return null;
 
     const latestDecisionAt = await latestWatchdogDecisionCreatedAt(input.run.companyId, input.run.id);
-    const cutoffCandidates = [
-      input.existingEvaluation.createdAt,
-      latestDecisionAt,
-    ].filter((value): value is Date => value instanceof Date);
-    if (cutoffCandidates.length === 0) return null;
-
-    const cutoff = new Date(Math.max(...cutoffCandidates.map((value) => value.getTime())));
+    const cutoff = latestDecisionAt && latestDecisionAt > input.existingEvaluation.createdAt
+      ? latestDecisionAt
+      : input.existingEvaluation.createdAt;
     if (input.run.lastOutputAt <= cutoff) return null;
 
     return {
@@ -1587,60 +1587,65 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     evidence: NonNullable<Awaited<ReturnType<typeof resolveDetachedNoSourceLateOutput>>>;
     now: Date;
   }) {
-    await issuesSvc.update(input.existingEvaluation.id, { status: "done" });
-    await issuesSvc.addComment(input.existingEvaluation.id, [
-      "Detached no-source watchdog fold.",
-      "",
-      `- Run: \`${input.run.id}\``,
-      `- Late output at: ${input.evidence.outputAt.toISOString()}`,
-      `- Late output sequence: ${input.evidence.outputSeq}`,
-      `- Late output stream: ${input.evidence.outputStream ?? "unknown"}`,
-      `- Evaluation opened at: ${input.existingEvaluation.createdAt.toISOString()}`,
-      "- Outcome: false positive; the detached no-source run emitted durable output after review opened.",
-    ].join("\n"), { runId: input.run.id });
-
     const snoozedUntil = new Date(input.now.getTime() + ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS);
-    const [decision] = await db
-      .insert(heartbeatRunWatchdogDecisions)
-      .values({
-        companyId: input.run.companyId,
-        runId: input.run.id,
-        evaluationIssueId: input.existingEvaluation.id,
-        decision: "continue",
-        reason: "Recovered detached no-source run emitted durable output after the watchdog evaluation opened.",
-        snoozedUntil,
-        createdByRunId: input.run.id,
-      })
-      .returning();
+    await db.transaction(async (tx) => {
+      await issuesSvc.update(input.existingEvaluation.id, { status: "done" }, tx);
+      await issuesSvc.addComment(input.existingEvaluation.id, [
+        "Detached no-source watchdog fold.",
+        "",
+        `- Run: \`${input.run.id}\``,
+        `- Late output at: ${input.evidence.outputAt.toISOString()}`,
+        `- Late output sequence: ${input.evidence.outputSeq}`,
+        `- Late output stream: ${input.evidence.outputStream ?? "unknown"}`,
+        `- Evaluation opened at: ${input.existingEvaluation.createdAt.toISOString()}`,
+        "- Outcome: false positive; the detached no-source run emitted durable output after review opened.",
+      ].join("\n"), { runId: input.run.id }, undefined, tx);
 
-    const payload = {
-      evaluationIssueId: input.existingEvaluation.id,
-      evaluationIssueIdentifier: input.existingEvaluation.identifier,
-      outputAt: input.evidence.outputAt.toISOString(),
-      outputSeq: input.evidence.outputSeq,
-      outputStream: input.evidence.outputStream,
-      cutoffAt: input.evidence.cutoff.toISOString(),
-      snoozedUntil: snoozedUntil.toISOString(),
-      watchdogDecisionId: decision.id,
-    };
-    await appendRecoveryRunEvent(input.run, {
-      level: "info",
-      message: "Detached no-source watchdog fold re-armed after late output",
-      payload,
-    });
-    await logActivity(db, {
-      companyId: input.run.companyId,
-      actorType: "system",
-      actorId: "system",
-      agentId: input.run.agentId,
-      runId: input.run.id,
-      action: "heartbeat.output_stale_detached_no_source_rearmed",
-      entityType: "heartbeat_run",
-      entityId: input.run.id,
-      details: {
-        source: "recovery.scan_silent_active_runs",
-        ...payload,
-      },
+      const [decision] = await tx
+        .insert(heartbeatRunWatchdogDecisions)
+        .values({
+          companyId: input.run.companyId,
+          runId: input.run.id,
+          evaluationIssueId: input.existingEvaluation.id,
+          decision: "continue",
+          reason: "Recovered detached no-source run emitted durable output after the watchdog evaluation opened.",
+          snoozedUntil,
+          createdByRunId: input.run.id,
+        })
+        .returning();
+      if (!decision) {
+        throw new Error("Failed to record detached no-source watchdog re-arm decision");
+      }
+
+      const payload = {
+        evaluationIssueId: input.existingEvaluation.id,
+        evaluationIssueIdentifier: input.existingEvaluation.identifier,
+        outputAt: input.evidence.outputAt.toISOString(),
+        outputSeq: input.evidence.outputSeq,
+        outputStream: input.evidence.outputStream,
+        cutoffAt: input.evidence.cutoff.toISOString(),
+        snoozedUntil: snoozedUntil.toISOString(),
+        watchdogDecisionId: decision.id,
+      };
+      await appendRecoveryRunEvent(input.run, {
+        level: "info",
+        message: "Detached no-source watchdog fold re-armed after late output",
+        payload,
+      }, tx);
+      await logActivity(tx, {
+        companyId: input.run.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: input.run.agentId,
+        runId: input.run.id,
+        action: "heartbeat.output_stale_detached_no_source_rearmed",
+        entityType: "heartbeat_run",
+        entityId: input.run.id,
+        details: {
+          source: "recovery.scan_silent_active_runs",
+          ...payload,
+        },
+      });
     });
 
     return { kind: "folded" as const, evaluationIssueId: input.existingEvaluation.id };
