@@ -6687,6 +6687,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
+
+    // Fix 3 (Lock TTL): Clear stale execution locks where the referenced run has reached a
+    // terminal state. This guards against any code path that sets executionRunId but the
+    // normal release path fails to clear it (e.g. process crash, cross-tree bugs).
+    // Lock TTL is conservative (10 min) to avoid false positives on long-running agents.
+    const LOCK_TTL_MS = 10 * 60 * 1000;
+    const lockTtlCutoff = new Date(now.getTime() - LOCK_TTL_MS);
+    const staleLockIssues = await db
+      .select({ id: issues.id, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(
+        and(
+          sql`${issues.executionRunId} is not null`,
+          sql`${issues.executionLockedAt} < ${lockTtlCutoff.toISOString()}`,
+        ),
+      );
+
+    let staleLockCleared = 0;
+    for (const staleLockIssue of staleLockIssues) {
+      if (!staleLockIssue.executionRunId) continue;
+      const staleRun = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, staleLockIssue.executionRunId))
+        .then((rows) => rows[0] ?? null);
+
+      // Only clear locks whose run has finished or is missing — active runs keep their lock
+      if (staleRun && !HEARTBEAT_RUN_TERMINAL_STATUSES.includes(staleRun.status as any)) continue;
+
+      const cleared = await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, staleLockIssue.id),
+            eq(issues.executionRunId, staleLockIssue.executionRunId),
+          ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+      if (cleared) staleLockCleared++;
+    }
+
+    if (staleLockCleared > 0) {
+      logger.warn({ staleLockCleared }, "cleared stale execution locks on issues");
+    }
+
     return { reaped: reaped.length, runIds: reaped };
   }
 
@@ -8710,6 +8762,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     });
 
+    // Fix 2: After releasing the primary context issue's lock, also clear any cross-tree
+    // execution locks this run may have acquired on issues assigned to a different agent.
+    // These locks should never have been set (Fix 1 prevents new ones), but this cleanup
+    // acts as a safety net so stale cross-tree locks are released the moment the run ends
+    // rather than persisting until the next issue wake clears them lazily.
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.executionRunId, run.id),
+          sql`${issues.assigneeAgentId} is distinct from ${run.agentId}`,
+        ),
+      );
+
     if (promotionResult?.kind === "blocked") {
       await recovery.escalateStrandedAssignedIssue({
         issue: promotionResult.issue,
@@ -9101,6 +9174,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (legacyRun) {
             if (await cancelStaleScheduledRetry(legacyRun)) {
               activeExecutionRun = null;
+            } else if (legacyRun.agentId !== issue.assigneeAgentId) {
+              // Cross-tree run: a heartbeat for a different agent has contextSnapshot.issueId
+              // pointing at this issue, but the run's agent does not own the issue. Do not
+              // adopt it as the active execution — the incoming wake must not be deferred
+              // behind a cross-tree run, and we must not stamp its ID onto this issue.
+              activeExecutionRun = null;
             } else {
               activeExecutionRun = legacyRun;
               const legacyAgent = await tx
@@ -9116,7 +9195,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   executionLockedAt: new Date(),
                   updatedAt: new Date(),
                 })
-                .where(eq(issues.id, issue.id));
+                .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, legacyRun.agentId)));
             }
           }
         }
