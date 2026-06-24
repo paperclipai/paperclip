@@ -2,6 +2,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import {
   buildReusableExecutionWorkspaceOptionGroups,
   reusableWorkspaceOptionMatches,
+  scoreReusableWorkspaceOptionMatch,
   type ReusableExecutionWorkspaceLike,
   type ReusableWorkspaceOption,
 } from "@/lib/reusable-execution-workspaces";
@@ -50,6 +51,7 @@ export function ReusableExecutionWorkspaceSelect<TWorkspace extends ReusableExec
       className={className}
       triggerClassName={cn(COMPACT_TRIGGER_CLASS, triggerClassName)}
       filterOption={(option, query) => reusableWorkspaceOptionMatches(option, query)}
+      scoreOption={(option, query) => scoreReusableWorkspaceOptionMatch(option, query)}
       disablePortal={disablePortal}
       renderOption={(option, { selected }) => (
         <span className="flex min-w-0 flex-col">

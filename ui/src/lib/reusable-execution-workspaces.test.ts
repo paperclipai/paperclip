@@ -3,6 +3,7 @@ import {
   buildReusableExecutionWorkspaceOptionGroups,
   orderReusableExecutionWorkspaces,
   reusableWorkspaceOptionMatches,
+  scoreReusableWorkspaceOptionMatch,
   type ReusableExecutionWorkspaceLike,
 } from "./reusable-execution-workspaces";
 
@@ -211,5 +212,71 @@ describe("buildReusableExecutionWorkspaceOptionGroups", () => {
     const option = groups[0]!.options[0]!;
     expect(reusableWorkspaceOptionMatches(option, "pclip reusable")).toBe(true);
     expect(reusableWorkspaceOptionMatches(option, "inactive")).toBe(false);
+  });
+
+  it("does not match query letters spread across unrelated workspace text", () => {
+    const groups = buildReusableExecutionWorkspaceOptionGroups([
+      workspace({
+        id: "routine-bodies",
+        name: "PAP-11694-editing-routine-bodies-should-have-revision-tracking",
+        cwd: "/srv/paperclip/home/paperclipai/paperclip/.paperclip/worktrees/PAP-11694-editing-routine-bodies",
+        branchName: "PAP-11694-editing-routine-bodies-should-have-revision-tracking",
+        status: "active",
+        lastUsedAt: "2026-01-10T00:00:00.000Z",
+      }),
+      workspace({
+        id: "mobile-agent-chat",
+        name: "PAP-11446-on-mobile-the-agent-chat-shouldn-t-hone-indented",
+        cwd: "/srv/paperclip/home/paperclipai/paperclip/.paperclip/worktrees/PAP-11446-on-mobile-agent-chat",
+        branchName: "PAP-11446-on-mobile-the-agent-chat-shouldnt-hone-indented",
+        status: "active",
+        lastUsedAt: "2026-01-09T00:00:00.000Z",
+      }),
+      workspace({
+        id: "simultaneous-work",
+        name: "PAP-11429-why-are-these-live-simultaneously",
+        cwd: "/srv/paperclip/home/paperclipai/paperclip/.paperclip/worktrees/PAP-11429-live-simultaneously",
+        branchName: "PAP-11429-why-are-these-live-simultaneously",
+        status: "active",
+        lastUsedAt: "2026-01-08T00:00:00.000Z",
+      }),
+    ], { now });
+
+    const options = groups.flatMap((group) => group.options);
+    const unrelated = options.find((option) => option.workspaceId === "routine-bodies")!;
+    const mobile = options.find((option) => option.workspaceId === "mobile-agent-chat")!;
+    const simultaneous = options.find((option) => option.workspaceId === "simultaneous-work")!;
+
+    expect(reusableWorkspaceOptionMatches(unrelated, "mobile")).toBe(false);
+    expect(reusableWorkspaceOptionMatches(unrelated, "simultan")).toBe(false);
+    expect(reusableWorkspaceOptionMatches(mobile, "mobile")).toBe(true);
+    expect(reusableWorkspaceOptionMatches(simultaneous, "simultan")).toBe(true);
+  });
+
+  it("scores visible label matches ahead of hidden path matches", () => {
+    const groups = buildReusableExecutionWorkspaceOptionGroups([
+      workspace({
+        id: "path-only-mobile",
+        name: "Paperclip app",
+        cwd: "/srv/paperclip/mobile-checkout",
+        branchName: "feature/workspace-reuse",
+        lastUsedAt: "2026-01-10T00:00:00.000Z",
+      }),
+      workspace({
+        id: "label-mobile",
+        name: "Mobile agent chat",
+        cwd: "/srv/paperclip/agent-chat",
+        branchName: "feature/agent-chat",
+        lastUsedAt: "2026-01-09T00:00:00.000Z",
+      }),
+    ], { now });
+
+    const options = groups.flatMap((group) => group.options);
+    const pathOnly = options.find((option) => option.workspaceId === "path-only-mobile")!;
+    const label = options.find((option) => option.workspaceId === "label-mobile")!;
+
+    expect(scoreReusableWorkspaceOptionMatch(label, "mobile")).toBeLessThan(
+      scoreReusableWorkspaceOptionMatch(pathOnly, "mobile")!,
+    );
   });
 });

@@ -1786,6 +1786,7 @@ export function NewIssueDialog() {
                   onValueChange={(workspaceId) => setSelectedExecutionWorkspaceId(workspaceId)}
                   loading={reusableExecutionWorkspacesLoading}
                   error={reusableExecutionWorkspacesError}
+                  disablePortal
                 />
               )}
               {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (

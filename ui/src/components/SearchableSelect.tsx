@@ -10,7 +10,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { fuzzyTextMatchesQuery } from "@/lib/searchable-select";
+import { fuzzyTextMatchesQuery, normalizeSearchText, scoreFuzzyTextFields } from "@/lib/searchable-select";
 import { cn } from "@/lib/utils";
 
 export interface SearchableSelectOption<TValue extends string = string> {
@@ -52,11 +52,19 @@ export interface SearchableSelectProps<
   renderValue?: (option: TOption | null) => ReactNode;
   renderOption?: (option: TOption, state: SearchableSelectRenderState) => ReactNode;
   filterOption?: (option: TOption, query: string) => boolean;
+  scoreOption?: (option: TOption, query: string) => number | null;
   disablePortal?: boolean;
 }
 
 function defaultFilterOption(option: SearchableSelectOption, query: string) {
   return fuzzyTextMatchesQuery(`${option.label} ${option.searchText ?? ""}`, query);
+}
+
+function defaultScoreOption(option: SearchableSelectOption, query: string) {
+  return scoreFuzzyTextFields([
+    { text: option.label, weight: 0 },
+    { text: option.searchText, weight: 20 },
+  ], query);
 }
 
 export function SearchableSelect<
@@ -80,6 +88,7 @@ export function SearchableSelect<
   renderValue,
   renderOption,
   filterOption = defaultFilterOption,
+  scoreOption,
   disablePortal,
 }: SearchableSelectProps<TValue, TOption>) {
   const [open, setOpen] = useState(false);
@@ -97,13 +106,38 @@ export function SearchableSelect<
 
   const filteredGroups = useMemo(() => {
     if (loading) return [];
+    const normalizedQuery = normalizeSearchText(query);
     return groups
-      .map((group) => ({
-        ...group,
-        options: group.options.filter((option) => filterOption(option, query)),
-      }))
+      .map((group) => {
+        const options = group.options
+          .map((option, index) => {
+            if (!normalizedQuery) return { option, index, score: 0 };
+
+            if (scoreOption) {
+              const score = scoreOption(option, query);
+              return score === null ? null : { option, index, score };
+            }
+
+            if (!filterOption(option, query)) return null;
+            return {
+              option,
+              index,
+              score: defaultScoreOption(option, query) ?? Number.MAX_SAFE_INTEGER,
+            };
+          })
+          .filter((entry): entry is { option: TOption; index: number; score: number } => entry !== null);
+
+        if (normalizedQuery) {
+          options.sort((a, b) => a.score - b.score || a.index - b.index);
+        }
+
+        return {
+          ...group,
+          options: options.map((entry) => entry.option),
+        };
+      })
       .filter((group) => group.options.length > 0);
-  }, [filterOption, groups, loading, query]);
+  }, [filterOption, groups, loading, query, scoreOption]);
 
   const hasOptions = filteredGroups.some((group) => group.options.length > 0);
 
@@ -188,7 +222,14 @@ export function SearchableSelect<
             onValueChange={setQuery}
             placeholder={searchPlaceholder}
           />
-          <CommandList>
+          <CommandList
+            className="overscroll-contain touch-pan-y"
+            onWheelCapture={(event) => {
+              if (event.currentTarget.scrollHeight > event.currentTarget.clientHeight) {
+                event.stopPropagation();
+              }
+            }}
+          >
             {loading ? (
               <div className="px-3 py-6 text-center text-sm text-muted-foreground">{loadingMessage}</div>
             ) : !hasOptions ? (

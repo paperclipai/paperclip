@@ -181,6 +181,63 @@ describe("SearchableSelect", () => {
     expect(onValueChange).toHaveBeenCalledWith("bravo", bravo);
   });
 
+  it("ranks visible label matches ahead of lower-quality search text matches", async () => {
+    const onValueChange = vi.fn();
+    const groups: SearchableSelectGroup[] = [
+      {
+        id: "all",
+        label: "All",
+        options: [
+          {
+            key: "all:path-only",
+            value: "path-only",
+            label: "Paperclip app",
+            searchText: "/srv/paperclip/mobile-checkout",
+          },
+          {
+            key: "all:mobile",
+            value: "mobile",
+            label: "Mobile agent chat",
+            searchText: "/srv/paperclip/agent-chat",
+          },
+        ],
+      },
+    ];
+
+    root = render(
+      <SearchableSelect
+        value=""
+        groups={groups}
+        onValueChange={onValueChange}
+        placeholder="Pick one"
+        searchPlaceholder="Search options..."
+        disablePortal
+        renderOption={(option) => <span data-option-key={option.key}>{option.label}</span>}
+      />,
+      container,
+    );
+
+    const trigger = container.querySelector("button[role='combobox']") as HTMLButtonElement | null;
+    act(() => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    const input = container.querySelector("input[placeholder='Search options...']") as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    setInputValue(input!, "mobile");
+    await flush();
+
+    const renderedKeys = Array.from(container.querySelectorAll("[data-option-key]")).map((item) =>
+      item.getAttribute("data-option-key"),
+    );
+    expect(renderedKeys).toEqual(["all:mobile", "all:path-only"]);
+
+    const commandList = container.querySelector("[data-slot='command-list']");
+    expect(commandList?.className).toContain("overscroll-contain");
+    expect(commandList?.className).toContain("touch-pan-y");
+  });
+
   it("shows loading, empty, and disabled states", async () => {
     const onValueChange = vi.fn();
 

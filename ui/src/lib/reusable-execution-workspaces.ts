@@ -1,4 +1,4 @@
-import { fuzzyTextMatchesQuery } from "./searchable-select";
+import { scoreFuzzyTextFields } from "./searchable-select";
 
 export interface ReusableExecutionWorkspaceLike {
   id: string;
@@ -141,5 +141,16 @@ export function reusableWorkspaceOptionMatches(
   option: Pick<ReusableWorkspaceOption, "label" | "description" | "searchText">,
   query: string,
 ) {
-  return fuzzyTextMatchesQuery(`${option.label} ${option.description} ${option.searchText}`, query);
+  return scoreReusableWorkspaceOptionMatch(option, query) !== null;
+}
+
+export function scoreReusableWorkspaceOptionMatch(
+  option: Pick<ReusableWorkspaceOption, "label" | "description" | "searchText">,
+  query: string,
+) {
+  return scoreFuzzyTextFields([
+    { text: option.label, weight: 0 },
+    { text: option.description, weight: 20 },
+    { text: option.searchText, weight: 40 },
+  ], query);
 }
