@@ -415,7 +415,7 @@ describe("IssueChatThread system notice routing", () => {
       authorUserId: null,
       runId: "run-stale",
       runAgentId: "agent-codex",
-      body: "Paperclip needs a disposition before this issue can continue.",
+      body: "Paperclip needs a disposition before this task can continue.",
       presentation: {
         kind: "system_notice",
         tone: "warning",
@@ -463,7 +463,7 @@ describe("IssueChatThread system notice routing", () => {
     expect(row?.querySelector('[data-testid="stale-disposition-warning-time"]')?.parentElement?.className).toContain("ml-auto");
     expect(row?.textContent).toContain("Stale disposition warning");
     expect(row?.textContent).not.toContain("This disposition warning is stale because the issue now has a newer disposition.");
-    expect(row?.textContent).not.toContain("Paperclip needs a disposition before this issue can continue.");
+    expect(row?.textContent).not.toContain("Paperclip needs a disposition before this task can continue.");
 
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     const detailsId = toggle.getAttribute("aria-controls");
