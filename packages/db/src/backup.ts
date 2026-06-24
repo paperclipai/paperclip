@@ -1,9 +1,8 @@
 import postgres from "postgres";
-import { createHash } from "node:crypto";
-import { readFile, mkdir, readdir, copyFile } from "node:fs/promises";
-import { join, dirname, basename } from "node:path";
+import { readFile, mkdir, readdir } from "node:fs/promises";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-
+import { applyPendingMigrations } from "./client.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BACKUPS_DIR = join(__dirname, "..", "..", "data", "backups");
 
@@ -43,36 +42,9 @@ export async function backupDatabase(url: string): Promise<string> {
     let dump = "-- Paperclip Database Backup\n";
     dump += `-- Generated: ${new Date().toISOString()}\n\n`;
 
-
-
-    // Fallback: generate CREATE TABLE from information_schema
+    // We no longer dump schema (CREATE TABLE). We rely on Drizzle migrations 
+    // during restore to produce a structurally perfect database.
     for (const table of tables) {
-      dump += `-- Table: ${table.tablename}\n`;
-      const columns = await sql<{ column_name: string; data_type: string; udt_name: string; is_nullable: string; column_default: string | null }[]>`
-        SELECT column_name, data_type, udt_name, is_nullable, column_default
-        FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = ${table.tablename}
-        ORDER BY ordinal_position
-      `;
-
-      dump += `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(table.tablename)} (\n`;
-      const colDefs = columns.map((col) => {
-        let typeStr = col.data_type.toUpperCase();
-        if (typeStr === "ARRAY") {
-          typeStr = col.udt_name.replace(/^_/, "") + "[]";
-        } else if (typeStr === "USER-DEFINED") {
-          typeStr = col.udt_name;
-        }
-        
-        let def = `  ${quoteIdentifier(col.column_name)} ${typeStr}`;
-        if (col.column_default) def += ` DEFAULT ${col.column_default}`;
-        if (col.is_nullable === "NO") def += " NOT NULL";
-        return def;
-      });
-      dump += colDefs.join(",\n");
-      dump += "\n);\n\n";
-
-      // Dump data
       const rows = await sql.unsafe(`SELECT * FROM ${quoteIdentifier(table.tablename)}`);
       if (rows.length > 0) {
         dump += `-- Data: ${table.tablename} (${rows.length} rows)\n`;
@@ -117,31 +89,99 @@ async function writeFile(path: string, content: string): Promise<void> {
   await fsWriteFile(path, content, "utf8");
 }
 
+export function splitSqlStatements(sqlText: string): string[] {
+  const statements: string[] = [];
+  let current = "";
+  let inString = false;
+  let inComment = false;
+  
+  for (let i = 0; i < sqlText.length; i++) {
+    const char = sqlText[i];
+    
+    if (inComment) {
+      if (char === "\n") {
+        inComment = false;
+      }
+      continue;
+    }
+    
+    if (!inString && char === "-" && sqlText[i + 1] === "-") {
+      inComment = true;
+      i++;
+      continue;
+    }
+
+    if (char === "'") {
+      // Handle escaped quotes
+      if (sqlText[i + 1] === "'") {
+        current += "''";
+        i++;
+        continue;
+      }
+      inString = !inString;
+    }
+    if (char === ";" && !inString) {
+      if (current.trim()) statements.push(current.trim() + ";");
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) statements.push(current.trim());
+  return statements;
+}
+
 export async function restoreDatabase(url: string, backupPath: string): Promise<void> {
   const content = await readFile(backupPath, "utf8");
-  const statements = content
-    .split("\n")
-    .filter((line) => line.trim() && !line.trim().startsWith("--"))
-    .join("\n")
-    .split(/;\s*\n/);
+  const statements = splitSqlStatements(content);
+
+  console.log("Taking safety snapshot of current database state...");
+  try {
+    const snapshotPath = await backupDatabase(url);
+    if (snapshotPath) {
+      console.log(`Safety snapshot created at ${snapshotPath} before restore.`);
+    }
+  } catch (e) {
+    console.warn("Warning: Failed to take safety snapshot. Proceeding with restore anyway.", e);
+  }
 
   const sql = postgres(url, { max: 1 });
   try {
-    // Drop existing tables first
-    const tables = await sql<{ tablename: string }[]>`
-      SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename
-    `;
-    for (const table of tables) {
-      await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(table.tablename)} CASCADE`);
-    }
+    // Drop existing schemas
+    await sql.unsafe("DROP SCHEMA IF EXISTS public CASCADE;");
+    await sql.unsafe("DROP SCHEMA IF EXISTS drizzle CASCADE;");
+    await sql.unsafe("CREATE SCHEMA public;");
 
-    // Execute backup statements
-    for (const statement of statements) {
-      const trimmed = statement.trim();
-      if (trimmed) {
-        await sql.unsafe(trimmed);
+    // Re-apply migrations to get perfect schema (sequences, constraints, indexes)
+    await applyPendingMigrations(url);
+
+    // Execute backup data statements
+    await sql.begin(async (tx) => {
+      for (const statement of statements) {
+        const trimmed = statement.trim();
+        if (trimmed) {
+          await tx.unsafe(trimmed);
+        }
       }
-    }
+
+      // Sync sequences
+      const sequences = await tx<{ sequence_name: string; table_name: string; column_name: string }[]>`
+        SELECT
+            s.relname AS sequence_name,
+            t.relname AS table_name,
+            a.attname AS column_name
+        FROM pg_class s
+        JOIN pg_depend d ON d.objid = s.oid AND d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass
+        JOIN pg_class t ON t.oid = d.refobjid
+        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+        WHERE s.relkind = 'S'
+      `;
+
+      for (const seq of sequences) {
+        const escapedSeqName = seq.sequence_name.replace(/'/g, "''");
+        await tx.unsafe(`SELECT setval('${escapedSeqName}', COALESCE((SELECT MAX(${quoteIdentifier(seq.column_name)}) FROM ${quoteIdentifier(seq.table_name)}), 1), true)`);
+      }
+    });
 
     console.log(`Database restored from ${backupPath}`);
   } finally {

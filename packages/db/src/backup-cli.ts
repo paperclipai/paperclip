@@ -15,13 +15,12 @@ async function main(): Promise<void> {
       case "restore": {
         const backupPath = process.argv[3];
         if (!backupPath) {
-          console.error("Usage: pnpm db:restore <backup-file.sql>");
+          console.error("Available backups:");
           const backups = await listBackups();
           if (backups.length > 0) {
-            console.log("\nAvailable backups:");
-            backups.forEach((b, i) => console.log(`  ${i + 1}. ${b}`));
+            backups.forEach((b, i) => console.error(`  ${i + 1}. ${b}`));
           }
-          process.exit(1);
+          throw new Error("Usage: pnpm db:restore <backup-file.sql>");
         }
         await restoreDatabase(resolved.connectionString, backupPath);
         console.log("Restore complete.");
@@ -38,8 +37,7 @@ async function main(): Promise<void> {
         break;
       }
       default:
-        console.log("Usage: pnpm db:backup | pnpm db:restore <file> | pnpm db:backup:list");
-        process.exit(1);
+        throw new Error("Usage: pnpm db:backup | pnpm db:restore <file> | pnpm db:backup:list");
     }
   } finally {
     await resolved.stop();
