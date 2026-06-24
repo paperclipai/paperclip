@@ -84,6 +84,25 @@ describe("IssueRow", () => {
     container.remove();
   });
 
+  it("renders the list status glyph at lg (20px)", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue({ status: "in_progress" })} />);
+    });
+
+    const glyphs = container.querySelectorAll('svg[viewBox="0 0 24 24"]');
+    expect(glyphs.length).toBeGreaterThan(0);
+    glyphs.forEach((glyph) => {
+      expect(glyph.getAttribute("width")).toBe("20");
+      expect(glyph.getAttribute("height")).toBe("20");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("suppresses accent hover styling when the row is selected", () => {
     const root = createRoot(container);
     const issue = createIssue();
@@ -111,7 +130,10 @@ describe("IssueRow", () => {
 
     const markReadButton = container.querySelector('button[aria-label="Mark as read"]');
     const unreadDot = markReadButton?.querySelector("span");
-    const statusIcon = container.querySelector('span[class*="border-muted-foreground"]');
+    // Selected rows neutralize the status glyph to muted via `!`-important
+    // utilities, which override the glyph's inline colour var. The glyph is an
+    // <svg> (SVGAnimatedString className), so match on the class attribute.
+    const statusGlyph = container.querySelector('svg[class*="text-muted-foreground"]');
 
     expect(markReadButton).not.toBeNull();
     expect(markReadButton?.className).toContain("hover:bg-muted/80");
@@ -119,9 +141,9 @@ describe("IssueRow", () => {
     expect(unreadDot).not.toBeNull();
     expect(unreadDot?.className).toContain("bg-muted-foreground/70");
     expect(unreadDot?.className).not.toContain("bg-blue-600");
-    expect(statusIcon).not.toBeNull();
-    expect(statusIcon?.className).toContain("!border-muted-foreground");
-    expect(statusIcon?.className).toContain("!text-muted-foreground");
+    expect(statusGlyph).not.toBeNull();
+    expect(statusGlyph?.getAttribute("class")).toContain("!text-muted-foreground");
+    expect(statusGlyph?.getAttribute("class")).toContain("!border-muted-foreground");
 
     act(() => {
       root.unmount();

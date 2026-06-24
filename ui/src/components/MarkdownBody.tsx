@@ -96,12 +96,14 @@ function MarkdownIssueLink({
     <Link
       to={`/issues/${identifier}`}
       data-mention-kind="issue"
-      className="paperclip-markdown-issue-ref"
+      // Boxless inline mention: the unified status glyph + a regular-weight
+      // underlined link, optically centered with the body text.
+      className={cn("paperclip-markdown-issue-ref", "font-normal underline")}
       title={title}
       aria-label={issueLabel}
     >
       {status ? (
-        <StatusIcon status={status} className="mr-1 h-3 w-3 align-[-0.125em]" />
+        <StatusIcon status={status} size="lg" className="relative -top-px mr-1 inline-block h-5 w-5 align-middle" />
       ) : null}
       {children}
     </Link>

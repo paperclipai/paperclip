@@ -79,9 +79,16 @@ export function BreadcrumbBar() {
       <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
         {menuButton}
         <div className="min-w-0 overflow-hidden flex-1">
-          <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
-            {breadcrumbs[0].label}
-          </h1>
+          {breadcrumbs[0].leading ? (
+            <h1 className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wider">
+              <span className="flex shrink-0 items-center">{breadcrumbs[0].leading}</span>
+              <span className="truncate">{breadcrumbs[0].label}</span>
+            </h1>
+          ) : (
+            <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
+              {breadcrumbs[0].label}
+            </h1>
+          )}
         </div>
         {globalToolbarSlots}
       </div>
@@ -102,10 +109,24 @@ export function BreadcrumbBar() {
                   {i > 0 && <BreadcrumbSeparator />}
                   <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
                     {isLast || !crumb.href ? (
-                      <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                      crumb.leading ? (
+                        <BreadcrumbPage className="flex min-w-0 items-center gap-1.5">
+                          <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                          <span className="truncate">{crumb.label}</span>
+                        </BreadcrumbPage>
+                      ) : (
+                        <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                      )
                     ) : (
                       <BreadcrumbLink asChild>
-                        <Link to={crumb.href}>{crumb.label}</Link>
+                        {crumb.leading ? (
+                          <Link to={crumb.href} className="flex items-center gap-1.5">
+                            <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                            <span className="truncate">{crumb.label}</span>
+                          </Link>
+                        ) : (
+                          <Link to={crumb.href}>{crumb.label}</Link>
+                        )}
                       </BreadcrumbLink>
                     )}
                   </BreadcrumbItem>

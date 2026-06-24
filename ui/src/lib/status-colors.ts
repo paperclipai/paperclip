@@ -190,6 +190,57 @@ export const issueStatusColor: Record<string, BrandChipColor> = {
 export const issueStatusColorDefault: BrandChipColor = "gray";
 
 // ---------------------------------------------------------------------------
+// Status → base-hue CSS variable
+//
+// Each status chip / icon sets a local `--sc` to the matching var below, and
+// the `.status-chip` / `.status-fill` helpers (index.css) derive the rendered
+// fill/text/border from it for both light and dark. Agent and task keep
+// independent vars so each can be tuned without touching the other, even where
+// their defaults coincide.
+// ---------------------------------------------------------------------------
+
+/** Agent status → base-hue CSS var. `active` aliases idle (never assigned). */
+export const agentStatusVar: Record<string, string> = {
+  idle: "--status-agent-idle",
+  active: "--status-agent-idle",
+  running: "--status-agent-running",
+  paused: "--status-agent-paused",
+  error: "--status-agent-error",
+};
+export const agentStatusVarDefault = "--status-agent-idle";
+
+/** Task/issue status → base-hue CSS var (drives both the chip and the icon). */
+export const taskStatusVar: Record<string, string> = {
+  backlog: "--status-task-backlog",
+  todo: "--status-task-todo",
+  in_progress: "--status-task-in_progress",
+  in_review: "--status-task-in_review",
+  done: "--status-task-done",
+  blocked: "--status-task-blocked",
+  cancelled: "--status-task-cancelled",
+};
+export const taskStatusVarDefault = "--status-task-backlog";
+
+/**
+ * Task/issue status → AA-tuned ICON-hue CSS var (PAP-238). Drives the standalone
+ * {@link StatusGlyph} colour. Separate from {@link taskStatusVar} (the chip base
+ * hue) because a bare glyph next to text needs a stronger hue to clear WCAG 3:1;
+ * see the `--status-task-icon-*` block in `index.css`. `in_queue` is the blocked
+ * shape recoloured blue, so it maps to its own var.
+ */
+export const taskStatusIconVar: Record<string, string> = {
+  backlog: "--status-task-icon-backlog",
+  todo: "--status-task-icon-todo",
+  in_progress: "--status-task-icon-in_progress",
+  in_review: "--status-task-icon-in_review",
+  done: "--status-task-icon-done",
+  blocked: "--status-task-icon-blocked",
+  cancelled: "--status-task-icon-cancelled",
+  in_queue: "--status-task-icon-in_queue",
+};
+export const taskStatusIconVarDefault = "--status-task-icon-backlog";
+
+// ---------------------------------------------------------------------------
 // Agent status dot — solid background for small indicator dots
 // ---------------------------------------------------------------------------
 
