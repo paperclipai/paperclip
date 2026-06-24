@@ -128,6 +128,10 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     ageMs: number;
     withOutput?: boolean;
     logChunk?: string;
+    processPid?: number | null;
+    processGroupId?: number | null;
+    runErrorCode?: string | null;
+    runError?: string | null;
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
@@ -195,10 +199,14 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       companyId,
       agentId: coderId,
       status: "running",
+      errorCode: opts.runErrorCode ?? null,
+      error: opts.runError ?? null,
       invocationSource: "assignment",
       triggerDetail: "system",
       startedAt,
       processStartedAt: startedAt,
+      processPid: opts.processPid ?? null,
+      processGroupId: opts.processGroupId ?? null,
       lastOutputAt,
       lastOutputSeq: opts.withOutput ? 3 : 0,
       lastOutputStream: opts.withOutput ? "stdout" : null,
@@ -453,6 +461,77 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
     expect(allEvaluations).toHaveLength(1);
+  });
+
+  it("auto-folds no-source detached evaluations after late run-local output and re-arms the watchdog", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      processPid: 12_345,
+      processGroupId: 12_345,
+      runErrorCode: "process_detached",
+      runError: "Lost in-memory process handle, but child pid 12345 is still alive",
+    });
+    await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first).toMatchObject({ created: 1 });
+
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation).toBeTruthy();
+    expect(evaluation?.parentId).toBeNull();
+
+    const evaluationOpenedAt = new Date(now.getTime() + 1_000);
+    const outputAt = new Date(evaluationOpenedAt.getTime() + 60_000);
+    await db
+      .update(issues)
+      .set({ createdAt: evaluationOpenedAt, updatedAt: evaluationOpenedAt })
+      .where(eq(issues.id, evaluation!.id));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastOutputAt: outputAt,
+        lastOutputSeq: 7,
+        lastOutputStream: "stdout",
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const secondNow = new Date(outputAt.getTime() + ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000);
+    const second = await heartbeat.scanSilentActiveRuns({ now: secondNow, companyId });
+
+    expect(second).toMatchObject({ created: 0, folded: 1 });
+    const [storedEvaluation] = await db.select().from(issues).where(eq(issues.id, evaluation!.id));
+    expect(storedEvaluation?.status).toBe("done");
+
+    const decisions = await db
+      .select()
+      .from(heartbeatRunWatchdogDecisions)
+      .where(eq(heartbeatRunWatchdogDecisions.runId, runId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      evaluationIssueId: evaluation!.id,
+      decision: "continue",
+    });
+    expect(decisions[0]?.reason).toContain("detached no-source run emitted durable output");
+    expect(decisions[0]?.snoozedUntil?.getTime()).toBeGreaterThan(secondNow.getTime());
+
+    const [event] = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(event?.message).toContain("Detached no-source watchdog fold");
+
+    const beforeRearm = await heartbeat.scanSilentActiveRuns({
+      now: new Date(secondNow.getTime() + 5 * 60_000),
+      companyId,
+    });
+    expect(beforeRearm).toMatchObject({ created: 0, snoozed: 1 });
   });
 
   it("folds terminal source issues with same-run durable evidence instead of creating watchdog work", async () => {
