@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Cloud,
+  ExternalLink,
   Globe,
   Link2,
   Loader2,
@@ -37,6 +38,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+
+// Deep-link that opens Cloudflare's token creation with Zone:Read + DNS:Edit
+// pre-selected on all zones, so the human just clicks Create + copies.
+const CLOUDFLARE_TOKEN_URL =
+  "https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%5D&accountId=%2A&zoneId=all&name=Atelier";
 
 export function CompanySettingsDomain() {
   const { selectedCompanyId } = useCompany();
@@ -175,24 +181,35 @@ export function CompanySettingsDomain() {
               </Button>
             </div>
           ) : (
-            <div className="flex gap-2">
-              <Input
-                type="password"
-                placeholder="Cloudflare API token"
-                value={apiToken}
-                onChange={(e) => setApiToken(e.target.value)}
-              />
-              <Button
-                onClick={() => connectMutation.mutate()}
-                disabled={!apiToken.trim() || connectMutation.isPending}
+            <div className="flex flex-col gap-2">
+              <div className="flex gap-2">
+                <Input
+                  type="password"
+                  placeholder="Cloudflare API token"
+                  value={apiToken}
+                  onChange={(e) => setApiToken(e.target.value)}
+                />
+                <Button
+                  onClick={() => connectMutation.mutate()}
+                  disabled={!apiToken.trim() || connectMutation.isPending}
+                >
+                  {connectMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Link2 className="h-4 w-4" />
+                  )}
+                  Connect
+                </Button>
+              </div>
+              <a
+                href={CLOUDFLARE_TOKEN_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
               >
-                {connectMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Link2 className="h-4 w-4" />
-                )}
-                Connect
-              </Button>
+                Create the token on Cloudflare (Zone:Read + DNS:Edit pre-selected)
+                <ExternalLink className="h-3 w-3" />
+              </a>
             </div>
           )}
         </CardContent>
