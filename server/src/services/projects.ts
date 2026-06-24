@@ -8,6 +8,7 @@ import {
   budgetPolicies,
   pluginManagedResources,
   plugins,
+  pluginState,
   projectWorkspaces,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
@@ -21,6 +22,7 @@ import {
   type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
+  type LinearProjectLink,
   type ProjectManagedByPlugin,
   type ProjectWorkspaceRuntimeConfig,
   type ProjectWorkspace,
@@ -65,6 +67,7 @@ interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> 
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
   managedByPlugin: ProjectManagedByPlugin | null;
+  linearProjectLink: LinearProjectLink | null;
   taskCount?: number;
   budget?: ProjectBudgetSummary | null;
 }
@@ -296,6 +299,41 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
     });
   }
 
+  // Resolve Linear project links stored in plugin_state by the linear sync plugin.
+  // Keys follow the pattern "project-link:{paperclipProjectId}" under instance scope.
+  const linearProjectLinkByProjectId = new Map<string, LinearProjectLink>();
+  const linearProjectLinkKeys = projectIds.map((id) => `project-link:${id}`);
+  const linearStateRows = await db
+    .select({
+      stateKey: pluginState.stateKey,
+      valueJson: pluginState.valueJson,
+    })
+    .from(pluginState)
+    .innerJoin(plugins, eq(pluginState.pluginId, plugins.id))
+    .where(and(
+      eq(plugins.pluginKey, "paperclip-plugin-linear"),
+      eq(pluginState.scopeKind, "instance"),
+      inArray(pluginState.stateKey, linearProjectLinkKeys),
+    ));
+  for (const row of linearStateRows) {
+    const value = row.valueJson as Record<string, unknown>;
+    const paperclipProjectId = typeof value.paperclipProjectId === "string" ? value.paperclipProjectId : null;
+    if (
+      paperclipProjectId
+      && typeof value.linearProjectId === "string"
+      && typeof value.linearProjectName === "string"
+      && typeof value.syncDirection === "string"
+      && typeof value.lastSyncAt === "string"
+    ) {
+      linearProjectLinkByProjectId.set(paperclipProjectId, {
+        linearProjectId: value.linearProjectId,
+        linearProjectName: value.linearProjectName,
+        syncDirection: value.syncDirection as LinearProjectLink["syncDirection"],
+        lastSyncAt: value.lastSyncAt,
+      });
+    }
+  }
+
   return rows.map((row) => {
     const projectWorkspaceRows = map.get(row.id) ?? [];
     const workspaces = projectWorkspaceRows.map((workspace) =>
@@ -316,6 +354,7 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
       workspaces,
       primaryWorkspace,
       managedByPlugin: managedByProjectId.get(row.id) ?? null,
+      linearProjectLink: linearProjectLinkByProjectId.get(row.id) ?? null,
     };
   });
 }

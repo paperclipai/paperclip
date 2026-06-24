@@ -1,0 +1,80 @@
+name: Docker (mcp-external)
+
+# Builds + pushes the Node @paperclipai/mcp-external image — the external MCP
+# server that backs https://paperclip.blockcast.net/mcp (the `server` container
+# of the paperclip-mcp deployment, behind the bun auth-proxy sidecar). Replaces
+# the retired Python kkroo/paperclip-mcp fork (Workstream B cutover).
+#
+# Does NOT auto-deploy: onprem-k8s has no GitOps, so re-pinning the manifest
+# (onprem-k8s paperclip/paperclip-mcp.yaml server image) to a fresh sha- tag is a
+# separate manual step. Pushes to harbor.blockcast.net/library/* — the same
+# project the live deployment already pulls from.
+#
+# Trigger: any change under packages/mcp-external/. Master + tags only; no PR
+# builds (the HARBOR_PASSWORD org secret isn't available to forks, so a PR build
+# would 401 on push). Mirrors docker-mcp-gateway.yml.
+
+on:
+  push:
+    branches:
+      - "master"
+    paths:
+      - "packages/mcp-external/**"
+      - ".github/workflows/docker-mcp-external.yml"
+    tags:
+      - "mcp-external-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: self-hosted
+    timeout-minutes: 15
+    concurrency:
+      group: docker-mcp-external-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Clean stale node_modules from runner workspace
+        run: |
+          find . -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null || true
+          find . -name node_modules -type l -exec rm -f {} + 2>/dev/null || true
+
+      - name: Login to Harbor
+        uses: docker/login-action@v4
+        with:
+          registry: harbor.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          cleanup: true
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            harbor.blockcast.net/library/paperclip-mcp-external
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: packages/mcp-external/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          cache-from: type=registry,ref=harbor.blockcast.net/library/paperclip-mcp-external:buildcache-v1
+          cache-to: type=registry,ref=harbor.blockcast.net/library/paperclip-mcp-external:buildcache-v1,mode=max,image-manifest=true,oci-mediatypes=true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

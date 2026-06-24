@@ -138,6 +138,39 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
 
+const PAPERCLIP_RUN_AUTH_ANTHROPIC_PROXY_MARKERS = ["ccrotate", "penstock"];
+
+function isPaperclipRunAuthAnthropicBaseUrl(raw: string | undefined): boolean {
+  if (!raw?.trim()) return false;
+  const hasMarker = (value: string) => {
+    const normalized = value.toLowerCase();
+    return PAPERCLIP_RUN_AUTH_ANTHROPIC_PROXY_MARKERS.some(marker => normalized.includes(marker));
+  };
+
+  try {
+    const url = new URL(raw);
+    const pathSegments = url.pathname.split("/").filter(Boolean);
+    return pathSegments.some(segment => hasMarker(segment)) || hasMarker(url.hostname);
+  } catch {
+    return hasMarker(raw);
+  }
+}
+
+function applyPaperclipRunAuthAnthropicEnv(input: {
+  env: Record<string, string>;
+  envConfig: Record<string, unknown>;
+}): void {
+  const paperclipApiKey = input.env.PAPERCLIP_API_KEY?.trim();
+  if (!paperclipApiKey || !isPaperclipRunAuthAnthropicBaseUrl(input.env.ANTHROPIC_BASE_URL)) return;
+
+  if (!hasNonEmptyEnvValue(input.env, "ANTHROPIC_AUTH_TOKEN") || input.envConfig.ANTHROPIC_AUTH_TOKEN === undefined) {
+    input.env.ANTHROPIC_AUTH_TOKEN = paperclipApiKey;
+  }
+  if (!hasNonEmptyEnvValue(input.env, "ANTHROPIC_API_KEY") || input.envConfig.ANTHROPIC_API_KEY === undefined) {
+    input.env.ANTHROPIC_API_KEY = paperclipApiKey;
+  }
+}
+
 interface CcrotateAdvanceInput {
   runId: string;
   executionTarget: ReturnType<typeof readAdapterExecutionTarget>;
@@ -417,6 +450,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  applyPaperclipRunAuthAnthropicEnv({ env, envConfig });
 
   const runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(

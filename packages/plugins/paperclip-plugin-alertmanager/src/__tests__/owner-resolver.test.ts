@@ -101,6 +101,22 @@ describe("resolveOwnerEmail — pure resolution chain", () => {
     });
   });
 
+  it("ships a durable default route for paperclip data_volume alert class", () => {
+    const a = alert({
+      labels: {
+        alertname: "PaperclipDataVolumeNearlyFull",
+        severity: "warning",
+        class: "paperclip_data_volume",
+      },
+    });
+
+    expect(resolveOwnerEmail(a, DEFAULT_OWNER_MAP)).toEqual({
+      email: "support@blockcast.net",
+      agentId: null,
+      source: "owner-map",
+    });
+  });
+
   it("falls back to annotation override when neither label nor owner-map matches", () => {
     const a = alert({
       labels: { alertname: "X", severity: "info" },

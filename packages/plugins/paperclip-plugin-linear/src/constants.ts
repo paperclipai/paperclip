@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "paperclip-plugin-linear";
-export const PLUGIN_VERSION = "0.9.3";
+export const PLUGIN_VERSION = "0.9.4";
 
 /**
  * The originKind value the host stamps on issues created by this plugin.
@@ -63,6 +63,7 @@ export const ACTION_KEYS = {
   importIssue: "import-issue",
   backfillBackLinks: "backfill-backlinks",
   reconcileLinearMirrors: "reconcile-linear-mirrors",
+  reconcileMilestones: "reconcile-milestones",
 } as const;
 
 export const DATA_KEYS = {
@@ -97,6 +98,8 @@ export const STATE_KEYS = {
   initiativesSupported: "initiatives-supported",
   /** Cursor for bounded Paperclip -> Linear mirror reconciliation. */
   linearMirrorReconcileOffset: "linear-mirror-reconcile-offset",
+  milestoneLinkPrefix: "milestone-link:",
+  milestoneLinearPrefix: "milestone-linear:",
 } as const;
 
 export const LINEAR_OAUTH = {

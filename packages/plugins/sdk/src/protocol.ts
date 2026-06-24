@@ -38,6 +38,7 @@ import type {
   RoutineRun,
   Agent,
   Goal,
+  Milestone,
   PluginLocalFolderDeclaration,
   PrincipalPermissionGrant,
 } from "@paperclipai/shared";
@@ -1415,6 +1416,23 @@ export interface WorkerToHostMethods {
       companyId: string;
     },
     result: Goal,
+  ];
+
+  // Milestones
+  "milestones.list": [
+    params: { companyId: string; projectId?: string; limit?: number; offset?: number },
+    result: Milestone[],
+  ];
+  "milestones.create": [
+    params: {
+      companyId: string;
+      name: string;
+      projectId?: string | null;
+      description?: string | null;
+      targetDate?: string | null;
+      sortOrder?: number;
+    },
+    result: Milestone,
   ];
 
   // Access

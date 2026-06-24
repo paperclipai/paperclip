@@ -50,6 +50,7 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/mcp-server/package.json packages/mcp-server/
+COPY packages/mcp-external/package.json packages/mcp-external/
 COPY packages/mcp-gateway/package.json packages/mcp-gateway/
 COPY packages/skills-catalog/package.json packages/skills-catalog/
 COPY packages/teams-catalog/package.json packages/teams-catalog/
@@ -117,7 +118,15 @@ WORKDIR /vendor
 # corresponding local Claude JSONL session exists. Paperclip runtime UUIDs
 # without a Claude session file now start fresh instead of failing with
 # "No conversation found with session ID".
-ARG CLAUDE_K8S_REF=af5df8448e02f3b152ddb0d8e40c558d371a0ebd
+# Bumped 2026-06-17 to f79ab9a (master tip): BLO-10699 — redirect Chrome's
+# BrowserMetrics spool off the shared CephFS HOME to the per-pod /runtime-cache
+# emptyDir (PR #8), so the agent-browser designer tool's headless Chrome can no
+# longer leak *.pma buffers onto /paperclip and wall the fleet with EDQUOT.
+# af5df84's "only --resume when the JSONL session exists" guard was pinned
+# directly off an unmerged branch and was NOT on master; PR #9 ported it onto
+# master (cherry-pick), so f79ab9a carries BOTH the --resume guard and the
+# BrowserMetrics fix (verified present + 371 tests green). No --resume regress.
+ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98
 # Re-pinned 2026-06-14 to kkroo/paperclip-adapter-opencode-k8s master a533d11
 # (was 168688e): BLO-10448 — a transient k8s status-read error during the
 # completion poll was mislabeled as a deadline, surfacing as the bogus
@@ -145,7 +154,56 @@ ARG CLAUDE_K8S_REF=af5df8448e02f3b152ddb0d8e40c558d371a0ebd
 # (exit 1)" self-explains instead of needing a kubectl trip. PR
 # kkroo/paperclip-adapter-opencode-k8s#27; the pin was 2 behind tip so this
 # also picks up #26 (5d43c07 was the pre-merge sha; #26 merged at 09083e1).
-ARG OPENCODE_K8S_REF=4b195304acfd7c5b693b2cfeb9a6cc9fdcda98dd
+# Bumped 2026-06-19 to 861227d (master tip): PEN-389 — mount a per-agent
+# /runtime-cache emptyDir in opencode_k8s Jobs and keep regenerable XDG/Go/npm/
+# Bun/pip/Playwright/TMPDIR caches there instead of on the shared /paperclip
+# PVC. Also redirects Chrome BrowserMetrics to that emptyDir. PR
+# kkroo/paperclip-adapter-opencode-k8s#29; local adapter verification passed
+# job-manifest tests, typecheck, and build.
+# Bumped 2026-06-19 to 42d2d99: reserve the runtime-cache env keys after
+# adapterConfig.env merging, so stale /paperclip/.runtime-cache overrides cannot
+# move regenerable caches back onto the shared PVC. PR
+# kkroo/paperclip-adapter-opencode-k8s#30; local adapter verification passed
+# job-manifest tests, typecheck, and build.
+# Bumped 2026-06-21 to ce9b7b8: split the opencode pod schedule wait from the
+# post-schedule container startup wait. Slow init containers no longer consume
+# the 120s scheduler timeout and report as bogus "pod scheduling failed";
+# scheduled pods get a bounded 10m startup window instead. Local adapter
+# verification: execute.test.ts (101 tests) and typecheck passed.
+# Bumped 2026-06-21 to 33794ca: reset the per-agent opencode.db when the
+# vendored opencode binary is upgraded. A DB built by an older opencode can
+# carry a schema the current binary's insert path violates — observed live on
+# the Blockcast MulticastEngineer agent as `NOT NULL constraint failed:
+# session_message.seq` at SessionPrompt.createUserMessage, which bricked EVERY
+# run with a generic "Unexpected server error / UnknownError" thrown before any
+# model call (model/ccrotate/shim all probed healthy). Best-effort,
+# version-stamped, idempotent reset; never wipes a DB matching the current
+# binary, never fails the run. PR kkroo/paperclip-adapter-opencode-k8s#31;
+# 33794ca's parent is ce9b7b8 (no regress). Local adapter verification:
+# job-manifest.test.ts (102 tests) and typecheck passed.
+# Bumped 2026-06-22 to b5b99fd (v0.2.5): no-task workspace_subpath runs now
+# use ephemeral emptyDir DB storage instead of a shared _no_task_ DB, while
+# issue-scoped runs keep durable DBs. Also resets DB/WAL/SHM when combined
+# size exceeds 500 MiB. PR kkroo/paperclip-adapter-opencode-k8s#32; local
+# adapter verification passed focused tests, typecheck, build, and full tests.
+# Bumped 2026-06-23 to 54426c9: set provider.openai.options.chunkTimeout=240s on
+# both opencode config paths so slow gpt-5.5 reasoning streams aren't aborted
+# mid-chunk. The default inter-chunk idle guard fired on long reasoning gaps as
+# `API Error: Stream idle timeout - partial response`, persisting TRUNCATED
+# assistant turns (issue descriptions cut mid-sentence) that then mirrored to
+# Linear and read as a "sync clipped my body" bug. 240s sits just under the
+# /responses shim's 255s Bun socket idle. PR
+# kkroo/paperclip-adapter-opencode-k8s#33; 54426c9's parent is b5b99fd (no
+# regress). Local adapter verification: job-manifest.test.ts (new chunkTimeout
+# tests, red->green), full suite 494/494, and typecheck passed.
+# Bumped 2026-06-23 to b405f5b: enforce the BLO-3494 monthly budget cap before
+# creating opencode_k8s Kubernetes Jobs. Over-cap agents now fail fast with
+# errorCode=budget_exceeded, best-effort pause metadata, and an escalation
+# comment instead of continuing to spend past the cap. PR
+# kkroo/paperclip-adapter-opencode-k8s#34; local adapter verification passed
+# focused budget test, execute.test.ts (104/104), full suite 495/495,
+# typecheck, and git diff --check.
+ARG OPENCODE_K8S_REF=b405f5b52d827ded4829df6665a35b73cadcda77
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
@@ -281,7 +339,10 @@ COPY --from=github-mcp /server/github-mcp-server /usr/local/bin/github-mcp-serve
 # image, so `opencode-ai@latest` lets unrelated rebuilds pick up parser/runtime
 # changes that can crash every OpenCode-backed agent. Bump only after adapter
 # smoke/regression tests pass.
-ARG OPENCODE_AI_VERSION=1.4.3
+# Bumped 2026-06-20 to 1.15.12: opencode 1.4.3 fails OpenAI Responses streams
+# that include reasoning output items before the assistant message, surfacing as
+# UnknownError/exit 1 in opencode_k8s review runs while ccrotate returned 200.
+ARG OPENCODE_AI_VERSION=1.15.12
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \

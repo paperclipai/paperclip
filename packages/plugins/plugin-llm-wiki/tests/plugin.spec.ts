@@ -596,6 +596,8 @@ function paperclipIssue(overrides: Partial<Issue> = {}): Issue {
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    milestoneId: null,
+    targetDate: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,

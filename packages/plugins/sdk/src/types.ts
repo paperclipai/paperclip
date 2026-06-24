@@ -42,6 +42,7 @@ import type {
   RoutineRun,
   Agent,
   Goal,
+  Milestone,
   HumanCompanyMembershipRole,
   InviteJoinType,
   MembershipStatus,
@@ -1748,6 +1749,28 @@ export interface PluginGoalsClient {
   ): Promise<Goal>;
 }
 
+/**
+ * `ctx.milestones` — read and write milestones.
+ *
+ * `list` requires `milestones.read`; `create` requires `milestones.write`.
+ */
+export interface PluginMilestonesClient {
+  list(input: {
+    companyId: string;
+    projectId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<Milestone[]>;
+  create(input: {
+    companyId: string;
+    name: string;
+    projectId?: string | null;
+    description?: string | null;
+    targetDate?: string | null;
+    sortOrder?: number;
+  }): Promise<Milestone>;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin management client (Lucitra extension)
 // ---------------------------------------------------------------------------
@@ -2092,6 +2115,9 @@ export interface PluginContext {
 
   /** Read and mutate goals. Requires `goals.read` for reads; `goals.create` / `goals.update` for write ops. */
   goals: PluginGoalsClient;
+
+  /** Read milestones. Requires `milestones.read`. */
+  milestones: PluginMilestonesClient;
 
   /** Read and manage access memberships and invites. Requires `access.*` capabilities. */
   access: PluginAccessClient;

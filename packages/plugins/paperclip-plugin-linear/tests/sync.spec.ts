@@ -6,6 +6,7 @@ import {
   createLink,
   createGoalLink,
   createProjectLink,
+  createMilestoneLink,
   getGoalLink,
   getLink,
   getGoalLinkByLinear,
@@ -17,6 +18,7 @@ import {
   syncToLinear,
   type GoalLink,
   type IssueLink,
+  type MilestoneLink,
   type ProjectLink,
 } from "../src/sync.js";
 import * as linearApi from "../src/linear.js";
@@ -980,5 +982,157 @@ describe("syncToLinear", () => {
 
     expect(listIssueLabels).not.toHaveBeenCalled();
     expect(updateIssue).not.toHaveBeenCalled();
+  });
+});
+
+function makeMilestoneLink(overrides: Partial<MilestoneLink> = {}): MilestoneLink {
+  return {
+    paperclipMilestoneId: "pc-ms-1",
+    paperclipCompanyId: "comp-1",
+    paperclipProjectId: "pc-proj-1",
+    linearMilestoneId: "lin-ms-1",
+    linearMilestoneName: "M1",
+    lastSyncAt: "2026-06-10T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("milestone sync — syncToLinear", () => {
+  it("sets projectMilestoneId on the Linear issue when a MilestoneLink exists", async () => {
+    const harness = createTestHarness({ manifest });
+    await createMilestoneLink(harness.ctx, makeMilestoneLink());
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({ lastSyncAt: "2020-01-01T00:00:00.000Z" }),
+      { milestoneId: "pc-ms-1" },
+      "lin-token",
+      "team-1",
+    );
+
+    expect(updateIssue).toHaveBeenCalledWith(
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { projectMilestoneId: "lin-ms-1" },
+    );
+  });
+
+  it("clears projectMilestoneId when milestoneId is null", async () => {
+    const harness = createTestHarness({ manifest });
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({ lastSyncAt: "2020-01-01T00:00:00.000Z" }),
+      { milestoneId: null },
+      "lin-token",
+      "team-1",
+    );
+
+    expect(updateIssue).toHaveBeenCalledWith(
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { projectMilestoneId: null },
+    );
+  });
+
+  it("skips the milestone update (but not other changes) when no MilestoneLink exists", async () => {
+    const harness = createTestHarness({ manifest });
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+    const warn = vi.spyOn(harness.ctx.logger, "warn");
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({ lastSyncAt: "2020-01-01T00:00:00.000Z" }),
+      { title: "Keep this change", milestoneId: "unmapped-ms" },
+      "lin-token",
+      "team-1",
+    );
+
+    expect(updateIssue).toHaveBeenCalledWith(
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { title: "Keep this change" },
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("unmapped-ms"),
+    );
+  });
+});
+
+describe("milestone sync — syncFromLinear", () => {
+  it("patches milestoneId when the Linear projectMilestone is mapped", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [
+        {
+          id: "pc-1",
+          companyId: "comp-1",
+          title: "T",
+          status: "todo",
+          priority: "low",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        } as never,
+      ],
+    });
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.milestoneLinkPrefix}pc-ms-1` },
+      makeMilestoneLink(),
+    );
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.milestoneLinearPrefix}lin-ms-1` },
+      "pc-ms-1",
+    );
+
+    const update = vi.spyOn(harness.ctx.issues, "update");
+
+    await syncFromLinear(
+      harness.ctx,
+      makeLink(),
+      makeLinearIssue({ projectMilestone: { id: "lin-ms-1", name: "M1" } }),
+    );
+
+    expect(update).toHaveBeenCalledWith(
+      "pc-1",
+      expect.objectContaining({ milestoneId: "pc-ms-1" }),
+      "comp-1",
+    );
+  });
+
+  it("clears milestoneId when the Linear issue has no projectMilestone", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [
+        {
+          id: "pc-1",
+          companyId: "comp-1",
+          title: "T",
+          status: "todo",
+          priority: "low",
+          milestoneId: "pc-ms-1",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        } as never,
+      ],
+    });
+
+    const update = vi.spyOn(harness.ctx.issues, "update");
+
+    await syncFromLinear(
+      harness.ctx,
+      makeLink(),
+      makeLinearIssue({ projectMilestone: null }),
+    );
+
+    expect(update).toHaveBeenCalledWith(
+      "pc-1",
+      expect.objectContaining({ milestoneId: null }),
+      "comp-1",
+    );
   });
 });

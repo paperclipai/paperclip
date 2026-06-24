@@ -50,6 +50,17 @@ describe("dynamic adapter type validation schemas", () => {
     ).toBe("external_adapter");
   });
 
+  it("preserves pause metadata in update agent schemas", () => {
+    const pausedAt = "2026-06-24T00:00:00.000Z";
+    const parsed = updateAgentSchema.parse({
+      pauseReason: "budget exceeded: $223.85 spent / $200.00 cap",
+      pausedAt,
+    });
+
+    expect(parsed.pauseReason).toBe("budget exceeded: $223.85 spent / $200.00 cap");
+    expect(parsed.pausedAt).toEqual(new Date(pausedAt));
+  });
+
   it("accepts the security agent role and exposes its UI label", () => {
     expect(
       createAgentSchema.parse({

@@ -68,6 +68,8 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "agents.managed.reset": ["agents.managed"],
   "goals.list": ["goals.read"],
   "goals.get": ["goals.read"],
+  "milestones.list": ["milestones.read"],
+  "milestones.create": ["milestones.write"],
   "activity.list": ["activity.read"],
   "activity.get": ["activity.read"],
   "costs.list": ["costs.read"],

@@ -512,6 +512,8 @@ export interface Issue {
   projectWorkspaceId: string | null;
   goalId: string | null;
   parentId: string | null;
+  milestoneId: string | null;
+  targetDate: string | null;
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;

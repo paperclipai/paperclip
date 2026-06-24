@@ -8,6 +8,7 @@ interface StrictMcpUpstream {
   server: http.Server;
   url: string;
   methods: string[];
+  receivedHeaders: http.IncomingHttpHeaders[];
   clearSessions: () => void;
   close: () => Promise<void>;
 }
@@ -48,7 +49,9 @@ async function createStrictMcpUpstream(): Promise<StrictMcpUpstream> {
   let nextSession = 1;
   const sessions = new Map<string, { initialized: boolean }>();
   const methods: string[] = [];
+  const receivedHeaders: http.IncomingHttpHeaders[] = [];
   const server = http.createServer(async (req, res) => {
+    receivedHeaders.push(req.headers);
     const bodyText = await readBody(req);
     const message = JSON.parse(bodyText) as { id?: number; method?: string };
     const method = message.method ?? "";
@@ -96,9 +99,40 @@ async function createStrictMcpUpstream(): Promise<StrictMcpUpstream> {
     server,
     url,
     methods,
+    receivedHeaders,
     clearSessions: () => sessions.clear(),
     close: () => closeServer(server),
   };
+}
+
+/**
+ * POST to the gateway over a raw HTTP/1.1 connection using chunked transfer
+ * encoding (Node sets `Transfer-Encoding: chunked` automatically when a body
+ * is written without a Content-Length). This faithfully reproduces what the
+ * upstream auth-proxy does for some requests — and what the global `fetch`
+ * client cannot send (undici forbids a caller-set transfer-encoding header).
+ */
+function postChunked(url: string, body: string, headers: Record<string, string>): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: "POST",
+        headers, // no content-length → Node frames the body as chunked
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c as Buffer));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
+      },
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
 }
 
 async function createGateway(upstreamUrl: string): Promise<{ url: string; state: GatewayState }> {
@@ -202,6 +236,32 @@ describe("mcp gateway lifecycle compatibility", () => {
     expect(toolsCall.status).toBe(200);
     expect(toolsCall.headers.get(MCP_SESSION_HEADER)).toBeTruthy();
     expect(upstream.methods).toEqual(["initialize", "notifications/initialized", "tools/call"]);
+  });
+
+  it("strips the hop-by-hop transfer-encoding header from a chunked inbound request", async () => {
+    // Regression: undici's fetch throws `UND_ERR_INVALID_ARG: invalid
+    // transfer-encoding header` for ANY request whose headers carry
+    // `transfer-encoding`. The gateway must strip hop-by-hop headers (RFC 7230
+    // §6.1) before forwarding, or every chunked-framed request 502s.
+    const upstream = await createStrictMcpUpstream();
+    const gateway = await createGateway(upstream.url);
+
+    const res = await postChunked(
+      gateway.url,
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "0" } },
+      }),
+      { "content-type": "application/json", accept: "application/json, text/event-stream" },
+    );
+
+    expect(res.status).toBe(200);
+    // The upstream must never see the hop-by-hop transfer-encoding header.
+    for (const headers of upstream.receivedHeaders) {
+      expect(headers["transfer-encoding"]).toBeUndefined();
+    }
   });
 
   it("replays initialize and initialized before retrying a missing upstream session", async () => {

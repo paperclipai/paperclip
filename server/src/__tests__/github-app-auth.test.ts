@@ -128,17 +128,30 @@ describe("githubHasReviewerEvidenceForPr", () => {
     reviews?: unknown[];
     reviewsStatus?: number;
     comments?: unknown[];
+    prHead?: string;
+    // BLO-10878 cause #2: map of "base...head" → compare status ("ahead" |
+    // "behind" | "identical" | "diverged"). Absent pairs 404 (unknown SHA).
+    compares?: Record<string, string>;
   }) {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string | URL) => {
         const u = String(url);
         if (u.includes("/access_tokens")) return jsonResponse({ token: "ghs_test", expires_at: FUTURE_ISO });
+        if (u.includes("/compare/")) {
+          const seg = decodeURIComponent(u.split("/compare/")[1]!.split("?")[0]!);
+          const status = routes.compares?.[seg];
+          return status ? jsonResponse({ status }) : jsonResponse({}, false, 404);
+        }
         if (u.includes("/pulls/") && u.includes("/reviews")) {
           if (routes.reviewsStatus && routes.reviewsStatus >= 400) {
             return jsonResponse([], false, routes.reviewsStatus);
           }
           return jsonResponse(routes.reviews ?? []);
+        }
+        // BLO-10878: bare PR fetch used to resolve a missing head SHA.
+        if (u.includes("/pulls/")) {
+          return jsonResponse(routes.prHead !== undefined ? { head: { sha: routes.prHead } } : {});
         }
         if (u.includes("/issues/") && u.includes("/comments")) return jsonResponse(routes.comments ?? []);
         throw new Error(`unexpected url ${u}`);
@@ -173,6 +186,60 @@ describe("githubHasReviewerEvidenceForPr", () => {
     });
   });
 
+  it("BLO-10878: matches a comment-mode review when the head SHA is wrapped in markdown italics (trailing _)", async () => {
+    setCreds();
+    // Real paperclip#458 shape: Ally's consolidated review embeds the head SHA in
+    // an italic run (`_reviewed head: <sha>_`), so a `_` sits immediately after the
+    // final hex digit. `_` is a `\w` char, so a `\b…\b`-anchored pattern finds no
+    // trailing word boundary and the review is mis-flagged as missing.
+    stubGithub({
+      reviews: [],
+      comments: [
+        { user: { login: "allyblockcast[bot]" }, body: `## Ally — Consolidated PR Review\n_reviewed head: ${headSha}_` },
+      ],
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: true,
+      via: "comment",
+    });
+  });
+
+  it("BLO-10878: falls back to the PR head when the wake carried no head SHA, then matches a comment-mode review", async () => {
+    setCreds();
+    stubGithub({
+      prHead: headSha,
+      reviews: [],
+      comments: [{ user: { login: "allyblockcast[bot]" }, body: `## Ally — Consolidated PR Review  _reviewed head: ${headSha}` }],
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha: null })).resolves.toEqual({
+      found: true,
+      via: "comment",
+    });
+  });
+
+  it("BLO-10878: keeps the lenient any-bot-review fallback when the head SHA can't be resolved", async () => {
+    setCreds();
+    // No head SHA on the wake and the PR fetch yields no head → the formal-review
+    // loop still rescues on any bot review (unchanged pre-existing leniency).
+    stubGithub({ reviews: [{ user: { login: "allyblockcast[bot]" }, commit_id: null }] });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha: null })).resolves.toEqual({
+      found: true,
+      via: "review",
+    });
+  });
+
+  it("BLO-10878: returns not-found when the resolved PR head has no bot review or comment", async () => {
+    setCreds();
+    stubGithub({
+      prHead: headSha,
+      reviews: [],
+      comments: [{ user: { login: "someone-else" }, body: headSha }],
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha: null })).resolves.toEqual({
+      found: false,
+    });
+  });
+
   it("does not match a review by a different author or at a different head", async () => {
     setCreds();
     stubGithub({
@@ -181,6 +248,78 @@ describe("githubHasReviewerEvidenceForPr", () => {
         { user: { login: "allyblockcast[bot]" }, commit_id: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" },
       ],
       comments: [{ user: { login: "allyblockcast[bot]" }, body: "no sha referenced here" }],
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: false,
+    });
+  });
+
+  // BLO-10878 cause #2 — at-or-newer head: the bot frequently reviews a DESCENDANT
+  // of the wake head (the PR advanced between wake and review). An exact-head match
+  // fails, so fall back to a `compare` check and credit a review/comment whose head
+  // is the wake head or a descendant ("ahead"/"identical"), but not older/diverged.
+  const DESCENDANT = "aaaaaaaa1111111111111111111111111111aaaa";
+  const ANCESTOR = "bbbbbbbb2222222222222222222222222222bbbb";
+  const DIVERGED = "cccccccc3333333333333333333333333333cccc";
+
+  it("BLO-10878: credits a bot formal review at a descendant head (at-or-newer)", async () => {
+    setCreds();
+    stubGithub({
+      reviews: [{ user: { login: "allyblockcast[bot]" }, commit_id: DESCENDANT }],
+      comments: [],
+      compares: { [`${headSha}...${DESCENDANT}`]: "ahead" },
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: true,
+      via: "review",
+    });
+  });
+
+  it("BLO-10878: credits a comment-mode review embedding a descendant head (at-or-newer)", async () => {
+    setCreds();
+    stubGithub({
+      reviews: [],
+      comments: [
+        { user: { login: "allyblockcast[bot]" }, body: `## Ally — Consolidated PR Review\n_reviewed head: ${DESCENDANT}_` },
+      ],
+      compares: { [`${headSha}...${DESCENDANT}`]: "ahead" },
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: true,
+      via: "comment",
+    });
+  });
+
+  it("BLO-10878: does NOT credit a bot review at a strictly-older head (behind)", async () => {
+    setCreds();
+    stubGithub({
+      reviews: [{ user: { login: "allyblockcast[bot]" }, commit_id: ANCESTOR }],
+      comments: [],
+      compares: { [`${headSha}...${ANCESTOR}`]: "behind" },
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: false,
+    });
+  });
+
+  it("BLO-10878: does NOT credit a diverged head", async () => {
+    setCreds();
+    stubGithub({
+      reviews: [{ user: { login: "allyblockcast[bot]" }, commit_id: DIVERGED }],
+      comments: [],
+      compares: { [`${headSha}...${DIVERGED}`]: "diverged" },
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: false,
+    });
+  });
+
+  it("BLO-10878: skips a candidate whose compare 404s (bogus hex) without erroring", async () => {
+    setCreds();
+    stubGithub({
+      reviews: [{ user: { login: "allyblockcast[bot]" }, commit_id: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" }],
+      comments: [],
+      // no `compares` entry → the candidate 404s and is skipped (not a fatal error).
     });
     await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
       found: false,

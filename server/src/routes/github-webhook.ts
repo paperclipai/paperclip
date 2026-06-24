@@ -769,6 +769,16 @@ async function reopenInReviewIssueForActionablePrFeedback(
   return result;
 }
 
+const IDEMPOTENT_REVIEWER_WAKE_STATUSES = [
+  "queued",
+  "claimed",
+  "running",
+  "scheduled",
+  "deferred_issue_execution",
+  "coalesced",
+  "completed",
+];
+
 function githubContextMetadata(context: ResolvedEventContext) {
   return {
     ...(context.prTitle ? { githubPrTitle: context.prTitle } : {}),
@@ -845,6 +855,20 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
           ...config.heartbeatOptions,
         });
         const reviewerTaskKey = buildPrReviewerTaskKey(context);
+        const idempotencyKey = buildPrReviewerWakeIdempotencyKey(context, deliveryId);
+        const existingWake = await db
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.agentId, config.prReviewerAgentId),
+              eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+              inArray(agentWakeupRequests.status, IDEMPOTENT_REVIEWER_WAKE_STATUSES),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existingWake) return false;
         await heartbeat.wakeup(config.prReviewerAgentId, {
           source: "automation",
           triggerDetail: "system",
@@ -886,7 +910,7 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
           // Open/ready/review-submitted events stay one wake per PR+reason.
           // @ally comment requests are scoped to the GitHub comment id so a
           // later explicit re-review comment can wake Ally again.
-          idempotencyKey: buildPrReviewerWakeIdempotencyKey(context, deliveryId),
+          idempotencyKey,
         });
         return true;
       } catch (err) {

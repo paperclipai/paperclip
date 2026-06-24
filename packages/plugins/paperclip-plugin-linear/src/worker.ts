@@ -1184,6 +1184,264 @@ const plugin = definePlugin({
       });
     });
 
+    // Reconcile existing Paperclip milestones ↔ Linear project milestones by
+    // matching on name (case-insensitive) within the same project. Idempotent —
+    // skips milestones that already have a MilestoneLink. Creates Linear
+    // milestones for Paperclip milestones with no match.
+    ctx.actions.register(ACTION_KEYS.reconcileMilestones, async (params: any, context: { companyId?: string | null } | undefined) => {
+      const companyId =
+        (context?.companyId as string | null | undefined) ??
+        (typeof params?.companyId === "string" ? params.companyId : null) ??
+        (await getCompanyId(ctx));
+      if (!companyId) return { reconciled: 0, created: 0, imported: 0, error: "company not connected" };
+
+      const token = await resolveToken(ctx);
+      let reconciled = 0;
+      let created = 0;
+      let imported = 0;
+
+      // Pre-load all PC milestones once so both phase 1 and phase 2 can do
+      // name-based dedup without repeated list calls.
+      const allPcMilestones = await ctx.milestones.list({ companyId });
+      // projectId:normalizedName → milestone (used to avoid creating duplicates
+      // when a title-backfill milestone already exists for a Linear milestone)
+      const pcMilestoneByProjectAndName = new Map<
+        string,
+        { id: string; projectId: string | null | undefined; name: string }
+      >();
+      for (const m of allPcMilestones) {
+        if (m.projectId) {
+          pcMilestoneByProjectAndName.set(
+            `${m.projectId}:${m.name.trim().toLowerCase()}`,
+            m,
+          );
+        }
+      }
+
+      // Phase 1: Linear → Paperclip import.
+      // Walk all project links for this company and import any Linear milestones
+      // that do not yet exist as Paperclip milestones.
+      let projectLinkOffset = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const page = await ctx.state.list({
+          scopeKind: "instance",
+          namespace: "default",
+          stateKeyPrefix: STATE_KEYS.projectLinkPrefix,
+          limit: 50,
+          offset: projectLinkOffset,
+        });
+        if (page.entries.length === 0) break;
+        projectLinkOffset += page.entries.length;
+
+        for (const entry of page.entries) {
+          if (!isProjectLink(entry.value)) continue;
+          if (entry.value.paperclipCompanyId !== companyId) continue;
+
+          const linearMilestones = await linear.listProjectMilestones(
+            ctx.http.fetch.bind(ctx.http), token, entry.value.linearProjectId,
+          );
+
+          for (const lm of linearMilestones) {
+            // Skip if already linked
+            const existing = await sync.getMilestoneLinkByLinear(ctx, lm.id);
+            if (existing) { reconciled++; continue; }
+
+            // Before creating a new PC milestone, check if one with the same
+            // name already exists in this project (e.g. created by title backfill).
+            // Linking to the existing milestone avoids duplicate PC milestones and
+            // ensures phase 1.5 stamps issues against the canonical milestone.
+            const nameKey = `${entry.value.paperclipProjectId}:${lm.name.trim().toLowerCase()}`;
+            const existingByName = pcMilestoneByProjectAndName.get(nameKey);
+
+            if (existingByName) {
+              await sync.createMilestoneLink(ctx, {
+                paperclipMilestoneId: existingByName.id,
+                paperclipCompanyId: companyId,
+                paperclipProjectId: entry.value.paperclipProjectId,
+                linearMilestoneId: lm.id,
+                linearMilestoneName: lm.name,
+              });
+              ctx.logger.debug(
+                `reconcile-milestones phase 1: linked existing PC milestone ${existingByName.id} ("${lm.name}") to Linear milestone ${lm.id}`,
+              );
+              reconciled++;
+            } else {
+              // Create the Paperclip milestone
+              const pc = await ctx.milestones.create({
+                companyId,
+                name: lm.name,
+                projectId: entry.value.paperclipProjectId,
+                description: lm.description ?? null,
+                targetDate: lm.targetDate ?? null,
+              });
+              // Register in cache so duplicate Linear milestones in the same run
+              // do not create a second PC milestone.
+              pcMilestoneByProjectAndName.set(nameKey, pc);
+
+              await sync.createMilestoneLink(ctx, {
+                paperclipMilestoneId: pc.id,
+                paperclipCompanyId: companyId,
+                paperclipProjectId: entry.value.paperclipProjectId,
+                linearMilestoneId: lm.id,
+                linearMilestoneName: lm.name,
+              });
+              imported++;
+            }
+          }
+
+          await new Promise((r) => setTimeout(r, 150)); // rate-limit headroom
+        }
+      }
+
+      // Phase 1.5: Linear → Paperclip issue-membership backfill.
+      // Iterate ALL bound MilestoneLinks (not just same-run imports) and stamp
+      // PC issues where milestoneId is null.  Idempotent; null-safe; guards
+      // milestone.projectId === issue.projectId to prevent cross-project leaks.
+      let membershipBackfilled = 0;
+      let membershipSkipped = 0;
+      let milestoneLinkOffset = 0;
+      const hostLinkFallbackAvailable = typeof ctx.issues.getByLinearIssueId === "function";
+      if (!hostLinkFallbackAvailable) {
+        ctx.logger.warn(
+          `reconcile-milestones phase 1.5: ctx.issues.getByLinearIssueId unavailable — host-link fallback disabled; host-linked issues without a plugin-state reverse key will be skipped`,
+        );
+      }
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const page = await ctx.state.list({
+          scopeKind: "instance",
+          namespace: "default",
+          stateKeyPrefix: STATE_KEYS.milestoneLinkPrefix,
+          limit: 50,
+          offset: milestoneLinkOffset,
+        });
+        if (page.entries.length === 0) break;
+        milestoneLinkOffset += page.entries.length;
+
+        for (const entry of page.entries) {
+          if (!isMilestoneLinkEntry(entry.value)) continue;
+          if (entry.value.paperclipCompanyId !== companyId) continue;
+
+          let cursor: string | null = null;
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            const { issues: linearIssues, hasNextPage, endCursor } =
+              await linear.listIssuesByMilestone(
+                ctx.http.fetch.bind(ctx.http), token, entry.value.linearMilestoneId, cursor ?? undefined,
+              );
+            for (const li of linearIssues) {
+              let issueLink = await sync.getLinkByLinear(ctx, li.id);
+              if (!issueLink && hostLinkFallbackAvailable) {
+                // Fallback: the host allocator path writes only the DB linear_issue_links row,
+                // not the plugin state reverse key. Similarly, broken pre-BLO-11247 runs of
+                // link-linear-issue overwrote the reverse key with "undefined". Recover via
+                // getByLinearIssueId and repair the reverse key for future runs.
+                const hostLinked = await ctx.issues.getByLinearIssueId({ linearIssueId: li.id, companyId });
+                if (hostLinked) {
+                  const forwardLink = await sync.getLink(ctx, hostLinked.id);
+                  if (forwardLink && forwardLink.linearIssueId === li.id && forwardLink.paperclipIssueId === hostLinked.id) {
+                    // Reverse key repair is project-independent; the cross-project guard below
+                    // governs milestone stamping only.
+                    await sync.repairReverseLink(ctx, forwardLink);
+                    issueLink = forwardLink;
+                    ctx.logger.debug(
+                      `reconcile-milestones phase 1.5: repaired missing reverse key for ${li.identifier} via host link`,
+                    );
+                  }
+                }
+              }
+              if (!issueLink) {
+                ctx.logger.debug(`reconcile-milestones phase 1.5: skipping ${li.identifier} — no PC issue link`);
+                membershipSkipped++;
+                continue;
+              }
+              const pcIssue = await ctx.issues.get(issueLink.paperclipIssueId, companyId);
+              if (!pcIssue) {
+                ctx.logger.debug(`reconcile-milestones phase 1.5: skipping ${li.identifier} — PC issue ${issueLink.paperclipIssueId} not found`);
+                membershipSkipped++;
+                continue;
+              }
+              // Guard same-project invariant to prevent cross-project leaks.
+              if (entry.value.paperclipProjectId && pcIssue.projectId !== entry.value.paperclipProjectId) {
+                ctx.logger.warn(
+                  `reconcile-milestones phase 1.5: skipping ${li.identifier} — project mismatch (milestone=${entry.value.paperclipProjectId} issue=${pcIssue.projectId})`,
+                );
+                membershipSkipped++;
+                continue;
+              }
+              if (pcIssue.milestoneId) {
+                // Already set — idempotent skip.
+                membershipSkipped++;
+                continue;
+              }
+              await ctx.issues.update(
+                issueLink.paperclipIssueId,
+                { milestoneId: entry.value.paperclipMilestoneId } as Parameters<typeof ctx.issues.update>[1],
+                companyId,
+              );
+              membershipBackfilled++;
+            }
+            if (!hasNextPage || !endCursor) break;
+            cursor = endCursor;
+            await new Promise((r) => setTimeout(r, 150));
+          }
+
+          await new Promise((r) => setTimeout(r, 150));
+        }
+      }
+      ctx.logger.info(`Milestone reconcile phase 1.5 done: ${membershipBackfilled} PC issues stamped, ${membershipSkipped} skipped`);
+
+      // Phase 2: Paperclip → Linear sync.
+      // Walk all Paperclip milestones and create any that are missing in Linear.
+      for (const milestone of allPcMilestones) {
+        if (!milestone.projectId) continue;
+
+        const existingLink = await sync.getMilestoneLink(ctx, milestone.id);
+        if (existingLink) { reconciled++; continue; }
+
+        const projectLink = await sync.getProjectLink(ctx, milestone.projectId);
+        if (!projectLink) continue;
+
+        const linearMilestones = await linear.listProjectMilestones(
+          ctx.http.fetch.bind(ctx.http), token, projectLink.linearProjectId,
+        );
+        const normalizedName = milestone.name.trim().toLowerCase();
+        const match = linearMilestones.find(
+          (lm) => lm.name.trim().toLowerCase() === normalizedName,
+        );
+
+        if (match) {
+          await sync.createMilestoneLink(ctx, {
+            paperclipMilestoneId: milestone.id,
+            paperclipCompanyId: companyId,
+            paperclipProjectId: milestone.projectId,
+            linearMilestoneId: match.id,
+            linearMilestoneName: match.name,
+          });
+          reconciled++;
+        } else {
+          const lm = await linear.createProjectMilestone(ctx.http.fetch.bind(ctx.http), token, {
+            name: milestone.name,
+            projectId: projectLink.linearProjectId,
+            description: milestone.description ?? null,
+            targetDate: milestone.targetDate ?? null,
+          });
+          await sync.createMilestoneLink(ctx, {
+            paperclipMilestoneId: milestone.id,
+            paperclipCompanyId: companyId,
+            paperclipProjectId: milestone.projectId,
+            linearMilestoneId: lm.id,
+            linearMilestoneName: lm.name,
+          });
+          created++;
+        }
+      }
+
+      ctx.logger.info(`Milestone reconcile done: ${reconciled} reconciled, ${imported} imported from Linear, ${created} pushed to Linear, ${membershipBackfilled} issue memberships backfilled`);
+      return { reconciled, created, imported, membershipBackfilled, membershipSkipped };
+    });
+
     // One-time bounded backfill: write Paperclip back-links for already-mirrored
     // issues/projects that predate paperclipBaseUrl. Idempotent (Linear dedupes
     // by URL/external link), bounded per run, and resumable via offset cursors
@@ -2344,6 +2602,13 @@ const plugin = definePlugin({
       if (payload?.description !== undefined) changes.description = payload.description as string;
       if (payload?.estimate !== undefined) changes.estimate = payload.estimate as number | null;
       if (payload?.dueDate !== undefined) changes.dueDate = payload.dueDate as string | null;
+      // targetDate on the issue maps to dueDate in Linear (dueDate takes precedence if both present)
+      if (payload?.targetDate !== undefined && payload?.dueDate === undefined) {
+        changes.dueDate = payload.targetDate as string | null;
+      }
+      if (Object.prototype.hasOwnProperty.call(payload ?? {}, "milestoneId")) {
+        changes.milestoneId = (payload?.milestoneId as string | null | undefined) ?? null;
+      }
       const patch = payload?.patch as Record<string, unknown> | undefined;
       const hasProjectIdChange =
         Object.prototype.hasOwnProperty.call(payload ?? {}, "projectId") ||
@@ -2638,6 +2903,103 @@ const plugin = definePlugin({
         await pushGoalToLinear(ctx, companyId, goalId);
       } catch (err) {
         ctx.logger.error("Failed to sync goal update to Linear", { error: String(err) });
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // Milestone events: Paperclip ↔ Linear ProjectMilestone
+    //
+    // Paperclip milestone.created → create a Linear ProjectMilestone inside
+    // the linked project (if projectId has a ProjectLink). milestone.updated
+    // pushes name/description/targetDate. milestone.deleted removes the Linear
+    // milestone and drops the MilestoneLink state entry.
+    // -----------------------------------------------------------------------
+    ctx.events.on("milestone.created", async (event) => {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const milestoneId = (event.entityId ?? payload?.id) as string | undefined;
+      const projectId = payload?.projectId as string | null | undefined;
+      if (!milestoneId || !projectId) return;
+
+      const companyId = await getConnectedCompanyIdForEvent(ctx, event, payload, "milestone.created");
+      if (!companyId) return;
+
+      const existing = await sync.getMilestoneLink(ctx, milestoneId);
+      if (existing) return;
+
+      const projectLink = await sync.getProjectLink(ctx, projectId);
+      if (!projectLink) {
+        ctx.logger.info(
+          `Skipping Linear milestone creation for Paperclip milestone ${milestoneId}: project ${projectId} is not linked to Linear`,
+        );
+        return;
+      }
+
+      try {
+        const token = await resolveToken(ctx);
+        const created = await linear.createProjectMilestone(ctx.http.fetch.bind(ctx.http), token, {
+          name: (payload?.name as string) ?? "Untitled",
+          projectId: projectLink.linearProjectId,
+          description: (payload?.description as string | null | undefined) ?? null,
+          targetDate: (payload?.targetDate as string | null | undefined) ?? null,
+        });
+        await sync.createMilestoneLink(ctx, {
+          paperclipMilestoneId: milestoneId,
+          paperclipCompanyId: companyId,
+          paperclipProjectId: projectId,
+          linearMilestoneId: created.id,
+          linearMilestoneName: created.name,
+        });
+        ctx.logger.info(`Created Linear milestone ${created.name} for Paperclip milestone ${milestoneId}`);
+      } catch (err) {
+        ctx.logger.error(`Failed to create Linear milestone: ${err}`);
+      }
+    });
+
+    ctx.events.on("milestone.updated", async (event) => {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const milestoneId = (event.entityId ?? payload?.id) as string | undefined;
+      if (!milestoneId) return;
+
+      const link = await sync.getMilestoneLink(ctx, milestoneId);
+      if (!link) return;
+      if (!eventMatchesLinkCompany(ctx, event, payload, link.paperclipCompanyId, "milestone.updated")) return;
+
+      const input: { name?: string; description?: string | null; targetDate?: string | null } = {};
+      if (payload?.name !== undefined) input.name = payload.name as string;
+      if (payload?.description !== undefined) input.description = payload.description as string | null;
+      if (payload?.targetDate !== undefined) input.targetDate = payload.targetDate as string | null;
+
+      if (Object.keys(input).length === 0) return;
+
+      try {
+        const token = await resolveToken(ctx);
+        const updated = await linear.updateProjectMilestone(
+          ctx.http.fetch.bind(ctx.http), token, link.linearMilestoneId, input,
+        );
+        link.linearMilestoneName = updated.name;
+        await sync.updateMilestoneLink(ctx, link);
+        ctx.logger.info(`Updated Linear milestone ${updated.name} for Paperclip milestone ${milestoneId}`);
+      } catch (err) {
+        ctx.logger.error(`Failed to update Linear milestone: ${err}`);
+      }
+    });
+
+    ctx.events.on("milestone.deleted", async (event) => {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const milestoneId = (event.entityId ?? payload?.id) as string | undefined;
+      if (!milestoneId) return;
+
+      const link = await sync.getMilestoneLink(ctx, milestoneId);
+      if (!link) return;
+      if (!eventMatchesLinkCompany(ctx, event, payload, link.paperclipCompanyId, "milestone.deleted")) return;
+
+      try {
+        const token = await resolveToken(ctx);
+        await linear.deleteProjectMilestone(ctx.http.fetch.bind(ctx.http), token, link.linearMilestoneId);
+        await sync.removeMilestoneLink(ctx, milestoneId);
+        ctx.logger.info(`Deleted Linear milestone for Paperclip milestone ${milestoneId}`);
+      } catch (err) {
+        ctx.logger.error(`Failed to delete Linear milestone: ${err}`);
       }
     });
 
@@ -3909,6 +4271,15 @@ function isProjectLink(value: unknown): value is sync.ProjectLink {
     && typeof candidate.linearProjectId === "string"
     && typeof candidate.linearProjectName === "string"
     && typeof candidate.syncDirection === "string";
+}
+
+function isMilestoneLinkEntry(value: unknown): value is sync.MilestoneLink {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<sync.MilestoneLink>;
+  return typeof candidate.paperclipMilestoneId === "string"
+    && typeof candidate.paperclipCompanyId === "string"
+    && typeof candidate.linearMilestoneId === "string"
+    && typeof candidate.linearMilestoneName === "string";
 }
 
 function issueLabelIdsForReconcile(issue: Issue): string[] | undefined {

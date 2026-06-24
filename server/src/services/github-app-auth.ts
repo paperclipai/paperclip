@@ -129,6 +129,71 @@ function headShaHex(headSha: string | null | undefined): string | null {
 }
 
 /**
+ * Fetch the PR's current head SHA. Used only as a fallback when the wake didn't
+ * carry one (BLO-10878): a null head SHA used to disable the comment-mode check
+ * entirely (`headPrefix` null), so comment-mode reviews on PRs whose wake lacked
+ * a head SHA were never recognized → false `pr_review_output_missing`. Returns
+ * null on any non-OK / failed fetch so the caller keeps its lenient fallback.
+ */
+async function fetchPrHeadSha(
+  apiBase: string,
+  repoFullName: string,
+  prNumber: number,
+  headers: Record<string, string>,
+): Promise<string | null> {
+  try {
+    const res = await ghFetch(`${apiBase}/repos/${repoFullName}/pulls/${prNumber}`, { headers });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as { head?: { sha?: string } } | null;
+    const sha = body?.head?.sha;
+    return typeof sha === "string" ? headShaHex(sha) : null;
+  } catch {
+    return null;
+  }
+}
+
+// BLO-10878 cause #2: cap the at-or-newer `compare` fan-out so a comment-heavy PR
+// (many embedded hex strings) can't trigger an unbounded number of API calls.
+const MAX_AT_OR_NEWER_COMPARES = 10;
+
+/**
+ * GitHub commit comparison status of `head` relative to `base`
+ * (`ahead` | `behind` | `identical` | `diverged`), or null on any non-OK / failed
+ * fetch. An unknown SHA (e.g. a non-commit hex scraped from a comment) 404s → null,
+ * so the caller simply skips that candidate rather than failing the whole check.
+ */
+async function compareCommitStatus(
+  apiBase: string,
+  repoFullName: string,
+  baseSha: string,
+  headSha: string,
+  headers: Record<string, string>,
+): Promise<string | null> {
+  try {
+    const res = await ghFetch(`${apiBase}/repos/${repoFullName}/compare/${baseSha}...${headSha}`, { headers });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as { status?: string } | null;
+    return typeof body?.status === "string" ? body.status : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Unique candidate git-SHA hex runs (7-40 chars, hex-bounded) embedded in text. */
+function extractCandidateShas(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(/(?<![0-9a-f])[0-9a-f]{7,40}(?![0-9a-f])/gi)) {
+    const sha = match[0].toLowerCase();
+    if (!seen.has(sha)) {
+      seen.add(sha);
+      out.push(sha);
+    }
+  }
+  return out;
+}
+
+/**
  * Authoritatively check whether the reviewer bot left a review or comment for
  * THIS PR head on GitHub. Used to rescue a false `pr_review_output_missing`.
  *
@@ -139,9 +204,18 @@ function headShaHex(headSha: string | null | undefined): string | null {
  *    body (covers comment-mode reviews on bot-authored PRs, which carry no
  *    commit_id).
  *
- * Returns `{error}` on missing creds / token / any non-OK or failed fetch so the
- * caller can fall back to the heuristic verdict. Head-SHA precision avoids
- * masking a genuine miss on a newer head than a stale earlier review.
+ * If no exact-head match is found, a second pass (BLO-10878 cause #2) credits a
+ * bot review/comment whose head is a DESCENDANT of the wake head — the PR
+ * commonly advances between the reviewer-wake and the review, so Ally reviews a
+ * newer commit than the one the wake carried. Each off-head candidate SHA is
+ * checked with GitHub `compare` and accepted only when the candidate is "ahead"
+ * of (or "identical" to) the wake head; "behind"/"diverged" are rejected, so a
+ * genuinely-unreviewed newer head still flags. Bounded by MAX_AT_OR_NEWER_COMPARES.
+ *
+ * Returns `{error}` on missing creds / token / any non-OK or failed reviews/
+ * comments fetch so the caller can fall back to the heuristic verdict. (A failed
+ * `compare` only skips that candidate — the second pass is purely additive and can
+ * never downgrade a verdict.)
  */
 export async function githubHasReviewerEvidenceForPr(input: {
   repoFullName: string;
@@ -157,8 +231,18 @@ export async function githubHasReviewerEvidenceForPr(input: {
 
   const headers = { ...GITHUB_API_HEADERS, authorization: `Bearer ${token}` };
   const apiBase = gitHubApiBase(GITHUB_HOST);
-  const headSha = input.headSha?.toLowerCase() ?? null;
-  const headPrefix = headShaHex(input.headSha);
+  // BLO-10878: when the wake didn't carry a head SHA, fall back to the PR's
+  // current head so the comment-mode check (keyed on `headPrefix`) still runs.
+  // Previously a null head SHA skipped comments entirely and only the formal-
+  // review loop ran, missing Ally's frequent comment-mode reviews.
+  const headSha =
+    headShaHex(input.headSha) ?? (await fetchPrHeadSha(apiBase, input.repoFullName, input.prNumber, headers));
+  const headPrefix = headShaHex(headSha);
+
+  // Off-head bot review/comment SHAs collected during the exact-head passes below;
+  // consumed by the at-or-newer fallback (cause #2) only when no exact match found.
+  const reviewCandidates: string[] = [];
+  const commentCandidates: string[] = [];
 
   // 1) Formal reviews — match the bot author at this exact head commit.
   try {
@@ -170,7 +254,9 @@ export async function githubHasReviewerEvidenceForPr(input: {
       for (const review of batch) {
         if (normalizeGithubLogin(review.user?.login ?? "") !== botLogin) continue;
         if (!headSha) return { found: true, via: "review" };
-        if ((review.commit_id ?? "").toLowerCase() === headSha) return { found: true, via: "review" };
+        const commitId = headShaHex(review.commit_id);
+        if (commitId === headSha) return { found: true, via: "review" };
+        if (commitId) reviewCandidates.push(commitId);
       }
       if (batch.length < 100) break;
     }
@@ -183,7 +269,10 @@ export async function githubHasReviewerEvidenceForPr(input: {
   // SHA forms of THIS head are recognized — same shape as
   // prReviewOutputReferencesSameTarget in heartbeat.ts.
   if (headPrefix) {
-    const headRefPattern = new RegExp(`\\b${headPrefix.slice(0, 7)}[0-9a-f]*\\b`);
+    // Boundary on hex chars only (not `\b`): `_` is a `\w` char, so `\b…\b` finds
+    // no trailing boundary when Ally embeds the SHA in markdown italics
+    // (`_reviewed head: <sha>_`), mis-flagging a real comment-mode review as missing.
+    const headRefPattern = new RegExp(`(?<![0-9a-f])${headPrefix.slice(0, 7)}[0-9a-f]*(?![0-9a-f])`);
     try {
       for (let page = 1; page <= 10; page += 1) {
         const url = `${apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/comments?per_page=100&page=${page}`;
@@ -192,12 +281,39 @@ export async function githubHasReviewerEvidenceForPr(input: {
         const batch = (await res.json()) as Array<{ user?: { login?: string }; body?: string }>;
         for (const comment of batch) {
           if (normalizeGithubLogin(comment.user?.login ?? "") !== botLogin) continue;
-          if (headRefPattern.test((comment.body ?? "").toLowerCase())) return { found: true, via: "comment" };
+          const body = (comment.body ?? "").toLowerCase();
+          if (headRefPattern.test(body)) return { found: true, via: "comment" };
+          for (const sha of extractCandidateShas(body)) commentCandidates.push(sha);
         }
         if (batch.length < 100) break;
       }
     } catch {
       return { error: "comments_fetch_failed" };
+    }
+  }
+
+  // 3) At-or-newer fallback (BLO-10878 cause #2): no exact-head match, but a bot
+  // review/comment may sit on a DESCENDANT of the wake head (the PR advanced
+  // between the wake and the review). Check off-head candidates newest-first
+  // (reviews, then comments) and credit the first that is "ahead"/"identical";
+  // "behind"/"diverged" — and unknown-SHA 404s — are skipped, so a genuinely
+  // unreviewed newer head still flags. Compare fan-out is bounded.
+  if (headSha) {
+    const seen = new Set<string>([headSha]);
+    let compares = 0;
+    const passes: Array<{ shas: string[]; via: "review" | "comment" }> = [
+      { shas: reviewCandidates.slice().reverse(), via: "review" },
+      { shas: commentCandidates.slice().reverse(), via: "comment" },
+    ];
+    for (const { shas, via } of passes) {
+      for (const sha of shas) {
+        if (compares >= MAX_AT_OR_NEWER_COMPARES) break;
+        if (seen.has(sha)) continue;
+        seen.add(sha);
+        compares += 1;
+        const status = await compareCommitStatus(apiBase, input.repoFullName, headSha, sha, headers);
+        if (status === "ahead" || status === "identical") return { found: true, via };
+      }
     }
   }
 

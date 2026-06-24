@@ -75,6 +75,13 @@ export interface ProjectManagedByPlugin {
   updatedAt: Date;
 }
 
+export interface LinearProjectLink {
+  linearProjectId: string;
+  linearProjectName: string;
+  syncDirection: "bidirectional" | "linear-to-paperclip" | "paperclip-to-linear";
+  lastSyncAt: string;
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -98,6 +105,7 @@ export interface Project {
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
   managedByPlugin?: ProjectManagedByPlugin | null;
+  linearProjectLink?: LinearProjectLink | null;
   /**
    * Number of tasks (issues) in the project. Populated by the projects list
    * endpoint (IA Phase 4 — PAP-60); omitted on single-project payloads.

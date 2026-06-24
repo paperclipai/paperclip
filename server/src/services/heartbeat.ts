@@ -3503,7 +3503,10 @@ function prReviewOutputReferencesSameTarget(
   }
   if (prReview.headSha) {
     const hex = prReview.headSha.match(/^[0-9a-f]{7,40}/i)?.[0];
-    if (hex && new RegExp(`\\b${hex.slice(0, 7)}[0-9a-f]*\\b`, "i").test(text)) return true;
+    // Boundary on hex chars only (not `\b`): `_` is a `\w` char, so `\b…\b` misses a
+    // head SHA wrapped in markdown italics (`_reviewed head: <sha>_`). Mirror of the
+    // headRefPattern fix in github-app-auth.ts (BLO-10878).
+    if (hex && new RegExp(`(?<![0-9a-f])${hex.slice(0, 7)}[0-9a-f]*(?![0-9a-f])`, "i").test(text)) return true;
   }
   return false;
 }
@@ -6143,6 +6146,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       existingWake,
       budgetBlock,
       pauseHold,
+      routineReceiverParent,
     ] = await Promise.all([
       issue
         ? db
@@ -6268,6 +6272,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue
         ? treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id)
         : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: routines.id })
+          .from(routines)
+          .where(
+            and(
+              eq(routines.companyId, issue.companyId),
+              eq(routines.parentIssueId, issue.id),
+              inArray(routines.status, ["active", "paused"]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -6283,6 +6301,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
+      isRoutineReceiverParent: Boolean(routineReceiverParent),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
@@ -11808,6 +11827,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 },
               });
               prReviewCompletionEvidence = { status: "posted_review" as const };
+            } else {
+              // BLO-10878: the non-rescue path used to be silent, making residual
+              // false `pr_review_output_missing` unclassifiable. Record why the
+              // GitHub check did not rescue (a specific `{error}` code, or genuine
+              // not-found) so the remaining residual is diagnosable from events.
+              await appendRunEvent(run, await nextRunEventSeq(run.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "info",
+                message: `GitHub reviewer-evidence check kept pr_review_output_missing on ${prReview.repoFullName}#${prReview.prNumber}: ${"error" in verified ? verified.error : "no_evidence_found"}`,
+                payload: {
+                  repoFullName: prReview.repoFullName,
+                  prNumber: prReview.prNumber,
+                  headSha: prReview.headSha,
+                  outcome: "error" in verified ? verified.error : "not_found",
+                },
+              });
             }
           }
         } catch {

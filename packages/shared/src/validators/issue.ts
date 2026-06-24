@@ -377,6 +377,8 @@ const createIssueBaseSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
+  milestoneId: z.string().uuid().optional().nullable(),
+  targetDate: z.string().optional().nullable(),
   parentId: z.string().uuid().optional().nullable(),
   blockedByIssueIds: z
     .array(z.string().uuid())

@@ -211,6 +211,19 @@ export async function createLink(
   return link;
 }
 
+/** Write the reverse lookup key (linearId → paperclipId) for an existing forward link.
+ * Use to repair state after the host allocator path or a broken pre-BLO-11247
+ * link-linear-issue run left the reverse key missing or stale. */
+export async function repairReverseLink(ctx: PluginContext, link: IssueLink): Promise<void> {
+  if (!link.linearIssueId || !link.paperclipIssueId) {
+    throw new Error(`repairReverseLink: link has falsy linearIssueId or paperclipIssueId — refusing to write a mangled state key`);
+  }
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: linearStateKey(link.linearIssueId) },
+    link.paperclipIssueId,
+  );
+}
+
 export async function removeLink(
   ctx: PluginContext,
   paperclipIssueId: string,
@@ -372,6 +385,23 @@ export async function syncFromLinear(
     }
   }
 
+  // Sync Linear projectMilestone → Paperclip milestoneId
+  if (linearIssue.projectMilestone !== undefined) {
+    const linearMilestoneId = linearIssue.projectMilestone?.id ?? null;
+    if (!linearMilestoneId) {
+      patch.milestoneId = null;
+    } else {
+      const milestoneLink = await getMilestoneLinkByLinear(ctx, linearMilestoneId);
+      if (milestoneLink && milestoneLink.paperclipCompanyId === link.paperclipCompanyId) {
+        patch.milestoneId = milestoneLink.paperclipMilestoneId;
+      } else if (!milestoneLink) {
+        ctx.logger.warn(
+          `Skipped milestoneId sync for ${link.linearIdentifier}: Linear milestone ${linearMilestoneId} has no Paperclip mapping`,
+        );
+      }
+    }
+  }
+
   if (Object.keys(patch).length === 0) {
     if (linkNeedsUpdate) await updateLink(ctx, link);
     return;
@@ -501,6 +531,9 @@ export interface SyncChanges {
   dueDate?: string | null;
   projectId?: string | null;
   labelIds?: string[];
+  // milestoneId (Paperclip) → Linear projectMilestoneId sync is a follow-up:
+  // requires a milestone state-key map (paperclipMilestoneId → linearMilestoneId).
+  milestoneId?: string | null;
 }
 
 export interface SyncToLinearOptions {
@@ -612,6 +645,25 @@ export async function syncToLinear(
       } else {
         linearUpdate.projectId = projectLink.linearProjectId;
         synced.push(`project:${projectLink.linearProjectName ?? projectLink.linearProjectId}`);
+      }
+    }
+  }
+
+  // Paperclip milestoneId → Linear projectMilestoneId
+  if (Object.prototype.hasOwnProperty.call(changes, "milestoneId")) {
+    if (!changes.milestoneId) {
+      // Detach from milestone
+      linearUpdate.projectMilestoneId = null;
+      synced.push("milestone:none");
+    } else {
+      const milestoneLink = await getMilestoneLink(ctx, changes.milestoneId);
+      if (!milestoneLink) {
+        ctx.logger.warn(
+          `Skipping Linear projectMilestoneId update for ${link.linearIdentifier}: Paperclip milestone ${changes.milestoneId} has no Linear mapping — run reconcile-milestones first`,
+        );
+      } else {
+        linearUpdate.projectMilestoneId = milestoneLink.linearMilestoneId;
+        synced.push(`milestone:${milestoneLink.linearMilestoneName}`);
       }
     }
   }
@@ -1072,6 +1124,108 @@ export function linearInitiativeStatusToPaperclip(status: string | null | undefi
     case "in_progress": return "active";
     default: return "planned";
   }
+}
+
+/** Bidirectional mapping between a Paperclip milestone and a Linear ProjectMilestone. */
+export interface MilestoneLink {
+  paperclipMilestoneId: string;
+  paperclipCompanyId: string;
+  paperclipProjectId: string | null;
+  linearMilestoneId: string;
+  linearMilestoneName: string;
+  lastSyncAt: string;
+}
+
+function milestoneLinkStateKey(paperclipMilestoneId: string): string {
+  return `${STATE_KEYS.milestoneLinkPrefix}${paperclipMilestoneId}`;
+}
+
+function linearMilestoneStateKey(linearMilestoneId: string): string {
+  return `${STATE_KEYS.milestoneLinearPrefix}${linearMilestoneId}`;
+}
+
+function isMilestoneLink(value: unknown): value is MilestoneLink {
+  return isRecord(value)
+    && typeof value.paperclipMilestoneId === "string"
+    && typeof value.paperclipCompanyId === "string"
+    && typeof value.linearMilestoneId === "string"
+    && typeof value.linearMilestoneName === "string";
+}
+
+export async function getMilestoneLink(
+  ctx: PluginContext,
+  paperclipMilestoneId: string,
+): Promise<MilestoneLink | null> {
+  const raw = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: milestoneLinkStateKey(paperclipMilestoneId),
+  });
+  if (!isMilestoneLink(raw)) return null;
+  return raw;
+}
+
+export async function getMilestoneLinkByLinear(
+  ctx: PluginContext,
+  linearMilestoneId: string,
+): Promise<MilestoneLink | null> {
+  const raw = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: linearMilestoneStateKey(linearMilestoneId),
+  });
+  if (!raw || typeof raw !== "string") return null;
+  const link = await getMilestoneLink(ctx, raw);
+  if (!link || link.linearMilestoneId !== linearMilestoneId) return null;
+  return link;
+}
+
+export async function createMilestoneLink(
+  ctx: PluginContext,
+  params: {
+    paperclipMilestoneId: string;
+    paperclipCompanyId: string;
+    paperclipProjectId: string | null;
+    linearMilestoneId: string;
+    linearMilestoneName: string;
+  },
+): Promise<MilestoneLink> {
+  const link: MilestoneLink = {
+    ...params,
+    lastSyncAt: new Date().toISOString(),
+  };
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: milestoneLinkStateKey(params.paperclipMilestoneId) },
+    link,
+  );
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: linearMilestoneStateKey(params.linearMilestoneId) },
+    params.paperclipMilestoneId,
+  );
+  return link;
+}
+
+export async function updateMilestoneLink(ctx: PluginContext, link: MilestoneLink): Promise<void> {
+  link.lastSyncAt = new Date().toISOString();
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: milestoneLinkStateKey(link.paperclipMilestoneId) },
+    link,
+  );
+}
+
+export async function removeMilestoneLink(
+  ctx: PluginContext,
+  paperclipMilestoneId: string,
+): Promise<boolean> {
+  const link = await getMilestoneLink(ctx, paperclipMilestoneId);
+  if (!link) return false;
+  await ctx.state.delete({
+    scopeKind: "instance",
+    stateKey: milestoneLinkStateKey(paperclipMilestoneId),
+  });
+  await ctx.state.delete({
+    scopeKind: "instance",
+    stateKey: linearMilestoneStateKey(link.linearMilestoneId),
+  });
+  return true;
 }
 
 export async function bridgeCommentToLinear(

@@ -311,6 +311,12 @@ export interface HostServices {
     update(params: WorkerToHostMethods["goals.update"][0]): Promise<WorkerToHostMethods["goals.update"][1]>;
   };
 
+  /** Provides `milestones.list` and `milestones.create`. */
+  milestones: {
+    list(params: WorkerToHostMethods["milestones.list"][0]): Promise<WorkerToHostMethods["milestones.list"][1]>;
+    create(params: WorkerToHostMethods["milestones.create"][0]): Promise<WorkerToHostMethods["milestones.create"][1]>;
+  };
+
   /** Provides `access.members.*` and `access.invites.*`. */
   access: {
     listMembers(params: WorkerToHostMethods["access.members.list"][0]): Promise<WorkerToHostMethods["access.members.list"][1]>;
@@ -536,6 +542,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "goals.get": "goals.read",
   "goals.create": "goals.create",
   "goals.update": "goals.update",
+
+  // Milestones
+  "milestones.list": "milestones.read",
+  "milestones.create": "milestones.write",
 
   // Access
   "access.members.list": "access.members.read",
@@ -1045,6 +1055,14 @@ export function createHostClientHandlers(
     }),
     "goals.update": gated("goals.update", async (params) => {
       return services.goals.update(params);
+    }),
+
+    // Milestones
+    "milestones.list": gated("milestones.list", async (params) => {
+      return services.milestones.list(params);
+    }),
+    "milestones.create": gated("milestones.create", async (params) => {
+      return services.milestones.create(params);
     }),
 
     // Access

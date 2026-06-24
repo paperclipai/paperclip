@@ -2785,6 +2785,12 @@ export function agentRoutes(
     const patchData = { ...(req.body as Record<string, unknown>) };
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
+    const settingPauseMetadata =
+      (hasOwn(patchData, "pauseReason") && patchData.pauseReason !== null) ||
+      (hasOwn(patchData, "pausedAt") && patchData.pausedAt !== null);
+    if (settingPauseMetadata && !hasOwn(patchData, "status")) {
+      patchData.status = "paused";
+    }
     if (hasOwn(patchData, "adapterConfig")) {
       const adapterConfig = asRecord(patchData.adapterConfig);
       if (!adapterConfig) {
