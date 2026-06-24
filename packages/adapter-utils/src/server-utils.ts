@@ -2084,7 +2084,7 @@ export async function ensurePaperclipSkillSymlink(
     return "skipped";
   }
 
-  await fs.unlink(target);
+  await fs.rm(target, { force: true, recursive: false });
   await linkSkill(source, target);
   return "repaired";
 }
