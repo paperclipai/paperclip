@@ -396,8 +396,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       config: {
-        async get() {
-          return callHost("config.get", {} as Record<string, never>);
+        async get(companyId?: string) {
+          return callHost("config.get", { companyId });
         },
       },
 
@@ -547,8 +547,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       secrets: {
-        async resolve(secretRef: string): Promise<string> {
-          return callHost("secrets.resolve", { secretRef });
+        async resolve(companyIdOrSecretRef: string, maybeSecretRef?: string): Promise<string> {
+          const companyId = maybeSecretRef ? companyIdOrSecretRef : undefined;
+          const secretRef = maybeSecretRef ?? companyIdOrSecretRef;
+          return callHost("secrets.resolve", { companyId, secretRef });
         },
       },
 

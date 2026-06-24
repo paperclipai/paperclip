@@ -280,27 +280,32 @@ export function pluginRegistryService(db: Db) {
 
     // ----- Config ---------------------------------------------------------
 
-    /** Retrieve a plugin's instance configuration. */
-    getConfig: (pluginId: string) =>
-      db
+    /** Retrieve a plugin's company-scoped configuration. */
+    getConfig: (pluginId: string, companyId?: string) => {
+      const query = db
         .select()
         .from(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
-        .then((rows) => rows[0] ?? null),
+        .where(companyId
+          ? and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId))
+          : eq(pluginConfig.pluginId, pluginId));
+
+      return (companyId ? query : query.orderBy(asc(pluginConfig.createdAt)))
+        .then((rows) => rows[0] ?? null);
+    },
 
     /**
-     * Create or fully replace a plugin's instance configuration.
-     * If a config row already exists for the plugin it is replaced;
+     * Create or fully replace a plugin's company-scoped configuration.
+     * If a config row already exists for the plugin/company it is replaced;
      * otherwise a new row is inserted.
      */
-    upsertConfig: async (pluginId: string, input: UpsertPluginConfig) => {
+    upsertConfig: async (pluginId: string, companyId: string, input: UpsertPluginConfig) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
       const existing = await db
         .select()
         .from(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
 
       if (existing) {
@@ -311,7 +316,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.pluginId, pluginId))
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
           .returning()
           .then((rows) => rows[0]);
       }
@@ -320,6 +325,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginConfig)
         .values({
           pluginId,
+          companyId,
           configJson: input.configJson,
         })
         .returning()
@@ -330,14 +336,14 @@ export function pluginRegistryService(db: Db) {
      * Partially update a plugin's instance configuration via shallow merge.
      * If no config row exists yet one is created with the supplied values.
      */
-    patchConfig: async (pluginId: string, input: PatchPluginConfig) => {
+    patchConfig: async (pluginId: string, companyId: string, input: PatchPluginConfig) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
       const existing = await db
         .select()
         .from(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
 
       if (existing) {
@@ -349,7 +355,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.pluginId, pluginId))
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
           .returning()
           .then((rows) => rows[0]);
       }
@@ -358,6 +364,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginConfig)
         .values({
           pluginId,
+          companyId,
           configJson: input.configJson,
         })
         .returning()
@@ -368,11 +375,11 @@ export function pluginRegistryService(db: Db) {
      * Record an error against a plugin's config (e.g. validation failure
      * against the plugin's instanceConfigSchema).
      */
-    setConfigError: async (pluginId: string, lastError: string | null) => {
+    setConfigError: async (pluginId: string, companyId: string, lastError: string | null) => {
       const rows = await db
         .update(pluginConfig)
         .set({ lastError, updatedAt: new Date() })
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .returning();
 
       if (rows.length === 0) throw notFound("Plugin config not found");
@@ -380,10 +387,10 @@ export function pluginRegistryService(db: Db) {
     },
 
     /** Delete a plugin's config row. */
-    deleteConfig: async (pluginId: string) => {
+    deleteConfig: async (pluginId: string, companyId: string) => {
       const rows = await db
         .delete(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .returning();
 
       return rows[0] ?? null;

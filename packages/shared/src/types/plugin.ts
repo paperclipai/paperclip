@@ -666,8 +666,10 @@ export interface PluginStateRecord {
 export interface PluginConfig {
   /** UUID primary key. */
   id: string;
-  /** FK to `plugins.id`. Unique — each plugin has at most one config row. */
+  /** FK to `plugins.id`. */
   pluginId: string;
+  /** Company that owns this configuration row. */
+  companyId: string;
   /** Operator-provided configuration values (validated against `instanceConfigSchema`). */
   configJson: Record<string, unknown>;
   /** Most recent config validation error, if any. */

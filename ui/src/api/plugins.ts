@@ -356,8 +356,8 @@ export const pluginsApi = {
    *
    * @param pluginId - UUID of the plugin.
    */
-  getConfig: (pluginId: string) =>
-    api.get<PluginConfig | null>(`/plugins/${pluginId}/config`),
+  getConfig: (pluginId: string, companyId: string) =>
+    api.get<PluginConfig | null>(`/plugins/${pluginId}/config?companyId=${encodeURIComponent(companyId)}`),
 
   /**
    * Save (create or update) the configuration for a plugin.
@@ -368,8 +368,8 @@ export const pluginsApi = {
    * @param pluginId - UUID of the plugin.
    * @param configJson - Configuration values matching the plugin's `instanceConfigSchema`.
    */
-  saveConfig: (pluginId: string, configJson: Record<string, unknown>) =>
-    api.post<PluginConfig>(`/plugins/${pluginId}/config`, { configJson }),
+  saveConfig: (pluginId: string, companyId: string, configJson: Record<string, unknown>) =>
+    api.post<PluginConfig>(`/plugins/${pluginId}/config`, { companyId, configJson }),
 
   /**
    * Call the plugin's `validateConfig` RPC method to test the configuration

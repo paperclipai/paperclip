@@ -2,8 +2,9 @@
  * Plugin secrets host-side handler — resolves secret references through the
  * Paperclip secret provider system.
  *
- * When a plugin worker calls `ctx.secrets.resolve(secretRef)`, the JSON-RPC
- * request arrives at the host with `{ secretRef }`. This module provides the
+ * When a plugin worker calls `ctx.secrets.resolve(companyId, secretRef)` (or
+ * the backward-compatible `ctx.secrets.resolve(secretRef)` form), the JSON-RPC
+ * request arrives at the host with `{ companyId?, secretRef }`. This module provides the
  * concrete `HostServices.secrets` adapter that:
  *
  * 1. Parses the `secretRef` string to identify the secret.
@@ -17,7 +18,7 @@
  * A `secretRef` is a **secret UUID** — the primary key (`id`) of a row in
  * the `company_secrets` table. Operators place these UUIDs into plugin
  * config values; plugin workers resolve them at execution time via
- * `ctx.secrets.resolve(secretId)`.
+ * `ctx.secrets.resolve(companyId, secretId)`.
  *
  * ## Security Invariants
  *
@@ -34,14 +35,14 @@
  */
 
 import type { Db } from "@paperclipai/db";
+import { companySecretBindings } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
-
-export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
-  "Plugin secret references are disabled until company-scoped plugin config lands";
+import { secretService } from "./secrets.js";
 
 // ---------------------------------------------------------------------------
 // Error helpers
@@ -123,6 +124,8 @@ export function extractSecretRefPathsFromConfig(
  * Matches `WorkerToHostMethods["secrets.resolve"][0]` from `protocol.ts`.
  */
 export interface PluginSecretsResolveParams {
+  /** Company that owns the secret binding. */
+  companyId?: string;
   /** The secret reference string (a secret UUID). */
   secretRef: string;
 }
@@ -200,13 +203,14 @@ export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
   const { pluginId } = options;
+  const secrets = secretService(options.db);
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
 
   return {
     async resolve(params: PluginSecretsResolveParams): Promise<string> {
-      const { secretRef } = params;
+      const { companyId, secretRef } = params;
 
       // ---------------------------------------------------------------
       // 0. Rate limiting — prevent brute-force UUID enumeration
@@ -230,9 +234,28 @@ export function createPluginSecretsHandler(
         throw invalidSecretRef(trimmedRef);
       }
 
-      // Fail closed until plugin config and worker runtime both carry an
-      // explicit company scope for secret bindings and resolution.
-      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      let resolvedCompanyId = companyId?.trim();
+      if (!resolvedCompanyId) {
+        const binding = await options.db
+          .select({ companyId: companySecretBindings.companyId })
+          .from(companySecretBindings)
+          .where(and(
+            eq(companySecretBindings.targetType, "plugin"),
+            eq(companySecretBindings.targetId, pluginId),
+            eq(companySecretBindings.secretId, trimmedRef),
+          ))
+          .then((rows) => rows[0] ?? null);
+        resolvedCompanyId = binding?.companyId;
+      }
+
+      if (!resolvedCompanyId) {
+        throw new Error("companyId is required for plugin secret resolution");
+      }
+
+      return secrets.resolveSecretValue(resolvedCompanyId, trimmedRef, "latest", {
+        consumerType: "plugin",
+        consumerId: pluginId,
+      });
     },
   };
 }

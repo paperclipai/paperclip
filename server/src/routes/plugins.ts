@@ -73,10 +73,8 @@ import {
   requireLocalFolderDeclaration,
   setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
-import {
-  extractSecretRefPathsFromConfig,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
-} from "../services/plugin-secrets-handler.js";
+import { extractSecretRefPathsFromConfig } from "../services/plugin-secrets-handler.js";
+import { secretService } from "../services/secrets.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -1952,7 +1950,14 @@ export function pluginRoutes(
       return;
     }
 
-    const config = await registry.getConfig(plugin.id);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : null;
+    if (!companyId) {
+      res.status(400).json({ error: '"companyId" query parameter is required' });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+
+    const config = await registry.getConfig(plugin.id, companyId);
     res.json(config);
   });
 
@@ -1982,8 +1987,14 @@ export function pluginRoutes(
       return;
     }
 
-    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
-    if (!body?.configJson || typeof body.configJson !== "object") {
+    const body = req.body as { companyId?: string; configJson?: Record<string, unknown> } | undefined;
+    if (!body?.companyId || typeof body.companyId !== "string") {
+      res.status(400).json({ error: '"companyId" is required and must be a string' });
+      return;
+    }
+    assertCompanyAccess(req, body.companyId);
+
+    if (!body.configJson || typeof body.configJson !== "object") {
       res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
     }
@@ -2014,12 +2025,16 @@ export function pluginRoutes(
 
     try {
       const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      if (secretRefsByPath.size > 0) {
-        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
-        return;
-      }
+      await secretService(db).syncSecretRefsForTarget(
+        body.companyId,
+        { targetType: "plugin", targetId: plugin.id },
+        [...secretRefsByPath.entries()].flatMap(([secretId, paths]) =>
+          [...paths].map((configPath) => ({ secretId, configPath })),
+        ),
+      );
 
-      const result = await registry.upsertConfig(plugin.id, {
+      const result = await registry.upsertConfig(plugin.id, body.companyId, {
+        companyId: body.companyId,
         configJson: body.configJson,
       });
       await logPluginMutationActivity(req, "plugin.config.updated", plugin.id, {

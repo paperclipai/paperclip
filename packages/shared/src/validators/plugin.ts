@@ -993,6 +993,7 @@ export type InstallPlugin = z.infer<typeof installPluginSchema>;
  * the plugin's instanceConfigSchema is done at the service layer.
  */
 export const upsertPluginConfigSchema = z.object({
+  companyId: z.string().uuid(),
   configJson: z.record(z.string(), z.unknown()),
 });
 
@@ -1003,6 +1004,7 @@ export type UpsertPluginConfig = z.infer<typeof upsertPluginConfigSchema>;
  * Allows a partial merge of config values.
  */
 export const patchPluginConfigSchema = z.object({
+  companyId: z.string().uuid(),
   configJson: z.record(z.string(), z.unknown()),
 });
 

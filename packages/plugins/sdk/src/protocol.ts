@@ -576,7 +576,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
  */
 export interface WorkerToHostMethods {
   // Config
-  "config.get": [params: Record<string, never>, result: Record<string, unknown>];
+  "config.get": [params: { companyId?: string }, result: Record<string, unknown>];
 
   // Trusted local folders
   "localFolders.declarations": [
@@ -713,7 +713,7 @@ export interface WorkerToHostMethods {
 
   // Secrets
   "secrets.resolve": [
-    params: { secretRef: string },
+    params: { companyId?: string; secretRef: string },
     result: string,
   ];
 

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
+  getConfig: vi.fn(),
   upsertConfig: vi.fn(),
   getCompanySettings: vi.fn(),
   upsertCompanySettings: vi.fn(),
@@ -17,6 +18,8 @@ const mockLifecycle = vi.hoisted(() => ({
   enable: vi.fn(),
   disable: vi.fn(),
 }));
+
+const mockSyncSecretRefsForTarget = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/plugin-registry.js", () => ({
   pluginRegistryService: () => mockRegistry,
@@ -32,6 +35,12 @@ vi.mock("../services/activity-log.js", () => ({
 
 vi.mock("../services/live-events.js", () => ({
   publishGlobalLiveEvent: vi.fn(),
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => ({
+    syncSecretRefsForTarget: mockSyncSecretRefsForTarget,
+  }),
 }));
 
 async function createApp(
@@ -120,6 +129,14 @@ function readyPlugin() {
     pluginKey: "paperclip.example",
     version: "1.0.0",
     status: "ready",
+    manifestJson: {
+      instanceConfigSchema: {
+        type: "object",
+        properties: {
+          apiKeyRef: { type: "string", format: "secret-ref" },
+        },
+      },
+    },
   });
 }
 
@@ -275,7 +292,42 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.unload).toHaveBeenCalledWith(pluginId, true);
   }, 20_000);
 
-  it("rejects plugin config saves that contain secret refs even for instance admins", async () => {
+  it("saves plugin secret-ref config under an explicit company scope", async () => {
+    readyPlugin();
+    mockRegistry.upsertConfig.mockResolvedValue({ id: "cfg-1", pluginId, companyId: companyA, configJson: {} });
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({
+        companyId: companyA,
+        configJson: {
+          apiKeyRef: "77777777-7777-4777-8777-777777777777",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertConfig).toHaveBeenCalledWith(pluginId, companyA, {
+      companyId: companyA,
+      configJson: {
+        apiKeyRef: "77777777-7777-4777-8777-777777777777",
+      },
+    });
+    expect(mockSyncSecretRefsForTarget).toHaveBeenCalledWith(
+      companyA,
+      { targetType: "plugin", targetId: pluginId },
+      [{ secretId: "77777777-7777-4777-8777-777777777777", configPath: "apiKeyRef" }],
+    );
+  }, 20_000);
+
+  it("rejects plugin config saves for another company", async () => {
     readyPlugin();
 
     const { app } = await createApp({
@@ -289,13 +341,11 @@ describe.sequential("plugin install and upgrade authz", () => {
     const res = await request(app)
       .post(`/api/plugins/${pluginId}/config`)
       .send({
-        configJson: {
-          apiKeyRef: "77777777-7777-4777-8777-777777777777",
-        },
+        companyId: companyB,
+        configJson: { apiKeyRef: "77777777-7777-4777-8777-777777777777" },
       });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/secret references are disabled/i);
+    expect(res.status).toBe(403);
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
   }, 20_000);
 
