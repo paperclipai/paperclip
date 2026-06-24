@@ -734,4 +734,161 @@ describe("issue execution policy routes", () => {
       expect.objectContaining({ action: "issue.approvers_updated" }),
     );
   });
+
+  it("re-syncs Reviewers when an existing review stage's participants change", async () => {
+    const previousPolicy = normalizeIssueExecutionPolicy({
+      stages: [
+        { type: "review", participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }] },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      createdByUserId: "local-board",
+      identifier: "PAP-2001",
+      title: "Re-sync reviewers",
+      executionPolicy: previousPolicy,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          stages: [
+            { type: "review", participants: [{ type: "agent", agentId: "11111111-2222-4333-8444-555555555555" }] },
+          ],
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.reviewers_updated",
+        entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        details: expect.objectContaining({
+          participants: [{ type: "agent", agentId: "11111111-2222-4333-8444-555555555555", userId: null }],
+          addedParticipants: [{ type: "agent", agentId: "11111111-2222-4333-8444-555555555555", userId: null }],
+          removedParticipants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333", userId: null }],
+        }),
+      }),
+    );
+  });
+
+  it("re-syncs Approvers when an existing approval stage's participants change", async () => {
+    const previousPolicy = normalizeIssueExecutionPolicy({
+      stages: [
+        { type: "approval", participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }] },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      createdByUserId: "local-board",
+      identifier: "PAP-2002",
+      title: "Re-sync approvers",
+      executionPolicy: previousPolicy,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          stages: [
+            { type: "approval", participants: [{ type: "user", userId: "local-board" }] },
+          ],
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.approvers_updated",
+        entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        details: expect.objectContaining({
+          participants: [{ type: "user", agentId: null, userId: "local-board" }],
+          addedParticipants: [{ type: "user", agentId: null, userId: "local-board" }],
+          removedParticipants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333", userId: null }],
+        }),
+      }),
+    );
+  });
+
+  it("clears Reviewers and Approvers to None when the stages are removed", async () => {
+    const previousPolicy = normalizeIssueExecutionPolicy({
+      stages: [
+        { type: "review", participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }] },
+        { type: "approval", participants: [{ type: "user", userId: "local-board" }] },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      createdByUserId: "local-board",
+      identifier: "PAP-2003",
+      title: "Remove sign-off stages",
+      executionPolicy: previousPolicy,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: null });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.reviewers_updated",
+        entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        details: expect.objectContaining({
+          participants: [],
+          addedParticipants: [],
+          removedParticipants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333", userId: null }],
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.approvers_updated",
+        entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        details: expect.objectContaining({
+          participants: [],
+          addedParticipants: [],
+          removedParticipants: [{ type: "user", agentId: null, userId: "local-board" }],
+        }),
+      }),
+    );
+  });
 });
