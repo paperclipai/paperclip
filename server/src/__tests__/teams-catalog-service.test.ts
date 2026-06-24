@@ -39,7 +39,8 @@ const {
 } = await import("../services/teams-catalog.js");
 
 const CORE_EXEC_TEAM_ID = "paperclipai:bundled:company-defaults:core-exec-team";
-const CORE_EXEC_TEAM_HASH = "sha256:0f20e9d56124c1dc90a1e4b128fabd863538bcc935117220f719d9620f7c89f1";
+const CORE_EXEC_TEAM_KEY = "paperclipai/bundled/company-defaults/core-exec-team";
+const CORE_EXEC_TEAM_HASH = "sha256:91b498249140444f185aab8576df0ed017fd051491e6597da547c41c0381ca24";
 
 function agentWithCatalogTeam(originHash: string | null, extra: Record<string, unknown> = {}) {
   return {
@@ -401,7 +402,7 @@ describe("teamsCatalogService", () => {
       expect(mockAgentService.list).toHaveBeenCalledWith("company-1");
       expect(installed).toEqual([
         expect.objectContaining({
-          catalogId: CORE_EXEC_TEAM_ID,
+          catalogKey: CORE_EXEC_TEAM_KEY,
           present: true,
           currentContentHash: CORE_EXEC_TEAM_HASH,
           installedOriginHashes: ["sha256:stale-hash"],

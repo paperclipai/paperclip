@@ -366,8 +366,14 @@ const geminiLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
-  getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec(config, "gemini", "@google/gemini-cli"),
+  getRuntimeCommandSpec: (config) => {
+    const command = readConfiguredCommand(config, "agy");
+    return {
+      command,
+      detectCommand: command,
+      installCommand: null,
+    };
+  },
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
