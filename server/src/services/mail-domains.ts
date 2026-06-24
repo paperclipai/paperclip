@@ -263,6 +263,11 @@ export function mailDomainService(db: Db) {
           .where(eq(mailDomains.id, id))
           .returning()
           .then((rows) => rows[0]);
+        // Provision any agents that don't yet have a mailbox on this domain
+        // (covers domains attached before auto-provisioning existed).
+        await mailAddressService(db)
+          .provisionForDomain(companyId, id)
+          .catch((err) => logger.warn({ err, companyId, domain: row.domain }, "mail address provisioning failed"));
         return toMailDomain(updated);
       } catch (err) {
         logger.warn({ err, companyId, domain: row.domain }, "failed to re-publish mail DNS records");
