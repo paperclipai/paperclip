@@ -339,6 +339,8 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "restored.txt"), "utf8")).resolves.toBe("restored\n");
     expect(await git(localWorkspaceDir, ["ls-files", "restored.txt"])).toBe("restored.txt");
     expect(await git(localWorkspaceDir, ["status", "--short"])).toBe("");
+    expect(await git(localWorkspaceDir, ["diff", "--name-status", "HEAD", "--"])).toBe("");
+    expect(await git(localWorkspaceDir, ["diff", "--cached", "--name-status", "HEAD", "--"])).toBe("");
   });
 
   it("excludes unignored dependency trees from git-backed workspace overlay archives", async () => {

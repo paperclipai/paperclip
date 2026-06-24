@@ -545,11 +545,13 @@ export async function prepareSandboxManagedRuntime(input: {
       await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
         let importedRef: string | null = null;
         let importedHead: string | null = null;
+        let remoteWorkspaceStatus = "dirty";
         try {
           if (gitSnapshot) {
             await emitRuntimeStatus(input.onRuntimeProgress, "export", "Exporting git changes from sandbox");
             importedRef = createImportedGitRef("sandbox");
             const remoteGitBundle = path.posix.join(runtimeRootDir, "git-delta.bundle");
+            const remoteWorkspaceStatusPath = path.posix.join(runtimeRootDir, "workspace-status.txt");
             const exportRef = createRemoteGitExportRef("sandbox");
             await input.client.run(
               `sh -c ${shellQuote(buildRemoteGitDeltaBundleScript({
@@ -557,6 +559,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 baseSha: gitSnapshot.headCommit,
                 exportRef,
                 bundlePath: remoteGitBundle,
+                statusPath: remoteWorkspaceStatusPath,
               }))}`,
               { timeoutMs: input.spec.timeoutMs },
             );
@@ -564,6 +567,8 @@ export async function prepareSandboxManagedRuntime(input: {
             const bundleBytes = await input.client.readFile(remoteGitBundle, gitExport.options);
             await gitExport.finish();
             await input.client.remove(remoteGitBundle).catch(() => undefined);
+            remoteWorkspaceStatus = toBuffer(await input.client.readFile(remoteWorkspaceStatusPath)).toString("utf8").trim();
+            await input.client.remove(remoteWorkspaceStatusPath).catch(() => undefined);
             const bundlePath = path.join(tempDir, "git-delta.bundle");
             await fs.writeFile(bundlePath, toBuffer(bundleBytes));
             importedHead = await fetchGitBundleIntoLocalRef({
@@ -603,18 +608,19 @@ export async function prepareSandboxManagedRuntime(input: {
             targetDir: input.workspaceLocalDir,
             beforeApply: gitHeadToIntegrate
               ? async () => {
-                await integrateImportedGitHead({
-                  localDir: input.workspaceLocalDir,
-                  importedHead: gitHeadToIntegrate,
-                });
-              }
+                  await integrateImportedGitHead({
+                    localDir: input.workspaceLocalDir,
+                    importedHead: gitHeadToIntegrate,
+                  });
+                }
               : undefined,
             afterApply: gitSnapshot
               ? async () => {
-                await resetLocalGitIndexToHead({
-                  localDir: input.workspaceLocalDir,
-                });
-              }
+                  await resetLocalGitIndexToHead({
+                    localDir: input.workspaceLocalDir,
+                    checkWorkingTreeClean: remoteWorkspaceStatus === "clean",
+                  });
+                }
               : undefined,
           });
         } finally {
