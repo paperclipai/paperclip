@@ -19,6 +19,41 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import {
+  isStaleExecutionLockHeartbeatRun,
+  SCHEDULED_RETRY_EXECUTION_LOCK_STALE_AFTER_MS,
+} from "../services/issues.js";
+
+// Pure predicate coverage (IRO-45 remediation B): a `scheduled_retry` holder
+// with no live heartbeat is a stale, adoptable execution lock once it is overdue
+// past the grace window, but a freshly-scheduled retry that still owns the lock
+// it must reclaim is NOT stale.
+describe("isStaleExecutionLockHeartbeatRun", () => {
+  const now = new Date("2026-06-24T12:00:00.000Z");
+  const overdue = new Date(now.getTime() - SCHEDULED_RETRY_EXECUTION_LOCK_STALE_AFTER_MS - 1_000);
+  const pending = new Date(now.getTime() + 30_000);
+  const justDue = new Date(now.getTime() - 1_000);
+
+  it("treats missing, terminal, and overdue scheduled_retry holders as stale", () => {
+    expect(isStaleExecutionLockHeartbeatRun(null, now)).toBe(true);
+    expect(isStaleExecutionLockHeartbeatRun(undefined, now)).toBe(true);
+    for (const status of ["succeeded", "failed", "cancelled", "timed_out"]) {
+      expect(isStaleExecutionLockHeartbeatRun({ status, scheduledRetryAt: null }, now)).toBe(true);
+    }
+    expect(isStaleExecutionLockHeartbeatRun({ status: "scheduled_retry", scheduledRetryAt: overdue }, now)).toBe(true);
+    // A scheduled_retry holder with no recorded due time can never fire to reclaim itself.
+    expect(isStaleExecutionLockHeartbeatRun({ status: "scheduled_retry", scheduledRetryAt: null }, now)).toBe(true);
+  });
+
+  it("keeps live and not-yet-overdue scheduled_retry holders non-stale", () => {
+    expect(isStaleExecutionLockHeartbeatRun({ status: "running", scheduledRetryAt: null }, now)).toBe(false);
+    expect(isStaleExecutionLockHeartbeatRun({ status: "queued", scheduledRetryAt: null }, now)).toBe(false);
+    // Retry still pending its fire window — owns the lock it must reclaim.
+    expect(isStaleExecutionLockHeartbeatRun({ status: "scheduled_retry", scheduledRetryAt: pending }, now)).toBe(false);
+    // Just barely due, still inside the grace window.
+    expect(isStaleExecutionLockHeartbeatRun({ status: "scheduled_retry", scheduledRetryAt: justDue }, now)).toBe(false);
+  });
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -417,6 +452,151 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     expect(row).toEqual({
       status: "in_progress",
       assigneeAgentId: otherAgentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  // IRO-45 remediation B: a transient retry that parks the run in `scheduled_retry`
+  // owns the execution lock so it can reclaim on fire. If that retry never fires
+  // (orphaned holder / dead promoter) the lock used to be permanently
+  // unreclaimable because `scheduled_retry` is not a TERMINAL status. These tests
+  // pin the new dedicated execution-lock-staleness predicate.
+  async function insertScheduledRetryRun(
+    companyId: string,
+    agentId: string,
+    scheduledRetryAt: Date,
+  ): Promise<string> {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "scheduled_retry",
+      invocationSource: "automation",
+      scheduledRetryAt,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+    });
+    return runId;
+  }
+
+  it("recovers an overdue scheduled_retry executionRunId that never fired (PATCH)", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    // Due to fire well outside the grace window — the retry is abandoned.
+    const overdue = new Date(Date.now() - SCHEDULED_RETRY_EXECUTION_LOCK_STALE_AFTER_MS - 60_000);
+    const scheduledRetryRunId = await insertScheduledRetryRun(companyId, agentId, overdue);
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Scheduled-retry stale execution lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: scheduledRetryRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Recovered scheduled-retry lock" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.title).toBe("Recovered scheduled-retry lock");
+
+    const row = await db
+      .select({
+        title: issues.title,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      title: "Recovered scheduled-retry lock",
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("does NOT steal a still-pending scheduled_retry execution lock (PATCH 409)", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    // Retry still inside its fire window — it owns the lock it must reclaim.
+    const pending = new Date(Date.now() + 5 * 60_000);
+    const scheduledRetryRunId = await insertScheduledRetryRun(companyId, agentId, pending);
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Pending scheduled-retry lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: scheduledRetryRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Should not steal" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body?.error).toBe("Issue run ownership conflict");
+
+    const row = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row?.executionRunId).toBe(scheduledRetryRunId);
+  });
+
+  it("adopts an overdue scheduled_retry execution lock on checkout when a new run takes over", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const overdue = new Date(Date.now() - SCHEDULED_RETRY_EXECUTION_LOCK_STALE_AFTER_MS - 60_000);
+    const scheduledRetryRunId = await insertScheduledRetryRun(companyId, agentId, overdue);
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Scheduled-retry lock reclaimed on checkout",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: scheduledRetryRunId,
+      executionRunId: scheduledRetryRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review", "in_progress"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "in_progress",
+      assigneeAgentId: agentId,
       checkoutRunId: currentRunId,
       executionRunId: currentRunId,
     });

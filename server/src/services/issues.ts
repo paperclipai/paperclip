@@ -415,6 +415,42 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+
+// Grace window after a scheduled retry's due time before its held execution
+// lock is considered abandoned. A healthy promoter flips a due `scheduled_retry`
+// run to `queued` within seconds, so a holder still sitting in `scheduled_retry`
+// well past its due time has no live process to fire it and reclaim the lock.
+export const SCHEDULED_RETRY_EXECUTION_LOCK_STALE_AFTER_MS = 5 * 60 * 1000;
+
+// Dedicated execution-lock-staleness predicate (IRO-45 remediation B).
+//
+// A heartbeat run holds no real execution/checkout claim once it is terminal,
+// missing, OR parked in `scheduled_retry` past its due grace window with no live
+// process to fire it. The `scheduled_retry` case is the livelock: when a
+// transient retry is scheduled the lock is handed to the new `scheduled_retry`
+// run atomically so it can reclaim on fire, but if that retry never fires
+// (promoter died, the holder was orphaned, double-execution) the lock stays
+// permanently unreclaimable because `scheduled_retry` is not a TERMINAL status.
+//
+// We deliberately keep this separate from TERMINAL_HEARTBEAT_RUN_STATUSES, which
+// is reused for cancellation/promotion semantics that must NOT treat a
+// scheduled_retry run as terminal.
+export function isStaleExecutionLockHeartbeatRun(
+  run: { status: string; scheduledRetryAt: Date | string | null } | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (!run) return true;
+  if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+  if (run.status === "scheduled_retry") {
+    // No recorded due time → the retry can never fire to reclaim its own lock.
+    if (!run.scheduledRetryAt) return true;
+    const dueAt = new Date(run.scheduledRetryAt).getTime();
+    if (Number.isNaN(dueAt)) return true;
+    return now.getTime() - dueAt >= SCHEDULED_RETRY_EXECUTION_LOCK_STALE_AFTER_MS;
+  }
+  return false;
+}
+
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -3829,14 +3865,16 @@ export function issueService(db: Db) {
     );
   }
 
-  async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
+  // Resolves whether the run holding an execution/checkout lock is stale: terminal,
+  // missing, or an abandoned `scheduled_retry` holder (see
+  // isStaleExecutionLockHeartbeatRun / IRO-45 remediation B).
+  async function isStaleExecutionLockRun(runId: string, dbOrTx: DbReader = db) {
     const run = await dbOrTx
-      .select({ status: heartbeatRuns.status })
+      .select({ status: heartbeatRuns.status, scheduledRetryAt: heartbeatRuns.scheduledRetryAt })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
-    if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    return isStaleExecutionLockHeartbeatRun(run);
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -3880,7 +3918,7 @@ export function issueService(db: Db) {
       ]);
       const [existingRun, actorRun] = await Promise.all([
         tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, scheduledRetryAt: heartbeatRuns.scheduledRetryAt })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
           .then((rows) => rows[0] ?? null),
@@ -3890,7 +3928,7 @@ export function issueService(db: Db) {
           .where(eq(heartbeatRuns.id, input.actorRunId))
           .then((rows) => rows[0] ?? null),
       ]);
-      const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
+      const stale = isStaleExecutionLockHeartbeatRun(existingRun);
       const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
       if (!stale || !actorLive) {
         return { adopted: null, latest: lockedIssue };
@@ -4003,11 +4041,11 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({ status: heartbeatRuns.status, scheduledRetryAt: heartbeatRuns.scheduledRetryAt })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (run && !isStaleExecutionLockHeartbeatRun(run)) return false;
 
       const updated = await tx
         .update(issues)
@@ -4051,22 +4089,22 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({ status: heartbeatRuns.status, scheduledRetryAt: heartbeatRuns.scheduledRetryAt })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.checkoutRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (run && !isStaleExecutionLockHeartbeatRun(run)) return false;
 
       if (issue.executionRunId && issue.executionRunId !== issue.checkoutRunId) {
         await tx.execute(
           sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
         );
         const executionRun = await tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, scheduledRetryAt: heartbeatRuns.scheduledRetryAt })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, issue.executionRunId))
           .then((rows) => rows[0] ?? null);
-        if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) return false;
+        if (executionRun && !isStaleExecutionLockHeartbeatRun(executionRun)) return false;
       }
 
       const updated = await tx
@@ -5671,7 +5709,7 @@ export function issueService(db: Db) {
         current.executionRunId !== checkoutRunId &&
         (current.assigneeAgentId === agentId || current.assigneeAgentId == null)
       ) {
-        const stale = await isTerminalOrMissingHeartbeatRun(current.executionRunId);
+        const stale = await isStaleExecutionLockRun(current.executionRunId);
         if (stale) {
           const now = new Date();
           const adoptionSet: Record<string, unknown> = {
@@ -5893,7 +5931,7 @@ export function issueService(db: Db) {
           existing.checkoutRunId &&
           !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
         ) {
-          const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId, tx);
+          const stale = await isStaleExecutionLockRun(existing.checkoutRunId, tx);
           if (!stale) {
             throw conflict("Only checkout run can release issue", {
               issueId: existing.id,
