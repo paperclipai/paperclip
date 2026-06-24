@@ -23,23 +23,24 @@ export function providerRateLimitRoutes(db: Db) {
     const actor = getActorInfo(req);
     const resolvedBy = actor.actorType === "user" ? `manual:${actor.actorId}` : "manual";
 
-    const block = await svc.resolveBlock(blockId, resolvedBy, companyId);
-    if (!block || block.companyId !== companyId) {
+    // Read the block first (without mutating it) and verify tenant ownership.
+    const existing = await svc.getBlock(blockId);
+    if (!existing || existing.companyId !== companyId) {
       throw notFound("Rate limit block not found");
     }
 
-    const stillBlocked = await svc.isWindowStillBlocked(block.adapterType, block.limitKind);
+    // Check the live quota window *before* resolving. If the provider window is
+    // still exhausted we leave the block — and its issue-member associations —
+    // intact rather than resolving and re-creating a fresh, memberless block.
+    const stillBlocked = await svc.isWindowStillBlocked(existing.adapterType, existing.limitKind);
     if (stillBlocked) {
-      await svc.upsertBlock({
-        companyId: block.companyId,
-        adapterType: block.adapterType,
-        limitKind: block.limitKind,
-        modelFamily: block.modelFamily,
-        message: block.message,
-        resetsAt: block.resetsAt,
-      });
       res.json({ released: false, reason: "limit_still_active" });
       return;
+    }
+
+    const block = await svc.resolveBlock(blockId, resolvedBy, companyId);
+    if (!block) {
+      throw notFound("Rate limit block not found");
     }
 
     await svc.releaseAndResumeForBlock(block);
