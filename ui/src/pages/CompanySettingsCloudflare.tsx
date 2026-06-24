@@ -29,7 +29,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-export function CompanySettingsMail() {
+export function CompanySettingsCloudflare() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -37,7 +37,7 @@ export function CompanySettingsMail() {
   const [apiToken, setApiToken] = useState("");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Email" }]);
+    setBreadcrumbs([{ label: "Cloudflare" }]);
   }, [setBreadcrumbs]);
 
   const companyId = selectedCompanyId;
@@ -122,11 +122,11 @@ export function CompanySettingsMail() {
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6 p-6">
       <div>
-        <h1 className="text-xl font-semibold">Email</h1>
+        <h1 className="text-xl font-semibold">Cloudflare</h1>
         <p className="text-sm text-muted-foreground">
-          Connect a Cloudflare account and attach domains so agents can have email addresses.
-          This configures the DNS foundation (MX/SPF/DKIM/DMARC); sending and receiving land in
-          later phases.
+          Connect your Cloudflare account and manage the domains agents use for email, all in one
+          place. Attaching a domain configures its DNS foundation (MX/SPF/DKIM/DMARC); sending and
+          receiving land in later phases.
         </p>
       </div>
 

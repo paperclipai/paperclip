@@ -41,7 +41,7 @@ import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
 import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { Secrets } from "./pages/Secrets";
-import { CompanySettingsMail } from "./pages/CompanySettingsMail";
+import { CompanySettingsCloudflare } from "./pages/CompanySettingsCloudflare";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
@@ -89,7 +89,8 @@ function boardRoutes() {
       <Route path="company/export/*" element={<CompanyExport />} />
       <Route path="company/import" element={<CompanyImport />} />
       <Route path="company/settings/secrets" element={<Secrets />} />
-      <Route path="company/settings/mail" element={<CompanySettingsMail />} />
+      <Route path="company/settings/cloudflare" element={<CompanySettingsCloudflare />} />
+      <Route path="company/settings/mail" element={<Navigate to="../cloudflare" replace />} />
       <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
       <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
       <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />

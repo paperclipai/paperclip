@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
-  AtSign,
+  Cloud,
   ChevronLeft,
   Clock3,
   CloudUpload,
@@ -134,7 +134,7 @@ export function CompanySettingsSidebar() {
             ))}
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
-          <SidebarNavItem to="/company/settings/mail" label="Email" icon={AtSign} end />
+          <SidebarNavItem to="/company/settings/cloudflare" label="Cloudflare" icon={Cloud} end />
         </div>
         <div className="mt-5 px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Instance settings
