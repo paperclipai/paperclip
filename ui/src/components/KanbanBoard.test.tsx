@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,8 @@ vi.mock("@/lib/router", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const mountedRoots: Root[] = [];
 
 function act(callback: () => void): void {
   flushSync(callback);
@@ -81,6 +83,7 @@ function renderBoard(
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
+  mountedRoots.push(root);
 
   const render = (nextProps: Partial<React.ComponentProps<typeof KanbanBoard>> & { issues: Issue[] }) => {
     act(() => {
@@ -106,6 +109,12 @@ describe("KanbanBoard", () => {
   });
 
   afterEach(() => {
+    while (mountedRoots.length > 0) {
+      const root = mountedRoots.pop();
+      if (root) {
+        act(() => root.unmount());
+      }
+    }
     document.body.innerHTML = "";
   });
 
