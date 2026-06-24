@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { createMailAddressSchema, mailInboxQuerySchema } from "@paperclipai/shared";
+import { createMailAddressSchema, mailInboxQuerySchema, sendEmailSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { agentService, mailAddressService, mailMessageService, logActivity } from "../services/index.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
@@ -84,6 +84,37 @@ export function agentEmailRoutes(db: Db) {
     const message = await messages.getById(companyId, id);
     if (message.agentId !== agentId) throw forbidden("This message does not belong to the agent");
     res.json(message);
+  });
+
+  // Send (or reply to) an email from one of the agent's addresses.
+  router.post("/agents/:agentId/email/send", validate(sendEmailSchema), async (req, res) => {
+    const agentId = req.params.agentId as string;
+    const { companyId } = await resolveContext(req, agentId);
+    const from = await addresses.getById(companyId, req.body.fromAddressId);
+    if (from.agentId !== agentId) throw forbidden("That address does not belong to the agent");
+    if (from.status !== "active") throw unprocessable("That address is not active");
+    const queued = await messages.enqueueOutbound(companyId, {
+      addressId: from.id,
+      agentId,
+      fromAddr: from.address,
+      toAddrs: req.body.to,
+      ccAddrs: req.body.cc ?? [],
+      subject: req.body.subject ?? null,
+      textBody: req.body.text ?? null,
+      htmlBody: req.body.html ?? null,
+      inReplyTo: req.body.inReplyTo ?? null,
+    });
+    await logActivity(db, {
+      companyId,
+      actorType: getActorInfo(req).actorType,
+      actorId: getActorInfo(req).actorId,
+      action: "email_sent",
+      entityType: "mail_message",
+      entityId: queued.id,
+      agentId,
+      details: { from: from.address, to: req.body.to, subject: req.body.subject ?? null },
+    });
+    res.status(202).json(queued);
   });
 
   // Mark a message read.

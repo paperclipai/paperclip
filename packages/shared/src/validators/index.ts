@@ -486,10 +486,12 @@ export {
   connectCloudflareSchema,
   attachDomainSchema,
   createMailAddressSchema,
+  sendEmailSchema,
   mailInboxQuerySchema,
   type ConnectCloudflare,
   type AttachDomain,
   type CreateMailAddress,
+  type SendEmail,
   type MailInboxQuery,
 } from "./mail.js";
 

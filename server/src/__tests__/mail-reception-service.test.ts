@@ -105,6 +105,45 @@ describeEmbeddedPostgres("mail reception (embedded mail, phase 1)", () => {
     expect((await addresses.list(companyId, { agentId })).filter((a) => a.address === "ceo@example.com")).toHaveLength(1);
   });
 
+  it("outbound queue: enqueue -> claim (sending) -> markSent; failure backs off out of the queue", async () => {
+    const { companyId, agentId, domainId } = await seed();
+    const addr = await addresses.create(companyId, agentId, { domainId, localPart: "ceo" }, boardActor);
+
+    const queued = await messages.enqueueOutbound(companyId, {
+      addressId: addr.id,
+      agentId,
+      fromAddr: addr.address,
+      toAddrs: ["someone@dest.example"],
+      subject: "Re: hello",
+      textBody: "On it.",
+      inReplyTo: "<orig@founder.com>",
+    });
+    expect(queued.direction).toBe("outbound");
+    expect(queued.status).toBe("queued");
+
+    // Claiming marks it sending and is single-shot.
+    const claimed = await messages.claimDueOutbound(new Date(), 10);
+    expect(claimed.map((c) => c.id)).toContain(queued.id);
+    expect(claimed.find((c) => c.id === queued.id)?.status).toBe("sending");
+    expect(await messages.claimDueOutbound(new Date(), 10)).toHaveLength(0);
+
+    await messages.markSent(queued.id);
+
+    // A second message that fails goes to "failed" with a future retry time, so it
+    // is not immediately re-claimed.
+    const q2 = await messages.enqueueOutbound(companyId, {
+      addressId: addr.id,
+      agentId,
+      fromAddr: addr.address,
+      toAddrs: ["nope@dest.example"],
+      textBody: "x",
+    });
+    const [c2] = await messages.claimDueOutbound(new Date(), 10);
+    expect(c2.id).toBe(q2.id);
+    await messages.markFailed(c2.id, "no MX");
+    expect(await messages.claimDueOutbound(new Date(), 10)).toHaveLength(0);
+  });
+
   it("records inbound mail, lists the inbox, and marks read", async () => {
     const { companyId, agentId, domainId } = await seed();
     const mailbox = await addresses.create(companyId, agentId, { domainId, localPart: "ceo" }, boardActor);

@@ -138,6 +138,7 @@ import {
   connectCloudflareSchema,
   attachDomainSchema,
   createMailAddressSchema,
+  sendEmailSchema,
   provideCredentialSchema,
 } from "@paperclipai/shared";
 
@@ -4740,6 +4741,14 @@ registerCurrentRoute({
   path: "/api/agents/{agentId}/email/messages/{id}/read",
   tags: ["agents"],
   summary: "Mark an email message as read",
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/agents/{agentId}/email/send",
+  tags: ["agents"],
+  summary: "Send or reply to an email from an agent address",
+  body: sendEmailSchema,
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
 
 // ─── Spec builder ─────────────────────────────────────────────────────────────

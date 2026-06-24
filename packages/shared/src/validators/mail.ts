@@ -45,6 +45,20 @@ export const createMailAddressSchema = z.object({
 });
 export type CreateMailAddress = z.infer<typeof createMailAddressSchema>;
 
+/** Send (or reply to) an email from one of the agent's addresses (phase 2). */
+export const sendEmailSchema = z
+  .object({
+    fromAddressId: z.string().uuid(),
+    to: z.array(z.string().email()).min(1).max(20),
+    cc: z.array(z.string().email()).max(20).optional(),
+    subject: z.string().max(998).optional(),
+    text: z.string().max(100_000).optional(),
+    html: z.string().max(200_000).optional(),
+    inReplyTo: z.string().max(998).optional(),
+  })
+  .refine((d) => Boolean(d.text || d.html), { message: "Provide a text or html body" });
+export type SendEmail = z.infer<typeof sendEmailSchema>;
+
 /** Inbox listing query (phase 1). */
 export const mailInboxQuerySchema = z.object({
   since: z.string().datetime().optional(),
