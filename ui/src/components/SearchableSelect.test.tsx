@@ -5,6 +5,12 @@ import { createRoot, type Root } from "react-dom/client";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SearchableSelect, type SearchableSelectGroup, type SearchableSelectOption } from "./SearchableSelect";
+import {
+  buildReusableExecutionWorkspaceOptionGroups,
+  reusableWorkspaceOptionMatches,
+  type ReusableExecutionWorkspaceLike,
+  type ReusableWorkspaceOption,
+} from "@/lib/reusable-execution-workspaces";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -37,6 +43,33 @@ function setInputValue(input: HTMLInputElement, value: string) {
     valueSetter?.call(input, value);
     input.dispatchEvent(new InputEvent("input", { bubbles: true, data: value, inputType: "insertText" }));
   });
+}
+
+function keyDown(target: Element, key: string) {
+  act(() => {
+    target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  });
+}
+
+function workspace(overrides: Partial<ReusableExecutionWorkspaceLike>): ReusableExecutionWorkspaceLike {
+  return {
+    id: overrides.id ?? "workspace-id",
+    name: overrides.name ?? "Workspace",
+    cwd: overrides.cwd ?? null,
+    lastUsedAt: overrides.lastUsedAt ?? "2026-06-24T00:00:00.000Z",
+    status: overrides.status,
+    branchName: overrides.branchName,
+  };
+}
+
+function buildWorkspaceSelectGroups(workspaces: readonly ReusableExecutionWorkspaceLike[]) {
+  return buildReusableExecutionWorkspaceOptionGroups(workspaces, {
+    now: "2026-06-24T12:00:00.000Z",
+  }).map((group) => ({
+    id: group.id,
+    label: group.label,
+    options: group.options,
+  })) satisfies SearchableSelectGroup<string, ReusableWorkspaceOption>[];
 }
 
 describe("SearchableSelect", () => {
@@ -203,5 +236,130 @@ describe("SearchableSelect", () => {
       );
     });
     expect(container.querySelector("button[role='combobox']")?.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("opens on focus and closes with Escape", async () => {
+    root = render(
+      <SearchableSelect
+        value=""
+        groups={[{ id: "all", options: [{ key: "all:alpha", value: "alpha", label: "Alpha" }] }]}
+        onValueChange={vi.fn()}
+        placeholder="Pick one"
+        searchPlaceholder="Search options..."
+        disablePortal
+      />,
+      container,
+    );
+
+    const trigger = container.querySelector("button[role='combobox']") as HTMLButtonElement | null;
+    expect(trigger).not.toBeNull();
+    act(() => {
+      trigger?.focus();
+    });
+    await flush();
+
+    const input = container.querySelector("input[placeholder='Search options...']") as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    expect(trigger?.getAttribute("aria-expanded")).toBe("true");
+
+    keyDown(input!, "Escape");
+    await flush();
+
+    expect(container.querySelector("input[placeholder='Search options...']")).toBeNull();
+    expect(trigger?.getAttribute("aria-expanded")).toBe("false");
+
+    act(() => {
+      trigger?.dispatchEvent(new Event("pointerdown", { bubbles: true, cancelable: true }));
+      trigger?.focus();
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(container.querySelector("input[placeholder='Search options...']")).not.toBeNull();
+    expect(trigger?.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("filters workspace options, moves with arrows, and selects the workspace id with Enter", async () => {
+    const onValueChange = vi.fn();
+    const groups = buildWorkspaceSelectGroups([
+      workspace({
+        id: "workspace-paperclip",
+        name: "Paperclip app",
+        cwd: "/srv/paperclip/home/paperclipai/paperclip/.paperclip/worktrees/PAP-11722-new-existing-workspace-selector",
+        branchName: "feature/reusable-workspaces",
+        status: "running",
+        lastUsedAt: "2026-06-24T10:00:00.000Z",
+      }),
+      workspace({
+        id: "workspace-marketing",
+        name: "Marketing site",
+        cwd: "/srv/paperclip/home/marketing-site",
+        branchName: "landing-refresh",
+        status: "idle",
+        lastUsedAt: "2026-06-20T10:00:00.000Z",
+      }),
+    ]);
+
+    root = render(
+      <SearchableSelect<string, ReusableWorkspaceOption>
+        value=""
+        groups={groups}
+        onValueChange={onValueChange}
+        placeholder="Choose an existing workspace"
+        searchPlaceholder="Search workspaces..."
+        filterOption={(option, query) => reusableWorkspaceOptionMatches(option, query)}
+        disablePortal
+        renderOption={(option, { selected }) => (
+          <span data-option-key={option.key} data-selected={String(selected)}>
+            {option.label}
+          </span>
+        )}
+      />,
+      container,
+    );
+
+    const trigger = container.querySelector("button[role='combobox']") as HTMLButtonElement | null;
+    act(() => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    const input = container.querySelector("input[placeholder='Search workspaces...']") as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    expect(container.textContent).toContain("Recent");
+    expect(container.textContent).toContain("All workspaces");
+
+    setInputValue(input!, "pclip reusable");
+    await flush();
+
+    expect(container.textContent).toContain("Paperclip app");
+    expect(container.textContent).not.toContain("Marketing site");
+
+    const selectedOptionKey = () => (
+      container.querySelector("[cmdk-item][aria-selected='true'] [data-option-key]")?.getAttribute("data-option-key")
+    );
+
+    expect(selectedOptionKey()).toBe("recent:workspace-paperclip");
+    keyDown(input!, "ArrowDown");
+    await flush();
+    expect(selectedOptionKey()).toBe("all:workspace-paperclip");
+
+    keyDown(input!, "ArrowUp");
+    await flush();
+    expect(selectedOptionKey()).toBe("recent:workspace-paperclip");
+
+    keyDown(input!, "ArrowDown");
+    await flush();
+    keyDown(input!, "Enter");
+    await flush();
+
+    expect(onValueChange).toHaveBeenCalledWith(
+      "workspace-paperclip",
+      expect.objectContaining({
+        key: "all:workspace-paperclip",
+        value: "workspace-paperclip",
+        workspaceId: "workspace-paperclip",
+      }),
+    );
   });
 });

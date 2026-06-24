@@ -1,5 +1,5 @@
 import { Check, ChevronsUpDown } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -84,6 +84,7 @@ export function SearchableSelect<
 }: SearchableSelectProps<TValue, TOption>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const pointerFocusRef = useRef(false);
 
   const selectedOption = useMemo(() => {
     for (const group of groups) {
@@ -125,6 +126,16 @@ export function SearchableSelect<
           type="button"
           variant="outline"
           disabled={disabled}
+          onPointerDown={() => {
+            pointerFocusRef.current = true;
+          }}
+          onFocus={() => {
+            if (pointerFocusRef.current) {
+              pointerFocusRef.current = false;
+              return;
+            }
+            setOpen(true);
+          }}
           aria-expanded={open}
           role="combobox"
           className={cn("w-full justify-between overflow-hidden", className, triggerClassName)}
@@ -147,7 +158,12 @@ export function SearchableSelect<
           contentClassName,
         )}
       >
-        <Command shouldFilter={false}>
+        <Command
+          shouldFilter={false}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setOpen(false);
+          }}
+        >
           <CommandInput
             value={query}
             onValueChange={setQuery}
