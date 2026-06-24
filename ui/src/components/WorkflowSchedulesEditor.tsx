@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, MoreHorizontal, Pencil, Plus, Save, Trash2 } from "lucide-react";
 import type { WorkflowSchedule } from "@paperclipai/shared";
 import type { WorkflowScheduleMutationInput } from "../api/workflows";
@@ -43,19 +43,27 @@ export function WorkflowSchedulesEditor({
 }) {
   const [draft, setDraft] = useState<ScheduleDraft>(defaultDraft);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const editingSchedule = useMemo(
-    () => schedules.find((schedule) => schedule.id === editingId) ?? null,
-    [editingId, schedules],
-  );
+  const editingSchedule = schedules.find((schedule) => schedule.id === editingId) ?? null;
   const [editDraft, setEditDraft] = useState<ScheduleDraft | null>(null);
+  const editingSessionId = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!editingSchedule) {
+    if (!editingId) {
+      editingSessionId.current = null;
       setEditDraft(null);
       return;
     }
-    setEditDraft(toDraft(editingSchedule));
-  }, [editingSchedule]);
+    if (!editingSchedule) {
+      editingSessionId.current = null;
+      setEditingId(null);
+      setEditDraft(null);
+      return;
+    }
+    if (editingSessionId.current !== editingId) {
+      editingSessionId.current = editingId;
+      setEditDraft(toDraft(editingSchedule));
+    }
+  }, [editingId, editingSchedule]);
 
   function startEditing(schedule: WorkflowSchedule) {
     setEditingId(schedule.id);

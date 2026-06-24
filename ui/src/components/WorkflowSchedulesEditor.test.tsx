@@ -107,4 +107,60 @@ describe("WorkflowSchedulesEditor", () => {
       ),
     ).toBe(true);
   });
+
+  it("does not reset the edit draft when schedules refetch", async () => {
+    await act(async () => {
+      root.render(
+        <WorkflowSchedulesEditor
+          schedules={[schedule]}
+          onCreate={onCreateMock}
+          onUpdate={onUpdateMock}
+          onDelete={onDeleteMock}
+        />,
+      );
+    });
+
+    const editButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Edit"),
+    );
+    expect(editButton).toBeTruthy();
+
+    await act(async () => {
+      editButton!.click();
+    });
+
+    const titleInput = Array.from(container.querySelectorAll("input")).find(
+      (input) => (input as HTMLInputElement).value === schedule.title,
+    ) as HTMLInputElement | undefined;
+    expect(titleInput).toBeTruthy();
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(titleInput!, "Updated brief");
+      titleInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const refreshedSchedule: WorkflowSchedule = {
+      ...schedule,
+      nextRunAt: new Date("2026-06-10T09:05:00.000Z"),
+      updatedAt: new Date("2026-06-10T09:05:00.000Z"),
+    };
+
+    await act(async () => {
+      root.render(
+        <WorkflowSchedulesEditor
+          schedules={[refreshedSchedule]}
+          onCreate={onCreateMock}
+          onUpdate={onUpdateMock}
+          onDelete={onDeleteMock}
+        />,
+      );
+    });
+
+    expect(
+      Array.from(container.querySelectorAll("input")).some(
+        (input) => (input as HTMLInputElement).value === "Updated brief",
+      ),
+    ).toBe(true);
+  });
 });
