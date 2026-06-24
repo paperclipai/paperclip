@@ -298,9 +298,16 @@ function renderDialog(container: HTMLDivElement) {
 
 describe("NewIssueDialog", () => {
   let container: HTMLDivElement;
+  let originalResizeObserver: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
     vi.useRealTimers();
+    originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
     container = document.createElement("div");
     document.body.appendChild(container);
     dialogState.newIssueOpen = true;
@@ -337,6 +344,7 @@ describe("NewIssueDialog", () => {
   });
 
   afterEach(() => {
+    globalThis.ResizeObserver = originalResizeObserver!;
     document.body.innerHTML = "";
   });
 
