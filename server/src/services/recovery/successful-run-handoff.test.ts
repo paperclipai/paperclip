@@ -29,6 +29,7 @@ const issue = {
   status: "in_progress",
   assigneeAgentId: "agent-1",
   assigneeUserId: null,
+  executionPolicy: null,
   executionState: null,
 } as any;
 
@@ -151,6 +152,24 @@ describe("successful run handoff decision", () => {
     })).toEqual({
       kind: "skip",
       reason: "active routine continuation owns the next action",
+    });
+  });
+
+  it("does not queue for permanent watcher registry issues", () => {
+    expect(decide({
+      issue: {
+        ...issue,
+        title: "Discord Notification Dedup Registry (permanent, do not complete)",
+        executionPolicy: {
+          mode: "normal",
+          stages: [],
+          commentRequired: true,
+          permanentWatcher: true,
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "permanent watcher policy owns the continuation path",
     });
   });
 

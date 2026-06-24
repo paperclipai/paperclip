@@ -45,7 +45,15 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
+  | "id"
+  | "companyId"
+  | "identifier"
+  | "title"
+  | "status"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "executionPolicy"
+  | "executionState"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -311,6 +319,11 @@ function isProductiveSuccessfulRun(input: {
   return Boolean(input.detectedProgressSummary);
 }
 
+function isPermanentWatcherIssue(issue: IssueRow) {
+  const policy = readRecord(issue.executionPolicy);
+  return policy.permanentWatcher === true;
+}
+
 export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   sourceRunId: string;
@@ -373,6 +386,7 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
+  if (isPermanentWatcherIssue(issue)) return { kind: "skip", reason: "permanent watcher policy owns the continuation path" };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
