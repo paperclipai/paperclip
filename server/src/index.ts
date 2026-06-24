@@ -62,28 +62,13 @@ import {
   autoConfigureLinearFromEnv,
   installKkrooLocalPlugins,
 } from "./bootstrap/kkroo-bundled-plugins.js";
+import { BUNDLED_PLUGIN_PACKAGES } from "./bootstrap/bundled-plugin-packages.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
-
-/**
- * Bundled plugins that should be auto-installed on startup.
- * These are npm packages that get installed if not already present.
- *
- * Note: `@lucitra/paperclip-plugin-linear` was previously listed here but is
- * now vendored as a workspace package at `packages/plugins/paperclip-plugin-linear`
- * and installed from that local path further below. Listing it here would
- * race the npm install ahead of the local install, ending up with whatever
- * version is on npm rather than the in-image version with kkroo fixes.
- */
-const BUNDLED_PLUGINS = [
-  "@lucitra/paperclip-plugin-chat",
-  "@lucitra/paperclip-plugin-updater",
-  "@lucitra/paperclip-plugin-secrets",
-];
 
 async function autoInstallBundledPlugins(
   _db: import("@paperclipai/db").Db,
@@ -108,7 +93,7 @@ async function autoInstallBundledPlugins(
     });
 
   // Install npm-based bundled plugins
-  for (const pkg of BUNDLED_PLUGINS) {
+  for (const pkg of BUNDLED_PLUGIN_PACKAGES) {
     try {
       const listRes = await fetchInternal(`${baseUrl}/api/plugins`);
       if (listRes.ok) {
@@ -151,7 +136,7 @@ async function autoInstallBundledPlugins(
       const allPlugins = (await listRes3.json()) as Array<{
         id: string; packageName: string; version: string; status: string;
       }>;
-      for (const pkg of BUNDLED_PLUGINS) {
+      for (const pkg of BUNDLED_PLUGIN_PACKAGES) {
         const installed = allPlugins.find((p) => p.packageName === pkg && p.status === "ready");
         if (!installed) continue;
 
