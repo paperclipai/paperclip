@@ -136,6 +136,21 @@ export function approvalRoutes(
       : [];
     const uniqueIssueIds = Array.from(new Set(issueIds));
     const { issueIds: _issueIds, ...approvalInput } = req.body;
+
+    const idempotencyKey =
+      typeof approvalInput.idempotencyKey === "string" && approvalInput.idempotencyKey.length > 0
+        ? approvalInput.idempotencyKey
+        : null;
+    if (idempotencyKey) {
+      const existing = await svc.findByIdempotencyKey(companyId, idempotencyKey);
+      if (existing) {
+        // Idempotent reuse: return the original approval without re-running
+        // side effects (issue links, activity log) or minting a duplicate card.
+        res.status(200).json(redactApprovalPayload(existing));
+        return;
+      }
+    }
+
     const normalizedPayload =
       approvalInput.type === "hire_agent"
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(

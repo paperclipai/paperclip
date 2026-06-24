@@ -8,6 +8,15 @@ import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
+const APPROVAL_IDEMPOTENCY_CONSTRAINT = "approvals_company_idempotency_uq";
+
+function isApprovalIdempotencyConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const err = error as { code?: string; constraint?: string; constraint_name?: string };
+  const constraint = err.constraint ?? err.constraint_name;
+  return err.code === "23505" && constraint === APPROVAL_IDEMPOTENCY_CONSTRAINT;
+}
+
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
@@ -16,6 +25,14 @@ export function approvalService(db: Db) {
   const resolvableStatuses = Array.from(canResolveStatuses);
   type ApprovalRecord = typeof approvals.$inferSelect;
   type ResolutionResult = { approval: ApprovalRecord; applied: boolean };
+
+  function getIdempotentApproval(companyId: string, idempotencyKey: string) {
+    return db
+      .select()
+      .from(approvals)
+      .where(and(eq(approvals.companyId, companyId), eq(approvals.idempotencyKey, idempotencyKey)))
+      .then((rows) => rows[0] ?? null);
+  }
 
   function redactApprovalComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
     return {
@@ -92,6 +109,9 @@ export function approvalService(db: Db) {
         .where(eq(approvals.id, id))
         .then((rows) => rows[0] ?? null),
 
+    findByIdempotencyKey: (companyId: string, idempotencyKey: string) =>
+      getIdempotentApproval(companyId, idempotencyKey),
+
     findOpenHireApprovalForAgent: async (companyId: string, agentId: string) => {
       const rows = await db
         .select()
@@ -107,12 +127,30 @@ export function approvalService(db: Db) {
       return rows[0] ?? null;
     },
 
-    create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
-      db
-        .insert(approvals)
-        .values({ ...data, companyId })
-        .returning()
-        .then((rows) => rows[0]),
+    create: async (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) => {
+      const idempotencyKey = data.idempotencyKey ?? null;
+
+      if (idempotencyKey) {
+        const existing = await getIdempotentApproval(companyId, idempotencyKey);
+        if (existing) return existing;
+      }
+
+      try {
+        const [created] = await db
+          .insert(approvals)
+          .values({ ...data, companyId, idempotencyKey })
+          .returning();
+        return created;
+      } catch (error) {
+        if (!idempotencyKey || !isApprovalIdempotencyConflict(error)) {
+          throw error;
+        }
+        // Lost a race against a concurrent identical create: return the winner's row.
+        const existing = await getIdempotentApproval(companyId, idempotencyKey);
+        if (!existing) throw error;
+        return existing;
+      }
+    },
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const { approval: updated, applied } = await resolveApproval(
