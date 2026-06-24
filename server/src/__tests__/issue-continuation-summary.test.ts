@@ -86,6 +86,42 @@ describe("issue continuation summaries", () => {
     expect(body).toContain("Inspect the failed run, fix the cause");
   });
 
+  it("does not expose raw output excerpts or secret-like result text", () => {
+    const rawSecret = "api_key=pc-test-secret-value";
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1579",
+        title: "Add continuation summaries",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+      },
+      run: {
+        id: "run-3",
+        status: "failed",
+        error: `failed with ${rawSecret}`,
+        errorCode: "adapter_failed",
+        resultJson: {
+          summary: `Updated server/src/services/heartbeat.ts with ${rawSecret}`,
+        },
+        stdoutExcerpt: "Touched server/src/unsafe-from-stdout.ts",
+        stderrExcerpt: rawSecret,
+      },
+      agent: {
+        id: "agent-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+      },
+    });
+
+    expect(body).not.toContain(rawSecret);
+    expect(body).not.toContain("server/src/unsafe-from-stdout.ts");
+    expect(body).toContain("api_key=***REDACTED***");
+    expect(body).toContain("Latest run error (adapter_failed): failed with api_key=***REDACTED***");
+    expect(body).toContain("`server/src/services/heartbeat.ts`");
+  });
+
   it("detects continuation summaries that explicitly park executor work for review", () => {
     const body = [
       "# Continuation Summary",

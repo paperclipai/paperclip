@@ -8,9 +8,12 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   buildRunOutputSilence: vi.fn(),
+  getRun: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
+  getRetryExhaustedReason: vi.fn(),
+  listEvents: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
 }));
@@ -194,6 +197,26 @@ describe("agent live run routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      status: "succeeded",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: new Date("2026-04-10T09:35:00.000Z"),
+      createdAt: new Date("2026-04-10T09:29:59.000Z"),
+      error: null,
+      resultJson: null,
+      stdoutExcerpt: null,
+      stderrExcerpt: null,
+      logBytes: 0,
+      logSha256: null,
+      contextSnapshot: null,
+    });
+    mockHeartbeatService.getRetryExhaustedReason.mockResolvedValue(null);
+    mockHeartbeatService.listEvents.mockResolvedValue([]);
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
       id: "run-1",
       status: "running",
@@ -326,6 +349,103 @@ describe("agent live run routes", () => {
       logRef: "logs/run-1.ndjson",
       content: "chunk",
       nextOffset: 5,
+    });
+  });
+
+  it("omits raw output bodies from heartbeat run detail responses", async () => {
+    const rawSecret = "api_key=pc-test-secret-value";
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-redacted",
+      companyId: "company-1",
+      agentId: "agent-1",
+      status: "succeeded",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: new Date("2026-04-10T09:35:00.000Z"),
+      createdAt: new Date("2026-04-10T09:29:59.000Z"),
+      error: `failed with api_key=${rawSecret}`,
+      resultJson: {
+        summary: "done",
+        stdout: rawSecret,
+        stderr: rawSecret,
+        securityRedacted: true,
+        redactionReason: "security incident",
+        incidentTicket: "ITO-182",
+      },
+      stdoutExcerpt: rawSecret,
+      stderrExcerpt: rawSecret,
+      logBytes: 123,
+      logSha256: "abc123",
+      contextSnapshot: {
+        stdout: `api_key=${rawSecret}`,
+        password: rawSecret,
+        issueId: "issue-1",
+      },
+    });
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-redacted"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain(rawSecret);
+    expect(res.body.resultJson).toEqual({
+      summary: "done",
+    });
+    expect(res.body.error).toBe("failed with api_key=***REDACTED***");
+    expect(res.body.contextSnapshot).toEqual({
+      stdout: "api_key=***REDACTED***",
+      password: "***REDACTED***",
+      issueId: "issue-1",
+    });
+    expect(res.body.stdoutExcerpt).toBeNull();
+    expect(res.body.stderrExcerpt).toBeNull();
+    expect(res.body.outputRedaction).toMatchObject({
+      rawResultJsonOmitted: true,
+      rawStdoutOmitted: true,
+      rawStderrOmitted: true,
+      securityRedacted: true,
+      reason: "security incident",
+      incidentTicket: "ITO-182",
+      logBytes: 123,
+      logSha256: "abc123",
+    });
+  });
+
+  it("redacts secret-shaped heartbeat run event payloads", async () => {
+    const rawSecret = "pc-test-secret-value";
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      resultJson: null,
+    });
+    mockHeartbeatService.listEvents.mockResolvedValue([
+      {
+        id: "event-1",
+        runId: "run-1",
+        seq: 1,
+        ts: new Date("2026-04-10T09:31:00.000Z"),
+        type: "adapter_result",
+        message: null,
+        payload: {
+          stdout: `api_key=${rawSecret}`,
+          apiKey: rawSecret,
+        },
+      },
+    ]);
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/events"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain(rawSecret);
+    expect(res.body[0].payload).toMatchObject({
+      stdout: "api_key=***REDACTED***",
+      apiKey: "***REDACTED***",
     });
   });
 
