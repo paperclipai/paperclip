@@ -3813,6 +3813,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       title: string;
       summary?: string | null;
       fields?: Record<string, unknown>;
+      workspaceRef?: Record<string, unknown> | null;
       stageKey?: string | null;
       parentCaseId?: string | null;
       requestKey?: string | null;
@@ -3821,6 +3822,9 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       actor: PipelineActor;
     }) {
       assertJsonSize(input.fields ?? {}, "fields");
+      if (input.workspaceRef !== undefined && input.workspaceRef !== null) {
+        assertJsonSize(input.workspaceRef, "workspaceRef");
+      }
       assertActorProvenance(input.actor);
       const caseKey = input.caseKey ?? randomUUID();
       assertCaseKey(caseKey);
@@ -3887,6 +3891,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
             title: input.title,
             summary: input.summary ?? null,
             fields: input.fields ?? {},
+            workspaceRef: input.workspaceRef ?? null,
             parentCaseId: input.parentCaseId ?? null,
             parentCaseVersion: parentCase?.version ?? null,
             requestKey,

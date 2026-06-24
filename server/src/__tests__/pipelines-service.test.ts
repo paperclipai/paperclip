@@ -232,6 +232,30 @@ describeEmbeddedPostgres("pipelineService", () => {
     expect(count).toBe(5);
   });
 
+  it("persists workspaceRef during ingest", async () => {
+    const { company, pipeline } = await seedPipeline();
+    const workspaceRef = {
+      workspacePath: "exports/pipeline-case",
+      name: "Pipeline case files",
+    };
+
+    const created = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "workspace-ref",
+      title: "Workspace ref",
+      workspaceRef,
+      actor: userActor,
+    });
+
+    expect(created.case.workspaceRef).toEqual(workspaceRef);
+    const [stored] = await db
+      .select({ workspaceRef: pipelineCases.workspaceRef })
+      .from(pipelineCases)
+      .where(eq(pipelineCases.id, created.case.id));
+    expect(stored?.workspaceRef).toEqual(workspaceRef);
+  });
+
   it("rejects stale content PATCH without writing an event", async () => {
     const { company, pipeline } = await seedPipeline();
     const created = await svc.ingestCase({
