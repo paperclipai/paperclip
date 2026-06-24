@@ -35,7 +35,7 @@ export function WorkflowSchedulesEditor({
   createPending = false,
 }: {
   schedules: readonly WorkflowSchedule[];
-  onCreate: (input: WorkflowScheduleMutationInput) => void;
+  onCreate: (input: WorkflowScheduleMutationInput) => Promise<void>;
   onUpdate: (scheduleId: string, input: Partial<WorkflowScheduleMutationInput>) => Promise<void>;
   onDelete: (scheduleId: string) => void;
   pendingScheduleId?: string | null;
@@ -122,7 +122,11 @@ export function WorkflowSchedulesEditor({
               Timezone is fixed to UTC. Missed fires are skipped.
             </div>
             <Button
-              onClick={() => onCreate(draft)}
+              onClick={() => {
+                void onCreate(draft).then(() => {
+                  setDraft(defaultDraft);
+                });
+              }}
               disabled={createPending || !draft.title.trim() || !draft.cronExpression.trim() || !draft.templateMarkdown.trim()}
             >
               {createPending ? <LoaderCircle className="mr-1.5 h-4 w-4 animate-spin" /> : <Plus className="mr-1.5 h-4 w-4" />}

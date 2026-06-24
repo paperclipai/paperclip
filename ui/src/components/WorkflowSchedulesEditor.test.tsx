@@ -163,4 +163,57 @@ describe("WorkflowSchedulesEditor", () => {
       ),
     ).toBe(true);
   });
+
+  it("resets the create draft after a successful create", async () => {
+    onCreateMock.mockResolvedValueOnce(undefined);
+
+    await act(async () => {
+      root.render(
+        <WorkflowSchedulesEditor
+          schedules={[schedule]}
+          onCreate={onCreateMock}
+          onUpdate={onUpdateMock}
+          onDelete={onDeleteMock}
+        />,
+      );
+    });
+
+    const titleInput = Array.from(container.querySelectorAll("input")).find(
+      (input) => (input as HTMLInputElement).placeholder === "Daily brief",
+    ) as HTMLInputElement | undefined;
+    const markdownInput = container.querySelector("textarea") as HTMLTextAreaElement | null;
+
+    expect(titleInput).toBeTruthy();
+    expect(markdownInput).toBeTruthy();
+
+    await act(async () => {
+      const inputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      inputSetter?.call(titleInput!, "Morning brief");
+      titleInput!.dispatchEvent(new Event("input", { bubbles: true }));
+
+      const textareaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      textareaSetter?.call(markdownInput!, "Send the morning brief.");
+      markdownInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const createButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Create schedule"),
+    );
+    expect(createButton).toBeTruthy();
+
+    await act(async () => {
+      createButton!.click();
+      await Promise.resolve();
+    });
+
+    expect(onCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Morning brief",
+        cronExpression: "0 9 * * *",
+        templateMarkdown: "Send the morning brief.",
+      }),
+    );
+    expect(titleInput!.value).toBe("");
+    expect(markdownInput!.value).toBe("");
+  });
 });

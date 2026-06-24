@@ -1567,7 +1567,9 @@ export function WorkflowDetail() {
 
             <WorkflowSchedulesEditor
               schedules={workflowSchedules}
-              onCreate={(input) => createScheduleMutation.mutate(input)}
+              onCreate={(input) =>
+                createScheduleMutation.mutateAsync(input).then(() => undefined)
+              }
               onUpdate={(scheduleId, input) =>
                 updateScheduleMutation.mutateAsync({ scheduleId, input }).then(() => undefined)
               }
