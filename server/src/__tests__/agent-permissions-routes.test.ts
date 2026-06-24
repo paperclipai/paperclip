@@ -599,6 +599,47 @@ describe.sequential("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   }, 15_000);
 
+  it("preserves agent-authenticated budget pause metadata and hard-pauses the agent", async () => {
+    const pausedAt = "2026-06-24T00:00:00.000Z";
+    const pauseReason = "budget exceeded: $223.85 spent / $200.00 cap";
+    mockAgentService.update.mockResolvedValue({
+      ...baseAgent,
+      status: "paused",
+      pauseReason,
+      pausedAt: new Date(pausedAt),
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        pauseReason,
+        pausedAt,
+      }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        status: "paused",
+        pauseReason,
+        pausedAt: new Date(pausedAt),
+      }),
+      expect.any(Object),
+    );
+    expect(res.body).toMatchObject({
+      status: "paused",
+      pauseReason,
+    });
+  });
+
   it("blocks agent-authenticated instructions-path updates", async () => {
     const app = await createApp({
       type: "agent",
