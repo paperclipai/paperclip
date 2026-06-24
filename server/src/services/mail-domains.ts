@@ -273,15 +273,29 @@ export function mailDomainService(db: Db) {
     },
 
     remove: async (companyId: string, id: string): Promise<void> => {
-      const deleted = await db
-        .delete(mailDomains)
-        .where(and(eq(mailDomains.id, id), eq(mailDomains.companyId, companyId)))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!deleted) throw notFound("Mail domain not found");
+      const row = await getRow(companyId, id);
+      if (!row) throw notFound("Mail domain not found");
+
+      // Best-effort: remove the mail DNS records we published on the zone, so
+      // detaching leaves the Cloudflare zone clean (no orphaned MX/SPF/DKIM/DMARC).
+      if (row.cfZoneId) {
+        const zone = row.cfZoneId;
+        const domain = row.domain;
+        await cloudflare.deleteDnsRecords(companyId, zone, { type: "MX", name: domain }).catch(() => {});
+        await cloudflare
+          .deleteDnsRecords(companyId, zone, { type: "TXT", name: `${row.dkimSelector}._domainkey.${domain}` })
+          .catch(() => {});
+        await cloudflare.deleteDnsRecords(companyId, zone, { type: "TXT", name: `_dmarc.${domain}` }).catch(() => {});
+        // Only our SPF record on the apex TXT (don't touch unrelated TXT records).
+        await cloudflare
+          .deleteDnsRecords(companyId, zone, { type: "TXT", name: domain, contentIncludes: "v=spf1" })
+          .catch(() => {});
+      }
+
+      await db.delete(mailDomains).where(and(eq(mailDomains.id, id), eq(mailDomains.companyId, companyId)));
       // Best-effort cleanup of the domain's DKIM private key secret.
-      if (deleted.dkimPrivateKeySecretId) {
-        await secrets.remove(deleted.dkimPrivateKeySecretId).catch(() => {});
+      if (row.dkimPrivateKeySecretId) {
+        await secrets.remove(row.dkimPrivateKeySecretId).catch(() => {});
       }
     },
   };

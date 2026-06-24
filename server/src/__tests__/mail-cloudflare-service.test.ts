@@ -41,7 +41,9 @@ function cloudflareFetchMock() {
     }
     if (/^\/zones\/[^/]+\/dns_records$/.test(p)) {
       if (method === "POST") return ok({ id: randomUUID() });
-      return ok([]); // GET: no existing record -> caller will POST
+      // GET: return one existing record (content includes v=spf1 so the SPF
+      // content filter on delete matches it too).
+      return ok([{ id: "rec1", content: "v=spf1 ip4:203.0.113.1 ~all" }]);
     }
     if (/^\/zones\/[^/]+\/dns_records\/[^/]+$/.test(p)) return ok({ id: "rec1" });
     return { ok: false, status: 404, json: async () => ({ success: false, errors: [{ message: "not found" }] }) } as unknown as Response;
@@ -168,5 +170,23 @@ describeEmbeddedPostgres("cloudflare + mail domains (embedded mail, phase 0)", (
     expect(again.dkimPublicKey).toBe(domain.dkimPublicKey);
     const all = await mail.list(companyId);
     expect(all).toHaveLength(1);
+  });
+
+  it("detach removes the domain and cleans up the published DNS records", async () => {
+    const companyId = await seedCompany();
+    await cf.connect(companyId, { apiToken: "cf-token-XYZ" }, boardActor);
+    const domain = await mail.attach(companyId, "example.com", boardActor);
+
+    const fetchMock = globalThis.fetch as unknown as { mock: { calls: Array<[unknown, { method?: string }?]> } };
+    await mail.remove(companyId, domain.id);
+
+    // DELETE calls were issued against dns_records to clean up the zone.
+    const deleteCalls = fetchMock.mock.calls.filter(
+      ([input, init]) => String(input).includes("/dns_records/") && init?.method === "DELETE",
+    );
+    expect(deleteCalls.length).toBeGreaterThan(0);
+
+    // The domain row is gone.
+    expect(await mail.list(companyId)).toHaveLength(0);
   });
 });

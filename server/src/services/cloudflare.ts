@@ -238,5 +238,27 @@ export function cloudflareService(db: Db) {
         await cfFetch(token, `/zones/${zoneId}/dns_records`, { method: "POST", body });
       }
     },
+
+    /**
+     * Delete DNS records matching a type + name (optionally only those whose
+     * content contains a marker, e.g. our SPF record on a shared apex TXT). Used
+     * to clean up the mail records when a domain is detached.
+     */
+    deleteDnsRecords: async (
+      companyId: string,
+      zoneId: string,
+      match: { type: string; name: string; contentIncludes?: string },
+    ): Promise<void> => {
+      const token = await getToken(companyId);
+      const existing = await cfFetch<Array<{ id: string; content: string }>>(
+        token,
+        `/zones/${zoneId}/dns_records`,
+        { query: { type: match.type, name: match.name } },
+      );
+      for (const rec of existing) {
+        if (match.contentIncludes && !(rec.content ?? "").includes(match.contentIncludes)) continue;
+        await cfFetch(token, `/zones/${zoneId}/dns_records/${rec.id}`, { method: "DELETE" });
+      }
+    },
   };
 }

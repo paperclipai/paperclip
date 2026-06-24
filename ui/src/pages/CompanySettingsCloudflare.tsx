@@ -256,7 +256,15 @@ export function CompanySettingsCloudflare() {
                   key={domain.id}
                   domain={domain}
                   onVerify={() => verifyMutation.mutate(domain.id)}
-                  onRemove={() => removeMutation.mutate(domain.id)}
+                  onRemove={() => {
+                    if (
+                      window.confirm(
+                        `Detach ${domain.domain}? This removes its mail DNS records (MX/SPF/DKIM/DMARC) from Cloudflare.`,
+                      )
+                    ) {
+                      removeMutation.mutate(domain.id);
+                    }
+                  }}
                   busy={verifyMutation.isPending || removeMutation.isPending}
                 />
               ))}
@@ -287,11 +295,11 @@ function MailDomainRow({
         <span className="font-mono text-sm">{domain.domain}</span>
         <div className="flex items-center gap-2">
           <Badge variant={statusVariant}>{domain.status}</Badge>
-          <Button size="icon-sm" variant="ghost" onClick={onVerify} disabled={busy} title="Re-publish & verify DNS">
-            <RefreshCw className="h-4 w-4" />
+          <Button size="sm" variant="ghost" onClick={onVerify} disabled={busy} title="Re-publish & verify DNS">
+            <RefreshCw className="h-3.5 w-3.5" /> Verify
           </Button>
-          <Button size="icon-sm" variant="ghost" onClick={onRemove} disabled={busy} title="Detach">
-            <Trash2 className="h-4 w-4" />
+          <Button size="sm" variant="outline" onClick={onRemove} disabled={busy} title="Detach this domain">
+            <Trash2 className="h-3.5 w-3.5" /> Detach
           </Button>
         </div>
       </div>
