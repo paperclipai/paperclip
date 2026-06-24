@@ -467,7 +467,7 @@ function createTimelineEventMessage(args: {
       : (formatAssigneeUserLabel(event.actorId, currentUserId, userLabelMap) ?? "Board");
 
   const lines: string[] = [
-    event.followUpRequested ? `${actorName} requested follow-up` : `${actorName} updated this issue`,
+    event.followUpRequested ? `${actorName} requested follow-up` : `${actorName} updated this task`,
   ];
   if (event.statusChange) {
     lines.push(

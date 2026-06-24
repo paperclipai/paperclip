@@ -3804,7 +3804,7 @@ export function IssueDetail() {
                 size="icon-xs"
                 onClick={() => setFileViewerPromptOpen(true)}
                 title="Open file... (g f)"
-                aria-label="Open file in this issue"
+                aria-label="Open file in this task"
               >
                 <FileCode2 className="h-4 w-4" />
               </Button>
