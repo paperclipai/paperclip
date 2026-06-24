@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockApprovalService = vi.hoisted(() => ({
   list: vi.fn(),
   getById: vi.fn(),
+  findByIdempotencyKey: vi.fn(),
   create: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
@@ -120,6 +121,8 @@ describe("approval routes idempotent retries", () => {
     vi.clearAllMocks();
     mockApprovalService.list.mockReset();
     mockApprovalService.getById.mockReset();
+    mockApprovalService.findByIdempotencyKey.mockReset();
+    mockApprovalService.findByIdempotencyKey.mockResolvedValue(null);
     mockApprovalService.create.mockReset();
     mockApprovalService.approve.mockReset();
     mockApprovalService.reject.mockReset();
@@ -366,6 +369,72 @@ describe("approval routes idempotent retries", () => {
         actorId: "agent-1",
         action: "approval.created",
       }),
+    );
+  });
+
+  it("returns the existing approval and skips side effects when the idempotency key was already used", async () => {
+    const existing = {
+      id: "approval-existing",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve hosting spend" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    };
+    mockApprovalService.findByIdempotencyKey.mockResolvedValue(existing);
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        idempotencyKey: "retry-key-1",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ id: "approval-existing", status: "pending" });
+    expect(mockApprovalService.findByIdempotencyKey).toHaveBeenCalledWith("company-1", "retry-key-1");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("creates a fresh approval and persists the idempotency key on first use", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve hosting spend" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        idempotencyKey: "fresh-key-1",
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockApprovalService.findByIdempotencyKey).toHaveBeenCalledWith("company-1", "fresh-key-1");
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ idempotencyKey: "fresh-key-1" }),
     );
   });
 

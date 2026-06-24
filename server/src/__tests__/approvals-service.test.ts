@@ -136,6 +136,103 @@ describe("approvalService resolution idempotency", () => {
   });
 });
 
+describe("approvalService.create idempotency", () => {
+  function createIdempotencyDbStub(options: {
+    existingByKey?: ApprovalRecord[];
+    insertResult?: ApprovalRecord[];
+    insertError?: unknown;
+    existingAfterConflict?: ApprovalRecord[];
+  }) {
+    const selectResults = [
+      options.existingByKey ?? [],
+      options.existingAfterConflict ?? [],
+    ];
+    let selectCall = 0;
+    const selectWhere = vi.fn(async () => selectResults[selectCall++] ?? []);
+    const from = vi.fn(() => ({ where: selectWhere }));
+    const select = vi.fn(() => ({ from }));
+
+    const returning = vi.fn(async () => {
+      if (options.insertError) throw options.insertError;
+      return options.insertResult ?? [];
+    });
+    const values = vi.fn(() => ({ returning }));
+    const insert = vi.fn(() => ({ values }));
+
+    return { db: { select, insert } as any, selectWhere, values, returning };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("inserts a new approval when no row shares the idempotency key", async () => {
+    const created = { ...createApproval("pending"), id: "approval-new" };
+    const dbStub = createIdempotencyDbStub({ insertResult: [created] });
+
+    const svc = approvalService(dbStub.db);
+    const result = await svc.create("company-1", {
+      type: "hire_agent",
+      idempotencyKey: "key-1",
+      payload: { agentId: "agent-1" },
+      status: "pending",
+    } as any);
+
+    expect(result.id).toBe("approval-new");
+    expect(dbStub.values).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the existing approval instead of creating a duplicate for a repeated key", async () => {
+    const existing = { ...createApproval("pending"), id: "approval-existing" };
+    const dbStub = createIdempotencyDbStub({ existingByKey: [existing] });
+
+    const svc = approvalService(dbStub.db);
+    const result = await svc.create("company-1", {
+      type: "hire_agent",
+      idempotencyKey: "key-1",
+      payload: { agentId: "agent-1" },
+      status: "pending",
+    } as any);
+
+    expect(result.id).toBe("approval-existing");
+    expect(dbStub.values).not.toHaveBeenCalled();
+  });
+
+  it("recovers the winning row when a concurrent insert hits the unique constraint", async () => {
+    const winner = { ...createApproval("pending"), id: "approval-winner" };
+    const dbStub = createIdempotencyDbStub({
+      insertError: { code: "23505", constraint: "approvals_company_idempotency_uq" },
+      existingAfterConflict: [winner],
+    });
+
+    const svc = approvalService(dbStub.db);
+    const result = await svc.create("company-1", {
+      type: "hire_agent",
+      idempotencyKey: "key-1",
+      payload: { agentId: "agent-1" },
+      status: "pending",
+    } as any);
+
+    expect(result.id).toBe("approval-winner");
+  });
+
+  it("rethrows unique-constraint errors unrelated to the idempotency key", async () => {
+    const dbStub = createIdempotencyDbStub({
+      insertError: { code: "23505", constraint: "approvals_pkey" },
+    });
+
+    const svc = approvalService(dbStub.db);
+    await expect(
+      svc.create("company-1", {
+        type: "hire_agent",
+        idempotencyKey: "key-1",
+        payload: {},
+        status: "pending",
+      } as any),
+    ).rejects.toMatchObject({ code: "23505" });
+  });
+});
+
 describe("approvalService.findOpenHireApprovalForAgent", () => {
   beforeEach(() => {
     vi.clearAllMocks();
