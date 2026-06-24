@@ -23,7 +23,7 @@ export function providerRateLimitRoutes(db: Db) {
     const actor = getActorInfo(req);
     const resolvedBy = actor.actorType === "user" ? `manual:${actor.actorId}` : "manual";
 
-    const block = await svc.resolveBlock(blockId, resolvedBy);
+    const block = await svc.resolveBlock(blockId, resolvedBy, companyId);
     if (!block || block.companyId !== companyId) {
       throw notFound("Rate limit block not found");
     }

@@ -319,7 +319,11 @@ export function providerRateLimitService(db: Db) {
       );
   }
 
-  async function resolveBlock(blockId: string, resolvedBy: string) {
+  async function resolveBlock(
+    blockId: string,
+    resolvedBy: string,
+    companyId?: string,
+  ) {
     const now = new Date();
     const [block] = await db
       .update(providerRateLimitBlocks)
@@ -328,6 +332,9 @@ export function providerRateLimitService(db: Db) {
         and(
           eq(providerRateLimitBlocks.id, blockId),
           isNull(providerRateLimitBlocks.resolvedAt),
+          // Scope the mutation to the caller's company so a cross-tenant block
+          // id cannot be resolved before the ownership check (TOCTOU).
+          companyId ? eq(providerRateLimitBlocks.companyId, companyId) : undefined,
         ),
       )
       .returning();
