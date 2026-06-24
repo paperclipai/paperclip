@@ -27,8 +27,8 @@
  */
 import { Router } from "express";
 import crypto from "node:crypto";
-import { type Db, agentWakeupRequests, issues } from "@paperclipai/db";
-import { and, eq, inArray } from "drizzle-orm";
+import { type Db, agentWakeupRequests, issueComments, issues } from "@paperclipai/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatService, type HeartbeatServiceOptions } from "../services/heartbeat.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -57,6 +57,12 @@ export interface GithubWebhookConfig {
    * identifier. When null, only the legacy issue-assignee wake fires.
    */
   prReviewerAgentId?: string | null;
+  /**
+   * GitHub login for the automated PR reviewer bot. Used to recognize
+   * comment-mode review output, which arrives as issue_comment.created rather
+   * than pull_request_review.submitted.
+   */
+  prReviewerBotLogin?: string | null;
   /**
    * Agent ID that receives a wake for new/reintroduced/reopened Dependabot
    * alerts (`dependabot_alert` events) at or above `dependabotMinSeverity`.
@@ -104,6 +110,60 @@ const PR_REVIEWER_COMMENT_MENTION_PATTERN =
 
 function hasPrReviewerRequestMention(body: string | null | undefined): boolean {
   return typeof body === "string" && PR_REVIEWER_COMMENT_MENTION_PATTERN.test(body);
+}
+
+const DEFAULT_PR_REVIEWER_BOT_LOGIN = "allyblockcast[bot]";
+
+function normalizeGithubLogin(login: string): string {
+  return login
+    .trim()
+    .toLowerCase()
+    .replace(/^@/, "")
+    .replace(/^app\//, "")
+    .replace(/\[bot\]$/, "")
+    .trim();
+}
+
+function isConfiguredPrReviewerAuthor(
+  login: string | null | undefined,
+  configuredLogin: string | null | undefined,
+): boolean {
+  if (!login) return false;
+  const normalizedLogin = normalizeGithubLogin(login);
+  if (!normalizedLogin) return false;
+  const configured = normalizeGithubLogin(configuredLogin || DEFAULT_PR_REVIEWER_BOT_LOGIN);
+  if (configured && normalizedLogin === configured) return true;
+  return normalizedLogin === "ally" || normalizedLogin === "allyblockcast" || normalizedLogin === "blockcast-ci-packages";
+}
+
+function hasAllyConsolidatedReviewHeader(body: string | null | undefined): boolean {
+  return typeof body === "string" && /\bAlly\s*(?:—|-|:)\s*Consolidated\s+PR\s+Review\b/i.test(body);
+}
+
+function hasActionablePrReviewFeedback(body: string | null | undefined, state?: string | null): boolean {
+  const normalizedState = state?.trim().toLowerCase();
+  if (normalizedState === "changes_requested" || normalizedState === "changes-requested") return true;
+  if (typeof body !== "string") return false;
+  const text = body.trim();
+  if (!text) return false;
+
+  const importantIssues = text.match(/\bImportant\s+Issues\s*\((\d+)\)/i);
+  if (importantIssues && Number(importantIssues[1]) > 0) return true;
+  if (/\bImportant\s+Issues\b/i.test(text) && !/\bImportant\s+Issues\s*\(\s*0\s*\)/i.test(text)) return true;
+  if (/^[ \t]*decision[ \t]*:[ \t]*changes_requested[ \t]*$/im.test(text)) return true;
+  if (/\bchanges\s+requested\b/i.test(text)) return true;
+  if (/\brequest(?:ed|s)?\s+changes\b/i.test(text)) return true;
+  if (/\bRecommended\s+Action\b[\s\S]{0,400}\bfix\b[\s\S]{0,400}\bbefore\s+merge\b/i.test(text)) return true;
+  return false;
+}
+
+function isActionablePrReviewComment(
+  body: string | null | undefined,
+  authorLogin: string | null | undefined,
+  configuredReviewerLogin: string | null | undefined,
+): boolean {
+  if (!hasActionablePrReviewFeedback(body)) return false;
+  return isConfiguredPrReviewerAuthor(authorLogin, configuredReviewerLogin) || hasAllyConsolidatedReviewHeader(body);
 }
 
 function timingSafeStringEq(a: string, b: string): boolean {
@@ -193,6 +253,7 @@ function clampReviewBody(value: string | null | undefined): string | null {
 function resolveEventContext(
   eventName: string,
   payload: Record<string, unknown>,
+  options: { prReviewerBotLogin?: string | null } = {},
 ): ResolvedEventContext | null {
   const repository = payload.repository as Record<string, unknown> | undefined;
   const repoFullName = (repository?.full_name as string | undefined) ?? null;
@@ -325,8 +386,15 @@ function resolveEventContext(
       if (!issue || !pullRequestMarker) return null;
       const comment = payload.comment as Record<string, unknown> | undefined;
       const commentBody = comment?.body as string | undefined;
-      if (!hasPrReviewerRequestMention(commentBody)) return null;
       const commentUser = comment?.user as Record<string, unknown> | undefined;
+      const commentAuthorLogin = (commentUser?.login as string | undefined) ?? null;
+      const reviewerRequest = hasPrReviewerRequestMention(commentBody);
+      const reviewFeedback = isActionablePrReviewComment(
+        commentBody,
+        commentAuthorLogin,
+        options.prReviewerBotLogin,
+      );
+      if (!reviewerRequest && !reviewFeedback) return null;
       // BLO-9293: on a PR's issue_comment payload, `issue.user.login` is the PR
       // author (the comment author is `comment.user.login`, captured separately).
       const issueUser = issue.user as Record<string, unknown> | undefined;
@@ -339,7 +407,7 @@ function resolveEventContext(
           issue.body as string | undefined,
           commentBody,
         ),
-        wakeReason: "github_pr_review_requested",
+        wakeReason: reviewerRequest ? "github_pr_review_requested" : "github_pr_review_feedback",
         prNumber,
         repoFullName,
         prTitle: (issue.title as string | undefined) ?? null,
@@ -347,7 +415,7 @@ function resolveEventContext(
         eventUrl: commentUrl ?? prUrl,
         commentId: (comment?.id as number | undefined) ?? null,
         commentBody: clampReviewBody(commentBody),
-        commentAuthorLogin: (commentUser?.login as string | undefined) ?? null,
+        commentAuthorLogin,
         prAuthorLogin: (issueUser?.login as string | undefined) ?? null,
         commentUrl,
       };
@@ -518,6 +586,189 @@ function buildPrReviewerTaskKey(context: ResolvedEventContext & { prNumber: numb
   return `pr_review:${repo}:${context.prNumber}`;
 }
 
+function prFeedbackBody(context: ResolvedEventContext): string | null {
+  return context.reviewBody ?? context.commentBody ?? null;
+}
+
+function prFeedbackAuthorLogin(context: ResolvedEventContext): string | null {
+  return context.reviewAuthorLogin ?? context.commentAuthorLogin ?? null;
+}
+
+function isActionableReviewFeedbackContext(context: ResolvedEventContext): boolean {
+  if (context.wakeReason === "github_pr_review_feedback") return true;
+  if (context.wakeReason !== "github_pr_review_submitted") return false;
+  return hasActionablePrReviewFeedback(context.reviewBody, context.reviewState);
+}
+
+function buildPrFeedbackExternalKey(context: ResolvedEventContext, deliveryId: string | null): string | null {
+  if (context.commentId) return `github_issue_comment:${context.commentId}`;
+  if (context.reviewUrl) return `github_pr_review:${context.reviewUrl}`;
+  if (context.eventUrl) return `github_event:${context.eventUrl}`;
+  if (deliveryId) return `github_delivery:${deliveryId}`;
+  return null;
+}
+
+function buildPrAuthorWakeIdempotencyKey(
+  issueId: string,
+  context: ResolvedEventContext,
+  deliveryId: string | null,
+): string {
+  const repo = context.repoFullName ?? "unknown";
+  const pr = context.prNumber ?? "unknown";
+  const externalKey = buildPrFeedbackExternalKey(context, deliveryId);
+  const suffix = externalKey ?? context.wakeReason;
+  return `pr_review_author:${issueId}:${repo}:${pr}:${context.wakeReason}:${suffix}`;
+}
+
+function readReturnAssigneeAgentId(executionState: unknown): string | null {
+  if (!executionState || typeof executionState !== "object") return null;
+  const state = executionState as Record<string, unknown>;
+  const returnAssignee = state.returnAssignee;
+  if (!returnAssignee || typeof returnAssignee !== "object") return null;
+  const principal = returnAssignee as Record<string, unknown>;
+  return principal.type === "agent" && typeof principal.agentId === "string" ? principal.agentId : null;
+}
+
+function markExecutionStateChangesRequested(executionState: unknown): Record<string, unknown> | null {
+  if (!executionState || typeof executionState !== "object") return null;
+  const state = executionState as Record<string, unknown>;
+  if (state.status !== "pending" && state.status !== "changes_requested") return null;
+  return {
+    ...state,
+    status: "changes_requested",
+    reviewRequest: null,
+    lastDecisionOutcome: "changes_requested",
+  };
+}
+
+function fencedText(value: string): string {
+  const longestBacktickRun = Math.max(2, ...Array.from(value.matchAll(/`+/g), (match) => match[0].length));
+  const fence = "`".repeat(longestBacktickRun + 1);
+  return [fence + "text", value, fence].join("\n");
+}
+
+function buildChangesRequestedComment(context: ResolvedEventContext): string {
+  const sourceUrl = context.eventUrl ?? context.reviewUrl ?? context.commentUrl ?? context.prUrl;
+  const reviewer = prFeedbackAuthorLogin(context);
+  const body = prFeedbackBody(context);
+  const lines = [
+    "## Changes Requested",
+    "",
+    "GitHub review feedback requires another implementation pass.",
+    "",
+    ...(context.repoFullName && context.prNumber !== null
+      ? [`- PR: ${context.repoFullName}#${context.prNumber}`]
+      : []),
+    ...(sourceUrl ? [`- Source: ${sourceUrl}`] : []),
+    ...(reviewer ? [`- Reviewer: ${reviewer}`] : []),
+    ...(context.reviewState ? [`- State: ${context.reviewState}`] : []),
+  ];
+  if (body) {
+    lines.push("", "Review body:", "", fencedText(body));
+  }
+  return lines.join("\n");
+}
+
+type MatchedGithubIssue = {
+  id: string;
+  companyId: string;
+  identifier: string | null;
+  assigneeAgentId: string | null;
+  status: string;
+  executionState: Record<string, unknown> | null;
+};
+
+async function hasExistingWakeWithIdempotencyKey(
+  db: Db,
+  agentId: string,
+  idempotencyKey: string,
+): Promise<boolean> {
+  const existing = await db
+    .select({ id: agentWakeupRequests.id })
+    .from(agentWakeupRequests)
+    .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.idempotencyKey, idempotencyKey)))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return Boolean(existing);
+}
+
+async function reopenInReviewIssueForActionablePrFeedback(
+  db: Db,
+  issue: MatchedGithubIssue,
+  context: ResolvedEventContext,
+  deliveryId: string | null,
+): Promise<{ reopened: boolean; commentId: string | null; assigneeAgentId: string | null }> {
+  const returnAssigneeAgentId = readReturnAssigneeAgentId(issue.executionState);
+  const effectiveAssigneeAgentId = returnAssigneeAgentId ?? issue.assigneeAgentId;
+  if (issue.status !== "in_review" || !effectiveAssigneeAgentId) {
+    return { reopened: false, commentId: null, assigneeAgentId: effectiveAssigneeAgentId };
+  }
+
+  const externalKey = buildPrFeedbackExternalKey(context, deliveryId);
+  const now = new Date();
+  const result = await db.transaction(async (tx) => {
+    const existingComment = externalKey
+      ? await tx
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(and(
+          eq(issueComments.issueId, issue.id),
+          sql`${issueComments.metadata}->>'kind' = 'github_pr_review_feedback'`,
+          sql`${issueComments.metadata}->>'externalKey' = ${externalKey}`,
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+      : null;
+
+    const commentId: string | null = existingComment
+      ? existingComment.id
+      : await tx
+        .insert(issueComments)
+        .values({
+          companyId: issue.companyId,
+          issueId: issue.id,
+          authorType: "system",
+          body: buildChangesRequestedComment(context),
+          metadata: {
+            kind: "github_pr_review_feedback",
+            source: "github",
+            externalKey: externalKey ?? null,
+            repoFullName: context.repoFullName,
+            prNumber: context.prNumber,
+            deliveryId,
+          } as never,
+        })
+        .returning({ id: issueComments.id })
+        .then((rows): string | null => rows[0]?.id ?? null);
+
+    const executionState = markExecutionStateChangesRequested(issue.executionState);
+    const patch: Partial<typeof issues.$inferInsert> = {
+      status: "in_progress",
+      assigneeAgentId: effectiveAssigneeAgentId,
+      assigneeUserId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      updatedAt: now,
+    };
+    if (executionState) {
+      patch.executionState = executionState;
+    }
+
+    const updated = await tx
+      .update(issues)
+      .set(patch)
+      .where(and(eq(issues.id, issue.id), eq(issues.status, "in_review")))
+      .returning({ id: issues.id })
+      .then((rows) => rows[0] ?? null);
+
+    return { reopened: Boolean(updated), commentId, assigneeAgentId: effectiveAssigneeAgentId };
+  });
+
+  return result;
+}
+
 function githubContextMetadata(context: ResolvedEventContext) {
   return {
     ...(context.prTitle ? { githubPrTitle: context.prTitle } : {}),
@@ -569,7 +820,9 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
     }
 
     const payload = (req.body ?? {}) as Record<string, unknown>;
-    const context = resolveEventContext(eventName, payload);
+    const context = resolveEventContext(eventName, payload, {
+      prReviewerBotLogin: config.prReviewerBotLogin,
+    });
 
     // PR-review wake fires independently of the identifier-matching
     // issue-assignee wake below: it targets a dedicated reviewer agent so
@@ -774,6 +1027,7 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
         identifier: issues.identifier,
         assigneeAgentId: issues.assigneeAgentId,
         status: issues.status,
+        executionState: issues.executionState,
       })
       .from(issues);
     const matched = matchedIssues.filter(
@@ -837,6 +1091,8 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
     });
     const wakes: Array<{ issueIdentifier: string | null; agentId: string }> = [];
     const skipped: Array<{ issueIdentifier: string | null; reason: string }> = [];
+    const reopened: Array<{ issueIdentifier: string | null; commentId: string | null }> = [];
+    const actionableReviewFeedback = isActionableReviewFeedbackContext(context);
 
     for (const issue of matched) {
       // Terminal-status issues don't need to wake -- the assignee
@@ -846,7 +1102,28 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
         skipped.push({ issueIdentifier: issue.identifier, reason: "terminal_status" });
         continue;
       }
-      if (!issue.assigneeAgentId) {
+
+      let effectiveAssigneeAgentId = issue.assigneeAgentId;
+      let wakeCommentId: string | null = null;
+      let authorWakeIdempotencyKey: string | null = null;
+
+      if (actionableReviewFeedback) {
+        const reopen = await reopenInReviewIssueForActionablePrFeedback(db, issue, context, deliveryId);
+        effectiveAssigneeAgentId = reopen.assigneeAgentId;
+        wakeCommentId = reopen.commentId;
+        if (reopen.reopened) {
+          reopened.push({ issueIdentifier: issue.identifier, commentId: reopen.commentId });
+        }
+        if (effectiveAssigneeAgentId) {
+          authorWakeIdempotencyKey = buildPrAuthorWakeIdempotencyKey(issue.id, context, deliveryId);
+          if (await hasExistingWakeWithIdempotencyKey(db, effectiveAssigneeAgentId, authorWakeIdempotencyKey)) {
+            skipped.push({ issueIdentifier: issue.identifier, reason: "duplicate_review_feedback" });
+            continue;
+          }
+        }
+      }
+
+      if (!effectiveAssigneeAgentId) {
         skipped.push({ issueIdentifier: issue.identifier, reason: "unassigned" });
         continue;
       }
@@ -856,13 +1133,17 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
       // Non-PR wakes (CI completion, etc.) leave prRole unset.
       const isPrWake =
         context.wakeReason.startsWith("github_pr_") && context.prNumber !== null;
+      const reviewBody = context.reviewBody ?? (actionableReviewFeedback ? prFeedbackBody(context) : null);
+      const reviewAuthorLogin =
+        context.reviewAuthorLogin ?? (actionableReviewFeedback ? prFeedbackAuthorLogin(context) : null);
       try {
-        await heartbeat.wakeup(issue.assigneeAgentId, {
+        await heartbeat.wakeup(effectiveAssigneeAgentId, {
           source: "automation",
           triggerDetail: "system",
           reason: context.wakeReason,
           payload: {
             issueId: issue.id,
+            ...(wakeCommentId ? { wakeCommentId } : {}),
             source: "github",
             event: eventName,
             deliveryId,
@@ -884,13 +1165,15 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
             githubDeliveryId: deliveryId,
             githubPrNumber: context.prNumber,
             githubRepoFullName: context.repoFullName,
+            ...(wakeCommentId ? { wakeCommentId, commentId: wakeCommentId } : {}),
             ...githubContextMetadata(context),
             ...(isPrWake ? { prRole: "author" as const } : {}),
-            ...(context.reviewBody ? { githubPrReviewBody: context.reviewBody } : {}),
+            ...(reviewBody ? { githubPrReviewBody: reviewBody } : {}),
             ...(context.reviewState ? { githubPrReviewState: context.reviewState } : {}),
-            ...(context.reviewAuthorLogin
-              ? { githubPrReviewAuthorLogin: context.reviewAuthorLogin }
+            ...(reviewAuthorLogin
+              ? { githubPrReviewAuthorLogin: reviewAuthorLogin }
               : {}),
+            ...(actionableReviewFeedback ? { githubReviewFeedbackActionable: true } : {}),
           },
           // Coalesce rapid bursts on the same PR/event so a single review
           // submission can't fan into N author runs. Parallel to the
@@ -898,18 +1181,19 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
           // scoped by issue so two issues sharing a PR each get their own.
           ...(isPrWake
             ? {
-                idempotencyKey: `pr_review_author:${issue.id}:${context.repoFullName ?? "unknown"}:${context.prNumber}:${context.wakeReason}`,
+                idempotencyKey: authorWakeIdempotencyKey ??
+                  `pr_review_author:${issue.id}:${context.repoFullName ?? "unknown"}:${context.prNumber}:${context.wakeReason}`,
               }
             : {}),
         });
-        wakes.push({ issueIdentifier: issue.identifier, agentId: issue.assigneeAgentId });
+        wakes.push({ issueIdentifier: issue.identifier, agentId: effectiveAssigneeAgentId });
       } catch (err) {
         logger.error(
           {
             err,
             issueId: issue.id,
             identifier: issue.identifier,
-            agentId: issue.assigneeAgentId,
+            agentId: effectiveAssigneeAgentId,
             event: eventName,
           },
           "github webhook wake failed",
@@ -926,12 +1210,13 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
         prNumber: context.prNumber,
         repoFullName: context.repoFullName,
         wakeCount: wakes.length,
+        reopenedCount: reopened.length,
         skippedCount: skipped.length,
       },
       "github webhook drove issue wakes",
     );
 
-    res.status(200).json({ ok: true, wakes, skipped });
+    res.status(200).json({ ok: true, wakes, skipped, reopened });
   });
 
   return router;

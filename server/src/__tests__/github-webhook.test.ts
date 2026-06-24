@@ -15,6 +15,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
@@ -261,6 +262,36 @@ describe("github-webhook pure helpers", () => {
     ).toBeNull();
   });
 
+  it("treats an actionable Ally consolidated PR review comment as author feedback, not a reviewer request", () => {
+    const ctx = __test_resolveEventContext("issue_comment", {
+      action: "created",
+      issue: {
+        number: 269,
+        title: "Fix PEN-1126 hosted vault follow-up",
+        body: "Closes PEN-1126",
+        html_url: "https://github.com/Blockcast/penstock-llm-proxy-core/pull/269",
+        pull_request: { url: "https://api.github.com/repos/Blockcast/penstock-llm-proxy-core/pulls/269" },
+      },
+      comment: {
+        id: 4784546377,
+        body: "## Ally — Consolidated PR Review\n\n### Important Issues (1)\n\nI1: The vault health probe still points at the wrong route.\n\n### Recommended Action\n\nFix I1 before merge.",
+        html_url: "https://github.com/Blockcast/penstock-llm-proxy-core/pull/269#issuecomment-4784546377",
+        user: { login: "allyblockcast[bot]" },
+      },
+      repository: { full_name: "Blockcast/penstock-llm-proxy-core" },
+    });
+
+    expect(ctx).toMatchObject({
+      identifiers: ["PEN-1126"],
+      wakeReason: "github_pr_review_feedback",
+      prNumber: 269,
+      repoFullName: "Blockcast/penstock-llm-proxy-core",
+      commentId: 4784546377,
+      commentAuthorLogin: "allyblockcast[bot]",
+    });
+    expect(ctx ? __test_shouldFirePrReviewerWake(ctx) : true).toBe(false);
+  });
+
   it("extracts review body / state / author from pull_request_review.submitted so the assignee wake can render it inline (BLO-6300)", () => {
     const ctx = __test_resolveEventContext("pull_request_review", {
       action: "submitted",
@@ -443,7 +474,7 @@ describeEmbeddedPostgres("github-webhook route", () => {
     await tempDb?.cleanup();
   });
 
-  function buildApp(config: Pick<GithubWebhookConfig, "prReviewerAgentId" | "dependabotAgentId" | "dependabotMinSeverity" | "heartbeatOptions"> = {}) {
+  function buildApp(config: Pick<GithubWebhookConfig, "prReviewerAgentId" | "prReviewerBotLogin" | "dependabotAgentId" | "dependabotMinSeverity" | "heartbeatOptions"> = {}) {
     const app = express();
     app.use(express.json({
       verify: (req, _res, buf) => {
@@ -838,6 +869,129 @@ describeEmbeddedPostgres("github-webhook route", () => {
       paperclipIdentifiers: ["BLO-3182"],
     });
     expect(wakes[0]!.reason).toBe("github_check_completed");
+  });
+
+  it("reopens an in_review issue when Ally posts actionable PR feedback and ignores done siblings on the same PR", async () => {
+    const { companyId, agentId, issueId } = await seedIssueWithIdentifier("PEN-1126", { status: "in_review" });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Already finished child",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1124,
+      identifier: "PEN-1124",
+    });
+
+    const app = buildApp({ prReviewerBotLogin: "allyblockcast[bot]" });
+    const payload = {
+      action: "created",
+      issue: {
+        number: 269,
+        title: "Fix hosted vault onboarding",
+        body: "Closes PEN-1126 and PEN-1124",
+        html_url: "https://github.com/Blockcast/penstock-llm-proxy-core/pull/269",
+        pull_request: { url: "https://api.github.com/repos/Blockcast/penstock-llm-proxy-core/pulls/269" },
+        user: { login: "codex-bot" },
+      },
+      comment: {
+        id: 4784546377,
+        body: [
+          "## Ally — Consolidated PR Review",
+          "",
+          "### Important Issues (1)",
+          "",
+          "I1: The vault health probe still points at the wrong route.",
+          "",
+          "### Recommended Action",
+          "",
+          "Fix I1 before merge.",
+        ].join("\n"),
+        html_url: "https://github.com/Blockcast/penstock-llm-proxy-core/pull/269#issuecomment-4784546377",
+        user: { login: "allyblockcast[bot]" },
+      },
+      repository: { full_name: "Blockcast/penstock-llm-proxy-core" },
+    };
+
+    const { body, signature } = signedRequest(payload);
+    const res = await request(app)
+      .post("/api/webhooks/github")
+      .set("x-github-event", "issue_comment")
+      .set("x-hub-signature-256", signature)
+      .set("x-github-delivery", "delivery-ally-feedback-1")
+      .set("content-type", "application/json")
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.body.reopened).toEqual([
+      { issueIdentifier: "PEN-1126", commentId: expect.any(String) },
+    ]);
+    expect(res.body.wakes).toEqual([
+      { issueIdentifier: "PEN-1126", agentId },
+    ]);
+    expect(res.body.skipped).toContainEqual({
+      issueIdentifier: "PEN-1124",
+      reason: "terminal_status",
+    });
+
+    const [updatedIssue] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(updatedIssue?.status).toBe("in_progress");
+
+    const comments = await db
+      .select({ id: issueComments.id, body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("## Changes Requested");
+    expect(comments[0]!.body).toContain("https://github.com/Blockcast/penstock-llm-proxy-core/pull/269#issuecomment-4784546377");
+
+    const wakes = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({
+      reason: "github_pr_review_feedback",
+      payload: expect.objectContaining({
+        issueId,
+        wakeCommentId: comments[0]!.id,
+        source: "github",
+        event: "issue_comment",
+        prNumber: 269,
+        repoFullName: "Blockcast/penstock-llm-proxy-core",
+      }),
+    });
+
+    const duplicateRes = await request(app)
+      .post("/api/webhooks/github")
+      .set("x-github-event", "issue_comment")
+      .set("x-hub-signature-256", signature)
+      .set("x-github-delivery", "delivery-ally-feedback-1")
+      .set("content-type", "application/json")
+      .send(body);
+    expect(duplicateRes.status).toBe(200);
+    expect(duplicateRes.body.skipped).toContainEqual({
+      issueIdentifier: "PEN-1126",
+      reason: "duplicate_review_feedback",
+    });
+
+    const commentsAfterDuplicate = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(commentsAfterDuplicate).toHaveLength(1);
+    const wakesAfterDuplicate = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakesAfterDuplicate).toHaveLength(1);
   });
 
   function dependabotPayload(severity: string, action = "created", alertNumber = 58) {
