@@ -2,12 +2,12 @@
 
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { IssueStatusBadge, IssueStatusGlyph, StatusBadge } from "./StatusBadge";
-import { brandChipBadge, issueStatusColor, statusBadgeClassic } from "../lib/status-colors";
+import { AgentStatusBadge, IssueStatusBadge, StatusBadge } from "./StatusBadge";
+import { agentStatusVar, statusBadgeClassic, taskStatusVar } from "../lib/status-colors";
 
-// The brand chips ship behind the Conference Room Chat experimental flag
-// (PAP-139). These suites were written against the NUX UI, so the flag is
-// seeded ON; the classic-fallback suite below flips it OFF.
+// The generic StatusBadge (runs/goals/approvals) keeps the PAP-75 brand palette
+// behind the Conference Room Chat flag (PAP-139). Seeded ON; the suite below
+// flips it OFF. The task/agent status chips no longer depend on this flag.
 const conferenceRoomChatFlag = vi.hoisted(() => ({ enabled: true }));
 vi.mock("../hooks/useConferenceRoomChatEnabled", () => ({
   useConferenceRoomChatEnabled: () => ({ enabled: conferenceRoomChatFlag.enabled, loaded: true }),
@@ -18,114 +18,78 @@ afterEach(() => {
 });
 
 /**
- * PAP-99 (PAP-95e): issue/task status chips adopt the PAP-75 brand palette and
- * carry their glyph icon. These tests lock the colour mapping ("blue =
- * liveness": todo → amber, in_progress → blue, in_review → violet) and assert a
- * glyph is always present, against the brand `.task-chip` tokens.
+ * Issue/task status chips carry the unified glyph and are recolored from the
+ * `--status-task-*` base hue via the `.status-chip` color-mix helper.
  */
 describe("IssueStatusBadge", () => {
-  it("maps each issue status to its PAP-75 brand colour token", () => {
-    const cases: Record<string, keyof typeof brandChipBadge> = {
-      backlog: "gray",
-      todo: "amber",
-      in_progress: "blue",
-      in_review: "violet",
-      done: "green",
-      blocked: "red",
-      cancelled: "gray",
-    };
-    for (const [status, color] of Object.entries(cases)) {
-      expect(issueStatusColor[status]).toBe(color);
+  it("wires each issue status to its --status-task-* base hue, with a glyph", () => {
+    for (const [status, cssVar] of Object.entries(taskStatusVar)) {
       const html = renderToStaticMarkup(<IssueStatusBadge status={status} />);
-      // Brand chip carries a 1px border + the colour's light + dark classes.
+      expect(html).toContain("status-chip");
       expect(html).toContain("border");
-      expect(html).toContain(brandChipBadge[color].split(" ")[0]); // light bg hex
-      // Every chip carries a glyph (inline SVG).
-      expect(html).toContain("<svg");
-      // Human-readable label, underscores spaced out.
-      expect(html).toContain(status.replace(/_/g, " "));
+      expect(html).toContain(`var(${cssVar})`);
+      expect(html).toContain('viewBox="0 0 24 24"'); // unified glyph
     }
   });
 
-  it("uses liveness blue for in_progress (not amber) and amber for todo (not blue)", () => {
-    const prog = renderToStaticMarkup(<IssueStatusBadge status="in_progress" />);
-    expect(prog).toContain("#DBEAFE"); // blue light bg
-    expect(prog).not.toContain("#FEF3C7"); // not amber
-    const todo = renderToStaticMarkup(<IssueStatusBadge status="todo" />);
-    expect(todo).toContain("#FEF3C7"); // amber light bg
-    expect(todo).not.toContain("#DBEAFE"); // not blue
+  it("points in_progress at the blue liveness var and todo at the amber var", () => {
+    expect(renderToStaticMarkup(<IssueStatusBadge status="in_progress" />)).toContain("var(--status-task-in_progress)");
+    expect(renderToStaticMarkup(<IssueStatusBadge status="todo" />)).toContain("var(--status-task-todo)");
   });
 
-  it("renders in_review with the reserved violet token", () => {
+  it("sentence-cases the label and uses regular weight", () => {
     const html = renderToStaticMarkup(<IssueStatusBadge status="in_review" />);
-    expect(html).toContain("#EDE9FE");
-    expect(html).toContain("#7C3AED");
+    expect(html).toContain("In review");
+    expect(html).not.toContain("In Review"); // sentence case, not title case
+    expect(html).toContain("font-normal");
+    expect(html).not.toContain("font-medium");
   });
 
   it("strikes through cancelled chips", () => {
-    const html = renderToStaticMarkup(<IssueStatusBadge status="cancelled" />);
-    expect(html).toContain("line-through");
+    expect(renderToStaticMarkup(<IssueStatusBadge status="cancelled" />)).toContain("line-through");
   });
 
-  it("falls back to the gray token for unknown statuses", () => {
-    const html = renderToStaticMarkup(<IssueStatusBadge status="mystery" />);
-    expect(html).toContain(brandChipBadge.gray.split(" ")[0]);
+  it("falls back to the backlog (gray) var for unknown statuses", () => {
+    expect(renderToStaticMarkup(<IssueStatusBadge status="mystery" />)).toContain("var(--status-task-backlog)");
+  });
+
+  it("is independent of the Conference Room Chat flag", () => {
+    conferenceRoomChatFlag.enabled = false;
+    const html = renderToStaticMarkup(<IssueStatusBadge status="todo" />);
+    expect(html).toContain("status-chip");
+    expect(html).toContain('viewBox="0 0 24 24"');
+    expect(html).toContain("Todo");
   });
 });
 
-describe("IssueStatusBadge — Conference Room Chat flag OFF (PAP-139)", () => {
-  it("falls back to the plain master badge (no brand chip, no glyph)", () => {
-    conferenceRoomChatFlag.enabled = false;
-    const html = renderToStaticMarkup(<IssueStatusBadge status="in_progress" />);
-    expect(html).not.toContain("<svg");
-    expect(html).not.toContain("#DBEAFE");
-    // Master's StatusBadge markup with master's hues (in_progress → yellow).
-    expect(html).toBe(renderToStaticMarkup(<StatusBadge status="in_progress" />));
-    expect(html).toContain(statusBadgeClassic.in_progress!.split(" ")[0]); // bg-yellow-100
+/** Agent chips recolor from the `--status-agent-*` base hues. */
+describe("AgentStatusBadge", () => {
+  it("wires each agent status to its --status-agent-* base hue via status-chip", () => {
+    for (const [status, cssVar] of Object.entries(agentStatusVar)) {
+      const html = renderToStaticMarkup(<AgentStatusBadge status={status} />);
+      expect(html).toContain("status-chip");
+      expect(html).toContain(`var(${cssVar})`);
+    }
   });
 
-  it("keeps master's blue todo / yellow in_progress palette on StatusBadge", () => {
+  it('renders "active" as the idle label', () => {
+    expect(renderToStaticMarkup(<AgentStatusBadge status="active" />)).toContain("idle");
+  });
+});
+
+/** The generic badge still honors the PAP-139 Conference Room Chat palette. */
+describe("StatusBadge — Conference Room Chat flag palettes (PAP-139)", () => {
+  it("keeps master's blue todo / yellow in_progress palette when the flag is OFF", () => {
     conferenceRoomChatFlag.enabled = false;
     expect(renderToStaticMarkup(<StatusBadge status="todo" />)).toContain("bg-blue-100");
     expect(renderToStaticMarkup(<StatusBadge status="in_progress" />)).toContain("bg-yellow-100");
+    expect(renderToStaticMarkup(<StatusBadge status="in_progress" />)).toContain(
+      statusBadgeClassic.in_progress!.split(" ")[0],
+    );
   });
 
-  it("uses the brand hues on StatusBadge when the flag is ON", () => {
+  it("uses the brand hues when the flag is ON", () => {
     expect(renderToStaticMarkup(<StatusBadge status="todo" />)).toContain("bg-amber-100");
     expect(renderToStaticMarkup(<StatusBadge status="in_progress" />)).toContain("bg-blue-100");
-  });
-});
-
-describe("IssueStatusGlyph", () => {
-  it("gives in_progress a half-filled ring (liveness)", () => {
-    const html = renderToStaticMarkup(<IssueStatusGlyph status="in_progress" />);
-    // Open ring + the right-half semicircle fill path from status-reference.html.
-    expect(html).toContain('d="M6 1.5 A4.5 4.5 0 0 1 6 10.5 Z"');
-  });
-
-  it("gives in_review a ring + centre dot (not a clock)", () => {
-    const html = renderToStaticMarkup(<IssueStatusGlyph status="in_review" />);
-    expect(html).toContain('r="2"');
-  });
-
-  it("gives done a filled circle with a knocked-out check", () => {
-    const html = renderToStaticMarkup(<IssueStatusGlyph status="done" />);
-    expect(html).toContain('d="M3.5 6 5.5 8 8.5 4.5"');
-    expect(html).toContain("stroke-background");
-  });
-
-  it("gives blocked a ring + bar", () => {
-    const html = renderToStaticMarkup(<IssueStatusGlyph status="blocked" />);
-    expect(html).toContain("<rect");
-  });
-
-  it("gives backlog a dashed ring", () => {
-    const html = renderToStaticMarkup(<IssueStatusGlyph status="backlog" />);
-    expect(html).toContain('stroke-dasharray="2 2"');
-  });
-
-  it("gives cancelled a ring + slash", () => {
-    const html = renderToStaticMarkup(<IssueStatusGlyph status="cancelled" />);
-    expect(html).toContain('d="M3 9 9 3"');
   });
 });
