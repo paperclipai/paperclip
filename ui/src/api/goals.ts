@@ -1,4 +1,4 @@
-import type { Goal } from "@paperclipai/shared";
+import type { Goal, GoalProgressRow } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const goalsApi = {
@@ -8,4 +8,5 @@ export const goalsApi = {
     api.post<Goal>(`/companies/${companyId}/goals`, data),
   update: (id: string, data: Record<string, unknown>) => api.patch<Goal>(`/goals/${id}`, data),
   remove: (id: string) => api.delete<Goal>(`/goals/${id}`),
+  progress: (companyId: string) => api.get<GoalProgressRow[]>(`/companies/${companyId}/goals/progress`),
 };

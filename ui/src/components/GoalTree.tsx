@@ -1,4 +1,4 @@
-import type { Goal } from "@paperclipai/shared";
+import type { Goal, GoalProgressRow } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { StatusBadge } from "./StatusBadge";
 import { ChevronRight } from "lucide-react";
@@ -9,6 +9,7 @@ interface GoalTreeProps {
   goals: Goal[];
   goalLink?: (goal: Goal) => string;
   onSelect?: (goal: Goal) => void;
+  progressByGoalId?: Map<string, GoalProgressRow>;
 }
 
 interface GoalNodeProps {
@@ -18,12 +19,35 @@ interface GoalNodeProps {
   depth: number;
   goalLink?: (goal: Goal) => string;
   onSelect?: (goal: Goal) => void;
+  progressByGoalId?: Map<string, GoalProgressRow>;
 }
 
-function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalNodeProps) {
+function GoalProgressBar({ row }: { row: GoalProgressRow }) {
+  if (row.totalTasks === 0) return null;
+  const pct = Math.round((row.doneTasks / row.totalTasks) * 100);
+  return (
+    <div className="flex items-center gap-1.5 shrink-0">
+      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn(
+            "h-full rounded-full transition-[width]",
+            pct === 100 ? "bg-emerald-500" : pct > 50 ? "bg-blue-500" : "bg-muted-foreground/50",
+          )}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="text-xs tabular-nums text-muted-foreground">
+        {row.doneTasks}/{row.totalTasks}
+      </span>
+    </div>
+  );
+}
+
+function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect, progressByGoalId }: GoalNodeProps) {
   const [expanded, setExpanded] = useState(true);
   const hasChildren = children.length > 0;
   const link = goalLink?.(goal);
+  const progress = progressByGoalId?.get(goal.id);
 
   const inner = (
     <>
@@ -45,6 +69,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
       )}
       <span className="text-xs text-muted-foreground capitalize">{goal.level}</span>
       <span className="flex-1 truncate">{goal.title}</span>
+      {progress && <GoalProgressBar row={progress} />}
       <StatusBadge status={goal.status} />
     </>
   );
@@ -83,6 +108,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
               depth={depth + 1}
               goalLink={goalLink}
               onSelect={onSelect}
+              progressByGoalId={progressByGoalId}
             />
           ))}
         </div>
@@ -91,7 +117,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
   );
 }
 
-export function GoalTree({ goals, goalLink, onSelect }: GoalTreeProps) {
+export function GoalTree({ goals, goalLink, onSelect, progressByGoalId }: GoalTreeProps) {
   const goalIds = new Set(goals.map((g) => g.id));
   const roots = goals.filter((g) => !g.parentId || !goalIds.has(g.parentId));
 
@@ -110,6 +136,7 @@ export function GoalTree({ goals, goalLink, onSelect }: GoalTreeProps) {
           depth={0}
           goalLink={goalLink}
           onSelect={onSelect}
+          progressByGoalId={progressByGoalId}
         />
       ))}
     </div>

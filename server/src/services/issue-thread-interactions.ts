@@ -749,6 +749,40 @@ export function issueThreadInteractionService(db: Db) {
       return rows.map((row) => hydrateInteraction(row));
     },
 
+    // All pending interactions across a company, each paired with light issue
+    // context, oldest first — powers the cross-task "Review" queue.
+    listPendingForCompany: async (companyId: string) => {
+      const rows = await db
+        .select({
+          interaction: issueThreadInteractions,
+          issueId: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          projectId: issues.projectId,
+        })
+        .from(issueThreadInteractions)
+        .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issueThreadInteractions.status, "pending"),
+          ),
+        )
+        .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
+
+      return rows.map((row) => ({
+        issue: {
+          id: row.issueId,
+          identifier: row.identifier,
+          title: row.title,
+          status: row.status,
+          projectId: row.projectId,
+        },
+        interaction: hydrateInteraction(row.interaction),
+      }));
+    },
+
     getById: async (interactionId: string) => {
       const row = await db
         .select()

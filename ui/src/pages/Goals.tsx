@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { GoalProgressRow } from "@paperclipai/shared";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -25,6 +26,20 @@ export function Goals() {
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  const { data: progressRows } = useQuery({
+    queryKey: queryKeys.goals.progress(selectedCompanyId!),
+    queryFn: () => goalsApi.progress(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const progressByGoalId = useMemo(() => {
+    const map = new Map<string, GoalProgressRow>();
+    for (const row of progressRows ?? []) {
+      map.set(row.goalId, row);
+    }
+    return map;
+  }, [progressRows]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Target} message="Select a company to view goals." />;
@@ -55,7 +70,11 @@ export function Goals() {
               New Goal
             </Button>
           </div>
-          <GoalTree goals={goals} goalLink={(goal) => `/goals/${goal.id}`} />
+          <GoalTree
+            goals={goals}
+            goalLink={(goal) => `/goals/${goal.id}`}
+            progressByGoalId={progressByGoalId}
+          />
         </>
       )}
     </div>

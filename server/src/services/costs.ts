@@ -500,5 +500,21 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
     },
+
+    dailySpend: async (companyId: string, range?: CostDateRange) => {
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      const dayExpr = sql<string>`date_trunc('day', ${costEvents.occurredAt} at time zone 'UTC')::date::text`;
+      return db
+        .select({
+          date: dayExpr,
+          costCents: sumAsNumber(costEvents.costCents),
+        })
+        .from(costEvents)
+        .where(and(...conditions))
+        .groupBy(dayExpr)
+        .orderBy(dayExpr);
+    },
   };
 }

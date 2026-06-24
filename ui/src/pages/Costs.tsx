@@ -6,6 +6,7 @@ import type {
   CostByBiller,
   CostByProviderModel,
   CostWindowSpendRow,
+  DailySpendRow,
   FinanceEvent,
   QuotaWindow,
 } from "@paperclipai/shared";
@@ -81,18 +82,103 @@ function MetricTile({
   icon: ComponentType<{ className?: string }>;
 }) {
   return (
-    <div className="border border-border p-4">
+    <div data-slot="card" className="border p-6">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
-          <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
-          <div className="mt-1 text-xs leading-5 text-muted-foreground">{subtitle}</div>
+          <div className="font-display mt-3 text-3xl tracking-tight tabular-nums">{value}</div>
+          <div className="mt-1.5 text-xs leading-5 text-muted-foreground">{subtitle}</div>
         </div>
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center border border-border">
-          <Icon className="h-4 w-4 text-muted-foreground" />
-        </div>
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+          <Icon className="h-4 w-4" />
+        </span>
       </div>
     </div>
+  );
+}
+
+function BudgetForecastCard({
+  rows,
+  budgetCents,
+}: {
+  rows: DailySpendRow[];
+  budgetCents: number;
+}) {
+  if (rows.length === 0) return null;
+
+  const now = new Date();
+  const daysInMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() + 1, 0).getUTCDate();
+  const dayOfMonth = now.getUTCDate();
+  const daysRemaining = daysInMonth - dayOfMonth;
+
+  const totalSpent = rows.reduce((s, r) => s + r.costCents, 0);
+  const avgPerDay = rows.length > 0 ? totalSpent / rows.length : 0;
+  const projected = totalSpent + avgPerDay * daysRemaining;
+  const overBudget = budgetCents > 0 && projected > budgetCents;
+  const maxBar = Math.max(...rows.map((r) => r.costCents), 1);
+
+  return (
+    <Card>
+      <CardHeader className="px-5 pt-5 pb-2">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">Budget forecast</CardTitle>
+            <CardDescription>Daily spend trend with month-end projection.</CardDescription>
+          </div>
+          {overBudget && (
+            <span className="shrink-0 rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">
+              Over budget
+            </span>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="px-5 pb-5 pt-2 space-y-4">
+        <div className="flex items-end gap-0.5 h-20">
+          {rows.map((row) => {
+            const heightPct = (row.costCents / maxBar) * 100;
+            const isToday = row.date === now.toISOString().slice(0, 10);
+            return (
+              <div
+                key={row.date}
+                className="group relative flex-1 flex flex-col justify-end"
+                title={`${row.date}: ${formatCents(row.costCents)}`}
+              >
+                <div
+                  className={cn(
+                    "w-full rounded-sm transition-opacity",
+                    isToday ? "bg-blue-500" : "bg-muted-foreground/30",
+                    "group-hover:opacity-80",
+                  )}
+                  style={{ height: `${Math.max(heightPct, 2)}%` }}
+                />
+              </div>
+            );
+          })}
+        </div>
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Month-to-date</div>
+            <div className="mt-1 font-semibold tabular-nums">{formatCents(totalSpent)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Projected month-end</div>
+            <div className={cn("mt-1 font-semibold tabular-nums", overBudget && "text-red-600 dark:text-red-400")}>
+              {formatCents(Math.round(projected))}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Daily average</div>
+            <div className="mt-1 font-semibold tabular-nums">{formatCents(Math.round(avgPerDay))}</div>
+          </div>
+          {budgetCents > 0 && (
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Monthly budget</div>
+              <div className="mt-1 font-semibold tabular-nums">{formatCents(budgetCents)}</div>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -242,6 +328,13 @@ export function Costs() {
       return { summary, byAgent, byProject, byAgentModel };
     },
     enabled: !!selectedCompanyId && customReady,
+  });
+
+  const { data: dailyData } = useQuery({
+    queryKey: queryKeys.dailyCosts(companyId, from || undefined, to || undefined),
+    queryFn: () => costsApi.daily(companyId, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId && customReady && mainTab === "overview",
+    staleTime: 60_000,
   });
 
   const { data: financeData, isLoading: financeLoading, error: financeError } = useQuery({
@@ -829,6 +922,13 @@ export function Costs() {
                   <FinanceTimelineCard rows={topFinanceEvents.slice(0, 6)} emptyMessage="No finance events yet. Add account-level charges once biller invoices or credits land." />
                 </div>
               </div>
+
+              {dailyData && dailyData.length > 0 && (
+                <BudgetForecastCard
+                  rows={dailyData}
+                  budgetCents={spendData?.summary.budgetCents ?? 0}
+                />
+              )}
             </>
           )}
         </TabsContent>

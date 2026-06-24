@@ -126,3 +126,10 @@ export interface CostByProject {
   cachedInputTokens: number;
   outputTokens: number;
 }
+
+/** daily spend aggregated for the requested date range */
+export interface DailySpendRow {
+  /** UTC calendar day as ISO date string, e.g. "2026-06-24" */
+  date: string;
+  costCents: number;
+}
