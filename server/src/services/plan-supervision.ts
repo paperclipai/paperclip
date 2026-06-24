@@ -35,6 +35,8 @@ export interface PlanHealthDiagnosis {
 }
 
 // Run statuses that are not active — the agent has stopped processing.
+// SYNC: inverse of CANCELLABLE_RUN_STATUSES in routes/plans.ts — if a new
+// status is added, update both constants.
 const TERMINAL_RUN_STATUSES = new Set(["failed", "timed_out", "cancelled", "succeeded"]);
 // Issue statuses that mean the assignee should still be making progress.
 const ACTIVE_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;

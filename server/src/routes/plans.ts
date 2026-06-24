@@ -23,6 +23,8 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 // Heartbeat run statuses that can be cancelled. Mirrors
 // CANCELLABLE_HEARTBEAT_RUN_STATUSES in heartbeat.ts (module-private there);
 // used to reject CTO cancel actions against already-terminal runs.
+// SYNC: inverse of TERMINAL_RUN_STATUSES in services/plan-supervision.ts — if a new
+// status is added, update both constants.
 const CANCELLABLE_RUN_STATUSES: readonly string[] = ["queued", "running", "scheduled_retry"];
 
 // Per-actor rate limit for the destructive supervision actions endpoint

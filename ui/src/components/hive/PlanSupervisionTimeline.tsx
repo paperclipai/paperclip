@@ -169,10 +169,10 @@ export function PlanSupervisionTimeline({ planIssueId, planState }: PlanSupervis
                       variant="outline"
                       size="sm"
                       className="h-6 shrink-0 px-2 text-[11px] text-red-700 hover:text-red-800 dark:text-red-300"
-                      onClick={() => cancelRun.mutate({ runId: agent.runId!, targetAgentId: agent.agentId })}
+                      onClick={() => cancelRun.mutate({ runId: agent.runId, targetAgentId: agent.agentId })}
                       disabled={actionPending}
                     >
-                      Cancel run
+                      {cancelRun.isPending ? "Cancelling…" : "Cancel run"}
                     </Button>
                   )}
                 </li>
