@@ -40,11 +40,11 @@
   ],
   "scripts": {
     "build": "pnpm run build:manifest && tsc -p tsconfig.json",
-    "build:manifest": "node ../../cli/node_modules/tsx/dist/cli.mjs scripts/build-catalog-manifest.ts",
+    "build:manifest": "tsx scripts/build-catalog-manifest.ts",
     "clean": "rm -rf dist",
     "test": "pnpm -w exec vitest run --root packages/teams-catalog --config vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "validate": "node ../../cli/node_modules/tsx/dist/cli.mjs scripts/validate-catalog.ts"
+    "validate": "tsx scripts/validate-catalog.ts"
   },
   "devDependencies": {
     "@types/node": "^22.19.21"
