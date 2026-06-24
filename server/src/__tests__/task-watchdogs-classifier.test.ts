@@ -25,6 +25,7 @@ function issue(overrides: Partial<TaskWatchdogClassifierIssue> = {}): TaskWatchd
 function classify(overrides: Partial<Parameters<typeof classifyTaskWatchdogSubtree>[0]> = {}) {
   return classifyTaskWatchdogSubtree({
     watchdog: {
+      id: "watchdog-config-1",
       companyId,
       issueId: sourceId,
       lastReviewedFingerprint: null,
@@ -62,6 +63,7 @@ describe("task watchdog subtree classifier", () => {
     expect(result.state).toBe("stopped");
     if (result.state !== "stopped") return;
     expect(result.stopFingerprint).toMatch(/^task_watchdog_stop:/);
+    expect(result.proofObligationFingerprint).toMatch(/^task_watchdog_proof:/);
     expect(result.stoppedLeaves).toEqual([
       expect.objectContaining({
         issueId: childId,
@@ -80,6 +82,7 @@ describe("task watchdog subtree classifier", () => {
 
     const reviewed = classify({
       watchdog: {
+        id: "watchdog-config-1",
         companyId,
         issueId: sourceId,
         lastReviewedFingerprint: stopped.stopFingerprint,
@@ -186,6 +189,7 @@ describe("task watchdog subtree classifier", () => {
   it("does not evaluate a task-watchdog issue as a watched source", () => {
     const result = classify({
       watchdog: {
+        id: "watchdog-config-1",
         companyId,
         issueId: watchdogId,
         lastReviewedFingerprint: null,
@@ -201,5 +205,83 @@ describe("task watchdog subtree classifier", () => {
     });
 
     expect(result.state).toBe("not_applicable");
+  });
+
+  it("changes the stopped proof when blocker state changes", () => {
+    const blockedIssue = issue({ status: "blocked" });
+    const blocked = classify({
+      issues: [blockedIssue, issue({ id: "blocker-1", identifier: "PAP-5", title: "Blocker", status: "blocked" })],
+      blockers: [{
+        companyId,
+        blockedIssueId: sourceId,
+        blockerIssueId: "blocker-1",
+        blockerStatus: "blocked",
+        blockerUpdatedAt: new Date("2026-06-17T21:00:00.000Z"),
+      }],
+    });
+    const resolved = classify({
+      issues: [blockedIssue, issue({ id: "blocker-1", identifier: "PAP-5", title: "Blocker", status: "done" })],
+      blockers: [{
+        companyId,
+        blockedIssueId: sourceId,
+        blockerIssueId: "blocker-1",
+        blockerStatus: "done",
+        blockerUpdatedAt: new Date("2026-06-17T22:00:00.000Z"),
+      }],
+    });
+
+    expect(blocked.state).toBe("stopped");
+    expect(resolved.state).toBe("stopped");
+    if (blocked.state !== "stopped" || resolved.state !== "stopped") return;
+    expect(blocked.stoppedLeaves[0]?.blockers).toEqual([
+      { issueId: "blocker-1", status: "blocked", updatedAt: "2026-06-17T21:00:00.000Z" },
+    ]);
+    expect(resolved.stoppedLeaves[0]?.blockers).toEqual([
+      { issueId: "blocker-1", status: "done", updatedAt: "2026-06-17T22:00:00.000Z" },
+    ]);
+    expect(resolved.stopFingerprint).not.toBe(blocked.stopFingerprint);
+    expect(resolved.proofObligationFingerprint).not.toBe(blocked.proofObligationFingerprint);
+  });
+
+  it("includes the watchdog id in proof obligation fingerprints", () => {
+    const first = classify({ issues: [issue({ status: "done" })] });
+    const second = classify({
+      watchdog: {
+        id: "watchdog-config-2",
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: null,
+      },
+      issues: [issue({ status: "done" })],
+    });
+
+    expect(first.state).toBe("stopped");
+    expect(second.state).toBe("stopped");
+    if (first.state !== "stopped" || second.state !== "stopped") return;
+    expect(second.stopFingerprint).toBe(first.stopFingerprint);
+    expect(second.proofObligationFingerprint).not.toBe(first.proofObligationFingerprint);
+  });
+
+  it("suppresses a repeated proof obligation when a typed outcome already exists", () => {
+    const stopped = classify({ issues: [issue({ status: "done" })] });
+    expect(stopped.state).toBe("stopped");
+    if (stopped.state !== "stopped") return;
+
+    const repeated = classify({
+      issues: [issue({ status: "done" })],
+      proofOutcomes: [{
+        companyId,
+        watchdogId: "watchdog-config-1",
+        stopFingerprint: stopped.stopFingerprint,
+        proofObligationFingerprint: stopped.proofObligationFingerprint,
+        outcome: "accepted",
+      }],
+    });
+
+    expect(repeated).toMatchObject({
+      state: "already_reviewed",
+      stopFingerprint: stopped.stopFingerprint,
+      proofObligationFingerprint: stopped.proofObligationFingerprint,
+    });
   });
 });

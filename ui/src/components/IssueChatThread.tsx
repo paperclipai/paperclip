@@ -40,6 +40,7 @@ import type {
   IssueRecoveryAction,
   IssueRelationIssueSummary,
   IssueScheduledRetry,
+  IssueWatchdogSummary,
   SuccessfulRunHandoffState,
   IssueWorkMode,
 } from "@paperclipai/shared";
@@ -170,6 +171,7 @@ import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Co
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
+import { WatchdogStateCallout } from "./WatchdogStateCallout";
 import { SourceTrustBadge } from "./SourceTrustBadge";
 
 interface IssueChatMessageContext {
@@ -367,6 +369,8 @@ interface IssueChatThreadProps {
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
+  watchdog?: IssueWatchdogSummary | null;
+  monitorNextCheckAt?: Date | string | null;
   onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
   canFalsePositiveRecoveryAction?: boolean;
   legacyRecoverySourceIssue?: {
@@ -4088,6 +4092,8 @@ export function IssueChatThread({
   successfulRunHandoff = null,
   scheduledRetry = null,
   recoveryAction = null,
+  watchdog = null,
+  monitorNextCheckAt = null,
   onResolveRecoveryAction,
   canFalsePositiveRecoveryAction = false,
   legacyRecoverySourceIssue = null,
@@ -4833,6 +4839,16 @@ export function IssueChatThread({
                     }
                   />
                   <IssueAssigneePausedNotice agent={assignedAgent} />
+                  {issueId ? (
+                    <WatchdogStateCallout
+                      issueId={issueId}
+                      watchdog={watchdog}
+                      recoveryAction={recoveryAction}
+                      blockers={unresolvedBlockers}
+                      monitorNextCheckAt={monitorNextCheckAt}
+                      agentMap={agentMap}
+                    />
+                  ) : null}
                 </div>
               ) : null}
               {footer ? <div data-testid="issue-chat-thread-footer">{footer}</div> : null}

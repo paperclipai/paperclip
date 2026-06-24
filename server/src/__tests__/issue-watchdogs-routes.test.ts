@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRelations,
+  issueWatchdogProofOutcomes,
   issueWatchdogs,
   issues,
   principalPermissionGrants,
@@ -52,6 +53,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
+    await db.delete(issueWatchdogProofOutcomes);
     await db.delete(issueWatchdogs);
     await db.delete(issues);
     await db.delete(agents);
@@ -281,6 +283,79 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       "issue.watchdog_removed",
     ]);
     expect(actionNames).toContain("issue.task_watchdog_triggered");
+  });
+
+  it("surfaces the latest proof outcome and its redacted evidence on the watchdog read path", async () => {
+    // PAP-11887 Phase 3b read path: GET /issues/:id/watchdog must carry the
+    // most recent persisted proof outcome so the issue UI can render the latest
+    // verdict + bounded evidence without reconstructing the watchdog thread.
+    const companyId = await seedCompany();
+    const watchedRootId = await seedIssue(companyId, { identifier: "WDOG-PR1", issueNumber: 700 });
+    const watchdogIssueId = await seedIssue(companyId, {
+      identifier: "WDOG-PR2",
+      issueNumber: 701,
+      parentId: watchedRootId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const watchdogAgentId = await seedAgent(companyId, { name: "Proof Watchdog" });
+    const app = createApp(companyId);
+
+    const created = await request(app)
+      .put(`/api/issues/${watchedRootId}/watchdog`)
+      .send({ agentId: watchdogAgentId, instructions: "Verify the deploy host is healthy." });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const watchdogId = created.body.id as string;
+
+    // A read before any proof outcome leaves latestProofOutcome null (the UI's
+    // "armed but unreviewed" empty state).
+    const beforeOutcome = await request(app).get(`/api/issues/${watchedRootId}/watchdog`);
+    expect(beforeOutcome.status, JSON.stringify(beforeOutcome.body)).toBe(200);
+    expect(beforeOutcome.body.latestProofOutcome ?? null).toBeNull();
+
+    // Persist two outcomes; the read path must return the most recently observed.
+    await db.insert(issueWatchdogProofOutcomes).values({
+      companyId,
+      watchdogId,
+      sourceIssueId: watchedRootId,
+      watchdogIssueId,
+      targetIssueId: watchedRootId,
+      outcome: "deferred",
+      method: "https_probe",
+      observedAt: new Date("2026-06-24T10:00:00Z"),
+      resultClassification: "blocked_chain_pending",
+      redactedDetails: { target: "https://app.example/healthz" },
+      stopFingerprint: "task_watchdog_stop:old",
+      proofObligationFingerprint: "proof:old",
+    });
+    await db.insert(issueWatchdogProofOutcomes).values({
+      companyId,
+      watchdogId,
+      sourceIssueId: watchedRootId,
+      watchdogIssueId,
+      targetIssueId: watchedRootId,
+      outcome: "failed",
+      method: "https_probe",
+      observedAt: new Date("2026-06-24T12:00:00Z"),
+      resultClassification: "unhealthy_502",
+      redactedDetails: { target: "https://app.example/healthz", note: "***REDACTED***" },
+      stopFingerprint: "task_watchdog_stop:new",
+      proofObligationFingerprint: "proof:new",
+    });
+
+    const afterOutcome = await request(app).get(`/api/issues/${watchedRootId}/watchdog`);
+    expect(afterOutcome.status, JSON.stringify(afterOutcome.body)).toBe(200);
+    expect(afterOutcome.body.latestProofOutcome).toMatchObject({
+      outcome: "failed",
+      method: "https_probe",
+      resultClassification: "unhealthy_502",
+      stopFingerprint: "task_watchdog_stop:new",
+    });
+    // Evidence is surfaced verbatim — the read path never unredacts.
+    expect(afterOutcome.body.latestProofOutcome.redactedDetails).toMatchObject({
+      target: "https://app.example/healthz",
+      note: "***REDACTED***",
+    });
   });
 
   it("handles concurrent first-time watchdog upserts without duplicate-key failures", async () => {
@@ -564,6 +639,58 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
         watchdogIssueId,
       },
     });
+  });
+
+  it("redacts secret-bearing watchdog discovery evidence before persisting the follow-up issue", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Evidence Watchdog" });
+    const watchedRootId = await seedIssue(companyId, {
+      title: "Watched root",
+      identifier: "PAP-200",
+      issueNumber: 200,
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      identifier: "PAP-201",
+      issueNumber: 201,
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Fix leaked watchdog evidence",
+        watchdogDiscovery: {
+          kind: "product_bug",
+          evidenceMarkdown: [
+            "Probe URL: https://preview.example/run/123?token=secret&X-Amz-Signature=opaque",
+            "Response body: Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz123456",
+          ].join("\n"),
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.description).toContain("Probe URL: https://preview.example/run/123");
+    expect(res.body.description).toContain("Authorization: Bearer ***REDACTED***");
+    expect(res.body.description).not.toContain("token=secret");
+    expect(res.body.description).not.toContain("X-Amz-Signature");
+    expect(res.body.description).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz123456");
   });
 
   it("rejects watchdog interaction-resolution attempts outside the persisted watched subtree", async () => {

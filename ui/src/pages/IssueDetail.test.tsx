@@ -469,6 +469,28 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
   } as Issue;
 }
 
+function createWatchdogSummary(
+  overrides: Partial<NonNullable<Issue["watchdog"]>> = {},
+): NonNullable<Issue["watchdog"]> {
+  return {
+    id: "watchdog-1",
+    companyId: "company-1",
+    issueId: "issue-1",
+    watchdogAgentId: "agent-1",
+    instructions: "Watch for stalled proof obligations.",
+    status: "active",
+    watchdogIssueId: "watchdog-issue-1",
+    lastObservedFingerprint: "task_watchdog_stop:observed",
+    lastReviewedFingerprint: "task_watchdog_stop:reviewed",
+    lastTriggeredAt: null,
+    lastCompletedAt: null,
+    triggerCount: 1,
+    createdAt: new Date("2026-04-21T00:00:00.000Z"),
+    updatedAt: new Date("2026-04-21T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
 function createAttachment(overrides: Partial<IssueAttachment> & { id: string }): IssueAttachment {
   const { id, ...attachmentOverrides } = overrides;
   return {
@@ -1653,6 +1675,49 @@ describe("IssueDetail", () => {
       issueWorkMode: "ask",
     });
     expect(container.textContent).toContain("Ask mode");
+  });
+
+  it("does not pass watchdog state to the issue chat thread when task watchdogs are disabled", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({ watchdog: createWatchdogSummary() }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      watchdog: null,
+    });
+  });
+
+  it("passes watchdog state to the issue chat thread when task watchdogs are enabled", async () => {
+    const watchdog = createWatchdogSummary();
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
+      enableTaskWatchdogs: true,
+    });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ watchdog }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await vi.waitFor(() => {
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+        watchdog,
+      });
+    });
   });
 
   it("falls back to execCommand when copying the task from an insecure context", async () => {

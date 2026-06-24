@@ -25,6 +25,7 @@ import type {
   IssueThreadInteractionKind,
   IssueThreadInteractionStatus,
   IssueStatus,
+  IssueWatchdogProofOutcome,
 } from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
@@ -503,6 +504,21 @@ export interface IssueExecutionDecision {
 
 export type IssueWatchdogStatus = "active" | "disabled";
 
+export interface IssueWatchdogProofOutcomeSummary {
+  id: string;
+  outcome: IssueWatchdogProofOutcome;
+  targetIssueId: string | null;
+  method: string;
+  observedAt: Date;
+  resultClassification: string;
+  redactedDetails: Record<string, unknown>;
+  stopFingerprint: string;
+  proofObligationFingerprint: string;
+  createdByRunId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface IssueWatchdogSummary {
   id: string;
   companyId: string;
@@ -515,6 +531,7 @@ export interface IssueWatchdogSummary {
   lastReviewedFingerprint: string | null;
   lastTriggeredAt: Date | null;
   lastCompletedAt: Date | null;
+  latestProofOutcome?: IssueWatchdogProofOutcomeSummary | null;
   triggerCount: number;
   createdAt: Date;
   updatedAt: Date;

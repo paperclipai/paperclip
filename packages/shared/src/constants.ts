@@ -271,6 +271,14 @@ export type PluginIssueOriginKind = `plugin:${string}`;
 export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
 export const ISSUE_WATCHDOG_DISCOVERY_KINDS = ["product_bug", "platform_bug"] as const;
 export type IssueWatchdogDiscoveryKind = (typeof ISSUE_WATCHDOG_DISCOVERY_KINDS)[number];
+export const ISSUE_WATCHDOG_PROOF_OUTCOMES = [
+  "accepted",
+  "restored",
+  "deferred",
+  "failed",
+  "dismissed",
+] as const;
+export type IssueWatchdogProofOutcome = (typeof ISSUE_WATCHDOG_PROOF_OUTCOMES)[number];
 export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
 export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
 

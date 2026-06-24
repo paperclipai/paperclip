@@ -35,7 +35,8 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import { IssueReferencePill } from "./IssueReferencePill";
-import { formatDate, formatDateTime, cn, projectUrl } from "../lib/utils";
+import { formatDate, formatDateTime, cn, projectUrl, relativeTime } from "../lib/utils";
+import { WatchdogOutcomeBadge } from "./WatchdogOutcomeBadge";
 import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
 import type { IssueExternalObjectGroup } from "../hooks/useIssueExternalObjects";
 import {
@@ -1247,6 +1248,15 @@ export function IssueProperties({
   const watchdogIssueRef = (childIssues ?? []).find(
     (child) => child.id === issue.watchdog?.watchdogIssueId,
   );
+  // Rich watchdog state (latest proof outcome). Shares the query key with the
+  // pinned thread callout so both surfaces dedupe to one fetch. Only fires when
+  // a watchdog actually exists on this issue.
+  const watchdogStateQuery = useQuery({
+    queryKey: ["issue", issue.id, "watchdog"],
+    queryFn: () => issuesApi.getWatchdog(issue.id),
+    enabled: taskWatchdogsEnabled && !!issue.watchdog,
+  });
+  const latestProofOutcome = watchdogStateQuery.data?.latestProofOutcome ?? null;
   const watchdogTrigger = issue.watchdog ? (
     <span className="inline-flex min-w-0 items-center gap-1.5 text-sm">
       {(() => {
@@ -2640,6 +2650,42 @@ export function IssueProperties({
           >
             {watchdogContent}
           </PropertyPicker>
+        ) : null}
+
+        {taskWatchdogsEnabled && issue.watchdog && latestProofOutcome ? (
+          <PropertyRow label="Watchdog state">
+            <div className="flex min-w-0 flex-1 flex-col gap-1 text-xs">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <WatchdogOutcomeBadge outcome={latestProofOutcome.outcome} />
+                <span className="text-muted-foreground">
+                  reviewed {relativeTime(latestProofOutcome.observedAt)}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5 text-muted-foreground">
+                <code
+                  className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]"
+                  title={latestProofOutcome.method}
+                >
+                  {latestProofOutcome.resultClassification}
+                </code>
+                {issue.watchdog.lastObservedFingerprint &&
+                issue.watchdog.lastReviewedFingerprint &&
+                issue.watchdog.lastObservedFingerprint !== issue.watchdog.lastReviewedFingerprint ? (
+                  <span className="text-amber-600 dark:text-amber-400">review pending</span>
+                ) : null}
+              </div>
+            </div>
+          </PropertyRow>
+        ) : taskWatchdogsEnabled && issue.watchdog && watchdogStateQuery.isError ? (
+          <PropertyRow label="Watchdog state">
+            <button
+              type="button"
+              className="text-xs text-destructive underline-offset-2 hover:underline"
+              onClick={() => void watchdogStateQuery.refetch()}
+            >
+              Couldn't load — retry
+            </button>
+          </PropertyRow>
         ) : null}
 
         {issue.requestDepth > 0 && (

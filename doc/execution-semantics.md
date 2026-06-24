@@ -557,6 +557,35 @@ The watchdog should verify stopped leaves against comments, documents, work prod
 
 When work should continue, the watchdog restores a live path inside the watched subtree: reopen or reassign stuck work, create follow-up issues, repair blockers, set a monitor, or resolve an eligible plan confirmation. When the stopped state is legitimate, the watchdog records why and leaves the subtree with a valid terminal, waiting, blocked, review, or explicit recovery path.
 
+### Proof-obligation contract
+
+Each stopped leaf in a task-watchdog evaluation is a proof obligation. The watchdog must prove one of two things from bounded evidence:
+
+- the stopped disposition is legitimate and already has a valid terminal, waiting, review, blocked, owner, interaction, approval, monitor, or recovery path
+- the stopped disposition is wrong or incomplete, and the watchdog has restored or routed a valid next action inside its authority
+
+A prose-only comment is never enough to satisfy a proof obligation. Comments and reusable-watchdog issue notes can explain evidence, but real verification blockers must become first-class blockers, pending interactions or approvals, human owners, typed reviewers, follow-up issues, explicit recovery actions, or bounded one-shot monitors.
+
+The proof-obligation fingerprint is a stable identifier for the leaf-level obligation being reviewed. It must include at least the watchdog id, stopped leaf issue id, stopped leaf disposition, relevant evidence anchors, and the waiting or recovery primitive the watchdog depends on. Watchdog proof handling is idempotent for:
+
+```
+(watchdogId, stopFingerprint, proofObligationFingerprint)
+```
+
+A repeated wake or retry for the same tuple must reuse the existing obligation result. It must not create duplicate child issues, duplicate blockers, duplicate interactions, or an unbounded monitor loop.
+
+Allowed proof-obligation outcomes:
+
+- **Accepted**: the stopped state is legitimate. The watchdog records bounded evidence and leaves the source subtree on a valid terminal or waiting path.
+- **Restored**: the stopped state was wrong or incomplete. The watchdog reopens, reassigns, unblocks, creates in-subtree follow-up work, resolves an eligible plan confirmation, or sets a bounded monitor so work can continue.
+- **Deferred**: the watchdog found a real verification dependency. The dependency is represented by a first-class blocker, interaction, approval, human owner, typed reviewer, follow-up issue, recovery action, or one-shot monitor with owner and next action.
+- **Failed**: the watchdog cannot safely verify or restore the obligation. The reusable watchdog issue remains `blocked` or `in_review` with the real blocker, escalation owner, and next safe action.
+- **Dismissed**: the obligation is a false positive for this watchdog pass. The reusable watchdog issue records why no source mutation is needed, and the reviewed fingerprint may suppress future wakes for the same stopped state.
+
+Deferred is not a parking lot for uncertainty. It is valid only when the deferred dependency itself has a live or waiting path under §8. If the watchdog cannot name that path, the outcome is Failed and must escalate or block with a named owner/action.
+
+One-shot monitors are allowed only for bounded future checks owned by the current assignee, such as waiting for CI, an external review service, or a provider job. They are not recurring uptime monitoring. When a monitor fires, the assignee must decide the next proof outcome or explicitly re-arm a new bounded monitor; Paperclip must not loop indefinitely on the same proof obligation.
+
 ### Eligible interaction decisions
 
 A task watchdog may resolve only eligible `request_confirmation` plan confirmations. Eligibility is defined in `doc/SPEC-implementation.md` and must be checked by the server at decision time. The critical constraints are:
@@ -576,6 +605,7 @@ The watchdog's reviewed fingerprint should update only after the watchdog issue 
 - `in_review` with a real reviewer, approval, interaction, user owner, monitor, or recovery path
 - `blocked` with first-class blockers or a named external owner/action
 - a watchdog mutation that restores live work, where the subsequent source-subtree mutation naturally changes the stop fingerprint
+- a dismissed false-positive proof obligation that records why no source mutation or further review is needed
 
 If the watchdog moved work forward, Paperclip should not mark the old fingerprint as permanently acceptable just because the watchdog issue completed. The next scan should observe the changed subtree state and either suppress because work is live or compute a new stopped fingerprint later.
 

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -12,10 +13,16 @@ import {
   issueRelations,
   issues,
   issueThreadInteractions,
+  issueWatchdogProofOutcomes,
   issueWatchdogs,
   issueWorkProducts,
 } from "@paperclipai/db";
-import type { IssueWatchdog, IssueWatchdogSummary } from "@paperclipai/shared";
+import type {
+  IssueWatchdog,
+  IssueWatchdogProofOutcome,
+  IssueWatchdogProofOutcomeSummary,
+  IssueWatchdogSummary,
+} from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { logActivity } from "./activity-log.js";
@@ -93,11 +100,13 @@ export type TaskWatchdogClassifierRelation = {
   companyId: string;
   blockerIssueId: string;
   blockedIssueId: string;
+  blockerStatus?: string | null;
+  blockerUpdatedAt?: Date | string | null;
 };
 
 export type TaskWatchdogClassifierConfig = Pick<
   IssueWatchdogSummary,
-  "companyId" | "issueId" | "lastReviewedFingerprint"
+  "id" | "companyId" | "issueId" | "lastReviewedFingerprint"
 >;
 
 export type TaskWatchdogStoppedLeaf = {
@@ -108,12 +117,25 @@ export type TaskWatchdogStoppedLeaf = {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   blockerIssueIds: string[];
+  blockers: Array<{
+    issueId: string;
+    status: string | null;
+    updatedAt: string | null;
+  }>;
   pendingInteractionIds: string[];
   pendingApprovalIds: string[];
   updatedAt: string;
   latestCommentAt: string | null;
   latestDocumentAt: string | null;
   latestWorkProductAt: string | null;
+};
+
+export type TaskWatchdogProofOutcomeRecord = {
+  companyId: string;
+  watchdogId: string;
+  stopFingerprint: string;
+  proofObligationFingerprint: string;
+  outcome: IssueWatchdogProofOutcome | string;
 };
 
 export type TaskWatchdogClassifierResult =
@@ -139,6 +161,7 @@ export type TaskWatchdogClassifierResult =
     reason: string;
     includedIssueIds: string[];
     stopFingerprint: string;
+    proofObligationFingerprint: string;
     stoppedLeaves: TaskWatchdogStoppedLeaf[];
   }
   | {
@@ -146,6 +169,7 @@ export type TaskWatchdogClassifierResult =
     reason: string;
     includedIssueIds: string[];
     stopFingerprint: string;
+    proofObligationFingerprint: string;
     stoppedLeaves: TaskWatchdogStoppedLeaf[];
   };
 
@@ -157,6 +181,7 @@ export type TaskWatchdogClassifierInput = {
   blockers?: TaskWatchdogClassifierRelation[];
   pendingInteractions?: TaskWatchdogClassifierWaitingPath[];
   pendingApprovals?: TaskWatchdogClassifierWaitingPath[];
+  proofOutcomes?: TaskWatchdogProofOutcomeRecord[];
   // Timestamp the evaluation reads its snapshot at. When provided together
   // with a positive `firstRunGraceMs`, the classifier suppresses a
   // stopped-subtree verdict for issues created within the grace window that
@@ -227,6 +252,29 @@ function toIssueWatchdog(row: IssueWatchdogRow): IssueWatchdog {
   };
 }
 
+type IssueWatchdogProofOutcomeRow = typeof issueWatchdogProofOutcomes.$inferSelect;
+
+// Read-path projection of a persisted proof-outcome row into the typed summary
+// the UI renders. `redactedDetails` is surfaced verbatim — the watchdog run
+// already redacted secrets/URLs before persisting, so this layer never
+// re-fetches or unredacts evidence.
+function summarizeProofOutcome(row: IssueWatchdogProofOutcomeRow): IssueWatchdogProofOutcomeSummary {
+  return {
+    id: row.id,
+    outcome: row.outcome as IssueWatchdogProofOutcome,
+    targetIssueId: row.targetIssueId,
+    method: row.method,
+    observedAt: row.observedAt,
+    resultClassification: row.resultClassification,
+    redactedDetails: row.redactedDetails ?? {},
+    stopFingerprint: row.stopFingerprint,
+    proofObligationFingerprint: row.proofObligationFingerprint,
+    createdByRunId: row.createdByRunId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function issueUpdatedAtIso(issue: Pick<TaskWatchdogClassifierIssue, "updatedAt">) {
   return issue.updatedAt instanceof Date
     ? issue.updatedAt.toISOString()
@@ -277,6 +325,38 @@ function stableStopFingerprint(input: {
     leaves: input.leaves,
   });
   return `task_watchdog_stop:${createHash("sha256").update(payload).digest("hex")}`;
+}
+
+function stableProofObligationFingerprint(input: {
+  companyId: string;
+  watchdogId: string;
+  watchedIssueId: string;
+  stopFingerprint: string;
+  leaves: TaskWatchdogStoppedLeaf[];
+}) {
+  const payload = JSON.stringify({
+    version: 1,
+    companyId: input.companyId,
+    watchdogId: input.watchdogId,
+    watchedIssueId: input.watchedIssueId,
+    stopFingerprint: input.stopFingerprint,
+    targets: input.leaves.map((leaf) => ({
+      issueId: leaf.issueId,
+      status: leaf.status,
+      blockerIssueIds: leaf.blockerIssueIds,
+      blockers: leaf.blockers,
+      pendingInteractionIds: leaf.pendingInteractionIds,
+      pendingApprovalIds: leaf.pendingApprovalIds,
+      latestCommentAt: leaf.latestCommentAt,
+      latestDocumentAt: leaf.latestDocumentAt,
+      latestWorkProductAt: leaf.latestWorkProductAt,
+    })),
+  });
+  return `task_watchdog_proof:${createHash("sha256").update(payload).digest("hex")}`;
+}
+
+function proofOutcomeSuppressesRepeat(outcome: string) {
+  return outcome === "accepted" || outcome === "deferred" || outcome === "dismissed";
 }
 
 export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput): TaskWatchdogClassifierResult {
@@ -370,45 +450,71 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     list.push(issue.id);
     includedChildrenByParentId.set(issue.parentId, list);
   }
-  const blockersByIssueId = new Map<string, string[]>();
+  const blockersByIssueId = new Map<string, TaskWatchdogClassifierRelation[]>();
   for (const relation of input.blockers ?? []) {
     if (relation.companyId !== input.watchdog.companyId) continue;
     if (!includedIdSet.has(relation.blockedIssueId)) continue;
     const list = blockersByIssueId.get(relation.blockedIssueId) ?? [];
-    list.push(relation.blockerIssueId);
+    list.push(relation);
     blockersByIssueId.set(relation.blockedIssueId, list);
   }
 
   const leaves = included
     .filter((issue) => (includedChildrenByParentId.get(issue.id) ?? []).length === 0)
     .sort((left, right) => left.id.localeCompare(right.id))
-    .map((issue) => ({
-      issueId: issue.id,
-      identifier: issue.identifier,
-      title: issue.title,
-      status: issue.status,
-      assigneeAgentId: issue.assigneeAgentId,
-      assigneeUserId: issue.assigneeUserId,
-      blockerIssueIds: [...new Set(blockersByIssueId.get(issue.id) ?? [])].sort(),
-      pendingInteractionIds: waitingPathIds(input.pendingInteractions, input.watchdog.companyId, issue.id),
-      pendingApprovalIds: waitingPathIds(input.pendingApprovals, input.watchdog.companyId, issue.id),
-      updatedAt: issueUpdatedAtIso(issue),
-      latestCommentAt: optionalIso(issue.latestCommentAt),
-      latestDocumentAt: optionalIso(issue.latestDocumentAt),
-      latestWorkProductAt: optionalIso(issue.latestWorkProductAt),
-    }));
+    .map((issue) => {
+      const blockerEvidence = [...(blockersByIssueId.get(issue.id) ?? [])]
+        .sort((left, right) => left.blockerIssueId.localeCompare(right.blockerIssueId))
+        .map((relation) => ({
+          issueId: relation.blockerIssueId,
+          status: relation.blockerStatus ?? null,
+          updatedAt: optionalIso(relation.blockerUpdatedAt),
+        }));
+      return {
+        issueId: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        status: issue.status,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
+        blockerIssueIds: blockerEvidence.map((blocker) => blocker.issueId),
+        blockers: blockerEvidence,
+        pendingInteractionIds: waitingPathIds(input.pendingInteractions, input.watchdog.companyId, issue.id),
+        pendingApprovalIds: waitingPathIds(input.pendingApprovals, input.watchdog.companyId, issue.id),
+        updatedAt: issueUpdatedAtIso(issue),
+        latestCommentAt: optionalIso(issue.latestCommentAt),
+        latestDocumentAt: optionalIso(issue.latestDocumentAt),
+        latestWorkProductAt: optionalIso(issue.latestWorkProductAt),
+      };
+    });
   const stopFingerprint = stableStopFingerprint({
     companyId: input.watchdog.companyId,
     watchedIssueId: input.watchdog.issueId,
     leaves,
   });
+  const proofObligationFingerprint = stableProofObligationFingerprint({
+    companyId: input.watchdog.companyId,
+    watchdogId: input.watchdog.id,
+    watchedIssueId: input.watchdog.issueId,
+    stopFingerprint,
+    leaves,
+  });
 
-  if (input.watchdog.lastReviewedFingerprint === stopFingerprint) {
+  const alreadyRecordedProofOutcome = (input.proofOutcomes ?? []).some((outcome) =>
+    outcome.companyId === input.watchdog.companyId &&
+    outcome.watchdogId === input.watchdog.id &&
+    outcome.stopFingerprint === stopFingerprint &&
+    outcome.proofObligationFingerprint === proofObligationFingerprint &&
+    proofOutcomeSuppressesRepeat(String(outcome.outcome))
+  );
+
+  if (input.watchdog.lastReviewedFingerprint === stopFingerprint || alreadyRecordedProofOutcome) {
     return {
       state: "already_reviewed",
       reason: "The current stopped subtree fingerprint was already reviewed by the watchdog.",
       includedIssueIds: includedIds,
       stopFingerprint,
+      proofObligationFingerprint,
       stoppedLeaves: leaves,
     };
   }
@@ -418,6 +524,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     reason: "No issue in the watched subtree has a live execution path.",
     includedIssueIds: includedIds,
     stopFingerprint,
+    proofObligationFingerprint,
     stoppedLeaves: leaves,
   };
 }
@@ -499,6 +606,7 @@ function taskWatchdogWakeIdempotencyKey(watchdogId: string, stopFingerprint: str
 function buildStoppedFingerprintComment(input: {
   sourceIssue: Pick<IssueRow, "identifier" | "id">;
   stopFingerprint: string;
+  proofObligationFingerprint: string;
   stoppedLeaves: TaskWatchdogStoppedLeaf[];
   resumed: boolean;
 }) {
@@ -513,6 +621,7 @@ function buildStoppedFingerprintComment(input: {
     "",
     `Watched issue: ${input.sourceIssue.identifier ?? input.sourceIssue.id}`,
     `Stopped fingerprint: \`${input.stopFingerprint}\``,
+    `Proof-obligation fingerprint: \`${input.proofObligationFingerprint}\``,
     "",
     "Stopped leaves:",
     ...(leafLines.length > 0 ? leafLines : ["- No leaf issues found."]),
@@ -523,6 +632,7 @@ function buildStoppedFingerprintComment(input: {
 function stoppedFingerprintMetadata(input: {
   sourceIssueId: string;
   stopFingerprint: string;
+  proofObligationFingerprint: string;
   resumed: boolean;
 }) {
   return {
@@ -533,6 +643,7 @@ function stoppedFingerprintMetadata(input: {
         rows: [
           { type: "text" as const, label: "Watched issue", text: input.sourceIssueId },
           { type: "text" as const, label: "Stopped fingerprint", text: input.stopFingerprint },
+          { type: "text" as const, label: "Proof obligation", text: input.proofObligationFingerprint },
           { type: "text" as const, label: "Resume intent", text: input.resumed ? "true" : "false" },
         ],
       },
@@ -556,6 +667,7 @@ function watchdogWakeContext(input: {
       watchedIssueIdentifier: input.sourceIssue.identifier,
       watchedIssueTitle: input.sourceIssue.title,
       stopFingerprint: input.classification.stopFingerprint,
+      proofObligationFingerprint: input.classification.proofObligationFingerprint,
       capabilities: {
         targetScope: {
           watchedIssueId: input.sourceIssue.id,
@@ -587,6 +699,7 @@ function watchdogWakeContext(input: {
     watchedIssueId: input.sourceIssue.id,
     watchedIssueIdentifier: input.sourceIssue.identifier,
     stopFingerprint: input.classification.stopFingerprint,
+    proofObligationFingerprint: input.classification.proofObligationFingerprint,
     stoppedLeaves: input.classification.stoppedLeaves,
     customInstructions: input.watchdog.instructions,
     resumeIntent: true,
@@ -598,15 +711,6 @@ function isTerminalIssueStatus(status: string) {
   return TASK_WATCHDOG_TERMINAL_ISSUE_STATUSES.includes(
     status as (typeof TASK_WATCHDOG_TERMINAL_ISSUE_STATUSES)[number],
   );
-}
-
-function isWatchdogReviewDisposition(issue: Pick<
-  IssueRow,
-  "status" | "assigneeUserId" | "executionState" | "monitorNextCheckAt"
->, hasPendingReviewPath: boolean) {
-  if (issue.status === "done" || issue.status === "blocked") return true;
-  if (issue.status !== "in_review") return false;
-  return Boolean(issue.assigneeUserId || issue.executionState || issue.monitorNextCheckAt || hasPendingReviewPath);
 }
 
 function isUniqueConstraintConflict(error: unknown, constraintName: string) {
@@ -791,12 +895,14 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         blockers: [],
         pendingInteractions: [],
         pendingApprovals: [],
+        proofOutcomes: [],
         evaluatedAt: new Date(),
         firstRunGraceMs: TASK_WATCHDOG_FIRST_RUN_GRACE_MS,
         completedRunIssueIds: [],
       } satisfies TaskWatchdogClassifierInput;
     }
 
+    const blockerIssues = alias(issues, "task_watchdog_blocker_issues");
     const [
       activeRunRows,
       activeIssueRunRows,
@@ -807,6 +913,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       commentActivityRows,
       documentActivityRows,
       workProductActivityRows,
+      proofOutcomeRows,
     ] = await Promise.all([
       db
         .select({
@@ -862,8 +969,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           companyId: issueRelations.companyId,
           blockerIssueId: issueRelations.issueId,
           blockedIssueId: issueRelations.relatedIssueId,
+          blockerStatus: blockerIssues.status,
+          blockerUpdatedAt: blockerIssues.updatedAt,
         })
         .from(issueRelations)
+        .innerJoin(blockerIssues, eq(issueRelations.issueId, blockerIssues.id))
         .where(and(
           eq(issueRelations.companyId, companyId),
           eq(issueRelations.type, "blocks"),
@@ -930,6 +1040,19 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           inArray(issueWorkProducts.issueId, subtreeIssueIds),
         ))
         .groupBy(issueWorkProducts.issueId),
+      db
+        .select({
+          companyId: issueWatchdogProofOutcomes.companyId,
+          watchdogId: issueWatchdogProofOutcomes.watchdogId,
+          stopFingerprint: issueWatchdogProofOutcomes.stopFingerprint,
+          proofObligationFingerprint: issueWatchdogProofOutcomes.proofObligationFingerprint,
+          outcome: issueWatchdogProofOutcomes.outcome,
+        })
+        .from(issueWatchdogProofOutcomes)
+        .where(and(
+          eq(issueWatchdogProofOutcomes.companyId, companyId),
+          eq(issueWatchdogProofOutcomes.watchdogId, watchdog.id),
+        )),
     ]);
     const latestCommentByIssueId = new Map(commentActivityRows.map((row) => [row.issueId, row.latestAt]));
     const latestDocumentByIssueId = new Map(documentActivityRows.map((row) => [row.issueId, row.latestAt]));
@@ -972,6 +1095,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       blockers: blockerRows,
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
+      proofOutcomes: proofOutcomeRows,
       evaluatedAt,
       firstRunGraceMs: TASK_WATCHDOG_FIRST_RUN_GRACE_MS,
       completedRunIssueIds,
@@ -1032,8 +1156,37 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function issueHasUnresolvedBlocker(companyId: string, issueId: string) {
+    const blocker = alias(issues, "task_watchdog_waiting_blocker");
+    return db
+      .select({ id: blocker.id })
+      .from(issueRelations)
+      .innerJoin(blocker, eq(issueRelations.issueId, blocker.id))
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.type, "blocks"),
+        eq(issueRelations.relatedIssueId, issueId),
+        sql`${blocker.status} not in ('done', 'cancelled')`,
+        isNull(blocker.hiddenAt),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function hasLivePathForIssue(companyId: string, issueId: string) {
-    const [run, issueRun, wake] = await Promise.all([
+    const [issue, run, issueRun, wake] = await Promise.all([
+      db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeUserId: issues.assigneeUserId,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId), isNull(issues.hiddenAt)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -1070,7 +1223,13 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .limit(1)
         .then((rows) => rows[0] ?? null),
     ]);
-    return Boolean(run || issueRun || wake);
+    if (run || issueRun || wake) return true;
+    if (!issue) return false;
+    if (issue.monitorNextCheckAt) return true;
+    if (issue.status === "blocked" && await issueHasUnresolvedBlocker(companyId, issueId)) return true;
+    if (issue.status !== "in_review") return false;
+    if (issue.assigneeUserId || issue.executionState) return true;
+    return watchdogIssueHasPendingReviewPath(companyId, issueId);
   }
 
   async function watchdogIssueHasPendingReviewPath(companyId: string, issueId: string) {
@@ -1100,24 +1259,164 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return Boolean(interaction || approval);
   }
 
-  async function markTerminalWatchdogIssueReviewed(watchdog: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
-    if (!watchdog.watchdogIssueId || !watchdog.lastObservedFingerprint) return watchdog;
+  function fallbackProofObligationFingerprint(input: {
+    companyId: string;
+    watchdogId: string;
+    sourceIssueId: string;
+    stopFingerprint: string;
+    classificationState: string;
+  }) {
+    const payload = JSON.stringify({ version: 1, ...input });
+    return `task_watchdog_proof:${createHash("sha256").update(payload).digest("hex")}`;
+  }
+
+  async function recordWatchdogProofOutcome(input: {
+    watchdog: IssueWatchdogRow;
+    watchdogIssue: IssueRow;
+    outcome: IssueWatchdogProofOutcome;
+    method: string;
+    stopFingerprint: string;
+    proofObligationFingerprint: string;
+    resultClassification: string;
+    redactedDetails: Record<string, unknown>;
+    runId?: string | null;
+  }) {
+    const now = new Date();
+    const [row] = await db
+      .insert(issueWatchdogProofOutcomes)
+      .values({
+        companyId: input.watchdog.companyId,
+        watchdogId: input.watchdog.id,
+        sourceIssueId: input.watchdog.issueId,
+        watchdogIssueId: input.watchdogIssue.id,
+        targetIssueId: input.watchdog.issueId,
+        outcome: input.outcome,
+        method: input.method,
+        observedAt: now,
+        resultClassification: input.resultClassification,
+        redactedDetails: input.redactedDetails,
+        stopFingerprint: input.stopFingerprint,
+        proofObligationFingerprint: input.proofObligationFingerprint,
+        createdByRunId: input.runId ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [
+          issueWatchdogProofOutcomes.companyId,
+          issueWatchdogProofOutcomes.watchdogId,
+          issueWatchdogProofOutcomes.stopFingerprint,
+          issueWatchdogProofOutcomes.proofObligationFingerprint,
+        ],
+        set: {
+          watchdogIssueId: input.watchdogIssue.id,
+          targetIssueId: input.watchdog.issueId,
+          outcome: input.outcome,
+          method: input.method,
+          observedAt: now,
+          resultClassification: input.resultClassification,
+          redactedDetails: input.redactedDetails,
+          createdByRunId: input.runId ?? null,
+          updatedAt: now,
+        },
+      })
+      .returning();
+    return row ?? null;
+  }
+
+  async function markWatchdogProofOutcome(
+    watchdog: IssueWatchdogRow,
+    classification: TaskWatchdogClassifierResult,
+    opts: { runId?: string | null } = {},
+  ) {
+    if (!watchdog.watchdogIssueId || !watchdog.lastObservedFingerprint) {
+      return { watchdog, outcome: null as IssueWatchdogProofOutcome | null, suppressesCurrentProof: false };
+    }
     const watchdogIssue = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.watchdogIssueId)))
       .then((rows) => rows[0] ?? null);
-    if (!watchdogIssue) return watchdog;
+    if (!watchdogIssue) return { watchdog, outcome: null, suppressesCurrentProof: false };
     const hasPendingReviewPath = watchdogIssue.status === "in_review"
       ? await watchdogIssueHasPendingReviewPath(watchdog.companyId, watchdogIssue.id)
       : false;
-    if (!isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath)) return watchdog;
-    const reviewedFingerprint = reviewedFingerprintForWatchdogIssue(watchdogIssue);
-    if (!reviewedFingerprint || watchdog.lastReviewedFingerprint === reviewedFingerprint) return watchdog;
+    const hasUnresolvedBlocker = watchdogIssue.status === "blocked"
+      ? Boolean(await issueHasUnresolvedBlocker(watchdog.companyId, watchdogIssue.id))
+      : false;
+
+    const classifiedStopFingerprint = classification.state === "stopped" || classification.state === "already_reviewed"
+      ? classification.stopFingerprint
+      : null;
+    const stopFingerprint = reviewedFingerprintForWatchdogIssue(watchdogIssue) ??
+      classifiedStopFingerprint ??
+      watchdog.lastObservedFingerprint;
+    if (!stopFingerprint) return { watchdog, outcome: null, suppressesCurrentProof: false };
+
+    const proofObligationFingerprint =
+      (classification.state === "stopped" || classification.state === "already_reviewed") &&
+        classifiedStopFingerprint === stopFingerprint
+        ? classification.proofObligationFingerprint
+        : fallbackProofObligationFingerprint({
+          companyId: watchdog.companyId,
+          watchdogId: watchdog.id,
+          sourceIssueId: watchdog.issueId,
+          stopFingerprint,
+          classificationState: classification.state,
+        });
+
+    let outcome: IssueWatchdogProofOutcome | null = null;
+    if (watchdogIssue.status === "done") {
+      outcome = classification.state === "live" ? "restored" : "accepted";
+    } else if (watchdogIssue.status === "blocked") {
+      outcome = hasUnresolvedBlocker ? "deferred" : "failed";
+    } else if (watchdogIssue.status === "in_review") {
+      outcome = (watchdogIssue.assigneeUserId || watchdogIssue.executionState || watchdogIssue.monitorNextCheckAt || hasPendingReviewPath)
+        ? "deferred"
+        : "failed";
+    } else if (watchdogIssue.status === "cancelled") {
+      outcome = "dismissed";
+    }
+
+    if (!outcome) return { watchdog, outcome: null, suppressesCurrentProof: false };
+
+    const method = `watchdog_issue_status:${watchdogIssue.status}`;
+    const resultClassification = classification.state === "already_reviewed" ? "stopped" : classification.state;
+    await recordWatchdogProofOutcome({
+      watchdog,
+      watchdogIssue,
+      outcome,
+      method,
+      stopFingerprint,
+      proofObligationFingerprint,
+      resultClassification,
+      redactedDetails: {
+        version: 1,
+        target: {
+          sourceIssueId: watchdog.issueId,
+          watchdogIssueId: watchdogIssue.id,
+        },
+        method,
+        classification: resultClassification,
+        watchdogIssueStatus: watchdogIssue.status,
+        hasUnresolvedBlocker,
+        hasPendingReviewPath,
+        hasReviewOwner: Boolean(watchdogIssue.assigneeUserId || watchdogIssue.executionState),
+        hasBoundedMonitor: Boolean(watchdogIssue.monitorNextCheckAt),
+        stopFingerprint,
+        proofObligationFingerprint,
+      },
+      runId: opts.runId ?? null,
+    });
+
+    const shouldMarkReviewed = proofOutcomeSuppressesRepeat(outcome);
+    if (!shouldMarkReviewed || watchdog.lastReviewedFingerprint === stopFingerprint) {
+      return { watchdog, outcome, suppressesCurrentProof: shouldMarkReviewed && classifiedStopFingerprint === stopFingerprint };
+    }
     const [updated] = await db
       .update(issueWatchdogs)
       .set({
-        lastReviewedFingerprint: reviewedFingerprint,
+        lastReviewedFingerprint: stopFingerprint,
         lastCompletedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -1136,12 +1435,18 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         source: "task_watchdogs.review_disposition",
         watchdogId: watchdog.id,
         watchdogIssueId: watchdogIssue.id,
-        reviewedFingerprint,
+        outcome,
+        reviewedFingerprint: stopFingerprint,
+        proofObligationFingerprint,
         lastObservedFingerprint: watchdog.lastObservedFingerprint,
         watchdogIssueStatus: watchdogIssue.status,
       },
     });
-    return updated ?? watchdog;
+    return {
+      watchdog: updated ?? watchdog,
+      outcome,
+      suppressesCurrentProof: classifiedStopFingerprint === stopFingerprint,
+    };
   }
 
   async function ensureReusableWatchdogIssue(input: {
@@ -1188,6 +1493,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         buildStoppedFingerprintComment({
           sourceIssue: input.sourceIssue,
           stopFingerprint: input.classification.stopFingerprint,
+          proofObligationFingerprint: input.classification.proofObligationFingerprint,
           stoppedLeaves: input.classification.stoppedLeaves,
           resumed: true,
         }),
@@ -1197,6 +1503,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           metadata: stoppedFingerprintMetadata({
             sourceIssueId: input.sourceIssue.id,
             stopFingerprint: input.classification.stopFingerprint,
+            proofObligationFingerprint: input.classification.proofObligationFingerprint,
             resumed: true,
           }),
         },
@@ -1211,6 +1518,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           "",
           `Watched issue: ${input.sourceIssue.identifier ?? input.sourceIssue.id}`,
           `Stopped fingerprint: ${input.classification.stopFingerprint}`,
+          `Proof-obligation fingerprint: ${input.classification.proofObligationFingerprint}`,
           "",
           "The watchdog agent should verify the stopped subtree and either confirm the disposition or restore a valid live path.",
         ].join("\n"),
@@ -1237,6 +1545,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       buildStoppedFingerprintComment({
         sourceIssue: input.sourceIssue,
         stopFingerprint: input.classification.stopFingerprint,
+        proofObligationFingerprint: input.classification.proofObligationFingerprint,
         stoppedLeaves: input.classification.stoppedLeaves,
         resumed: false,
       }),
@@ -1246,6 +1555,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         metadata: stoppedFingerprintMetadata({
           sourceIssueId: input.sourceIssue.id,
           stopFingerprint: input.classification.stopFingerprint,
+          proofObligationFingerprint: input.classification.proofObligationFingerprint,
           resumed: false,
         }),
       },
@@ -1254,7 +1564,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
   }
 
   async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
-    const watchdog = await markTerminalWatchdogIssueReviewed(row, opts);
+    let watchdog = row;
     const sourceIssue = await db
       .select()
       .from(issues)
@@ -1266,6 +1576,14 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
 
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
     const classification = classifyTaskWatchdogSubtree(input);
+    const proofOutcome = await markWatchdogProofOutcome(watchdog, classification, opts);
+    watchdog = proofOutcome.watchdog;
+    if (
+      proofOutcome.suppressesCurrentProof &&
+      (classification.state === "stopped" || classification.state === "already_reviewed")
+    ) {
+      return { state: "already_reviewed" as const, reason: classification.reason, classification };
+    }
     if (classification.state !== "stopped") {
       return { state: classification.state, reason: classification.reason, classification };
     }
@@ -1318,6 +1636,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         watchdogId: watchdog.id,
         watchdogIssueId: watchdogIssue.id,
         stopFingerprint: classification.stopFingerprint,
+        proofObligationFingerprint: classification.proofObligationFingerprint,
         stoppedLeaves: classification.stoppedLeaves,
       },
     });
@@ -1448,7 +1767,24 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           eq(issueWatchdogs.status, "active"),
         ))
         .then((rows) => rows[0] ?? null);
-      return row ? toIssueWatchdog(row) : null;
+      if (!row) return null;
+      // Surface the most recent persisted proof outcome so the issue UI can show
+      // the latest watchdog verdict (accepted/deferred/failed/…) and its bounded,
+      // already-redacted evidence without reconstructing the watchdog thread.
+      const latestProofOutcomeRow = await db
+        .select()
+        .from(issueWatchdogProofOutcomes)
+        .where(and(
+          eq(issueWatchdogProofOutcomes.companyId, companyId),
+          eq(issueWatchdogProofOutcomes.watchdogId, row.id),
+        ))
+        .orderBy(desc(issueWatchdogProofOutcomes.observedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return {
+        ...toIssueWatchdog(row),
+        latestProofOutcome: latestProofOutcomeRow ? summarizeProofOutcome(latestProofOutcomeRow) : null,
+      };
     },
 
     listActiveSummariesForIssues: async (

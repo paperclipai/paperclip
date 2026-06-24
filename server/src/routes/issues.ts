@@ -65,6 +65,7 @@ import {
   type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
+import { canonicalizeExternalObjectUrl, findExternalObjectUrlMatches } from "@paperclipai/shared/external-objects-server";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
@@ -258,6 +259,7 @@ function noopTaskWatchdogService(): TaskWatchdogService {
         reason: "Task watchdog service unavailable in this route context.",
         includedIssueIds: [],
         stopFingerprint: "task_watchdog_stop:unavailable",
+        proofObligationFingerprint: "task_watchdog_proof:unavailable",
         stoppedLeaves: [],
       },
     }),
@@ -2308,9 +2310,21 @@ export function issueRoutes(
     if (!kind) return null;
     const evidenceMarkdown =
       typeof record.evidenceMarkdown === "string" && record.evidenceMarkdown.trim().length > 0
-        ? record.evidenceMarkdown.trim()
+        ? sanitizeWatchdogDiscoveryEvidenceMarkdown(record.evidenceMarkdown)
         : null;
     return { kind, evidenceMarkdown };
+  }
+
+  function sanitizeWatchdogDiscoveryEvidenceMarkdown(input: string) {
+    let sanitized = input;
+    const matches = findExternalObjectUrlMatches(input);
+    for (let index = matches.length - 1; index >= 0; index -= 1) {
+      const match = matches[index]!;
+      const replacement = canonicalizeExternalObjectUrl(match.matchedText)?.sanitizedCanonicalUrl ?? "[redacted-url]";
+      sanitized = `${sanitized.slice(0, match.index)}${replacement}${sanitized.slice(match.index + match.length)}`;
+    }
+    const redacted = redactSensitiveText(sanitized).trim();
+    return redacted.length > 0 ? redacted : null;
   }
 
   function issueMarkdownLink(issue: { id: string; identifier?: string | null }) {
