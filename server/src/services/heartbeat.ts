@@ -72,6 +72,7 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { providerRateLimitService } from "./provider-rate-limits.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -3413,6 +3414,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const providerRateLimits = providerRateLimitService(db);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
@@ -5088,6 +5090,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? await budgets.getInvocationBlock(issue.companyId, agent.id, {
           issueId: issue.id,
           projectId: issue.projectId,
+          contextSnapshot: context,
         })
         : null;
     if (issue) {
@@ -5394,6 +5397,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? budgets.getInvocationBlock(issue.companyId, run.agentId, {
           issueId: issue.id,
           projectId: issue.projectId,
+          contextSnapshot: context,
         })
         : Promise.resolve(null),
       issue
@@ -6042,6 +6046,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId,
       projectId,
+      contextSnapshot,
     });
     if (budgetBlock) {
       return {
@@ -7263,6 +7268,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
       projectId: readNonEmptyString(context.projectId),
+      contextSnapshot: context,
     });
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
@@ -8080,6 +8086,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+  }
+
+  async function resumeQueuedRunsForAgent(agentId: string) {
+    await startNextQueuedRunForAgent(agentId);
   }
 
   async function reconcileStrandedAssignedIssues() {
@@ -9829,29 +9839,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
-        if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
-          const policy = parseMaxTurnContinuationPolicy(agent);
-          if (policy.enabled && policy.maxAttempts > 0) {
-            await scheduleBoundedRetryForRun(livenessRun, agent, {
-              retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-              wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
-              maxAttempts: policy.maxAttempts,
-              delayMs: policy.delayMs,
+        if (outcome === "failed") {
+          if (adapterResult.rateLimitBlock) {
+            const rlb = adapterResult.rateLimitBlock;
+            const scope = await providerRateLimits.deriveBlockScope(agent.adapterType, {
+              limitKind: rlb.limitKind,
+              modelFamily: rlb.modelFamily ?? null,
+              resetsAt: rlb.resetsAt ?? null,
             });
-          } else {
-            await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
-              eventType: "lifecycle",
-              stream: "system",
-              level: "warn",
-              message: "Max-turn continuation suppressed because the policy is disabled",
-              payload: {
-                retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-                policy,
+            const block = await providerRateLimits.upsertBlock({
+              companyId: agent.companyId,
+              adapterType: agent.adapterType,
+              limitKind: scope.limitKind,
+              modelFamily: scope.modelFamily,
+              message: adapterResult.rateLimitBlock.message,
+              resetsAt: scope.resetsAt,
+              agentId: agent.id,
+              issueId,
+              runId: livenessRun.id,
+            });
+            await providerRateLimits.pauseAgentsForBlock(
+              agent.companyId, agent.adapterType, scope.modelFamily,
+              {
+                blockId: block.id,
+                sourceAgentId: agent.id,
+                issueId,
+                runId: livenessRun.id,
               },
-            });
+            );
+          } else if (isMaxTurnExhaustionRun(livenessRun)) {
+            const policy = parseMaxTurnContinuationPolicy(agent);
+            if (policy.enabled && policy.maxAttempts > 0) {
+              await scheduleBoundedRetryForRun(livenessRun, agent, {
+                retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+                wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+                maxAttempts: policy.maxAttempts,
+                delayMs: policy.delayMs,
+              });
+            } else {
+              await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: "Max-turn continuation suppressed because the policy is disabled",
+                payload: {
+                  retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+                  policy,
+                },
+              });
+            }
+          } else if (readTransientRecoveryContractFromRun(livenessRun)) {
+            await scheduleBoundedRetryForRun(livenessRun, agent);
           }
-        } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
-          await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
@@ -10868,6 +10907,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
       issueId,
       projectId,
+      contextSnapshot: enrichedContextSnapshot,
     });
     if (budgetBlock) {
       await writeSkippedRequest("budget.blocked");
@@ -12200,6 +12240,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     retryScheduledRetryNow,
 
     resumeQueuedRuns,
+    resumeQueuedRunsForAgent,
 
     scheduleBoundedRetry: async (
       runId: string,
@@ -12235,7 +12276,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     buildRunOutputSilence,
 
+    releaseDueProviderRateLimitBlocks: (now = new Date()) =>
+      providerRateLimits.releaseDueBlocks(now, "system"),
+
+    recoverLegacyProviderRateLimitBlocks: (now = new Date()) =>
+      providerRateLimits.recoverLegacyResolvedBlocks(now),
+
     tickTimers: async (now = new Date()) => {
+      const providerReleases = await providerRateLimits.releaseDueBlocks(now, "system");
       const allAgents = await db
         .select({ ...getTableColumns(agents) })
         .from(agents)
@@ -12277,8 +12325,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       return {
         checked: checked + issueMonitors.checked,
-        enqueued: enqueued + issueMonitors.triggered,
-        skipped: skipped + issueMonitors.skipped,
+        enqueued: enqueued + issueMonitors.triggered + providerReleases.wakeupsQueued,
+        skipped: skipped + issueMonitors.skipped + providerReleases.wakeupsSkipped,
       };
     },
 

@@ -86,38 +86,37 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
 async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createDb>) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
-      await db.execute(sql.raw(`
-        TRUNCATE TABLE
-          "company_skills",
-          "issue_comments",
-          "issue_documents",
-          "document_revisions",
-          "documents",
-          "issue_relations",
-          "issue_tree_holds",
-          "issues",
-          "heartbeat_run_events",
-          "cost_events",
-          "activity_log",
-          "heartbeat_runs",
-          "agent_wakeup_requests",
-          "agent_runtime_state",
-          "agents",
-          "companies"
-        RESTART IDENTITY CASCADE
-      `));
+      await db.delete(companySkills);
+      await db.delete(issueComments);
+      await db.delete(issueDocuments);
+      await db.delete(documentRevisions);
+      await db.delete(documents);
+      await db.delete(issueRelations);
+      await db.delete(issueTreeHolds);
+      await db.delete(issues);
+      await db.delete(heartbeatRunEvents);
+      await db.delete(activityLog);
+      await db.delete(heartbeatRuns);
+      await db.delete(agentWakeupRequests);
+      await db.delete(agentRuntimeState);
+      await db.delete(agents);
+      await db.delete(companySkills);
+      await db.delete(companies);
       return;
     } catch (error) {
       const isLateCommentRace =
         error instanceof Error &&
         error.message.includes("issue_comments_issue_id_issues_id_fk");
-      if (!isLateCommentRace || attempt === 9) {
+      const isLateCompanySkillRace =
+        error instanceof Error &&
+        error.message.includes("company_skills_company_id_companies_id_fk");
+      if ((!isLateCommentRace && !isLateCompanySkillRace) || attempt === 9) {
         throw error;
       }
 
-      // Heartbeat completion can write issue-thread comments shortly after the
-      // run leaves queued/running. Retry the dependent deletes once those land.
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // Heartbeat completion can write dependent rows shortly after the run
+      // leaves queued/running. Retry the deletes once those land.
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
 }

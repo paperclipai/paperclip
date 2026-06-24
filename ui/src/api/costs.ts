@@ -11,6 +11,7 @@ import type {
   FinanceByKind,
   FinanceEvent,
   ProviderQuotaResult,
+  ProviderRateLimitBlock,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -47,6 +48,13 @@ export const costsApi = {
     api.get<CostWindowSpendRow[]>(`/companies/${companyId}/costs/window-spend`),
   quotaWindows: (companyId: string) =>
     api.get<ProviderQuotaResult[]>(`/companies/${companyId}/costs/quota-windows`),
+  providerRateLimitBlocks: (companyId: string) =>
+    api.get<ProviderRateLimitBlock[]>(`/companies/${companyId}/provider-rate-limits`),
+  releaseProviderRateLimitBlock: (companyId: string, blockId: string) =>
+    api.post<{ released: boolean; reason?: string }>(
+      `/companies/${companyId}/provider-rate-limits/${blockId}/release`,
+      {},
+    ),
 };
 
 function dateParamsWithLimit(from?: string, to?: string, limit?: number): string {

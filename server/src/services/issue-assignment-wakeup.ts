@@ -3,6 +3,17 @@ import { logger } from "../middleware/logger.js";
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
 type WakeupSource = "timer" | "assignment" | "on_demand" | "automation";
 
+function isProviderRateLimitConflict(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const candidate = err as {
+    status?: unknown;
+    details?: {
+      scopeType?: unknown;
+    };
+  };
+  return candidate.status === 409 && candidate.details?.scopeType === "provider";
+}
+
 export interface IssueAssignmentWakeupDeps {
   wakeup: (
     agentId: string,
@@ -41,7 +52,11 @@ export function queueIssueAssignmentWakeup(input: {
       contextSnapshot: { issueId: input.issue.id, source: input.contextSource },
     })
     .catch((err) => {
-      logger.warn({ err, issueId: input.issue.id }, "failed to wake assignee on issue assignment");
+      if (isProviderRateLimitConflict(err)) {
+        logger.info({ err, issueId: input.issue.id }, "issue assignment wakeup blocked by provider rate limit");
+      } else {
+        logger.warn({ err, issueId: input.issue.id }, "failed to wake assignee on issue assignment");
+      }
       if (input.rethrowOnError) throw err;
       return null;
     });

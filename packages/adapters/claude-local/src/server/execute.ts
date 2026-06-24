@@ -51,6 +51,7 @@ import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
+  extractClaudeHardLimitBlock,
   isClaudeMaxTurnsResult,
   isClaudeRefusalResult,
   isClaudeTransientUpstreamError,
@@ -837,25 +838,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+      const errorInput = {
+        parsed: null as null,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage: fallbackErrorMessage,
+        rateLimitInfo: parsedStream.rateLimitInfo ?? null,
+      };
+      const hardLimitBlock =
+        !loginMeta.requiresLogin &&
+        ((proc.exitCode ?? 0) !== 0 || errorInput.rateLimitInfo?.status === "rejected")
+          ? extractClaudeHardLimitBlock(errorInput)
+          : null;
       const transientUpstream =
+        !hardLimitBlock &&
         !loginMeta.requiresLogin &&
         (proc.exitCode ?? 0) !== 0 &&
-        isClaudeTransientUpstreamError({
-          parsed: null,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        });
+        isClaudeTransientUpstreamError(errorInput);
       const transientRetryNotBefore = transientUpstream
-        ? extractClaudeRetryNotBefore({
-            parsed: null,
-            stdout: proc.stdout,
-            stderr: proc.stderr,
-            errorMessage: fallbackErrorMessage,
-          })
+        ? extractClaudeRetryNotBefore(errorInput)
         : null;
       const errorCode = loginMeta.requiresLogin
         ? "claude_auth_required"
+        : hardLimitBlock
+        ? "claude_hard_limit"
         : transientUpstream
         ? "claude_transient_upstream"
         : null;
@@ -865,12 +871,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: false,
         errorMessage: fallbackErrorMessage,
         errorCode,
-        errorFamily: transientUpstream ? "transient_upstream" : null,
+        errorFamily: hardLimitBlock ? "provider_rate_limit" : transientUpstream ? "transient_upstream" : null,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
+        rateLimitBlock: hardLimitBlock ?? null,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
+          ...(hardLimitBlock ? { errorFamily: "provider_rate_limit" } : {}),
           ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
           ...(transientRetryNotBefore
             ? { retryNotBefore: transientRetryNotBefore.toISOString() }
@@ -932,29 +940,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
+    const parsedErrorInput = {
+      parsed,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+      errorMessage,
+      rateLimitInfo: parsedStream.rateLimitInfo ?? null,
+    };
+    const hardLimitBlock =
+      failed && !loginMeta.requiresLogin
+        ? extractClaudeHardLimitBlock(parsedErrorInput)
+        : null;
     const transientUpstream =
       failed &&
+      !hardLimitBlock &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
-      isClaudeTransientUpstreamError({
-        parsed,
-        stdout: proc.stdout,
-        stderr: proc.stderr,
-        errorMessage,
-      });
+      isClaudeTransientUpstreamError(parsedErrorInput);
     const transientRetryNotBefore = transientUpstream
-      ? extractClaudeRetryNotBefore({
-          parsed,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage,
-        })
+      ? extractClaudeRetryNotBefore(parsedErrorInput)
       : null;
     const resolvedErrorCode = loginMeta.requiresLogin
       ? "claude_auth_required"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
+      : hardLimitBlock
+      ? "claude_hard_limit"
       : failed && poisonedPreviousMessageId
       ? "claude_poisoned_previous_message_id"
       : transientUpstream
@@ -965,6 +977,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
+      ...(hardLimitBlock ? { errorFamily: "provider_rate_limit" } : {}),
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(claudeRefusal ? { stopReason: "refusal", errorFamily: "model_refusal" } : {}),
       ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
@@ -978,12 +991,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorMessage,
       errorCode: resolvedErrorCode,
-      errorFamily: transientUpstream
+      errorFamily: hardLimitBlock
+        ? "provider_rate_limit"
+        : transientUpstream
         ? "transient_upstream"
         : claudeRefusal
         ? "model_refusal"
         : null,
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
+      rateLimitBlock: hardLimitBlock ?? null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,

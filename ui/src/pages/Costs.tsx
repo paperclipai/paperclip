@@ -7,6 +7,7 @@ import type {
   CostByProviderModel,
   CostWindowSpendRow,
   FinanceEvent,
+  ProviderRateLimitBlock,
   QuotaWindow,
 } from "@paperclipai/shared";
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
@@ -337,6 +338,23 @@ export function Costs() {
     staleTime: 60_000,
   });
 
+  const { data: activeBlocksData, refetch: refetchBlocks } = useQuery({
+    queryKey: queryKeys.providerRateLimitBlocks(companyId),
+    queryFn: () => costsApi.providerRateLimitBlocks(companyId),
+    enabled: !!selectedCompanyId && mainTab === "providers",
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+
+  const releaseBlockMutation = useMutation({
+    mutationFn: ({ blockId }: { blockId: string }) =>
+      costsApi.releaseProviderRateLimitBlock(companyId, blockId),
+    onSuccess: () => {
+      void refetchBlocks();
+      void queryClient.invalidateQueries({ queryKey: queryKeys.usageQuotaWindows(companyId) });
+    },
+  });
+
   const byProvider = useMemo(() => {
     const map = new Map<string, CostByProviderModel[]>();
     for (const row of providerData ?? []) {
@@ -410,6 +428,19 @@ export function Costs() {
     }
     return map;
   }, [quotaData]);
+
+  const activeBlocksByProvider = useMemo(() => {
+    const map = new Map<string, ProviderRateLimitBlock[]>();
+    for (const block of activeBlocksData ?? []) {
+      const providerKey = block.adapterType.startsWith("claude") ? "anthropic"
+        : block.adapterType.startsWith("codex") ? "openai"
+        : block.adapterType;
+      const blocks = map.get(providerKey) ?? [];
+      blocks.push(block);
+      map.set(providerKey, blocks);
+    }
+    return map;
+  }, [activeBlocksData]);
 
   const deficitNotchByProvider = useMemo(() => {
     const map = new Map<string, boolean>();
@@ -975,6 +1006,8 @@ export function Costs() {
                           quotaError={quotaErrorsByProvider.get(provider) ?? null}
                           quotaSource={quotaSourcesByProvider.get(provider) ?? null}
                           quotaLoading={quotaLoading}
+                          activeBlocks={activeBlocksByProvider.get(provider) ?? []}
+                          onReleaseBlock={(blockId) => releaseBlockMutation.mutate({ blockId })}
                         />
                       ))}
                     </div>
@@ -995,6 +1028,8 @@ export function Costs() {
                       quotaError={quotaErrorsByProvider.get(provider) ?? null}
                       quotaSource={quotaSourcesByProvider.get(provider) ?? null}
                       quotaLoading={quotaLoading}
+                      activeBlocks={activeBlocksByProvider.get(provider) ?? []}
+                      onReleaseBlock={(blockId) => releaseBlockMutation.mutate({ blockId })}
                     />
                   </TabsContent>
                 ))}
