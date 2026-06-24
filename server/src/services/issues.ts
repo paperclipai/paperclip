@@ -79,6 +79,7 @@ import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import {
+  disableIssueWatchdogForIssue,
   summarizeIssueWatchdog,
   upsertIssueWatchdogForIssue,
 } from "./task-watchdogs.js";
@@ -3161,6 +3162,80 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
   }, 0);
 }
 
+// Auto-populated Watchdog (DES-34 / property-population handbook): while a task is
+// `blocked`, the Watchdog points at the assignee's manager (or the company CTO when
+// the assignee has no manager) so a stalled task always has escalation visibility.
+// It is cleared the instant the task leaves `blocked`. Watchdog is a system-managed
+// property — manual edits are intentionally overwritten on the next status sync.
+const AUTO_BLOCKED_WATCHDOG_INSTRUCTIONS =
+  "Auto-assigned while this task is blocked, for escalation visibility. " +
+  "Resolved from the assignee's manager (or the company CTO when the assignee has no manager). " +
+  "Cleared automatically when the task leaves the blocked state.";
+
+// Resolve which agent should watch a task that is entering `blocked`: the assignee's
+// direct manager when present, otherwise the company CTO (falling back to the CEO) so
+// escalation always lands somewhere. Returns null when no suitable agent exists.
+async function resolveBlockedWatchdogAgentId(
+  dbOrTx: any,
+  companyId: string,
+  assigneeAgentId: string | null,
+): Promise<string | null> {
+  if (assigneeAgentId) {
+    const assignee = await dbOrTx
+      .select({ reportsTo: agents.reportsTo })
+      .from(agents)
+      .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, companyId)))
+      .then((rows: Array<{ reportsTo: string | null }>) => rows[0] ?? null);
+    if (assignee?.reportsTo) return assignee.reportsTo;
+  }
+  const fallback = await dbOrTx
+    .select({ id: agents.id })
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), inArray(agents.role, ["cto", "ceo"])))
+    .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt), asc(agents.id))
+    .limit(1)
+    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+  return fallback?.id ?? null;
+}
+
+// Set or clear the auto Watchdog when a task crosses the `blocked` boundary. Best-effort:
+// a failure to attach a watchdog (e.g. the resolved manager is not invokable) must never
+// block the underlying status change, so set-failures are swallowed after logging.
+async function syncBlockedTransitionWatchdog(
+  dbOrTx: any,
+  opts: {
+    companyId: string;
+    issueId: string;
+    previousStatus: string;
+    nextStatus: string;
+    assigneeAgentId: string | null;
+    actor: { agentId?: string | null; userId?: string | null; runId?: string | null };
+  },
+): Promise<void> {
+  const enteringBlocked = opts.previousStatus !== "blocked" && opts.nextStatus === "blocked";
+  const leavingBlocked = opts.previousStatus === "blocked" && opts.nextStatus !== "blocked";
+  if (!enteringBlocked && !leavingBlocked) return;
+
+  if (enteringBlocked) {
+    const watchdogAgentId = await resolveBlockedWatchdogAgentId(dbOrTx, opts.companyId, opts.assigneeAgentId);
+    if (!watchdogAgentId) return;
+    try {
+      await upsertIssueWatchdogForIssue(dbOrTx, opts.companyId, opts.issueId, {
+        agentId: watchdogAgentId,
+        instructions: AUTO_BLOCKED_WATCHDOG_INSTRUCTIONS,
+        actor: opts.actor,
+      });
+    } catch (error) {
+      console.warn(
+        `[issues] failed to auto-set blocked watchdog for issue ${opts.issueId}: ${(error as Error)?.message ?? error}`,
+      );
+    }
+    return;
+  }
+
+  await disableIssueWatchdogForIssue(dbOrTx, opts.companyId, opts.issueId, opts.actor);
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -5098,6 +5173,21 @@ export function issueService(db: Db) {
               runId: watchdogActorRunId ?? null,
             },
           });
+        } else if (issue.status === "blocked") {
+          // A task created directly in `blocked` should auto-populate the Watchdog the same
+          // way a status transition into `blocked` does (DES-34 / property-population handbook).
+          await syncBlockedTransitionWatchdog(tx, {
+            companyId,
+            issueId: issue.id,
+            previousStatus: "todo",
+            nextStatus: "blocked",
+            assigneeAgentId: issue.assigneeAgentId ?? null,
+            actor: {
+              agentId: issueData.createdByAgentId ?? null,
+              userId: issueData.createdByUserId ?? null,
+              runId: watchdogActorRunId ?? null,
+            },
+          });
         }
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
@@ -5331,6 +5421,14 @@ export function issueService(db: Db) {
               .where(eq(executionWorkspaces.id, workspace.id));
           }
         }
+        await syncBlockedTransitionWatchdog(tx, {
+          companyId: existing.companyId,
+          issueId: updated.id,
+          previousStatus: existing.status,
+          nextStatus: updated.status,
+          assigneeAgentId: nextAssigneeAgentId ?? null,
+          actor: { agentId: actorAgentId ?? null, userId: actorUserId ?? null, runId: null },
+        });
         const [enriched] = await withIssueLabels(tx, [updated]);
         if (
           (issueData.status === "done" || issueData.status === "cancelled") &&

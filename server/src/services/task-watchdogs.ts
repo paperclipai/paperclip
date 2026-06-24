@@ -717,6 +717,33 @@ export async function upsertIssueWatchdogForIssue(
   return { watchdog: toIssueWatchdog(insertResult.row), created: insertResult.created };
 }
 
+export async function disableIssueWatchdogForIssue(
+  dbOrTx: any,
+  companyId: string,
+  issueId: string,
+  actor: ActorFields = {},
+): Promise<IssueWatchdog | null> {
+  await assertWatchedIssue(dbOrTx, companyId, issueId);
+  const existing = await dbOrTx
+    .select()
+    .from(issueWatchdogs)
+    .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, issueId)))
+    .then((rows: IssueWatchdogRow[]) => rows[0] ?? null);
+  if (!existing || existing.status === "disabled") return null;
+  const [updated] = await dbOrTx
+    .update(issueWatchdogs)
+    .set({
+      status: "disabled",
+      updatedByAgentId: actor.agentId ?? null,
+      updatedByUserId: actor.userId ?? null,
+      updatedByRunId: actor.runId ?? null,
+      updatedAt: new Date(),
+    })
+    .where(eq(issueWatchdogs.id, existing.id))
+    .returning();
+  return toIssueWatchdog(updated);
+}
+
 export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) {
   const issuesSvc = issueService(db);
 
@@ -1480,27 +1507,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       companyId: string,
       issueId: string,
       actor: ActorFields = {},
-    ): Promise<IssueWatchdog | null> => {
-      await assertWatchedIssue(db, companyId, issueId);
-      const existing = await db
-        .select()
-        .from(issueWatchdogs)
-        .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, issueId)))
-        .then((rows) => rows[0] ?? null);
-      if (!existing || existing.status === "disabled") return null;
-      const [updated] = await db
-        .update(issueWatchdogs)
-        .set({
-          status: "disabled",
-          updatedByAgentId: actor.agentId ?? null,
-          updatedByUserId: actor.userId ?? null,
-          updatedByRunId: actor.runId ?? null,
-          updatedAt: new Date(),
-        })
-        .where(eq(issueWatchdogs.id, existing.id))
-        .returning();
-      return toIssueWatchdog(updated);
-    },
+    ): Promise<IssueWatchdog | null> => disableIssueWatchdogForIssue(db, companyId, issueId, actor),
 
     reconcileTaskWatchdogs: async (opts: { companyId?: string | null; runId?: string | null } = {}) => {
       const rows = await listActiveWatchdogsForCompany(opts.companyId ?? null);
