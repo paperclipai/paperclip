@@ -67,17 +67,30 @@ function countMatches(value, pattern) {
   return Array.from(value.matchAll(pattern)).length;
 }
 
-function assertCcrotateServeSecretEnv(rendered, envName) {
+function assertPenstockProxySecretEnv(rendered, envName) {
   assert.match(
     rendered,
     new RegExp(
       `- name: ${escapeRegExp(envName)}\\n` +
         "\\s+valueFrom:\\n" +
         "\\s+secretKeyRef:\\n" +
-        "\\s+key: serveToken\\n" +
-        "\\s+name: paperclip-ccrotate-serve-secrets",
+        "\\s+key: token\\n" +
+        "\\s+name: paperclip-penstock-org-key",
     ),
-    `${envName} should inherit the ccrotate-serve bearer secret`,
+    `${envName} should inherit the Penstock org key secret`,
+  );
+}
+
+function assertNoLegacyAnthropicSecretEnv(rendered, envName) {
+  const envBlock = rendered.match(
+    new RegExp(`- name: ${escapeRegExp(envName)}\\n(?:\\s{12,}.+\\n)+`),
+  )?.[0];
+
+  assert.ok(envBlock, `${envName} should render`);
+  assert.doesNotMatch(
+    envBlock,
+    /paperclip-ccrotate-serve-secrets|paperclip-ccrotate-board-token/,
+    `${envName} should not inherit a legacy ccrotate secret`,
   );
 }
 
@@ -153,18 +166,20 @@ test("runtimeCache can be disabled for API tier rollback", () => {
   assert.doesNotMatch(rendered, /XDG_CACHE_HOME/);
 });
 
-test("Blockcast values inherit ccrotate-serve bearer for Anthropic agent traffic", () => {
+test("Blockcast values route Anthropic agent traffic through Penstock proxy", () => {
   const renderedStatefulSet = renderStatefulSet();
   const renderedApiDeployment = renderApiDeployment();
 
   for (const rendered of [renderedStatefulSet, renderedApiDeployment]) {
     assert.match(
       rendered,
-      /- name: ANTHROPIC_BASE_URL\n\s+value: "?http:\/\/ccrotate-serve\.paperclip\.svc:4001"?/,
-      "agent Anthropic traffic must use the in-cluster ccrotate-serve endpoint",
+      /- name: ANTHROPIC_BASE_URL\n\s+value: "?http:\/\/penstock-proxy\.penstock\.svc\.cluster\.local\/anthropic"?/,
+      "agent Anthropic traffic should use the in-cluster Penstock proxy",
     );
-    assertCcrotateServeSecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
-    assertCcrotateServeSecretEnv(rendered, "ANTHROPIC_API_KEY");
+    assertPenstockProxySecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
+    assertPenstockProxySecretEnv(rendered, "ANTHROPIC_API_KEY");
+    assertNoLegacyAnthropicSecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
+    assertNoLegacyAnthropicSecretEnv(rendered, "ANTHROPIC_API_KEY");
     assert.doesNotMatch(
       rendered,
       /https:\/\/paperclip\.blockcast\.net\/ccrotate/,
