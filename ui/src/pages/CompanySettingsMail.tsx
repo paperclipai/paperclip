@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AtSign, Inbox, Loader2, Plus, Trash2 } from "lucide-react";
+import { AtSign, Inbox, Loader2, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import type { MailAddress, MailDomain } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -57,6 +57,11 @@ export function CompanySettingsMail() {
     queryFn: () => agentsApi.list(companyId!),
     enabled: Boolean(companyId),
   });
+  const reverseDnsQuery = useQuery({
+    queryKey: companyId ? queryKeys.mail.reverseDns(companyId) : ["mail", "reverse-dns", "none"],
+    queryFn: () => mailApi.getReverseDns(companyId!),
+    enabled: Boolean(companyId),
+  });
 
   const toastError = (e: unknown, fallback: string) =>
     pushToast({ tone: "error", title: e instanceof ApiError ? e.message : fallback });
@@ -80,6 +85,12 @@ export function CompanySettingsMail() {
     },
     onError: (e) => toastError(e, "Failed to delete address"),
   });
+  const recheckRdnsMutation = useMutation({
+    mutationFn: () => mailApi.getReverseDns(companyId!, true),
+    onSuccess: (data) =>
+      queryClient.setQueryData(queryKeys.mail.reverseDns(companyId!), data),
+    onError: (e) => toastError(e, "Failed to check reverse DNS"),
+  });
 
   if (!companyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select a company.</div>;
@@ -96,6 +107,16 @@ export function CompanySettingsMail() {
   }
   const receptionReady = domains.some((d: MailDomain) => d.mxConfigured);
   const canCreate = Boolean(domainId && localPart.trim()) && !createMutation.isPending;
+
+  const rdns = reverseDnsQuery.data;
+  const rdnsTone: Record<string, { label: string; cls: string }> = {
+    ok: { label: "OK", cls: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600" },
+    mismatch: { label: "Mismatch", cls: "border-amber-500/30 bg-amber-500/10 text-amber-600" },
+    missing: { label: "Missing", cls: "border-destructive/30 bg-destructive/10 text-destructive" },
+    unconfigured: { label: "Not set up", cls: "border-border bg-muted text-muted-foreground" },
+    error: { label: "Error", cls: "border-amber-500/30 bg-amber-500/10 text-amber-600" },
+  };
+  const rdnsBadge = rdns ? rdnsTone[rdns.status] ?? rdnsTone.error : null;
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6 p-6">
@@ -117,6 +138,63 @@ export function CompanySettingsMail() {
           ? "Reception is wired: at least one domain has its MX published."
           : "No domain has its MX published yet. Attach/verify a domain under Domain (the server needs MAIL_HOSTNAME set)."}
       </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4" /> Reverse DNS (sending)
+              </CardTitle>
+              <CardDescription>
+                Outbound mail needs the sending IP's PTR to match the server hostname (FCrDNS),
+                or Gmail and others flag it as spam. This record lives at your host, not Cloudflare.
+              </CardDescription>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={recheckRdnsMutation.isPending}
+              onClick={() => recheckRdnsMutation.mutate()}
+            >
+              {recheckRdnsMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              Recheck
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {reverseDnsQuery.isLoading ? (
+            <div className="text-sm text-muted-foreground">Checking…</div>
+          ) : reverseDnsQuery.isError ? (
+            <div className="text-sm text-destructive">Failed to load reverse DNS status.</div>
+          ) : rdns && rdnsBadge ? (
+            <>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`rounded-full border px-2 py-0.5 text-xs font-medium ${rdnsBadge.cls}`}
+                >
+                  {rdnsBadge.label}
+                </span>
+                <span className="text-sm text-muted-foreground">{rdns.message}</span>
+              </div>
+              {rdns.ip && (
+                <div className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1 text-sm">
+                  <span className="text-muted-foreground">Sending IP</span>
+                  <span className="font-mono">{rdns.ip}</span>
+                  <span className="text-muted-foreground">Current PTR</span>
+                  <span className="font-mono">{rdns.ptr ?? "(none)"}</span>
+                  <span className="text-muted-foreground">Expected PTR</span>
+                  <span className="font-mono">{rdns.hostname ?? "(MAIL_HOSTNAME not set)"}</span>
+                </div>
+              )}
+            </>
+          ) : null}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

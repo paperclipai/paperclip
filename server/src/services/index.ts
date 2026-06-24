@@ -11,6 +11,7 @@ export { cloudflareService } from "./cloudflare.js";
 export { mailDomainService } from "./mail-domains.js";
 export { mailAddressService } from "./mail-addresses.js";
 export { mailMessageService } from "./mail-messages.js";
+export { mailDiagnosticsService } from "./mail-diagnostics.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";

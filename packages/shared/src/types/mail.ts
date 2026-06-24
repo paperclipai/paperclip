@@ -63,6 +63,33 @@ export interface MailAddress {
   updatedAt: string | Date;
 }
 
+/**
+ * Reverse-DNS (PTR) health for the mail engine's sending IP. The PTR lives in the
+ * host provider's `in-addr.arpa` zone (not Cloudflare), so it cannot be published
+ * from Atelier; this surfaces its state so a human can fix it where it lives.
+ */
+export interface MailReverseDnsStatus {
+  // `ok`: PTR matches the HELO hostname and forward-confirms (FCrDNS passes).
+  // `mismatch`: a PTR exists but does not match / does not forward-confirm.
+  // `missing`: the sending IP has no PTR at all.
+  // `unconfigured`: MAIL_HOSTNAME is not set (mail engine not deployed yet).
+  // `error`: the lookup could not complete (e.g. hostname does not resolve).
+  status: "ok" | "mismatch" | "missing" | "unconfigured" | "error";
+  // The hostname the server announces in HELO (MAIL_HOSTNAME); the expected PTR.
+  hostname: string | null;
+  // The sending IP the PTR was checked for.
+  ip: string | null;
+  // The PTR actually published for the IP (the first record), if any.
+  ptr: string | null;
+  // The PTR resolves back to the same IP (forward-confirmed reverse DNS).
+  fcrdns: boolean;
+  // The PTR equals the HELO hostname.
+  matchesHostname: boolean;
+  // Human-readable explanation / remediation for the current status.
+  message: string;
+  checkedAt: string;
+}
+
 /** A stored email message (inbound in phase 1; outbound in phase 2). */
 export interface MailMessage {
   id: string;

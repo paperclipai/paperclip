@@ -1,4 +1,10 @@
-import type { CloudflareConnection, CloudflareZone, MailAddress, MailDomain } from "@paperclipai/shared";
+import type {
+  CloudflareConnection,
+  CloudflareZone,
+  MailAddress,
+  MailDomain,
+  MailReverseDnsStatus,
+} from "@paperclipai/shared";
 import { api } from "./client";
 
 export interface CreateMailAddressInput {
@@ -30,6 +36,11 @@ export const mailApi = {
     api.post<MailDomain>(`/companies/${companyId}/mail/domains/${id}/verify`, {}),
   removeDomain: (companyId: string, id: string) =>
     api.delete<void>(`/companies/${companyId}/mail/domains/${id}`),
+
+  getReverseDns: (companyId: string, refresh = false) =>
+    api.get<MailReverseDnsStatus>(
+      `/companies/${companyId}/mail/reverse-dns${refresh ? "?refresh=true" : ""}`,
+    ),
 
   listAddresses: (companyId: string) =>
     api.get<MailAddress[]>(`/companies/${companyId}/mail/addresses`),

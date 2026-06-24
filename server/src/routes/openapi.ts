@@ -556,6 +556,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/mail/domains",
   "POST /api/companies/{companyId}/mail/domains/{id}/verify",
   "DELETE /api/companies/{companyId}/mail/domains/{id}",
+  "GET /api/companies/{companyId}/mail/reverse-dns",
   "GET /api/companies",
   "POST /api/companies",
   "GET /api/companies/stats",
@@ -4679,6 +4680,12 @@ registerCurrentRoute({
   tags: ["companies"],
   summary: "Detach a mail domain",
   responses: { 204: r.noContent, 401: r.unauthorized, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/mail/reverse-dns",
+  tags: ["companies"],
+  summary: "Reverse-DNS (PTR) health for the mail sending IP",
 });
 registerCurrentRoute({
   method: "get",

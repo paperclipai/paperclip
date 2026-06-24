@@ -2,7 +2,12 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { attachDomainSchema, createMailAddressSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { mailDomainService, mailAddressService, logActivity } from "../services/index.js";
+import {
+  mailDomainService,
+  mailAddressService,
+  mailDiagnosticsService,
+  logActivity,
+} from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 /**
@@ -86,6 +91,16 @@ export function mailDomainRoutes(db: Db) {
       details: { domain: domain.domain },
     });
     res.status(204).end();
+  });
+
+  // Reverse-DNS (PTR) health for the sending IP. Instance-level infra, surfaced
+  // here so a human can see where it stands without running `dig` by hand.
+  router.get("/companies/:companyId/mail/reverse-dns", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const force = req.query.refresh === "true";
+    res.json(await mailDiagnosticsService().getReverseDnsStatus(force));
   });
 
   // ─── Mail addresses (company-level management, phase 1) ───────────────────

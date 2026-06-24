@@ -828,6 +828,7 @@ export type {
   MailDomain,
   MailAddress,
   MailMessage,
+  MailReverseDnsStatus,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
 export {
