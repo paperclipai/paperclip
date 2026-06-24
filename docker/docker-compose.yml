@@ -68,11 +68,11 @@ services:
     environment:
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
       PAPERCLIP_API_URL: "http://server:3100"
-      PAPERCLIP_COMPANY_ID: "dbc742c7-9a38-4542-936b-523dfa3a7fd2"
-      PAPERCLIP_CTO_AGENT_ID: "4e5cbf52-a530-439f-917c-a6cfee78d76d"
-      PAPERCLIP_API_KEY: "pclp_tgbot_fa99aa1d16ca8eeaf0022f1341311641ec315cbc48c5fdec"
+      PAPERCLIP_COMPANY_ID: "${PAPERCLIP_COMPANY_ID}"
+      PAPERCLIP_CTO_AGENT_ID: "${PAPERCLIP_CTO_AGENT_ID}"
+      PAPERCLIP_API_KEY: "${PAPERCLIP_TGBOT_API_KEY}"
       CHAT_IDS_FILE: "/data/chat_ids.json"
-      ANGEL_CHAT_ID: "518395647"
+      ANGEL_CHAT_ID: "${ANGEL_CHAT_ID}"
     volumes:
       - telegram-data:/data
     depends_on:
@@ -84,10 +84,10 @@ services:
     build: ./services/watchdog
     environment:
       PAPERCLIP_API_URL: "http://server:3100"
-      PAPERCLIP_API_KEY: "pclp_tgbot_fa99aa1d16ca8eeaf0022f1341311641ec315cbc48c5fdec"
-      PAPERCLIP_COMPANY_ID: "dbc742c7-9a38-4542-936b-523dfa3a7fd2"
+      PAPERCLIP_API_KEY: "${PAPERCLIP_TGBOT_API_KEY}"
+      PAPERCLIP_COMPANY_ID: "${PAPERCLIP_COMPANY_ID}"
       TELEGRAM_BOT_URL: "http://telegram-bot:8000"
-      ANGEL_CHAT_ID: "518395647"
+      ANGEL_CHAT_ID: "${ANGEL_CHAT_ID}"
       CHECK_INTERVAL_SECONDS: "120"
       ALERT_COOLDOWN_SECONDS: "900"
       SERVER_CONTAINER_NAME: "paperclip-server-1"
@@ -116,8 +116,8 @@ services:
     environment:
       PORT: "3200"
       PAPERCLIP_API_URL: "http://server:3100"
-      PAPERCLIP_API_KEY: "pclp_tgbot_fa99aa1d16ca8eeaf0022f1341311641ec315cbc48c5fdec"
-      PAPERCLIP_COMPANY_ID: "dbc742c7-9a38-4542-936b-523dfa3a7fd2"
+      PAPERCLIP_API_KEY: "${PAPERCLIP_TGBOT_API_KEY}"
+      PAPERCLIP_COMPANY_ID: "${PAPERCLIP_COMPANY_ID}"
       DEPLOY_TOKEN: "${DEPLOY_TOKEN:-}"
     volumes:
       - C:/Users/User/.claude/watchdog:/data
