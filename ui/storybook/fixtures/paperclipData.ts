@@ -167,10 +167,10 @@ export const storybookAgents: Agent[] = [
   {
     id: "agent-cto",
     companyId: "company-storybook",
-    name: "CTO",
+    name: "Coder",
     urlKey: "cto",
     role: "cto",
-    title: "CTO",
+    title: "Coder",
     icon: "crown",
     status: "active",
     reportsTo: null,
@@ -1235,7 +1235,7 @@ export const storybookEntityNameMap = new Map<string, string>([
   ["approval:approval-budget", "Budget override"],
   ["agent:agent-codex", "CodexCoder"],
   ["agent:agent-qa", "QAChecker"],
-  ["agent:agent-cto", "CTO"],
+  ["agent:agent-cto", "Coder"],
 ]);
 
 export const storybookEntityTitleMap = new Map<string, string>([

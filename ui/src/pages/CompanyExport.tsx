@@ -390,7 +390,7 @@ function FrontmatterCard({
 // ── Client-side README generation ────────────────────────────────────
 
 const ROLE_LABELS: Record<string, string> = {
-  ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO", coo: "COO",
+  ceo: "Operator", cto: "Coder", cmo: "CMO", cfo: "CFO", coo: "COO",
   vp: "VP", manager: "Manager", engineer: "Engineer", agent: "Agent",
 };
 

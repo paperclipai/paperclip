@@ -40,7 +40,7 @@ It looks like a task manager. Under the hood: org charts, budgets, governance, g
 |        | Step            | Example                                                            |
 | ------ | --------------- | ------------------------------------------------------------------ |
 | **01** | Define the goal | _"Build the #1 AI note-taking app to $1M MRR."_                    |
-| **02** | Hire the team   | CEO, CTO, engineers, designers, marketers — any bot, any provider. |
+| **02** | Hire the team   | Operators, coders, engineers, designers, marketers — any bot, any provider. |
 | **03** | Approve and run | Review strategy. Set budgets. Hit go. Monitor from the dashboard.  |
 
 <br/>
@@ -388,7 +388,7 @@ See [doc/DEVELOPING.md](https://github.com/paperclipai/paperclip/blob/master/doc
 - ⚪ Work Queues
 - ⚪ Self-Organization
 - ⚪ Automatic Organizational Learning
-- ⚪ CEO Chat
+- ⚪ Operator Chat
 - ⚪ Cloud deployments
 - ⚪ Desktop App
 

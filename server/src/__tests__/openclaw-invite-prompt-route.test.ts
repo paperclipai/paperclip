@@ -170,7 +170,7 @@ describe.sequential("POST /companies/:companyId/openclaw/invite-prompt", () => {
       .send({});
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("Only CEO agents");
+    expect(res.body.error).toContain("Only Operator agents");
   });
 
   it("rejects CEO agent callers outside the target company scope", async () => {

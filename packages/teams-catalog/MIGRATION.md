@@ -17,8 +17,8 @@ The approved plan for this package lives at [PAP-10206 plan document](/PAP/issue
 
 ## Bundled entries shipped in Phase H
 
-- `paperclipai/bundled/company-defaults/core-exec-team` — defaults: CEO, CTO, QA, starter project, recurring CEO heartbeat task. `defaultInstall: true`. This is the smallest team that mirrors the historical CEO onboarding flow while staying inside catalog rules.
-- `paperclipai/bundled/software-development/product-engineering` — optional engineering pod: CTO, Senior Coder, QA, weekly engineering sync routine.
+- `paperclipai/bundled/company-defaults/core-exec-team` — defaults: Operator, Coder, QA, starter project, recurring Operator heartbeat task. `defaultInstall: true`. This is the smallest team that mirrors the historical Operator onboarding flow while staying inside catalog rules.
+- `paperclipai/bundled/software-development/product-engineering` — optional engineering pod: Coder, Senior Coder, QA, weekly engineering sync routine.
 - `paperclipai/bundled/product/product-design` — single-designer product design team with `wireframe`, `design-critique`, and weekly design review routine.
 
 ## Optional entries shipped in Phase H

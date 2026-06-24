@@ -44,7 +44,7 @@ describe("teams catalog manifest", () => {
       files: {
         "agents/cto/AGENTS.md": [
           "---",
-          "name: CTO",
+          "name: Coder",
           "slug: cto",
           "skills:",
           "  - github-pr-workflow",

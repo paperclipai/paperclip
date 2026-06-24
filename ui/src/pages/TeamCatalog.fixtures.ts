@@ -17,9 +17,9 @@ export const sampleTeam: CatalogTeam = {
   kind: "bundled",
   category: "company-defaults",
   slug: "core-exec-team",
-  name: "Core Exec Team",
+  name: "Core Operator Team",
   description:
-    "A starter executive team: a CEO who manages a CTO and a CMO, plus a launch project and a weekly standup routine. Installs ready-to-run agents you can customize.",
+    "A starter operator team: an Operator who manages a Coder and a CMO, plus a launch project and a weekly standup routine. Installs ready-to-run agents you can customize.",
   path: "catalog/bundled/company-defaults/core-exec-team",
   entrypoint: "TEAM.md",
   schema: "agentcompanies/v1",

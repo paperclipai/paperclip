@@ -5,4 +5,4 @@ description: Starter project that turns the company goal into the first useful p
 owner: cto
 ---
 
-Use this project to convert the company goal into a concrete first deliverable. The CEO seeds priorities, the CTO breaks them into engineering tasks, and QA verifies the result before close-out.
+Use this project to convert the company goal into a concrete first deliverable. The Operator seeds priorities, the Coder breaks them into engineering tasks, and QA verifies the result before close-out.

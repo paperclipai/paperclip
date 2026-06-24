@@ -84,7 +84,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   const startedServer = await importServerEntry();
 
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
-    p.log.step("Generating bootstrap CEO invite");
+    p.log.step("Generating bootstrap Operator invite");
     await bootstrapCeoInvite({
       config: configPath,
       dbUrl: startedServer.databaseUrl,

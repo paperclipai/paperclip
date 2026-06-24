@@ -22,7 +22,7 @@ const HANDOFF_METADATA: SystemNoticeMetadataSection[] = [
       {
         kind: "agent",
         label: "Owner",
-        name: "CTO",
+        name: "Coder",
         href: "/PAP/agents/cto",
       },
       {

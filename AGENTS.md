@@ -194,6 +194,25 @@ This is a fork of `paperclipai/paperclip` with QoL patches and an **external-onl
 - UI uses generic **config-schema** + **ui-parser.js** from the package — no Hermes imports in `server/` or `ui/` source.
 - Optional: `file:` entry in `~/.paperclip/adapter-plugins.json` for local dev of the adapter repo.
 
+### Hermes/Paperclip control boundary
+
+Hermes should sit above Paperclip operationally: William/Discord/CLI → Hermes → Paperclip MCP/API. Paperclip is the company/task/control-plane state layer; Hermes is the operator with broader connectors, memory, GBrain, Slack/Discord, filesystem, and gateway access.
+
+Do **not** let Paperclip code, adapter plugins, dev scripts, MCP reload helpers, or Paperclip-launched jobs control the main Hermes messaging gateway:
+
+- Do not call `launchctl kickstart ai.hermes.gateway`, `hermes gateway restart`, or equivalent from Paperclip.
+- Do not use Discord/Telegram/Slack gateway conversations as a Paperclip execution API.
+- Do not install submitted/KeepAlive launchd helpers that repeatedly reload Hermes to refresh Paperclip MCP.
+- Do not make Paperclip depend on Hermes gateway session state, auto-resume behavior, or human chat threads.
+
+If Paperclip needs Hermes capabilities, use a bounded non-gateway integration instead:
+
+1. Prefer direct tool/API access for the needed capability, e.g. GBrain MCP/API directly from Paperclip.
+2. If Hermes-specific context/connectors are required, spawn a dedicated non-gateway Hermes worker profile, e.g. `hermes -p paperclip-worker chat -q ...`, with explicit cwd, timeout, tool scope, and structured output.
+3. For repeated use, expose a narrow internal Hermes worker/API surface such as `save_to_gbrain`, `search_slack`, or `draft_discord_update`; keep it separate from the messaging gateway.
+
+Incident note: a prior helper `~/.hermes/tmp/restart-paperclip-mcp.sh` was submitted as `ai.hermes.paperclip-mcp-reload` and repeatedly restarted `ai.hermes.gateway`, which caused Hermes to auto-resume a half-finished Discord session and enter a restart/resume loop. Treat gateway restarts from Paperclip as a production incident pattern, not a reload strategy.
+
 ### Local Dev
 
 - Fork runs on port 3101+ (auto-detects if 3100 is taken by upstream instance)

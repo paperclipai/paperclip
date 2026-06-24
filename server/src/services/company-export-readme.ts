@@ -4,8 +4,8 @@
 import type { CompanyPortabilityManifest } from "@paperclipai/shared";
 
 const ROLE_LABELS: Record<string, string> = {
-  ceo: "CEO",
-  cto: "CTO",
+  ceo: "Operator",
+  cto: "Coder",
   cmo: "CMO",
   cfo: "CFO",
   coo: "COO",

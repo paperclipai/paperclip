@@ -168,7 +168,7 @@ describe("IssueChatThread system notice routing", () => {
         sections: [
           {
             rows: [
-              { type: "agent_link", label: "Owner", agentId: "agent-cto", name: "CTO" },
+              { type: "agent_link", label: "Owner", agentId: "agent-cto", name: "Coder" },
             ],
           },
         ],
@@ -180,7 +180,7 @@ describe("IssueChatThread system notice routing", () => {
 
     const status = container.querySelector('[role="status"]');
     expect(status?.getAttribute("aria-label")).toBe("System alert");
-    expect(container.textContent).toContain("CTO");
+    expect(container.textContent).toContain("Coder");
     const toggle = container.querySelector("button[aria-expanded]");
     expect(toggle?.getAttribute("aria-expanded")).toBe("true");
   });

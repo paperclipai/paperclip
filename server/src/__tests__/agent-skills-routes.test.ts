@@ -666,11 +666,11 @@ describe.sequential("agent skill routes", () => {
     expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
   });
 
-  it("materializes the bundled CEO instruction set for default CEO agents", async () => {
+  it("materializes the bundled Operator instruction set for default CEO-role agents", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
       .send({
-        name: "CEO",
+        name: "Operator",
         role: "ceo",
         adapterType: "claude_local",
         adapterConfig: {},
@@ -685,9 +685,9 @@ describe.sequential("agent skill routes", () => {
         adapterType: "claude_local",
       }),
       expect.objectContaining({
-        "AGENTS.md": expect.stringContaining("You are the CEO."),
-        "HEARTBEAT.md": expect.stringContaining("CEO Heartbeat Checklist"),
-        "SOUL.md": expect.stringContaining("CEO Persona"),
+        "AGENTS.md": expect.stringContaining("You are the Operator."),
+        "HEARTBEAT.md": expect.stringContaining("Operator Heartbeat Checklist"),
+        "SOUL.md": expect.stringContaining("Operator Persona"),
         "TOOLS.md": expect.stringContaining("# Tools"),
       }),
       { entryFile: "AGENTS.md", replaceExisting: false },

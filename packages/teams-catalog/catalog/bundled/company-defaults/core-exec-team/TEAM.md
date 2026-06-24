@@ -1,6 +1,6 @@
 ---
-name: Core Exec Team
-description: Default leadership and engineering team for bootstrapping a Paperclip company with a CEO, CTO, QA Engineer, starter project, and a recurring CEO heartbeat review task.
+name: Core Operator Team
+description: Default leadership and engineering team for bootstrapping a Paperclip company with an Operator, Coder, QA Engineer, starter project, and a recurring Operator heartbeat review task.
 schema: agentcompanies/v1
 slug: core-exec-team
 category: company-defaults
@@ -27,17 +27,17 @@ requiredSkills:
   - paperclipai/bundled/quality/qa-acceptance
 ---
 
-# Core Exec Team
+# Core Operator Team
 
-The Core Exec Team is the bundled default install for a new Paperclip company. It boots the smallest org that can take a board prompt, plan it, implement it, and verify it.
+The Core Operator Team is the bundled default install for a new Paperclip company. It boots the smallest org that can take a board prompt, plan it, implement it, and verify it.
 
 ## Contents
 
-- `CEO` — strategy, prioritization, delegation. Uses `task-planning` and `issue-triage` to keep the inbox moving.
-- `CTO` — technical execution and engineering oversight. Reports to CEO. Uses `github-pr-workflow` for code review and merge hygiene.
-- `QA` — verifies fixes and captures evidence. Reports to CTO. Uses `qa-acceptance` for structured acceptance reports.
-- `first-project` — starter project under the CTO for converting the company goal into the first implementation task.
-- `first-heartbeat` — recurring CEO heartbeat to review priorities and confirm the next useful task.
+- `Operator` — strategy, prioritization, delegation. Uses `task-planning` and `issue-triage` to keep the inbox moving.
+- `Coder` — technical execution and engineering oversight. Reports to Operator. Uses `github-pr-workflow` for code review and merge hygiene.
+- `QA` — verifies fixes and captures evidence. Reports to Coder. Uses `qa-acceptance` for structured acceptance reports.
+- `first-project` — starter project under the Coder for converting the company goal into the first implementation task.
+- `first-heartbeat` — recurring Operator heartbeat to review priorities and confirm the next useful task.
 
 ## Migration notes
 

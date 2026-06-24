@@ -17,6 +17,24 @@ function shouldExposeFullHealthDetails(
   return actorType === "board" || actorType === "agent";
 }
 
+function publicHealthPayload(opts: {
+  deploymentMode: DeploymentMode;
+  deploymentExposure: DeploymentExposure;
+  authReady: boolean;
+  bootstrapStatus?: "ready" | "bootstrap_pending";
+  bootstrapInviteActive?: boolean;
+}) {
+  return {
+    status: "ok",
+    version: serverVersion,
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    authReady: opts.authReady,
+    ...(opts.bootstrapStatus ? { bootstrapStatus: opts.bootstrapStatus } : {}),
+    ...(opts.bootstrapInviteActive !== undefined ? { bootstrapInviteActive: opts.bootstrapInviteActive } : {}),
+  };
+}
+
 function hasDevServerStatusToken(providedToken: string | undefined) {
   const expectedToken = process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN?.trim();
   const token = providedToken?.trim();
@@ -91,7 +109,7 @@ export function healthRoutes(
       res.json(
         exposeFullDetails
           ? { status: "ok", version: serverVersion }
-          : { status: "ok", deploymentMode: opts.deploymentMode },
+          : publicHealthPayload(opts),
       );
       return;
     }
@@ -155,11 +173,11 @@ export function healthRoutes(
 
     if (!exposeFullDetails) {
       res.json({
-        status: "ok",
-        deploymentMode: opts.deploymentMode,
-        deploymentExposure: opts.deploymentExposure,
-        bootstrapStatus,
-        bootstrapInviteActive,
+        ...publicHealthPayload({
+          ...opts,
+          bootstrapStatus,
+          bootstrapInviteActive,
+        }),
         ...(devServer ? { devServer } : {}),
       });
       return;

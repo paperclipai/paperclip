@@ -78,9 +78,9 @@ function makePreview(errors: string[] = []): CatalogTeamImportPreviewResult {
       plan: {
         companyAction: "none",
         agentPlans: [
-          { slug: "ceo", action: "create", plannedName: "CEO", existingAgentId: null, reason: null },
-          { slug: "cto", action: "create", plannedName: "CTO", existingAgentId: null, reason: null },
-          { slug: "cmo", action: "create", plannedName: "CMO (from Core Exec Team)", existingAgentId: "agent-x", reason: "Renamed — name collision with existing agent" },
+          { slug: "ceo", action: "create", plannedName: "Operator", existingAgentId: null, reason: null },
+          { slug: "cto", action: "create", plannedName: "Coder", existingAgentId: null, reason: null },
+          { slug: "cmo", action: "create", plannedName: "CMO (from Core Operator Team)", existingAgentId: "agent-x", reason: "Renamed — name collision with existing agent" },
         ],
         projectPlans: [
           { slug: "launch", action: "create", plannedName: "Launch", existingProjectId: null, reason: null },
@@ -97,8 +97,8 @@ function makePreview(errors: string[] = []): CatalogTeamImportPreviewResult {
         company: null,
         sidebar: null,
         agents: [
-          manifestAgent("ceo", "CEO"),
-          manifestAgent("cto", "CTO"),
+          manifestAgent("ceo", "Operator"),
+          manifestAgent("cto", "Coder"),
           manifestAgent("cmo", "CMO"),
         ],
         skills: [],
@@ -108,7 +108,7 @@ function makePreview(errors: string[] = []): CatalogTeamImportPreviewResult {
       },
       files: {},
       envInputs: [
-        { key: "OPENAI_API_KEY", description: "API key for the CTO agent", agentSlug: "cto", projectSlug: null, kind: "secret", requirement: "required", defaultValue: null, portability: "system_dependent" },
+        { key: "OPENAI_API_KEY", description: "API key for the Coder agent", agentSlug: "cto", projectSlug: null, kind: "secret", requirement: "required", defaultValue: null, portability: "system_dependent" },
         { key: "DEFAULT_TIMEZONE", description: "Project timezone", agentSlug: null, projectSlug: "launch", kind: "plain", requirement: "optional", defaultValue: "UTC", portability: "portable" },
       ],
       warnings: ["Skill acme/growth-playbook will be imported from an external GitHub source."],
@@ -348,9 +348,9 @@ export const InstallSuccess: Story = {
           portabilityImport: {
             company: { id: "company-storybook", name: "Paperclip", action: "unchanged" },
             agents: [
-              { slug: "ceo", id: "a1", action: "created", name: "CEO", reason: null },
-              { slug: "cto", id: "a2", action: "created", name: "CTO", reason: null },
-              { slug: "cmo", id: "a3", action: "created", name: "CMO (from Core Exec Team)", reason: null },
+              { slug: "ceo", id: "a1", action: "created", name: "Operator", reason: null },
+              { slug: "cto", id: "a2", action: "created", name: "Coder", reason: null },
+              { slug: "cmo", id: "a3", action: "created", name: "CMO (from Core Operator Team)", reason: null },
             ],
             projects: [{ slug: "launch", id: "p1", action: "created", name: "Launch", reason: null }],
             envInputs: [],

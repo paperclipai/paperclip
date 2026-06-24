@@ -113,7 +113,7 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
     const adapterTypes = Array.from(byName.values()).map((row) => row.adapterType);
     expect(adapterTypes).toEqual(["claude_local", "claude_local", "claude_local"]);
     expect(adapterTypes).not.toContain("process");
-    expect(byName.get("CTO")?.permissions).toMatchObject({ canCreateAgents: true });
+    expect(byName.get("Coder")?.permissions).toMatchObject({ canCreateAgents: true });
   });
 
   it("honors an explicit caller adapter override for a single slug while defaulting the rest to claude_local", async () => {
@@ -130,7 +130,7 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
 
     const byName = await listAdapterTypesByName(companyId);
     expect(byName.size).toBe(3);
-    const ctoRow = Array.from(byName.values()).find((row) => row.role === "engineering-manager" || row.name === "CTO");
+    const ctoRow = Array.from(byName.values()).find((row) => row.role === "engineering-manager" || row.name === "Coder");
     expect(ctoRow?.adapterType).toBe("opencode_local");
     const otherAdapters = Array.from(byName.values())
       .filter((row) => row !== ctoRow)

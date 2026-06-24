@@ -12,7 +12,7 @@ import { BoardChat } from "./BoardChat";
 /**
  * Regression coverage for the post-wizard Conference Room intro (PAP-134,
  * plan: PAP-133 A+B): a fresh mount shows the three-dot typing bubble for
- * ~2s, then the CEO welcome, then the suggestion chips ~700ms later. The
+ * ~2s, then the Operator welcome, then the suggestion chips ~700ms later. The
  * staged reveal must hold while the onboarding wizard overlay is open or
  * the tab is hidden, and must fast-forward when the user already replied.
  */

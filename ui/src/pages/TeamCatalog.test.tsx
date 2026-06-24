@@ -119,7 +119,7 @@ function makeTeam(overrides: Partial<CatalogTeam> = {}): CatalogTeam {
     kind: "bundled",
     category: "company-defaults",
     slug: "team-no-deps",
-    name: "Core Exec Team",
+    name: "Core Operator Team",
     description: "A starter executive team.",
     path: "catalog/bundled/company-defaults/team-no-deps",
     entrypoint: "TEAM.md",
@@ -162,8 +162,8 @@ function makePreview(): CatalogTeamImportPreviewResult {
       plan: {
         companyAction: "none",
         agentPlans: [
-          { slug: "ceo", action: "create", plannedName: "CEO", existingAgentId: null, reason: null },
-          { slug: "cto", action: "create", plannedName: "CTO", existingAgentId: null, reason: null },
+          { slug: "ceo", action: "create", plannedName: "Operator", existingAgentId: null, reason: null },
+          { slug: "cto", action: "create", plannedName: "Coder", existingAgentId: null, reason: null },
         ],
         projectPlans: [
           { slug: "launch", action: "create", plannedName: "Launch", existingProjectId: null, reason: null },
@@ -255,7 +255,7 @@ describe("TeamCatalog install preview path", () => {
 
   it("renders the detail pane for the selected team", async () => {
     await renderPage();
-    expect(document.body.textContent).toContain("Core Exec Team");
+    expect(document.body.textContent).toContain("Core Operator Team");
     expect(document.body.textContent).toContain("A starter executive team.");
     // summary grid counts
     expect(document.body.textContent).toContain("Agents");

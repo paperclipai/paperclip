@@ -2490,7 +2490,7 @@ export function agentRoutes(
         return;
       }
       if (actorAgent.role !== "ceo") {
-        res.status(403).json({ error: "Only CEO can manage permissions" });
+        res.status(403).json({ error: "Only Operator can manage permissions" });
         return;
       }
     } else {

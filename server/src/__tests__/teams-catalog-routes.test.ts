@@ -57,7 +57,7 @@ function catalogTeam(overrides: Record<string, unknown> = {}) {
     category: "software-development",
     slug: "product-engineering",
     name: "Product Engineering",
-    description: "A software development team with CTO, coder, and QA roles.",
+    description: "A software development team with Coder and QA roles.",
     path: "catalog/bundled/software-development/product-engineering",
     entrypoint: "TEAM.md",
     schema: "agentcompanies/v1",

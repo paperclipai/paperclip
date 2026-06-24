@@ -80,7 +80,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       throw forbidden("Agent key cannot access another company");
     }
     if (actorAgent.role !== "ceo") {
-      throw forbidden(`Only CEO agents can manage ${capability}`);
+      throw forbidden(`Only Operator agents can manage ${capability}`);
     }
   }
 
@@ -126,7 +126,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   router.get("/:companyId", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    // Allow agents (CEO) to read their own company; board always allowed
+    // Allow Operator agents to read their own company; board always allowed
     if (req.actor.type !== "agent") {
       assertBoard(req);
     }

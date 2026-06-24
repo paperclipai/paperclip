@@ -48,7 +48,7 @@ describe("SystemNotice", () => {
 
   it("uses System alert label for danger tone", () => {
     const node = render(
-      <SystemNotice tone="danger" body="Recovery escalated to CTO." />,
+      <SystemNotice tone="danger" body="Recovery escalated to Coder." />,
     );
 
     const status = node.querySelector('[role="status"]');
@@ -145,7 +145,7 @@ describe("SystemNotice", () => {
               {
                 kind: "agent",
                 label: "Owner",
-                name: "CTO",
+                name: "Coder",
                 href: "/PAP/agents/cto",
               },
               {
@@ -167,7 +167,7 @@ describe("SystemNotice", () => {
     expect(links).toContain("/PAP/agents/codexcoder/runs/9cdba892");
     expect(node.textContent).toContain("PAP-3440");
     expect(node.textContent).toContain("Disposition recovery");
-    expect(node.textContent).toContain("CTO");
+    expect(node.textContent).toContain("Coder");
     expect(node.textContent).toContain("succeeded");
   });
 

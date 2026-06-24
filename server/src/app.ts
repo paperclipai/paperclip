@@ -175,6 +175,12 @@ export async function createApp(
     verify: captureRawBody,
   }));
   app.use(httpLogger);
+  app.use((req, _res, next) => {
+    if (req.url.startsWith("//api/")) {
+      req.url = req.url.replace(/^\/+api\//, "/api/");
+    }
+    next();
+  });
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,

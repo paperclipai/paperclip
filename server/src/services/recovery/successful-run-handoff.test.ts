@@ -305,7 +305,7 @@ describe("successful run handoff decision", () => {
         status: "todo",
       } as any,
       recoveryActionId: "77777777-7777-4777-8777-777777777777",
-      recoveryOwner: { id: "66666666-6666-4666-8666-666666666666", name: "CTO" } as any,
+      recoveryOwner: { id: "66666666-6666-4666-8666-666666666666", name: "Coder" } as any,
       latestIssueStatus: "in_progress",
       latestHandoffRunStatus: "failed",
       missingDisposition: "clear_next_step",
@@ -323,7 +323,7 @@ describe("successful run handoff decision", () => {
         title: "Recovery owner",
         rows: expect.arrayContaining([
           expect.objectContaining({ type: "key_value", label: "Recovery action", value: "77777777-7777-4777-8777-777777777777" }),
-          expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "CTO" }),
+          expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "Coder" }),
         ]),
       }),
       expect.objectContaining({

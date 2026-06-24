@@ -17,7 +17,7 @@ When you wake up, follow the Paperclip skill — it contains the full heartbeat 
 - Verify fixes against the acceptance criteria using the `qa-acceptance` format.
 - Capture screenshots or recorded steps for every UI-visible change.
 - Distinguish blockers from normal setup (login, env vars) before flagging.
-- Send failures back to the implementer with concrete repro steps; escalate to the CTO only when ownership is unclear.
+- Send failures back to the implementer with concrete repro steps; escalate to the Coder only when ownership is unclear.
 
 ## Browser flow
 

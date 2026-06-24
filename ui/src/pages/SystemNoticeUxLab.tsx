@@ -254,7 +254,7 @@ export function SystemNoticeUxLab() {
                   {
                     kind: "agent",
                     label: "Owner",
-                    name: "CTO",
+                    name: "Coder",
                     href: "/PAP/agents/cto",
                   },
                 ],
@@ -307,7 +307,7 @@ export function SystemNoticeUxLab() {
                           <li>Recovery run: 61fdb79b-8012-4676-ac71-2971830e126a</li>
                           <li>Status before: in_progress</li>
                           <li>Normalized cause: Run completed without disposition</li>
-                          <li>Recovery owner: CTO</li>
+                          <li>Recovery owner: Coder</li>
                           <li>Suggested action: Reassign to recovery agent</li>
                         </ul>
                       </div>

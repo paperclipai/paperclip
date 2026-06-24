@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-06-04T18:03:41.262Z",
+  "generatedAt": "2026-06-22T08:45:16.222Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -10,8 +10,8 @@
       "kind": "bundled",
       "category": "company-defaults",
       "slug": "core-exec-team",
-      "name": "Core Exec Team",
-      "description": "Default leadership and engineering team for bootstrapping a Paperclip company with a CEO, CTO, QA Engineer, starter project, and a recurring CEO heartbeat review task.",
+      "name": "Core Operator Team",
+      "description": "Default leadership and engineering team for bootstrapping a Paperclip company with an Operator, Coder, QA Engineer, starter project, and a recurring Operator heartbeat review task.",
       "path": "catalog/bundled/company-defaults/core-exec-team",
       "entrypoint": "TEAM.md",
       "schema": "agentcompanies/v1",
@@ -96,32 +96,32 @@
         {
           "path": "TEAM.md",
           "kind": "team",
-          "sizeBytes": 2144,
-          "sha256": "4ab4f57f147e89a56a6753755d7ef142d91741b3c0159f2e53fb333cd2779eaf"
+          "sizeBytes": 2190,
+          "sha256": "44e1a6cabf4ad585827842185ea912fdcc7bd8fb463eb2e719741f8fdbe520e0"
         },
         {
           "path": "agents/ceo/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 2492,
-          "sha256": "50f580c51807762265f09c6fe7bf32d7701d64caeb30595bfd577b2f5087c21b"
+          "sizeBytes": 2589,
+          "sha256": "dabd34dfed310976f2a08d1c3d9e1c61396473c33711677acab2660669ea63f6"
         },
         {
           "path": "agents/cto/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1449,
-          "sha256": "596e2e9fe08d7368b3b0cfe72c2635ea80444d92a2c0414157bfb0a17773fcaf"
+          "sizeBytes": 1540,
+          "sha256": "2d89d34a12cfedf62dcd7842b66e521f4659cb444a489b160336669d00c80f4b"
         },
         {
           "path": "agents/qa/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1307,
-          "sha256": "2a139b88b4b98516048395c569c1bc74fd31cdc2da65db410e9779b8d92c0343"
+          "sizeBytes": 1309,
+          "sha256": "d0945d97ff945811b9066f3622f3fd2bc13b9015a6d06f824d4c6a7bbba0dfa3"
         },
         {
           "path": "projects/first-project/PROJECT.md",
           "kind": "project",
-          "sizeBytes": 364,
-          "sha256": "1f457ae956da52ff83adc1cf63a3fb84337a4afb25bd43f0d123902d75e871cc"
+          "sizeBytes": 371,
+          "sha256": "7dba7f7e9286e9039382f96b597384249ca4261eb8faffb3de18789a9a111e40"
         },
         {
           "path": "projects/first-project/tasks/first-heartbeat/TASK.md",
@@ -132,7 +132,7 @@
       ],
       "trustLevel": "markdown_only",
       "compatibility": "compatible",
-      "contentHash": "sha256:0f20e9d56124c1dc90a1e4b128fabd863538bcc935117220f719d9620f7c89f1"
+      "contentHash": "sha256:63830568e0df3dafa1eebbba2535b2e20e83ca19a45494c2bd12cce45e9c39fb"
     },
     {
       "id": "paperclipai:bundled:product:product-design",
@@ -245,7 +245,7 @@
       "category": "software-development",
       "slug": "product-engineering",
       "name": "Product Engineering",
-      "description": "Bundled engineering team that pairs a CTO with a senior coder and a QA engineer to deliver, review, and verify product changes.",
+      "description": "Bundled engineering team that pairs a Coder with a senior coder and a QA engineer to deliver, review, and verify product changes.",
       "path": "catalog/bundled/software-development/product-engineering",
       "entrypoint": "TEAM.md",
       "schema": "agentcompanies/v1",
@@ -331,8 +331,8 @@
         {
           "path": "TEAM.md",
           "kind": "team",
-          "sizeBytes": 2583,
-          "sha256": "7204eeef78a48714dd3f82b82e171a4039adc6325e91a6bdf51a442105ee33b0"
+          "sizeBytes": 2600,
+          "sha256": "1f40c0cf1c708d23d7ba5b01d6e39b69c26ca618894fe78d9aa3b17843c2fae7"
         },
         {
           "path": ".paperclip.yaml",
@@ -343,14 +343,14 @@
         {
           "path": "agents/cto/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1499,
-          "sha256": "0a1a73ec9e5008056bca0a26325131ded2fcf4c4680a5014ba1e13400b32c173"
+          "sizeBytes": 1575,
+          "sha256": "cda8c6d07b4f98ac882c3216d62498126800793c091dfd4e61ac72fe93fa3a47"
         },
         {
           "path": "agents/qa/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1223,
-          "sha256": "2d5738f831aa772befa3471c844a0c9e611584be668e3ec82580ca9e92dc13fc"
+          "sizeBytes": 1225,
+          "sha256": "d4cfc64eacb3a3875d1d726b41583e314bb2488c3e449a3a807253a85e8580c5"
         },
         {
           "path": "agents/senior-coder/AGENTS.md",
@@ -361,8 +361,8 @@
         {
           "path": "projects/product-engineering/PROJECT.md",
           "kind": "project",
-          "sizeBytes": 358,
-          "sha256": "225d01c5b5b77f5d4dafedc083899c9368c9b079db1d3b7b67cfebd4677fc527"
+          "sizeBytes": 360,
+          "sha256": "9c4c79eca69a3b22b8d1941a868bae6112e491350f21e99ff9966b84083d77da"
         },
         {
           "path": "projects/product-engineering/tasks/weekly-engineering-sync/TASK.md",
@@ -373,7 +373,7 @@
       ],
       "trustLevel": "assets",
       "compatibility": "compatible",
-      "contentHash": "sha256:74ddeaeb11805835a4a67fc4530b048ab7f8aa1dc7d2b80acea139a933d158d3"
+      "contentHash": "sha256:e6cbf23ba424f3f7f98fa3365fde0b01b57507bccc8f3b0b6139838d1cc3f9ed"
     },
     {
       "id": "paperclipai:optional:content:content-machine",

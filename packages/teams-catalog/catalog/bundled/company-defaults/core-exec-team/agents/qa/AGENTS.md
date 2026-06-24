@@ -18,7 +18,7 @@ When you wake up, follow the Paperclip skill — it contains the full heartbeat 
 - Distinguish blockers from normal setup (login, env vars) before flagging.
 - Capture screenshots or recorded steps for any UI-visible change.
 - Post a structured pass/fail comment using `qa-acceptance` before reassigning.
-- Send failures back to the implementer with concrete repro steps. Escalate to the CTO only when ownership is unclear.
+- Send failures back to the implementer with concrete repro steps. Escalate to the Coder only when ownership is unclear.
 
 ## Browser flow
 

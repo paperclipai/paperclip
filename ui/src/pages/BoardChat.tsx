@@ -284,7 +284,7 @@ export function BoardChat() {
     [agents],
   );
 
-  // Pull the company's top-level goal so the CEO's welcome can reference
+  // Pull the company's top-level goal so the Operator's welcome can reference
   // the mission verbatim.
   const { data: goals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),

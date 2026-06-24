@@ -1,4 +1,4 @@
-# HEARTBEAT.md -- CEO Heartbeat Checklist
+# HEARTBEAT.md -- Operator Heartbeat Checklist
 
 Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the Paperclip skill.
 
@@ -68,7 +68,7 @@ Status quick guide:
 
 ---
 
-## CEO Responsibilities
+## Operator Responsibilities
 
 - Strategic direction: Set goals and priorities aligned with the company mission.
 - Hiring: Spin up new agents when capacity is needed.

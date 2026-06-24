@@ -945,9 +945,9 @@ export const NewAgentRecommendation: Story = {
   render: () => (
     <DialogStory
       eyebrow="NewAgentDialog"
-      title="Recommended CEO-assisted setup"
-      description="Initial agent creation wizard state that routes operators toward CEO-owned agent setup."
-      badges={["empty", "wizard", "CEO handoff"]}
+      title="Recommended Operator-assisted setup"
+      description="Initial agent creation wizard state that routes operators toward Operator-owned agent setup."
+      badges={["empty", "wizard", "Operator handoff"]}
     >
       <AgentDialogOpener />
     </DialogStory>

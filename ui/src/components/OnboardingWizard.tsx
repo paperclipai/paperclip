@@ -559,7 +559,7 @@ export function OnboardingWizard() {
         queryKey: queryKeys.agents.list(createdCompanyId)
       });
 
-      // Seed the CEO's agent instructions file so the agent always has
+      // Seed the Operator's agent instructions file so the agent always has
       // company context + a hiring-plan output format rule. Non-fatal on
       // failure — the agent can still function with adapter defaults.
       try {
@@ -581,7 +581,7 @@ export function OnboardingWizard() {
           createdCompanyId,
         );
       } catch (err) {
-        console.warn("Failed to seed CEO instructions:", err);
+        console.warn("Failed to seed Operator instructions:", err);
       }
 
       // Advance to the Review step — the lead is now online. The user drives

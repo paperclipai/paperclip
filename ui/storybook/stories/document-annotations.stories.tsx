@@ -26,7 +26,7 @@ The existing editor is MDXEditor on top of Lexical, and the current code already
 
 ## Reader And Goal
 
-Reader: board reviewer, CTO, and implementing engineers.
+Reader: board reviewer, Coder, and implementing engineers.
 
 ## Anchor Strategy
 
@@ -144,7 +144,7 @@ const baseThreads: DocumentAnnotationThreadWithComments[] = [
   makeThread({
     id: "resolved-1",
     status: "resolved",
-    selectedText: "Reader: board reviewer, CTO, and implementing engineers",
+    selectedText: "Reader: board reviewer, Coder, and implementing engineers",
     comments: [
       {
         id: "comment-resolved",

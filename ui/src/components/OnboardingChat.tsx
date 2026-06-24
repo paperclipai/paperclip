@@ -174,7 +174,7 @@ export function OnboardingChat({
     if (!trimmed || sending) return;
     setSending(true);
     try {
-      // Ensure the task is assigned to the CEO and in_progress before commenting.
+      // Ensure the task is assigned to the Operator and in_progress before commenting.
       try {
         await issuesApi.update(taskId, { assigneeUserId: null });
       } catch { /* may already be null */ }
@@ -261,7 +261,7 @@ export function OnboardingChat({
         ref={scrollRef}
         className="flex-1 overflow-y-auto space-y-3 mb-3 min-h-[180px] max-h-[320px] pr-1"
       >
-        {/* CEO welcome message + chips — delayed reveal */}
+        {/* Operator welcome message + chips — delayed reveal */}
         <WelcomeMessage
           agentName={agentName}
           companyName={companyName}

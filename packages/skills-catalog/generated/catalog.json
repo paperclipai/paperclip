@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-06-04T19:57:14.020Z",
+  "generatedAt": "2026-06-24T00:25:06.991Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -102,11 +102,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4649,
-          "sha256": "2ff61e12dfaa4cf8cc548529fd176f55f1b1f5292ff9dd3eb2cb331417ab5e4e"
+          "sizeBytes": 4938,
+          "sha256": "9c52a44a30ec8d306119da51bf298e9e3e6c382a9a9559ffd3054bf5e0c75f36"
         }
       ],
-      "contentHash": "sha256:4fb46a4bcefad4fd46fae48c433ee497112509a8e19fb8a7745ead44d219b498"
+      "contentHash": "sha256:487c3116eead89fef4f71c984329c41836bd69951b7ef9ed8736c69435e02438"
     },
     {
       "id": "paperclipai:bundled:product:wireframe",
@@ -317,6 +317,50 @@
         }
       ],
       "contentHash": "sha256:f22a9ed696e6614c6db2757a149f48b3295e81f78c27d065d9cb164cf4f8a9bd"
+    },
+    {
+      "id": "paperclipai:optional:data-product:data-product-engineering",
+      "key": "paperclipai/optional/data-product/data-product-engineering",
+      "kind": "optional",
+      "category": "data-product",
+      "slug": "data-product-engineering",
+      "name": "data-product-engineering",
+      "description": "Use when turning messy CSVs, spreadsheets, source tables, or local datasets into reliable data products: EDA, DuckDB/dbt-style medallion pipelines, quality gates, metric layers, dashboard specs, and Evidence.dev dashboards.",
+      "path": "catalog/optional/data-product/data-product-engineering",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "data",
+        "cto",
+        "product"
+      ],
+      "requires": [],
+      "tags": [
+        "data-product",
+        "data-engineering",
+        "eda",
+        "duckdb",
+        "dashboards",
+        "data-quality"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 14484,
+          "sha256": "533ff83451168baea6cac100760d3ebd202111d7fa01a20fb41449ce6ef31075"
+        },
+        {
+          "path": "references/data-product-engineer-profile-research.md",
+          "kind": "reference",
+          "sizeBytes": 9157,
+          "sha256": "d8df67baf389fdca95062a3d5f64b689d817ede325e8f1b1a349e2c93ad33fd2"
+        }
+      ],
+      "contentHash": "sha256:7694bca89636bc2b407f10dc1bf1f915e8bb956c1fadf604494549bcd0377e7e"
     },
     {
       "id": "paperclipai:optional:product:design-critique",
@@ -873,6 +917,48 @@
         "path": "skills/last30days",
         "url": "https://github.com/mvanhorn/last30days-skill/tree/v3.3.0/skills/last30days"
       }
+    },
+    {
+      "id": "paperclipai:optional:research:storm-research-brief",
+      "key": "paperclipai/optional/research/storm-research-brief",
+      "kind": "optional",
+      "category": "research",
+      "slug": "storm-research-brief",
+      "name": "storm-research-brief",
+      "description": "Use for high-value research or decision questions that need evidence, multiple perspectives, contradiction mapping, synthesis, and red-team review before producing a concise decision brief.",
+      "path": "catalog/optional/research/storm-research-brief",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "researcher",
+        "cto",
+        "product"
+      ],
+      "requires": [],
+      "tags": [
+        "research",
+        "synthesis",
+        "storm",
+        "decision-brief",
+        "evidence"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 7974,
+          "sha256": "cf2bfb3aa9dad5b2c628b3dc3a04470f42ba72399243bf3bc0c3b7a18470774e"
+        },
+        {
+          "path": "references/local-repo-architecture-briefs.md",
+          "kind": "reference",
+          "sizeBytes": 2069,
+          "sha256": "9f6af154ade182979fcc039d6805294abd6ca3e31d82a91a2b09e6ea3171ab79"
+        }
+      ],
+      "contentHash": "sha256:e49e11421d8205e707f44ace2aa8ad848a38a5205e5157f32af49b4238918475"
     }
   ]
 }
