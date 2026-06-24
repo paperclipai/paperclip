@@ -32,6 +32,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { startMailListener } from "./mail/smtp-listener.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
@@ -993,6 +994,15 @@ export async function startServer(): Promise<StartedServer> {
     server.listen(listenPort, config.host, () => {
       server.off("error", onError);
       logger.info(`Server listening on ${config.host}:${listenPort}`);
+      // Embedded mail: start the inbound SMTP listener (no-op unless MAIL_ENABLED).
+      try {
+        const mailListener = startMailListener(db as never);
+        if (mailListener) {
+          logger.info({ port: mailListener.port }, "embedded mail reception enabled");
+        }
+      } catch (err) {
+        logger.warn({ err }, "failed to start mail SMTP listener");
+      }
       if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
         const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
         const url = `http://${openHost}:${listenPort}`;

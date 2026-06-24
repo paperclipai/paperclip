@@ -106,6 +106,7 @@ import {
 import { issueService } from "./issues.js";
 import { agentMemoryService } from "./agent-memories.js";
 import { agentMcpServerService } from "./agent-mcp-servers.js";
+import { mailMessageService } from "./mail-messages.js";
 import { renderCapabilityRequestGuide } from "./capability-requests.js";
 import {
   buildIssueMonitorClearedPatch,
@@ -8620,6 +8621,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // tool/MCP, skill, or plugin via the approvals API. claude_local agents use the
     // REST API (not an MCP tool), so without this they never discover the path.
     context.paperclipCapabilityGuide = renderCapabilityRequestGuide(agent.companyId);
+    // Embedded mail (phase 1): surface unread inbox so the agent notices and can
+    // act on new mail without polling. Empty when the agent has no unread mail.
+    const emailSummary = await mailMessageService(db)
+      .buildRunEmailSummary(agent.companyId, agent.id)
+      .catch(() => "");
+    if (emailSummary) {
+      context.paperclipEmailSummary = emailSummary;
+    } else {
+      delete context.paperclipEmailSummary;
+    }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
     const requestedShouldReuseExisting =

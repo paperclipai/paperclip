@@ -771,12 +771,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const memoryNote = asString(context.paperclipMemorySummary, "").trim();
   // Capability-request guide (issue #2): how the agent can request a tool/skill/plugin.
   const capabilityNote = asString(context.paperclipCapabilityGuide, "").trim();
+  // Embedded mail (phase 1): the agent's unread inbox summary, if any.
+  const emailNote = asString(context.paperclipEmailSummary, "").trim();
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
     memoryNote,
     capabilityNote,
+    emailNote,
     taskContextNote,
     renderedPrompt,
   ]);
@@ -787,6 +790,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sessionHandoffChars: sessionHandoffNote.length,
     memoryChars: memoryNote.length,
     capabilityChars: capabilityNote.length,
+    emailChars: emailNote.length,
     taskContextChars: taskContextNote.length,
     heartbeatPromptChars: renderedPrompt.length,
     mcpServerCount,
