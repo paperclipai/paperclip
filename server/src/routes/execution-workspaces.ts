@@ -30,14 +30,19 @@ import {
 } from "./workspace-command-authz.js";
 import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { appendWithCap } from "../adapters/utils.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
-export function executionWorkspaceRoutes(db: Db) {
+export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
   const svc = executionWorkspaceService(db);
   const access = accessService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
+  const environmentRuntime = environmentRuntimeService(db, {
+    pluginWorkerManager: opts.pluginWorkerManager,
+  });
 
   async function assertExecutionWorkspaceReadAllowed(req: Request, res: Response, companyId: string) {
     const decision = await access.decide({
@@ -537,6 +542,12 @@ export function executionWorkspaceRoutes(db: Db) {
         return;
       }
       workspace = archivedWorkspace;
+
+      await environmentRuntime.destroyReusableSandboxLeases({
+        companyId: existing.companyId,
+        executionWorkspaceId: existing.id,
+        failureReason: "execution_workspace_closed",
+      });
 
       if (existing.mode === "shared_workspace") {
         await db

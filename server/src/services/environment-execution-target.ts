@@ -75,6 +75,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       timeoutMs,
       runner: input.environmentRuntime && input.lease
         ? {
+            supportsSingleStreamStdinProgress: false,
             execute: async (commandInput) => {
               const startedAt = new Date().toISOString();
               const result = await input.environmentRuntime!.execute({

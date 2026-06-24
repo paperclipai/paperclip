@@ -6,9 +6,17 @@ export type CompanySkillCompatibility = "compatible" | "unknown" | "invalid";
 
 export type CompanySkillSourceBadge = "paperclip" | "github" | "local" | "url" | "catalog" | "skills_sh";
 
+export type CompanySkillSharingScope = "private" | "company" | "public_link";
+
+export type CompanySkillListSort = "alphabetical" | "recent" | "installs" | "stars" | "agents" | "forks";
+
 export interface CompanySkillFileInventoryEntry {
   path: string;
   kind: "skill" | "markdown" | "reference" | "script" | "asset" | "other";
+}
+
+export interface CompanySkillVersionFileInventoryEntry extends CompanySkillFileInventoryEntry {
+  content: string;
 }
 
 export interface CompanySkill {
@@ -25,6 +33,20 @@ export interface CompanySkill {
   trustLevel: CompanySkillTrustLevel;
   compatibility: CompanySkillCompatibility;
   fileInventory: CompanySkillFileInventoryEntry[];
+  iconUrl: string | null;
+  color: string | null;
+  tagline: string | null;
+  authorName: string | null;
+  homepageUrl: string | null;
+  categories: string[];
+  sharingScope: CompanySkillSharingScope;
+  publicShareToken: string | null;
+  forkedFromSkillId: string | null;
+  forkedFromCompanyId: string | null;
+  starCount: number;
+  installCount: number;
+  forkCount: number;
+  currentVersionId: string | null;
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
@@ -43,6 +65,20 @@ export interface CompanySkillListItem {
   trustLevel: CompanySkillTrustLevel;
   compatibility: CompanySkillCompatibility;
   fileInventory: CompanySkillFileInventoryEntry[];
+  iconUrl: string | null;
+  color: string | null;
+  tagline: string | null;
+  authorName: string | null;
+  homepageUrl: string | null;
+  categories: string[];
+  sharingScope: CompanySkillSharingScope;
+  publicShareToken: string | null;
+  forkedFromSkillId: string | null;
+  forkedFromCompanyId: string | null;
+  starCount: number;
+  installCount: number;
+  forkCount: number;
+  currentVersionId: string | null;
   createdAt: Date;
   updatedAt: Date;
   attachedAgentCount: number;
@@ -69,6 +105,7 @@ export interface CompanySkillUsageAgent {
    * agent runtimes while loading operator-facing skill metadata.
    */
   actualState: string | null;
+  versionId: string | null;
 }
 
 export interface CompanySkillDetail extends CompanySkill {
@@ -79,6 +116,81 @@ export interface CompanySkillDetail extends CompanySkill {
   sourceLabel: string | null;
   sourceBadge: CompanySkillSourceBadge;
   sourcePath: string | null;
+  currentVersion: CompanySkillVersion | null;
+  starredByCurrentActor: boolean;
+}
+
+export interface CompanySkillListQuery {
+  q?: string;
+  sort?: CompanySkillListSort;
+  categories?: string[];
+  scope?: CompanySkillSharingScope;
+}
+
+export interface CompanySkillCategoryCount {
+  slug: string;
+  count: number;
+}
+
+export interface CompanySkillVersion {
+  id: string;
+  companyId: string;
+  companySkillId: string;
+  revisionNumber: number;
+  label: string | null;
+  fileInventory: CompanySkillVersionFileInventoryEntry[];
+  authorAgentId: string | null;
+  authorUserId: string | null;
+  createdAt: Date;
+}
+
+export interface CompanySkillVersionCreateRequest {
+  label?: string | null;
+}
+
+export interface CompanySkillStarResult {
+  skillId: string;
+  starred: boolean;
+  starCount: number;
+}
+
+export interface CompanySkillComment {
+  id: string;
+  companyId: string;
+  companySkillId: string;
+  parentCommentId: string | null;
+  authorAgentId: string | null;
+  authorUserId: string | null;
+  body: string;
+  deletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CompanySkillCommentCreateRequest {
+  body: string;
+  parentCommentId?: string | null;
+}
+
+export interface CompanySkillCommentUpdateRequest {
+  body: string;
+}
+
+export interface CompanySkillForkRequest {
+  name?: string | null;
+  slug?: string | null;
+  sharingScope?: CompanySkillSharingScope;
+}
+
+export interface CompanySkillUpdateRequest {
+  description?: string | null;
+  iconUrl?: string | null;
+  color?: string | null;
+  tagline?: string | null;
+  authorName?: string | null;
+  homepageUrl?: string | null;
+  categories?: string[];
+  sharingScope?: CompanySkillSharingScope;
 }
 
 export interface CompanySkillUpdateStatus {
@@ -186,6 +298,14 @@ export interface CompanySkillCreateRequest {
   slug?: string | null;
   description?: string | null;
   markdown?: string | null;
+  iconUrl?: string | null;
+  color?: string | null;
+  tagline?: string | null;
+  authorName?: string | null;
+  homepageUrl?: string | null;
+  categories?: string[];
+  sharingScope?: CompanySkillSharingScope;
+  forkedFromSkillId?: string | null;
 }
 
 export interface CompanySkillFileDetail {

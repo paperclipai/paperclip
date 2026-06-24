@@ -4,7 +4,7 @@ import type { Agent, DocumentAnnotationThreadWithComments, IssueDocument } from 
 import { MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { documentAnnotationsApi } from "@/api/document-annotations";
+import { documentAnnotationsApi, type DocumentAnnotationTarget } from "@/api/document-annotations";
 import { queryKeys } from "@/lib/queryKeys";
 import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import { DocumentAnnotationLayer, type PendingAnchor } from "./DocumentAnnotationLayer";
@@ -13,12 +13,15 @@ import type { CompanyUserProfile } from "@/lib/company-members";
 
 const DESKTOP_ANNOTATION_PANEL_WIDTH = 360;
 const DESKTOP_ANNOTATION_PANEL_MIN_WIDTH = 280;
-const DESKTOP_ANNOTATION_PANEL_GAP = 12;
+const DESKTOP_ANNOTATION_PANEL_GAP = 24;
 const DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN = 16;
+
+type AnnotationDocument = Pick<IssueDocument, "key" | "latestRevisionId" | "latestRevisionNumber">;
 
 export interface IssueDocumentAnnotationsProps {
   issueId: string;
-  doc: IssueDocument;
+  doc: AnnotationDocument;
+  target?: DocumentAnnotationTarget;
   /** The body that is being rendered/edited (current or historical revision). */
   bodyMarkdown: string;
   /** True when a draft has unsaved changes or is currently saving. */
@@ -34,7 +37,7 @@ export interface IssueDocumentAnnotationsProps {
   /** Controlled panel state. Caller owns this so the count chip can live in the doc header. */
   panelOpen: boolean;
   onPanelOpenChange: (open: boolean) => void;
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name">>;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   /** Seed which thread is focused on mount. Used by Storybook/screenshot harness. */
   defaultFocusedThreadId?: string;
@@ -43,6 +46,7 @@ export interface IssueDocumentAnnotationsProps {
 export function IssueDocumentAnnotations({
   issueId,
   doc,
+  target,
   bodyMarkdown,
   draftDirty,
   draftConflicted,
@@ -105,7 +109,12 @@ export function IssueDocumentAnnotations({
         boundaryWidth - DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN * 2,
       );
       const desiredWidth = Math.min(DESKTOP_ANNOTATION_PANEL_WIDTH, maxPanelWidth);
-      const top = Math.max(DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN, rect.top);
+      // Clamp the panel below the sticky top nav (the scroll container's top edge)
+      // so the comments thread never tucks under the nav bar while scrolling.
+      const boundaryTop = boundaryRect?.top ?? DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN;
+      const minTop = Math.max(DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN, boundaryTop)
+        + DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN;
+      const top = Math.max(minTop, rect.top);
       const desiredLeft = rect.right + DESKTOP_ANNOTATION_PANEL_GAP;
       const spaceRightOfDocument = boundaryRight
         - desiredLeft
@@ -147,8 +156,12 @@ export function IssueDocumentAnnotations({
   }, [doc.key, isMobile, panelOpen]);
 
   const annotationsQuery = useQuery({
-    queryKey: queryKeys.issues.documentAnnotations(issueId, doc.key, "all"),
-    queryFn: () => documentAnnotationsApi.list(issueId, doc.key, { status: "all", includeComments: true }),
+    queryKey: target?.kind === "routine"
+      ? queryKeys.routines.documentAnnotations(target.routineId, target.documentKey, "all")
+      : queryKeys.issues.documentAnnotations(issueId, doc.key, "all"),
+    queryFn: () => target
+      ? documentAnnotationsApi.listForTarget(target, { status: "all", includeComments: true })
+      : documentAnnotationsApi.list(issueId, doc.key, { status: "all", includeComments: true }),
     staleTime: 30_000,
   });
   const allThreads = annotationsQuery.data ?? [];
@@ -242,6 +255,30 @@ export function IssueDocumentAnnotations({
     [allThreads],
   );
 
+  const fallbackDesktopPanelFrame = useMemo(() => {
+    if (!panelOpen || isMobile || desktopPanelFrame || typeof window === "undefined") return null;
+    const width = Math.min(
+      DESKTOP_ANNOTATION_PANEL_WIDTH,
+      Math.max(
+        DESKTOP_ANNOTATION_PANEL_MIN_WIDTH,
+        window.innerWidth - DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN * 2,
+      ),
+    );
+    return {
+      left: Math.max(
+        DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN,
+        window.innerWidth - width - DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN,
+      ),
+      top: DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN,
+      maxHeight: Math.max(
+        240,
+        window.innerHeight - DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN * 2,
+      ),
+      width,
+    };
+  }, [desktopPanelFrame, isMobile, panelOpen]);
+  const renderedDesktopPanelFrame = desktopPanelFrame ?? fallbackDesktopPanelFrame;
+
   const annotationPanel = panelOpen ? (
     <DocumentAnnotationPanel
       open={panelOpen}
@@ -255,6 +292,7 @@ export function IssueDocumentAnnotations({
         }
       }}
       issueId={issueId}
+      target={target}
       documentKey={doc.key}
       documentRevisionNumber={doc.latestRevisionNumber}
       baseRevisionId={doc.latestRevisionId}
@@ -272,7 +310,7 @@ export function IssueDocumentAnnotations({
       newCommentDisabled={newCommentDisabled}
       newCommentDisabledReason={newCommentDisabledReason}
       isMobile={isMobile}
-      desktopWidth={desktopPanelFrame?.width}
+      desktopWidth={renderedDesktopPanelFrame?.width}
       agentMap={agentMap}
       userProfileMap={userProfileMap}
     />
@@ -304,18 +342,19 @@ export function IssueDocumentAnnotations({
             newCommentDisabledReason={newCommentDisabledReason}
             hideResolved
             captureSelectionRequestId={captureSelectionRequestId}
+            pendingHighlightText={composerAnchor?.selectedText ?? null}
           />
         ) : null}
       </section>
-      {panelOpen && !isMobile && desktopPanelFrame ? (
+      {panelOpen && !isMobile && renderedDesktopPanelFrame ? (
         <div
           data-testid="document-annotation-panel-anchor"
           className="pointer-events-auto fixed z-[60] hidden lg:block"
           style={{
-            left: desktopPanelFrame.left,
-            maxHeight: desktopPanelFrame.maxHeight,
-            top: desktopPanelFrame.top,
-            width: desktopPanelFrame.width,
+            left: renderedDesktopPanelFrame.left,
+            maxHeight: renderedDesktopPanelFrame.maxHeight,
+            top: renderedDesktopPanelFrame.top,
+            width: renderedDesktopPanelFrame.width,
           }}
         >
           {annotationPanel}
@@ -329,6 +368,7 @@ export function IssueDocumentAnnotations({
 export interface DocumentAnnotationsCountChipProps {
   issueId: string;
   docKey: string;
+  target?: DocumentAnnotationTarget;
   panelOpen: boolean;
   onToggle: () => void;
 }
@@ -340,12 +380,17 @@ export interface DocumentAnnotationsCountChipProps {
 export function DocumentAnnotationsCountChip({
   issueId,
   docKey,
+  target,
   panelOpen,
   onToggle,
 }: DocumentAnnotationsCountChipProps) {
   const annotationsQuery = useQuery({
-    queryKey: queryKeys.issues.documentAnnotations(issueId, docKey, "all"),
-    queryFn: () => documentAnnotationsApi.list(issueId, docKey, { status: "all", includeComments: true }),
+    queryKey: target?.kind === "routine"
+      ? queryKeys.routines.documentAnnotations(target.routineId, target.documentKey, "all")
+      : queryKeys.issues.documentAnnotations(issueId, docKey, "all"),
+    queryFn: () => target
+      ? documentAnnotationsApi.listForTarget(target, { status: "all", includeComments: true })
+      : documentAnnotationsApi.list(issueId, docKey, { status: "all", includeComments: true }),
     staleTime: 30_000,
   });
   const threads = annotationsQuery.data ?? [];

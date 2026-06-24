@@ -94,7 +94,7 @@ describe("AgentActionButtons", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
   let queryClient: QueryClient;
-  let invalidateQueries: ReturnType<typeof vi.spyOn>;
+  let invalidateQueries: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -103,7 +103,7 @@ describe("AgentActionButtons", () => {
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    invalidateQueries = vi.spyOn(queryClient, "invalidateQueries") as unknown as ReturnType<typeof vi.fn>;
     mockAgentsApi.clearError.mockResolvedValue(makeAgent({ status: "idle" }));
     mockAgentsApi.pause.mockResolvedValue(makeAgent({ status: "paused" }));
     mockAgentsApi.resume.mockResolvedValue(makeAgent({ status: "idle" }));

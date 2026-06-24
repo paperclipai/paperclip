@@ -16,6 +16,7 @@ import { KeyboardShortcutsCheatsheetContent } from "@/components/KeyboardShortcu
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Sidebar } from "@/components/Sidebar";
+import { PluginLauncherProvider } from "@/plugins/launchers";
 import { SidebarAccountMenu } from "@/components/SidebarAccountMenu";
 import { SidebarCompanyMenu } from "@/components/SidebarCompanyMenu";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -349,3 +350,30 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const BoardChromeMatrix: Story = {};
+
+// PAP-10676 verification harness: renders the real Sidebar at a fixed width so a
+// screenshot of the expanded state and a screenshot of the pinned-collapsed rail
+// can be overlaid. The icon column must be pixel-identical between the two — the
+// only difference should be the labels (sr-only in the rail). Playwright toggles
+// collapse via the in-sidebar control, so this exercises the real context path.
+function SidebarIconAlignmentHarness() {
+  return (
+    <PluginLauncherProvider>
+      <div className="paperclip-story">
+        <RouteSetter to="/PAP/projects/board-ui/issues" />
+        <div className="flex min-h-[760px] items-start justify-center bg-muted/30 p-8">
+          <div
+            data-testid="sidebar-align-frame"
+            className="h-[700px] w-60 overflow-hidden border border-border bg-background"
+          >
+            <Sidebar />
+          </div>
+        </div>
+      </div>
+    </PluginLauncherProvider>
+  );
+}
+
+export const SidebarIconAlignment: Story = {
+  render: () => <SidebarIconAlignmentHarness />,
+};

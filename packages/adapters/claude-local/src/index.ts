@@ -7,6 +7,8 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @anthropic-ai/claude-code
 
 export const models = [
   { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+  { id: "claude-fable-5", label: "Claude Fable 5" },
+  { id: "claude-mythos-5", label: "Claude Mythos 5" },
   { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
   { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
@@ -40,7 +42,7 @@ Core fields:
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
-- dangerouslySkipPermissions (boolean, optional, default true): pass --dangerously-skip-permissions to claude; defaults to true because Paperclip runs Claude in headless --print mode where interactive permission prompts cannot be answered
+- dangerouslySkipPermissions (boolean, optional, default true): allow non-interactive Claude runs to proceed without approval prompts. Local targets receive --dangerously-skip-permissions; remote targets receive a curated --allowedTools list so they do not inherit local bypass permissions.
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

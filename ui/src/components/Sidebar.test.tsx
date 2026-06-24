@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
-import { act, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
@@ -47,11 +48,18 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 
+const mockSidebar = vi.hoisted(() => ({
+  isMobile: false,
+  setSidebarOpen: vi.fn(),
+  collapsed: false,
+  collapseLocked: false,
+  peeking: false,
+  toggleCollapsed: vi.fn(),
+  setCollapsed: vi.fn(),
+}));
+
 vi.mock("../context/SidebarContext", () => ({
-  useSidebar: () => ({
-    isMobile: false,
-    setSidebarOpen: vi.fn(),
-  }),
+  useSidebar: () => mockSidebar,
 }));
 
 vi.mock("../api/heartbeats", () => ({
@@ -112,7 +120,9 @@ describe("Sidebar", () => {
     flushSync(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <Sidebar />
+          <TooltipProvider>
+            <Sidebar />
+          </TooltipProvider>
         </QueryClientProvider>,
       );
     });
@@ -125,6 +135,9 @@ describe("Sidebar", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    mockSidebar.isMobile = false;
+    mockSidebar.collapsed = false;
+    mockSidebar.peeking = false;
   });
 
   afterEach(() => {
@@ -189,7 +202,23 @@ describe("Sidebar", () => {
       container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
     ).toBe("true");
 
-    await act(async () => {
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("defaults to streamlined navigation while experimental settings are loading", async () => {
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const root = await renderSidebar();
+
+    const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
+    expect(navLabels).toContain("Projects");
+    expect(container.querySelector('[data-testid="sidebar-projects"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
+    ).toBe("true");
+
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -216,7 +245,7 @@ describe("Sidebar", () => {
       container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
     ).toBe("false");
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -254,7 +283,7 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows an Artifacts nav item directly below Goals", async () => {
+  it("shows Skills directly below Artifacts in Work", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
@@ -266,7 +295,57 @@ describe("Sidebar", () => {
     const navText = container.querySelector("nav")?.textContent ?? "";
     expect(navText).toContain("Goals");
     expect(navText).toContain("Artifacts");
+    expect(navText).toContain("Skills");
     expect(navText.indexOf("Goals")).toBeLessThan(navText.indexOf("Artifacts"));
+    expect(navText.indexOf("Artifacts")).toBeLessThan(navText.indexOf("Skills"));
+
+    const sections = [...container.querySelectorAll("nav > div")];
+    const workSection = sections.find((section) => section.textContent?.startsWith("Work"));
+    const companySection = sections.find((section) => section.textContent?.startsWith("Company"));
+    expect(workSection?.textContent).toContain("Skills");
+    expect(companySection?.textContent).not.toContain("Skills");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows the Conference Room nav item when conference room chat is enabled (PAP-137)", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableConferenceRoomChat: true,
+    });
+    const root = await renderSidebar();
+
+    const link = [...container.querySelectorAll("nav a")].find(
+      (anchor) => anchor.textContent?.trim() === "Conference Room",
+    );
+    expect(link?.getAttribute("href")).toBe("/board-chat");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the Conference Room nav item when conference room chat is off (PAP-137)", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableConferenceRoomChat: false,
+    });
+    const root = await renderSidebar();
+
+    expect(container.textContent).not.toContain("Conference Room");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not flash the Conference Room item while experimental settings are loading (PAP-137)", async () => {
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const root = await renderSidebar();
+
+    expect(container.textContent).not.toContain("Conference Room");
 
     flushSync(() => {
       root.unmount();
@@ -279,6 +358,94 @@ describe("Sidebar", () => {
 
     const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Workspaces");
     expect(link?.getAttribute("href")).toBe("/workspaces");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("header toggle collapses an expanded sidebar (aria-expanded reflects state)", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Collapse sidebar"]');
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+
+    flushSync(() => {
+      toggle?.click();
+    });
+    expect(mockSidebar.toggleCollapsed).toHaveBeenCalledTimes(1);
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the expand/collapse toggle while a secondary sidebar locks the rail", async () => {
+    // A secondary sidebar forces the rail; the user must not be able to expand
+    // the primary while it is shown (PAP-10694).
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockSidebar.collapseLocked = true;
+    const root = await renderSidebar();
+
+    expect(container.querySelector('button[aria-label="Collapse sidebar"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
+
+    mockSidebar.collapseLocked = false;
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the collapsed rail top bar to just the company logo (no clipped search/toggle)", async () => {
+    // In the narrow rail the search/toggle controls don't fit beside the logo and
+    // would overflow/clip, shoving the logo out of the icon column (PAP-10676), so
+    // they are dropped in the rail. Expansion stays reachable via hover-peek + Pin
+    // and Cmd/Ctrl+B. The full controls return as soon as the panel is expanded or
+    // peeking (covered by the other top-bar tests).
+    mockSidebar.collapsed = true;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    expect(container.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
+    expect(container.querySelector('a[aria-label="Open search"]')).toBeNull();
+    // The company menu (workspace switcher / logo) is still present in the rail.
+    expect(container.textContent).toContain("Company menu");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("peek header shows a pin that promotes the peek to pinned-expanded", async () => {
+    mockSidebar.collapsed = true;
+    mockSidebar.peeking = true;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    // The collapse toggle is replaced by the pin while peeking.
+    expect(container.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
+    const pin = container.querySelector<HTMLButtonElement>('button[aria-label="Keep sidebar expanded"]');
+    expect(pin).not.toBeNull();
+
+    flushSync(() => {
+      pin?.click();
+    });
+    expect(mockSidebar.setCollapsed).toHaveBeenCalledWith(false);
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the collapse affordance on mobile (drawer handles it)", async () => {
+    mockSidebar.isMobile = true;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    expect(container.querySelector('button[aria-label="Collapse sidebar"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Keep sidebar expanded"]')).toBeNull();
 
     flushSync(() => {
       root.unmount();
