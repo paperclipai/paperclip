@@ -70,7 +70,18 @@ function signalRunningProcess(
       // Fall back to the direct child signal if group signaling fails.
     }
   }
-  if (!running.child.killed) {
+  // Gate the direct-child fallback on real liveness, not `child.killed`.
+  // `ChildProcess.killed` only reflects that a signal was successfully *sent*
+  // (per the Node docs it "does not indicate that the child process has been
+  // terminated"), so after an earlier SIGTERM it is already `true` and this
+  // guard would suppress a follow-up SIGKILL escalation — leaving a
+  // SIGTERM-ignoring / wedged child alive past its deadline. `exitCode` and
+  // `signalCode` are populated only once the process has actually closed, so
+  // this fires precisely while the child is still running. (The process-group
+  // path above is unaffected; this matters on platforms / configurations that
+  // fall through to direct-child signaling, e.g. win32 or when group signaling
+  // is unavailable.)
+  if (running.child.exitCode === null && running.child.signalCode === null) {
     running.child.kill(signal);
   }
 }

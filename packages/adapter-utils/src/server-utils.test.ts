@@ -470,6 +470,44 @@ describe("runChildProcess", () => {
     expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
   });
 
+  it.skipIf(process.platform === "win32")(
+    "force-kills a child that ignores SIGTERM once the grace window elapses",
+    async () => {
+      // Residual hang case: a child that installs a SIGTERM handler which
+      // swallows the signal and keeps running. The timeout sends SIGTERM at
+      // timeoutSec, then must escalate to SIGKILL graceSec later. If the
+      // escalation were gated on `child.killed` (which is true the instant
+      // SIGTERM is *sent*, not when the process exits) the SIGKILL would be
+      // suppressed and this child would outlive its deadline.
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          [
+            "process.on('SIGTERM', () => {});",
+            "process.stdout.write(String(process.pid));",
+            "setInterval(() => {}, 1000);",
+          ].join(" "),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 1,
+          graceSec: 1,
+          onLog: async () => {},
+          onSpawn: async () => {},
+        },
+      );
+
+      const childPid = Number.parseInt(result.stdout.trim(), 10);
+      expect(result.timedOut).toBe(true);
+      expect(result.signal).toBe("SIGKILL");
+      expect(Number.isInteger(childPid) && childPid > 0).toBe(true);
+      expect(await waitForPidExit(childPid, 2_000)).toBe(true);
+    },
+  );
+
   it.skipIf(process.platform === "win32")("cleans up a lingering process group after terminal output and child exit", async () => {
     const result = await runChildProcess(
       randomUUID(),
