@@ -2,17 +2,23 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
+  agentRuntimeState,
   agents,
   agentWakeupRequests,
   companies,
+  companySkills,
   costEvents,
   createDb,
   documentRevisions,
   documents,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRelations,
   issues,
+  issueTreeHolds,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import {
@@ -86,6 +92,7 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
 async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createDb>) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
+      await db.delete(costEvents);
       await db.delete(companySkills);
       await db.delete(issueComments);
       await db.delete(issueDocuments);
