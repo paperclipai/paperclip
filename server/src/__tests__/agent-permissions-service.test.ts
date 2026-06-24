@@ -16,4 +16,21 @@ describe("agent permissions service", () => {
     expect(normalizeAgentPermissions({ canCreateAgents: false }, "cto").canCreateAgents).toBe(false);
     expect(normalizeAgentPermissions({ canCreateAgents: true }, "engineer").canCreateAgents).toBe(true);
   });
+
+  it("grants resume authority to the CEO role by default only", () => {
+    expect(defaultPermissionsForRole("ceo").canResumeAgents).toBe(true);
+    expect(defaultPermissionsForRole("CEO").canResumeAgents).toBe(true);
+    expect(defaultPermissionsForRole("cto").canResumeAgents).toBe(false);
+    expect(defaultPermissionsForRole("engineer").canResumeAgents).toBe(false);
+  });
+
+  it("preserves explicit canResumeAgents overrides", () => {
+    expect(normalizeAgentPermissions({ canResumeAgents: true }, "engineer").canResumeAgents).toBe(true);
+    expect(normalizeAgentPermissions({ canResumeAgents: false }, "ceo").canResumeAgents).toBe(false);
+  });
+
+  it("defaults canResumeAgents from role when unspecified", () => {
+    expect(normalizeAgentPermissions({ canCreateAgents: true }, "ceo").canResumeAgents).toBe(true);
+    expect(normalizeAgentPermissions({ canCreateAgents: false }, "engineer").canResumeAgents).toBe(false);
+  });
 });

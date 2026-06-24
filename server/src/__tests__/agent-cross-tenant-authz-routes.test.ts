@@ -395,7 +395,8 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(mockAgentService.revokeKey).not.toHaveBeenCalled();
   });
 
-  it("requires board access before clearing an agent error", async () => {
+  it("rejects clear-error from an agent without the resume capability", async () => {
+    // baseAgent: role "engineer", permissions.canResumeAgents falsy.
     const app = await createApp({
       type: "agent",
       agentId,
@@ -408,7 +409,7 @@ describe.sequential("agent cross-tenant route authorization", () => {
     );
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("Board access required");
+    expect(res.body.error).toContain("Missing permission: can resume agents");
     expect(mockAgentService.clearError).not.toHaveBeenCalled();
   });
 
@@ -506,5 +507,127 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("Only agents in error status can have their error cleared");
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+});
+
+describe.sequential("agent lifecycle capability authorization", () => {
+  const ceoAgentId = "55555555-5555-4555-8555-555555555555";
+  const otherCompanyId = "66666666-6666-4666-8666-666666666666";
+
+  beforeEach(() => {
+    resetMockDefaults();
+  });
+
+  function mockCeoActorAgent() {
+    // Target agent stays baseAgent; the acting CEO agent is a distinct record.
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === ceoAgentId) {
+        return { ...baseAgent, id: ceoAgentId, role: "ceo", permissions: { canCreateAgents: false } };
+      }
+      return { ...baseAgent };
+    });
+  }
+
+  it("lets a CEO run-JWT resume an agent in its own company", async () => {
+    mockCeoActorAgent();
+    const app = await createApp({ type: "agent", agentId: ceoAgentId, companyId, runId: "run-ceo" });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.resume).toHaveBeenCalledWith(agentId);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId,
+      actorType: "agent",
+      actorId: ceoAgentId,
+      action: "agent.resumed",
+      entityType: "agent",
+      entityId: agentId,
+    }));
+  });
+
+  it("lets a CEO run-JWT clear an agent error in its own company", async () => {
+    mockCeoActorAgent();
+    const app = await createApp({ type: "agent", agentId: ceoAgentId, companyId, runId: "run-ceo" });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({}),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.clearError).toHaveBeenCalledWith(agentId);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      actorType: "agent",
+      actorId: ceoAgentId,
+      action: "agent.error_cleared",
+    }));
+  });
+
+  it("rejects resume from an agent that lacks the resume capability", async () => {
+    // Default getById returns baseAgent (role engineer, no canResumeAgents).
+    const app = await createApp({ type: "agent", agentId, companyId, runId: "run-engineer" });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Missing permission: can resume agents");
+    expect(mockAgentService.resume).not.toHaveBeenCalled();
+  });
+
+  it("grants resume to a non-CEO agent that holds the canResumeAgents capability", async () => {
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === ceoAgentId) {
+        // Engineer-role acting agent explicitly granted the resume capability.
+        return { ...baseAgent, id: ceoAgentId, role: "engineer", permissions: { canResumeAgents: true } };
+      }
+      return { ...baseAgent };
+    });
+    const app = await createApp({ type: "agent", agentId: ceoAgentId, companyId, runId: "run-granted" });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.resume).toHaveBeenCalledWith(agentId);
+  });
+
+  it("keeps cross-company agents out of resume (cross-tenant 403 unchanged)", async () => {
+    // Acting agent belongs to another company; target agent is in `companyId`.
+    const app = await createApp({ type: "agent", agentId: ceoAgentId, companyId: otherCompanyId, runId: "run-x" });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Agent key cannot access another company");
+    expect(mockAgentService.resume).not.toHaveBeenCalled();
+  });
+
+  it("still lets a board session resume an agent (no regression)", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/resume`).send({}),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.resume).toHaveBeenCalledWith(agentId);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      actorType: "user",
+      actorId: "board-user",
+      action: "agent.resumed",
+    }));
   });
 });
