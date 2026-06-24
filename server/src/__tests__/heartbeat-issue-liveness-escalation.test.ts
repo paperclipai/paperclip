@@ -412,7 +412,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(escalations).toHaveLength(0);
   });
 
-  it("does not treat non-continuation pending interactions as scheduled liveness waiting paths", async () => {
+  it("treats non-continuation pending interactions as review liveness waiting paths", async () => {
     await enableAutoRecovery();
     const { companyId, blockerIssueId } = await seedBlockedChain({
       blockerStatus: "in_review",
@@ -443,8 +443,14 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     const result = await heartbeatService(db).reconcileIssueGraphLiveness();
 
-    expect(result.findings).toBe(1);
-    expect(result.escalationsCreated).toBe(1);
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
   });
 
   it("keeps active invalid_review_participant recoveries from being retired", async () => {

@@ -2839,10 +2839,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .where(
           and(
             eq(issueThreadInteractions.status, "pending"),
-            inArray(issueThreadInteractions.continuationPolicy, [
-              "wake_assignee",
-              "wake_assignee_on_accept",
-            ]),
           ),
         ),
       db
