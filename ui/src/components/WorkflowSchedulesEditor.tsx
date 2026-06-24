@@ -36,7 +36,7 @@ export function WorkflowSchedulesEditor({
 }: {
   schedules: readonly WorkflowSchedule[];
   onCreate: (input: WorkflowScheduleMutationInput) => void;
-  onUpdate: (scheduleId: string, input: Partial<WorkflowScheduleMutationInput>) => void;
+  onUpdate: (scheduleId: string, input: Partial<WorkflowScheduleMutationInput>) => Promise<void>;
   onDelete: (scheduleId: string) => void;
   pendingScheduleId?: string | null;
   createPending?: boolean;
@@ -264,9 +264,9 @@ export function WorkflowSchedulesEditor({
                           type="button"
                           disabled={!editDraft.title.trim() || !editDraft.cronExpression.trim() || !editDraft.templateMarkdown.trim()}
                           onClick={() => {
-                            onUpdate(schedule.id, editDraft);
-                            setEditingId(null);
-                            setEditDraft(null);
+                            void onUpdate(schedule.id, editDraft).then(() => {
+                              cancelEditing();
+                            }).catch(() => {});
                           }}
                         >
                           <Save className="mr-1.5 h-4 w-4" />

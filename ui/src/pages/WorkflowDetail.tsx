@@ -1569,7 +1569,7 @@ export function WorkflowDetail() {
               schedules={workflowSchedules}
               onCreate={(input) => createScheduleMutation.mutate(input)}
               onUpdate={(scheduleId, input) =>
-                updateScheduleMutation.mutate({ scheduleId, input })
+                updateScheduleMutation.mutateAsync({ scheduleId, input }).then(() => undefined)
               }
               onDelete={(scheduleId) => deleteScheduleMutation.mutate(scheduleId)}
               pendingScheduleId={

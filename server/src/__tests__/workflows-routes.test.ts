@@ -186,4 +186,40 @@ describe("workflow routes", () => {
       }),
     );
   });
+
+  it("returns 404 when a workflow schedule disappears during update", async () => {
+    mockWorkflowScheduleService.get.mockResolvedValue({
+      id: "schedule-1",
+      companyId,
+      workflowId: "workflow-1",
+      title: "Daily brief",
+      status: "active",
+      cronExpression: "0 9 * * *",
+      timezone: "UTC",
+      templateMarkdown: "Send the brief.",
+      lastFiredAt: null,
+      nextRunAt: new Date("2026-06-10T09:00:00.000Z"),
+      createdByUserId: "board-user",
+      updatedByUserId: "board-user",
+      createdAt: new Date("2026-06-10T08:00:00.000Z"),
+      updatedAt: new Date("2026-06-10T08:00:00.000Z"),
+    });
+    mockWorkflowService.get.mockResolvedValue({
+      id: "workflow-1",
+      companyId,
+    });
+    mockWorkflowScheduleService.update.mockResolvedValue(null);
+
+    const res = await request(createApp())
+      .patch(`/api/workflow-schedules/schedule-1`)
+      .send({
+        title: "Daily brief",
+        cronExpression: "0 9 * * *",
+        templateMarkdown: "Send the brief.",
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Workflow schedule not found" });
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
 });

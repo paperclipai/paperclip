@@ -122,6 +122,39 @@ describeEmbeddedPostgres("workflowScheduleService", () => {
         entityId: "run-1",
       }),
     );
+
+    const updated = await db.select().from(workflowSchedules).where(eq(workflowSchedules.id, schedule.id)).then((rows) => rows[0] ?? null);
+    expect(updated?.lastFiredAt).toBeInstanceOf(Date);
+  });
+
+  it("does not stamp lastFiredAt when dispatch fails", async () => {
+    const { workflowId } = await seedWorkflow("active");
+    const svc = workflowScheduleService(db);
+
+    mockRunManual.mockRejectedValueOnce(new Error("dispatch failed"));
+
+    const schedule = await svc.create(workflowId, {
+      title: "Daily brief",
+      cronExpression: "0 9 * * *",
+      templateMarkdown: "Send the morning brief.",
+      status: "active",
+    }, { userId: "board-user" });
+
+    await db.update(workflowSchedules).set({
+      nextRunAt: new Date("2026-06-10T08:59:00.000Z"),
+    }).where(eq(workflowSchedules.id, schedule.id));
+
+    const result = await svc.tickScheduledRuns(new Date("2026-06-10T09:00:00.000Z"));
+
+    expect(result.triggered).toBe(0);
+    expect(mockRunManual).toHaveBeenCalledWith(workflowId, {
+      inputMarkdown: "Send the morning brief.",
+    });
+    expect(mockLogActivity).not.toHaveBeenCalled();
+
+    const updated = await db.select().from(workflowSchedules).where(eq(workflowSchedules.id, schedule.id)).then((rows) => rows[0] ?? null);
+    expect(updated?.nextRunAt).toBeInstanceOf(Date);
+    expect(updated?.lastFiredAt).toBeNull();
   });
 
   it("skips missed fires when the workflow is paused", async () => {

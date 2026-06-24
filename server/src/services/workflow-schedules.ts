@@ -150,15 +150,14 @@ export function workflowScheduleService(db: Db) {
         if (!nextRunAt) continue;
 
         const claimed = await db
-          .update(workflowSchedules)
-          .set({
-            nextRunAt,
-            updatedAt: now,
-            ...(row.workflow.status === "active" ? { lastFiredAt: now } : {}),
-          })
-          .where(
-            and(
-              eq(workflowSchedules.id, row.schedule.id),
+        .update(workflowSchedules)
+        .set({
+          nextRunAt,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(workflowSchedules.id, row.schedule.id),
               eq(workflowSchedules.status, "active"),
               eq(workflowSchedules.nextRunAt, row.schedule.nextRunAt),
             ),
@@ -177,6 +176,13 @@ export function workflowScheduleService(db: Db) {
             inputMarkdown: row.schedule.templateMarkdown,
           });
           triggered += 1;
+          await db
+            .update(workflowSchedules)
+            .set({
+              lastFiredAt: now,
+              updatedAt: now,
+            })
+            .where(eq(workflowSchedules.id, row.schedule.id));
           await logActivity(db, {
             companyId: row.workflow.companyId,
             actorType: "system",

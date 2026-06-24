@@ -174,6 +174,10 @@ export function workflowRoutes(db: Db) {
     const updated = await scheduleSvc.update(schedule.id, req.body, {
       userId: req.actor.userId ?? "board",
     });
+    if (!updated) {
+      res.status(404).json({ error: "Workflow schedule not found" });
+      return;
+    }
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: workflow.companyId,
@@ -182,7 +186,7 @@ export function workflowRoutes(db: Db) {
       action: "workflow.schedule_updated",
       entityType: "workflow_schedule",
       entityId: schedule.id,
-      details: { workflowId: workflow.id, title: updated?.title ?? schedule.title },
+      details: { workflowId: workflow.id, title: updated.title },
     });
     res.json(updated);
   });
