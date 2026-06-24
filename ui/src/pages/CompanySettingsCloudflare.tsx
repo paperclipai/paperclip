@@ -7,12 +7,9 @@ import {
   Globe,
   Link2,
   Loader2,
-  Plus,
   RefreshCw,
   Search,
-  Trash2,
 } from "lucide-react";
-import type { MailDomain } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -38,7 +35,6 @@ export function CompanySettingsCloudflare() {
   const queryClient = useQueryClient();
   const [apiToken, setApiToken] = useState("");
   const [zoneFilter, setZoneFilter] = useState("");
-  const [selectedZones, setSelectedZones] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Cloudflare" }]);
@@ -93,22 +89,15 @@ export function CompanySettingsCloudflare() {
   });
 
   const attachMutation = useMutation({
-    mutationFn: async (names: string[]) => {
-      const results = await Promise.allSettled(names.map((name) => mailApi.attachDomain(companyId!, name)));
-      const ok = results.filter((r) => r.status === "fulfilled").length;
-      return { ok, failed: results.length - ok };
-    },
-    onSuccess: ({ ok, failed }) => {
-      setSelectedZones(new Set());
+    mutationFn: (name: string) => mailApi.attachDomain(companyId!, name),
+    onSuccess: (domain) => {
       pushToast({
-        tone: failed ? "warn" : "success",
-        title: failed
-          ? `Attached ${ok}, ${failed} failed`
-          : `Attached ${ok} domain${ok === 1 ? "" : "s"}; DNS configured`,
+        tone: domain.status === "failed" ? "error" : "success",
+        title: domain.status === "failed" ? `${domain.domain}: DNS publish failed` : `${domain.domain} attached`,
       });
       invalidate([queryKeys.mail.domains(companyId!)]);
     },
-    onError: (e) => toastError(e, "Failed to attach domains"),
+    onError: (e) => toastError(e, "Failed to attach domain"),
   });
 
   const verifyMutation = useMutation({
@@ -131,7 +120,6 @@ export function CompanySettingsCloudflare() {
   }
 
   const domains = domainsQuery.data ?? [];
-  const attachedNames = new Set(domains.map((d) => d.domain));
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6 p-6">
@@ -204,11 +192,11 @@ export function CompanySettingsCloudflare() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Globe className="h-4 w-4" /> Attach domains
+              <Globe className="h-4 w-4" /> Domains
             </CardTitle>
             <CardDescription>
-              Select the domains from your Cloudflare account to configure for email, then attach
-              them all at once.
+              Check a domain to attach it for email (publishes its MX/SPF/DKIM/DMARC). Uncheck to
+              detach and remove those records from Cloudflare.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -218,32 +206,16 @@ export function CompanySettingsCloudflare() {
               </div>
             ) : zonesQuery.isLoading ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" /> Loading zones…
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading domains…
               </div>
             ) : (zonesQuery.data ?? []).length === 0 ? (
-              <div className="text-sm text-muted-foreground">No zones found in this account.</div>
+              <div className="text-sm text-muted-foreground">No domains found in this account.</div>
             ) : (
               (() => {
                 const zones = zonesQuery.data ?? [];
                 const needle = zoneFilter.trim().toLowerCase();
                 const filtered = needle ? zones.filter((z) => z.name.toLowerCase().includes(needle)) : zones;
-                const selectableVisible = filtered.filter((z) => !attachedNames.has(z.name));
-                const allVisibleSelected =
-                  selectableVisible.length > 0 && selectableVisible.every((z) => selectedZones.has(z.name));
-                const toggle = (name: string) =>
-                  setSelectedZones((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(name)) next.delete(name);
-                    else next.add(name);
-                    return next;
-                  });
-                const toggleAll = () =>
-                  setSelectedZones((prev) => {
-                    const next = new Set(prev);
-                    if (allVisibleSelected) selectableVisible.forEach((z) => next.delete(z.name));
-                    else selectableVisible.forEach((z) => next.add(z.name));
-                    return next;
-                  });
+                const byName = new Map(domains.map((d) => [d.domain, d]));
                 return (
                   <>
                     {zones.length > 8 && (
@@ -257,38 +229,73 @@ export function CompanySettingsCloudflare() {
                         />
                       </div>
                     )}
-                    <div className="rounded-md border">
-                      <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground">
-                        <Checkbox
-                          checked={allVisibleSelected}
-                          onCheckedChange={toggleAll}
-                          disabled={selectableVisible.length === 0}
-                          aria-label="Select all"
-                        />
-                        <span>Domain</span>
-                      </div>
-                      <div className="max-h-72 overflow-y-auto">
+                    <div className="overflow-hidden rounded-md border">
+                      <div className="max-h-96 overflow-y-auto">
                         {filtered.map((zone) => {
-                          const already = attachedNames.has(zone.name);
+                          const attached = byName.get(zone.name);
+                          const isAttached = Boolean(attached);
+                          const busy =
+                            (attachMutation.isPending && attachMutation.variables === zone.name) ||
+                            (removeMutation.isPending && attached != null && removeMutation.variables === attached.id);
+                          const statusVariant =
+                            attached?.status === "active"
+                              ? "default"
+                              : attached?.status === "failed"
+                                ? "destructive"
+                                : "secondary";
                           return (
-                            <label
-                              key={zone.id}
-                              className={`flex items-center gap-2 border-b px-3 py-2 text-sm last:border-b-0 ${
-                                already ? "opacity-60" : "cursor-pointer hover:bg-accent/40"
-                              }`}
-                            >
-                              <Checkbox
-                                checked={selectedZones.has(zone.name)}
-                                disabled={already}
-                                onCheckedChange={() => toggle(zone.name)}
-                              />
-                              <span className="font-mono">{zone.name}</span>
-                              {already && (
-                                <Badge variant="outline" className="ml-auto text-muted-foreground">
-                                  Attached
-                                </Badge>
+                            <div key={zone.id} className="border-b last:border-b-0">
+                              <div className="flex items-center gap-2.5 px-3 py-2">
+                                <Checkbox
+                                  checked={isAttached}
+                                  disabled={busy}
+                                  aria-label={isAttached ? `Detach ${zone.name}` : `Attach ${zone.name}`}
+                                  onCheckedChange={() => {
+                                    if (isAttached && attached) {
+                                      if (
+                                        window.confirm(
+                                          `Detach ${zone.name}? This removes its mail DNS records (MX/SPF/DKIM/DMARC) from Cloudflare.`,
+                                        )
+                                      ) {
+                                        removeMutation.mutate(attached.id);
+                                      }
+                                    } else {
+                                      attachMutation.mutate(zone.name);
+                                    }
+                                  }}
+                                />
+                                <span className="font-mono text-sm">{zone.name}</span>
+                                {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                                {attached && (
+                                  <Badge variant={statusVariant} className="ml-auto">
+                                    {attached.status}
+                                  </Badge>
+                                )}
+                              </div>
+                              {attached && (
+                                <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2 pl-9">
+                                  <RecordFlag label="MX" ok={attached.mxConfigured} />
+                                  <RecordFlag label="SPF" ok={attached.spfConfigured} />
+                                  <RecordFlag label="DKIM" ok={Boolean(attached.dkimPublicKey)} />
+                                  <RecordFlag label="DMARC" ok={attached.dmarcConfigured} />
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="ml-auto h-7"
+                                    disabled={busy}
+                                    onClick={() => verifyMutation.mutate(attached.id)}
+                                    title="Re-publish & verify DNS"
+                                  >
+                                    <RefreshCw className="h-3.5 w-3.5" /> Verify
+                                  </Button>
+                                  {attached.lastError && (
+                                    <span className="flex w-full items-center gap-1.5 text-xs text-destructive">
+                                      <AlertTriangle className="h-3.5 w-3.5" /> {attached.lastError}
+                                    </span>
+                                  )}
+                                </div>
                               )}
-                            </label>
+                            </div>
                           );
                         })}
                         {filtered.length === 0 && (
@@ -296,105 +303,12 @@ export function CompanySettingsCloudflare() {
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground">{selectedZones.size} selected</span>
-                      <Button
-                        size="sm"
-                        disabled={selectedZones.size === 0 || attachMutation.isPending}
-                        onClick={() => attachMutation.mutate([...selectedZones])}
-                      >
-                        {attachMutation.isPending ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Plus className="h-3.5 w-3.5" />
-                        )}
-                        Attach selected
-                      </Button>
-                    </div>
                   </>
                 );
               })()
             )}
           </CardContent>
         </Card>
-      )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Attached domains</CardTitle>
-          <CardDescription>
-            DNS records (MX/SPF/DKIM/DMARC) published on each zone.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {domainsQuery.isError ? (
-            <div className="text-sm text-destructive">Failed to load domains.</div>
-          ) : domains.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No domains attached yet.</div>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {domains.map((domain) => (
-                <MailDomainRow
-                  key={domain.id}
-                  domain={domain}
-                  onVerify={() => verifyMutation.mutate(domain.id)}
-                  onRemove={() => {
-                    if (
-                      window.confirm(
-                        `Detach ${domain.domain}? This removes its mail DNS records (MX/SPF/DKIM/DMARC) from Cloudflare.`,
-                      )
-                    ) {
-                      removeMutation.mutate(domain.id);
-                    }
-                  }}
-                  busy={verifyMutation.isPending || removeMutation.isPending}
-                />
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function MailDomainRow({
-  domain,
-  onVerify,
-  onRemove,
-  busy,
-}: {
-  domain: MailDomain;
-  onVerify: () => void;
-  onRemove: () => void;
-  busy: boolean;
-}) {
-  const statusVariant =
-    domain.status === "active" ? "default" : domain.status === "failed" ? "destructive" : "secondary";
-  return (
-    <div className="rounded-md border p-3">
-      <div className="flex items-center justify-between">
-        <span className="font-mono text-sm">{domain.domain}</span>
-        <div className="flex items-center gap-2">
-          <Badge variant={statusVariant}>{domain.status}</Badge>
-          <Button size="sm" variant="ghost" onClick={onVerify} disabled={busy} title="Re-publish & verify DNS">
-            <RefreshCw className="h-3.5 w-3.5" /> Verify
-          </Button>
-          <Button size="sm" variant="outline" onClick={onRemove} disabled={busy} title="Detach this domain">
-            <Trash2 className="h-3.5 w-3.5" /> Detach
-          </Button>
-        </div>
-      </div>
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        <RecordFlag label="MX" ok={domain.mxConfigured} />
-        <RecordFlag label="SPF" ok={domain.spfConfigured} />
-        <RecordFlag label="DKIM" ok={Boolean(domain.dkimPublicKey)} />
-        <RecordFlag label="DMARC" ok={domain.dmarcConfigured} />
-      </div>
-      {domain.lastError && (
-        <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
-          <AlertTriangle className="h-3.5 w-3.5" /> {domain.lastError}
-        </div>
       )}
     </div>
   );
