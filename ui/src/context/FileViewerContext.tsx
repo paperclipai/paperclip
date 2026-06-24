@@ -285,7 +285,10 @@ function EnabledFileViewerProvider({ issueId, children }: Omit<FileViewerProvide
   }, [location.search, navigateSearch]);
 
   const close = useCallback(() => {
-    const params = new URLSearchParams(writeFileViewerStateToSearch(location.search, null).replace(/^\?/, ""));
+    const currentSearch = typeof window === "undefined"
+      ? location.search
+      : (window.location.search || location.search);
+    const params = new URLSearchParams(writeFileViewerStateToSearch(currentSearch, null).replace(/^\?/, ""));
     params.delete("browse");
     params.delete("q");
     params.delete("folder");
