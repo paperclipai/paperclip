@@ -25,7 +25,12 @@ import {
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
   heartbeatService,
 } from "../services/heartbeat.js";
-import { recoveryService } from "../services/recovery/service.js";
+import {
+  recoveryService,
+  STALE_ACTIVE_RUN_EVALUATION_ESCALATION_THRESHOLD,
+  STALE_ACTIVE_RUN_EVALUATION_REFIRE_COMMENT_MARKER,
+  STALE_ACTIVE_RUN_EVALUATION_REFIRE_COOLDOWN_MS,
+} from "../services/recovery/service.js";
 import { getRunLogStore } from "../services/run-log-store.js";
 import { runningProcesses } from "../adapters/index.js";
 
@@ -843,5 +848,137 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  // BLO-7113: re-fire dedupe. When the orphaned `running` row is the canonical
+  // BLO-4467-family wedge, the detector re-fires every ~10-15 min on the same
+  // run. Each wrapper costs a CTO triage slot. These tests pin the suppression
+  // + escalation behavior so one wedge produces one surface, not 3-5/day.
+  async function getStaleRunWrappers(companyId: string) {
+    return db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+  }
+
+  it("suppresses a re-fire when a wrapper for the same run closed within the cooldown (BLO-7113)", async () => {
+    const t0 = new Date("2026-05-24T12:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now: t0,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+
+    const first = await heartbeat.scanSilentActiveRuns({ now: t0, companyId });
+    expect(first.created).toBe(1);
+
+    const [wrapper] = await getStaleRunWrappers(companyId);
+    expect(wrapper).toBeTruthy();
+
+    // Operator triages and closes it `done` (BLO-4467 false-positive).
+    const closedAt = new Date(t0.getTime() + 60_000);
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: closedAt, updatedAt: closedAt })
+      .where(eq(issues.id, wrapper!.id));
+
+    // Detector re-fires 10 min later, inside the cooldown.
+    const refireAt = new Date(closedAt.getTime() + 10 * 60_000);
+    const second = await heartbeat.scanSilentActiveRuns({ now: refireAt, companyId });
+
+    expect(second.suppressed).toBe(1);
+    expect(second.created).toBe(0);
+    expect(second.reopened).toBe(0);
+
+    // No second wrapper opened; the original stays closed.
+    const wrappers = await getStaleRunWrappers(companyId);
+    expect(wrappers).toHaveLength(1);
+    expect(wrappers[0]?.status).toBe("done");
+
+    // Exactly one `+1 fire` tally comment landed on the closed wrapper.
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(and(eq(issueComments.issueId, wrapper!.id), eq(issueComments.authorType, "system")));
+    const tally = comments.filter((c) =>
+      c.body.startsWith(STALE_ACTIVE_RUN_EVALUATION_REFIRE_COMMENT_MARKER),
+    );
+    expect(tally).toHaveLength(1);
+  });
+
+  it("opens a fresh wrapper once the re-fire cooldown elapses (BLO-7113)", async () => {
+    const t0 = new Date("2026-05-24T12:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now: t0,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+
+    const first = await heartbeat.scanSilentActiveRuns({ now: t0, companyId });
+    expect(first.created).toBe(1);
+
+    const [wrapper] = await getStaleRunWrappers(companyId);
+    const closedAt = new Date(t0.getTime() + 60_000);
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: closedAt, updatedAt: closedAt })
+      .where(eq(issues.id, wrapper!.id));
+
+    // Past the cooldown: a genuinely-still-stuck run earns a fresh surface.
+    const afterCooldown = new Date(
+      closedAt.getTime() + STALE_ACTIVE_RUN_EVALUATION_REFIRE_COOLDOWN_MS + 60_000,
+    );
+    const second = await heartbeat.scanSilentActiveRuns({ now: afterCooldown, companyId });
+    expect(second.suppressed).toBe(0);
+    expect(second.created).toBe(1);
+
+    const wrappers = await getStaleRunWrappers(companyId);
+    const open = wrappers.filter((w) => w.status === "todo" || w.status === "in_progress");
+    expect(open).toHaveLength(1);
+  });
+
+  it("escalates by reopening the wrapper after three suppressed re-fires (BLO-7113)", async () => {
+    const t0 = new Date("2026-05-24T12:00:00.000Z");
+    const { companyId, managerId } = await seedRunningRun({
+      now: t0,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+
+    await heartbeat.scanSilentActiveRuns({ now: t0, companyId });
+    const [wrapper] = await getStaleRunWrappers(companyId);
+    const closedAt = new Date(t0.getTime() + 60_000);
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: closedAt, updatedAt: closedAt })
+      .where(eq(issues.id, wrapper!.id));
+
+    // Three suppressed re-fires inside the cooldown.
+    let suppressed = 0;
+    for (let i = 1; i <= STALE_ACTIVE_RUN_EVALUATION_ESCALATION_THRESHOLD; i += 1) {
+      const at = new Date(closedAt.getTime() + i * 10 * 60_000);
+      const r = await heartbeat.scanSilentActiveRuns({ now: at, companyId });
+      suppressed += r.suppressed;
+    }
+    expect(suppressed).toBe(STALE_ACTIVE_RUN_EVALUATION_ESCALATION_THRESHOLD);
+
+    // The next fire escalates by reopening instead of opening wrapper #N+1.
+    const escalateAt = new Date(
+      closedAt.getTime() + (STALE_ACTIVE_RUN_EVALUATION_ESCALATION_THRESHOLD + 1) * 10 * 60_000,
+    );
+    const escalation = await heartbeat.scanSilentActiveRuns({ now: escalateAt, companyId });
+    expect(escalation.reopened).toBe(1);
+    expect(escalation.created).toBe(0);
+
+    // Still exactly one wrapper, now reopened to in_progress and assigned to CTO.
+    const wrappers = await getStaleRunWrappers(companyId);
+    expect(wrappers).toHaveLength(1);
+    expect(wrappers[0]?.id).toBe(wrapper!.id);
+    expect(wrappers[0]?.status).toBe("in_progress");
+    expect(wrappers[0]?.assigneeAgentId).toBe(managerId);
+
+    // Self-limiting: a later fire now finds the OPEN wrapper and returns existing.
+    const afterReopen = new Date(escalateAt.getTime() + 10 * 60_000);
+    const followup = await heartbeat.scanSilentActiveRuns({ now: afterReopen, companyId });
+    expect(followup.existing).toBe(1);
+    expect(followup.reopened).toBe(0);
+    expect(followup.created).toBe(0);
   });
 });

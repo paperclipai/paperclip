@@ -69,6 +69,27 @@ export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
+// BLO-7113: re-fire suppression for `stale_active_run_evaluation` wrappers.
+// When the underlying `runs.status='running'` row is the canonical
+// BLO-4467-family wedge (pod already reaped), the detector keeps re-firing
+// every ~10-15 min on the SAME run. Each wrapper costs a CTO heartbeat slot
+// to triage and close as a false-positive — three closures inside 23 min for
+// one wedge was the trigger. If the most recent wrapper for the same run was
+// closed (done/cancelled) within this window, suppress a fresh wrapper and
+// instead record a running tally on the closed one. 1h: long enough to absorb
+// the re-fire burst that follows a manual close, short enough that a run still
+// stuck after an hour earns a genuinely fresh surface.
+export const STALE_ACTIVE_RUN_EVALUATION_REFIRE_COOLDOWN_MS = 60 * 60 * 1000;
+// After this many suppressed re-fires inside the escalation window, stop
+// suppressing silently and reopen the latest wrapper to `in_progress` (pinging
+// its owner / CTO) rather than opening wrapper #N+1.
+export const STALE_ACTIVE_RUN_EVALUATION_ESCALATION_WINDOW_MS = 6 * 60 * 60 * 1000;
+export const STALE_ACTIVE_RUN_EVALUATION_ESCALATION_THRESHOLD = 3;
+// Stable body prefix on the suppression tally comment. Used both as the
+// human-facing marker and as the counting key for the escalation threshold
+// (issue_comments.metadata is a strict schema with no room for a custom tag,
+// so we count by this prefix on system-authored comments within the window).
+export const STALE_ACTIVE_RUN_EVALUATION_REFIRE_COMMENT_MARKER = "[detector] +1 fire";
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -1115,6 +1136,83 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  // BLO-7113: the most-recent wrapper for this run that was closed
+  // (done/cancelled) within the re-fire cooldown. Window is measured from the
+  // STABLE close timestamp (completed_at/cancelled_at), NOT updated_at — posting
+  // the suppression tally comment bumps updated_at, so keying off it would let
+  // the window slide indefinitely and never re-surface a genuinely-stuck run.
+  async function findRecentClosedStaleRunEvaluation(companyId: string, runId: string, now: Date) {
+    const cutoff = new Date(now.getTime() - STALE_ACTIVE_RUN_EVALUATION_REFIRE_COOLDOWN_MS);
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        completedAt: issues.completedAt,
+        cancelledAt: issues.cancelledAt,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          sql`coalesce(${issues.completedAt}, ${issues.cancelledAt}, ${issues.updatedAt}) > ${cutoff.toISOString()}::timestamptz`,
+        ),
+      )
+      .orderBy(
+        sql`coalesce(${issues.completedAt}, ${issues.cancelledAt}, ${issues.updatedAt}) desc`,
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  // BLO-7113: has the agent engaged this run's wrapper via a `continue`/`snooze`
+  // watchdog decision within the cooldown? If so, the re-arm mechanism (which
+  // deliberately re-surfaces a fresh wrapper after its quiet window) owns
+  // re-creation — the re-fire cooldown must NOT suppress that. This scopes
+  // suppression to the pure close-as-false-positive-then-auto-refire noise mode
+  // (BLO-7090/7099/7109), where no such decision exists.
+  async function hasRecentStaleRunWatchdogDecision(companyId: string, runId: string, since: Date) {
+    const [row] = await db
+      .select({ id: heartbeatRunWatchdogDecisions.id })
+      .from(heartbeatRunWatchdogDecisions)
+      .where(
+        and(
+          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+          eq(heartbeatRunWatchdogDecisions.runId, runId),
+          inArray(heartbeatRunWatchdogDecisions.decision, ["snooze", "continue"]),
+          gt(heartbeatRunWatchdogDecisions.createdAt, since),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
+  // BLO-7113: count the suppression tally comments already recorded on a closed
+  // wrapper within the escalation window. These are system-authored comments
+  // whose body starts with the stable re-fire marker; once we have recorded
+  // STALE_ACTIVE_RUN_EVALUATION_ESCALATION_THRESHOLD of them the detector
+  // escalates by reopening instead of suppressing again.
+  async function countRecentStaleRunRefireComments(issueId: string, since: Date) {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.authorType, "system"),
+          gt(issueComments.createdAt, since),
+          sql`${issueComments.body} like ${`${STALE_ACTIVE_RUN_EVALUATION_REFIRE_COMMENT_MARKER}%`}`,
+        ),
+      );
+    return row?.count ?? 0;
+  }
+
   // PCL-2571 (2026-05-25 RCA): when an active run is silent past the
   // suspicion threshold and the detector files a `stale_active_run_evaluation`
   // review, but moments later the heartbeat reaper finalizes the run to
@@ -1887,6 +1985,165 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return true;
   }
 
+  // BLO-7113: reopen the most-recent closed wrapper to `in_progress` and ping
+  // its owner (the resolved manager/CTO) instead of opening wrapper #N+1.
+  // Once reopened, subsequent detector sweeps find an OPEN wrapper via
+  // findOpenStaleRunEvaluation and return `existing`, so this is self-limiting:
+  // exactly one wrapper carries the wedge forward for an operator to action.
+  async function escalateStaleRunRefire(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    closedEvaluation: NonNullable<Awaited<ReturnType<typeof findRecentClosedStaleRunEvaluation>>>;
+    priorRefires: number;
+    now: Date;
+  }) {
+    const ownerAgentId =
+      input.closedEvaluation.assigneeAgentId ??
+      (await resolveStaleRunOwnerAgentId({
+        run: input.run,
+        runningAgent: input.runningAgent,
+        sourceIssue: input.sourceIssue,
+      }));
+    const [reopened] = await db
+      .update(issues)
+      .set({
+        status: "in_progress",
+        startedAt: input.now,
+        completedAt: null,
+        cancelledAt: null,
+        assigneeAgentId: ownerAgentId ?? input.closedEvaluation.assigneeAgentId ?? null,
+        updatedAt: input.now,
+      })
+      .where(
+        and(
+          eq(issues.id, input.closedEvaluation.id),
+          eq(issues.companyId, input.run.companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .returning({ id: issues.id, identifier: issues.identifier });
+    // Lost the race (a concurrent sweep already reopened, or an operator
+    // touched it). Treat the now-open wrapper as the canonical artifact.
+    if (!reopened) return { kind: "existing" as const, evaluationIssueId: input.closedEvaluation.id };
+
+    await issuesSvc.addComment(
+      reopened.id,
+      [
+        "## Re-fire escalation — reopening instead of opening a new wrapper",
+        "",
+        `The \`stale_active_run_evaluation\` detector has now fired ${input.priorRefires + 1} times for run \`${input.run.id}\` (${input.runningAgent.name}) since this wrapper was closed, all inside a ${formatDuration(STALE_ACTIVE_RUN_EVALUATION_ESCALATION_WINDOW_MS)} window.`,
+        `That is past the ${STALE_ACTIVE_RUN_EVALUATION_ESCALATION_THRESHOLD}-suppressed-fire threshold, so the underlying \`running\` run row is NOT draining on its own — closing this wrapper as a false-positive is no longer the right disposition.`,
+        "",
+        "- This wrapper has been reopened to `in_progress` rather than spawning yet another duplicate review.",
+        "- Likely the canonical BLO-4467-family wedge: the run row is `running` but the pod/Job is gone. Force-finish the run (reaper) so the agent's concurrency lock releases — do not just re-close this wrapper.",
+        "- Refs: BLO-4467 (completed-run-not-reaped), BLO-7113 (this dedupe).",
+      ].join("\n"),
+      { runId: input.run.id },
+    );
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: ownerAgentId,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_refire_escalated",
+      entityType: "issue",
+      entityId: reopened.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        evaluationIssueId: reopened.id,
+        priorRefires: input.priorRefires,
+        escalationThreshold: STALE_ACTIVE_RUN_EVALUATION_ESCALATION_THRESHOLD,
+        escalationWindowMs: STALE_ACTIVE_RUN_EVALUATION_ESCALATION_WINDOW_MS,
+      },
+    });
+    if (ownerAgentId) {
+      await deps.enqueueWakeup(ownerAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: withRecoveryModelProfileHint(
+          { issueId: reopened.id, staleRunId: input.run.id, sourceIssueId: input.sourceIssue?.id ?? null },
+          "status_only",
+        ),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryModelProfileHint(
+          {
+            issueId: reopened.id,
+            taskId: reopened.id,
+            wakeReason: "issue_assigned",
+            source: STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND,
+            staleRunId: input.run.id,
+            sourceIssueId: input.sourceIssue?.id ?? null,
+          },
+          "status_only",
+        ),
+      });
+    }
+    return { kind: "reopened" as const, evaluationIssueId: reopened.id };
+  }
+
+  // BLO-7113: the run is silent and there's no OPEN wrapper, but a wrapper for
+  // the SAME run was just closed within the cooldown. Don't open a fresh
+  // wrapper — record a running tally on the closed one, and once the tally
+  // crosses the threshold, escalate by reopening (see escalateStaleRunRefire).
+  async function suppressOrEscalateStaleRunRefire(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    closedEvaluation: NonNullable<Awaited<ReturnType<typeof findRecentClosedStaleRunEvaluation>>>;
+    now: Date;
+  }) {
+    const windowStart = new Date(input.now.getTime() - STALE_ACTIVE_RUN_EVALUATION_ESCALATION_WINDOW_MS);
+    const priorRefires = await countRecentStaleRunRefireComments(input.closedEvaluation.id, windowStart);
+
+    if (priorRefires >= STALE_ACTIVE_RUN_EVALUATION_ESCALATION_THRESHOLD) {
+      return escalateStaleRunRefire({
+        run: input.run,
+        runningAgent: input.runningAgent,
+        sourceIssue: input.sourceIssue,
+        closedEvaluation: input.closedEvaluation,
+        priorRefires,
+        now: input.now,
+      });
+    }
+
+    const fireOrdinal = priorRefires + 1;
+    await issuesSvc.addComment(
+      input.closedEvaluation.id,
+      [
+        `${STALE_ACTIVE_RUN_EVALUATION_REFIRE_COMMENT_MARKER} (${fireOrdinal} suppressed re-fire${fireOrdinal === 1 ? "" : "s"} in the last ${formatDuration(STALE_ACTIVE_RUN_EVALUATION_ESCALATION_WINDOW_MS)})`,
+        "",
+        `The \`stale_active_run_evaluation\` detector fired again for run \`${input.run.id}\` (${input.runningAgent.name}), but ${input.closedEvaluation.identifier} was already closed \`${input.closedEvaluation.status}\` within the last ${formatDuration(STALE_ACTIVE_RUN_EVALUATION_REFIRE_COOLDOWN_MS)}.`,
+        "Suppressing a fresh wrapper: the orphaned `running` row is the canonical BLO-4467-family wedge (pod already reaped), so re-opening a new review every ~10-15 min would only burn a triage slot.",
+        `- After ${STALE_ACTIVE_RUN_EVALUATION_ESCALATION_THRESHOLD} suppressed re-fires in ${formatDuration(STALE_ACTIVE_RUN_EVALUATION_ESCALATION_WINDOW_MS)} this wrapper is reopened to \`in_progress\` instead of opening wrapper #${fireOrdinal + 1}.`,
+      ].join("\n"),
+      { runId: input.run.id },
+    );
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_refire_suppressed",
+      entityType: "issue",
+      entityId: input.closedEvaluation.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        evaluationIssueId: input.closedEvaluation.id,
+        closedStatus: input.closedEvaluation.status,
+        suppressedRefireCount: fireOrdinal,
+        cooldownMs: STALE_ACTIVE_RUN_EVALUATION_REFIRE_COOLDOWN_MS,
+      },
+    });
+    return { kind: "suppressed" as const, evaluationIssueId: input.closedEvaluation.id };
+  }
+
   async function createOrUpdateStaleRunEvaluation(input: {
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
@@ -1974,6 +2231,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
       }
       return { kind: "existing" as const, evaluationIssueId: existing.id };
+    }
+
+    // BLO-7113: no OPEN wrapper, but if one for this same run was closed within
+    // the cooldown, suppress a fresh wrapper (the re-fire-on-reaped-row noise
+    // mode) and tally it instead — escalating by reopen after the threshold.
+    const recentlyClosed = await findRecentClosedStaleRunEvaluation(input.run.companyId, input.run.id, input.now);
+    if (recentlyClosed) {
+      // Defer to the continue/re-arm mechanism when the agent explicitly chose
+      // to keep watching — that path is meant to re-create after its window.
+      const cooldownSince = new Date(input.now.getTime() - STALE_ACTIVE_RUN_EVALUATION_REFIRE_COOLDOWN_MS);
+      const rearmed = await hasRecentStaleRunWatchdogDecision(input.run.companyId, input.run.id, cooldownSince);
+      if (!rearmed) {
+        return suppressOrEscalateStaleRunRefire({
+          run: input.run,
+          runningAgent,
+          sourceIssue,
+          closedEvaluation: recentlyClosed,
+          now: input.now,
+        });
+      }
     }
 
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
@@ -2083,6 +2360,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       folded: 0,
       snoozed: 0,
+      suppressed: 0,
+      reopened: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
     };
@@ -2097,6 +2376,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
       else if (outcome.kind === "folded") result.folded += 1;
+      else if (outcome.kind === "suppressed") result.suppressed += 1;
+      else if (outcome.kind === "reopened") result.reopened += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
