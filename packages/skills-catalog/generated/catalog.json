@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-06-04T19:57:14.020Z",
+  "generatedAt": "2026-06-24T03:01:19.827Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -214,6 +214,41 @@
         }
       ],
       "contentHash": "sha256:32372dacaf62e93454b9855968c4eec96456ba78b509f450b3dfaa48e31ef356"
+    },
+    {
+      "id": "paperclipai:bundled:software-development:container-runtime",
+      "key": "paperclipai/bundled/software-development/container-runtime",
+      "kind": "bundled",
+      "category": "software-development",
+      "slug": "container-runtime",
+      "name": "container-runtime",
+      "description": "What build tooling your agent runtime actually has — the Go toolchain (go, gofmt, tinygo) on PATH, and how to use Docker-in-Docker (docker build, docker run, kind) when your adapter has it enabled.",
+      "path": "catalog/bundled/software-development/container-runtime",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "containers",
+        "docker",
+        "kind",
+        "go",
+        "tinygo",
+        "testing"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 2936,
+          "sha256": "5dc7f764701632bd4ca968d1d31ddd647628674517848b0d5557305787279c0f"
+        }
+      ],
+      "contentHash": "sha256:e3741391d2415db28824c4df7b07409e9894e4e93c8049012554b0e4d95ba219"
     },
     {
       "id": "paperclipai:bundled:software-development:github-pr-workflow",
