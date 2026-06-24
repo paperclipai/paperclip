@@ -2528,7 +2528,7 @@ export function PipelineSettings() {
                   const canInsertAfter = !isPipelineTerminalStageKind(stage.kind);
                   const tone = getPipelineStageColumnTone(stage.kind);
                   return (
-                    <div key={stage.id} className="flex items-center gap-2">
+                    <div key={stage.id} className="flex items-start gap-2">
                       <div className="flex flex-col items-start gap-1">
                         <button
                           type="button"
@@ -2575,7 +2575,7 @@ export function PipelineSettings() {
                         <button
                           type="button"
                           aria-label={`Insert stage after ${stage.name}`}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-dashed border-border text-muted-foreground hover:border-foreground hover:text-foreground"
+                          className="mt-6 inline-flex h-8 w-8 items-center justify-center rounded-md border border-dashed border-border text-muted-foreground hover:border-foreground hover:text-foreground"
                           onClick={() => addStage.mutate(stage)}
                           disabled={addStage.isPending}
                         >
@@ -2583,7 +2583,7 @@ export function PipelineSettings() {
                         </button>
                       ) : null}
                       {index === stages.length - 1 ? null : (
-                        <span className="h-px w-8 bg-border" aria-hidden="true" />
+                        <span className="mt-10 h-px w-8 bg-border" aria-hidden="true" />
                       )}
                     </div>
                   );
