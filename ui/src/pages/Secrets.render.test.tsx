@@ -649,6 +649,59 @@ describe("Secrets page layout", () => {
     });
   });
 
+  it("keeps generic AWS discovery 403 errors on the generic failure path", async () => {
+    mockSecretsApi.providerConfigDiscoveryPreview.mockRejectedValueOnce(
+      new ApiError("AWS discovery request failed before IAM evaluation.", 403, {
+        details: {
+          code: "proxy_forbidden",
+          provider: "aws_secrets_manager",
+          operation: "secret_provider_config.discovery.preview",
+          region: "us-west-1",
+        },
+      }),
+    );
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await openAwsVaultDialog();
+
+    const regionInput = document.getElementById("provider-vault-aws-region") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(regionInput, "us-west-1");
+    });
+    await flushReact();
+
+    await act(async () => {
+      (document.querySelector('[data-testid="aws-vault-discovery-button"]') as HTMLButtonElement | null)?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    const errorBanner = document.querySelector('[data-testid="aws-vault-discovery-error"]');
+    expect(errorBanner).not.toBeNull();
+    expect(errorBanner?.textContent).toContain("AWS discovery failed");
+    expect(errorBanner?.textContent).toContain("AWS discovery request failed before IAM evaluation.");
+    expect(errorBanner?.textContent).toContain("proxy_forbidden");
+    expect(errorBanner?.textContent).not.toContain("AWS discovery needs ListSecrets permission");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("shows an empty AWS discovery result without blocking manual entry", async () => {
     mockSecretsApi.providerConfigDiscoveryPreview.mockResolvedValueOnce(
       makeDiscoveryPreview({ candidates: [], sampledSecretCount: 0 }),

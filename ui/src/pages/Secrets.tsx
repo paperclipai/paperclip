@@ -169,7 +169,7 @@ function isAwsDiscoveryAccessDenied(error: unknown): boolean {
     return details.code === "access_denied";
   }
   if (!(error instanceof ApiError)) return false;
-  return apiErrorCode(error) === "access_denied" || error.status === 403;
+  return apiErrorCode(error) === "access_denied";
 }
 
 function readableErrorMessage(error: unknown): string {
