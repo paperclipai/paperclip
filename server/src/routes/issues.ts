@@ -2661,6 +2661,20 @@ export function issueRoutes(
     ) {
       return true;
     }
+    if (activeRecoveryAction.previousOwnerAgentId === actorAgentId) return true;
+    if (
+      activeRecoveryAction.previousOwnerAgentId &&
+      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, activeRecoveryAction.previousOwnerAgentId)
+    ) {
+      return true;
+    }
+    if (activeRecoveryAction.returnOwnerAgentId === actorAgentId) return true;
+    if (
+      activeRecoveryAction.returnOwnerAgentId &&
+      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, activeRecoveryAction.returnOwnerAgentId)
+    ) {
+      return true;
+    }
 
     res.status(403).json({
       error: "Agent cannot resolve another owner's recovery action",
@@ -3556,7 +3570,6 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
     if (
       !(await assertRecoveryActionAuthority(
