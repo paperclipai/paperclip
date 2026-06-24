@@ -9,6 +9,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
 } from "lucide-react";
 import type { MailDomain } from "@paperclipai/shared";
@@ -21,6 +22,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -35,6 +37,8 @@ export function CompanySettingsCloudflare() {
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const [apiToken, setApiToken] = useState("");
+  const [zoneFilter, setZoneFilter] = useState("");
+  const [selectedZones, setSelectedZones] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Cloudflare" }]);
@@ -89,12 +93,22 @@ export function CompanySettingsCloudflare() {
   });
 
   const attachMutation = useMutation({
-    mutationFn: (domain: string) => mailApi.attachDomain(companyId!, domain),
-    onSuccess: () => {
-      pushToast({ tone: "success", title: "Domain attached; DNS configured" });
+    mutationFn: async (names: string[]) => {
+      const results = await Promise.allSettled(names.map((name) => mailApi.attachDomain(companyId!, name)));
+      const ok = results.filter((r) => r.status === "fulfilled").length;
+      return { ok, failed: results.length - ok };
+    },
+    onSuccess: ({ ok, failed }) => {
+      setSelectedZones(new Set());
+      pushToast({
+        tone: failed ? "warn" : "success",
+        title: failed
+          ? `Attached ${ok}, ${failed} failed`
+          : `Attached ${ok} domain${ok === 1 ? "" : "s"}; DNS configured`,
+      });
       invalidate([queryKeys.mail.domains(companyId!)]);
     },
-    onError: (e) => toastError(e, "Failed to attach domain"),
+    onError: (e) => toastError(e, "Failed to attach domains"),
   });
 
   const verifyMutation = useMutation({
@@ -190,10 +204,11 @@ export function CompanySettingsCloudflare() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Globe className="h-4 w-4" /> Attach a domain
+              <Globe className="h-4 w-4" /> Attach domains
             </CardTitle>
             <CardDescription>
-              Pick a domain from your Cloudflare account to configure for email.
+              Select the domains from your Cloudflare account to configure for email, then attach
+              them all at once.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -208,30 +223,97 @@ export function CompanySettingsCloudflare() {
             ) : (zonesQuery.data ?? []).length === 0 ? (
               <div className="text-sm text-muted-foreground">No zones found in this account.</div>
             ) : (
-              <div className="flex flex-col divide-y rounded-md border">
-                {(zonesQuery.data ?? []).map((zone) => {
-                  const already = attachedNames.has(zone.name);
-                  return (
-                    <div key={zone.id} className="flex items-center justify-between px-3 py-2">
-                      <span className="font-mono text-sm">{zone.name}</span>
+              (() => {
+                const zones = zonesQuery.data ?? [];
+                const needle = zoneFilter.trim().toLowerCase();
+                const filtered = needle ? zones.filter((z) => z.name.toLowerCase().includes(needle)) : zones;
+                const selectableVisible = filtered.filter((z) => !attachedNames.has(z.name));
+                const allVisibleSelected =
+                  selectableVisible.length > 0 && selectableVisible.every((z) => selectedZones.has(z.name));
+                const toggle = (name: string) =>
+                  setSelectedZones((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(name)) next.delete(name);
+                    else next.add(name);
+                    return next;
+                  });
+                const toggleAll = () =>
+                  setSelectedZones((prev) => {
+                    const next = new Set(prev);
+                    if (allVisibleSelected) selectableVisible.forEach((z) => next.delete(z.name));
+                    else selectableVisible.forEach((z) => next.add(z.name));
+                    return next;
+                  });
+                return (
+                  <>
+                    {zones.length > 8 && (
+                      <div className="relative">
+                        <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          className="pl-7"
+                          placeholder="Filter domains…"
+                          value={zoneFilter}
+                          onChange={(e) => setZoneFilter(e.target.value)}
+                        />
+                      </div>
+                    )}
+                    <div className="rounded-md border">
+                      <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground">
+                        <Checkbox
+                          checked={allVisibleSelected}
+                          onCheckedChange={toggleAll}
+                          disabled={selectableVisible.length === 0}
+                          aria-label="Select all"
+                        />
+                        <span>Domain</span>
+                      </div>
+                      <div className="max-h-72 overflow-y-auto">
+                        {filtered.map((zone) => {
+                          const already = attachedNames.has(zone.name);
+                          return (
+                            <label
+                              key={zone.id}
+                              className={`flex items-center gap-2 border-b px-3 py-2 text-sm last:border-b-0 ${
+                                already ? "opacity-60" : "cursor-pointer hover:bg-accent/40"
+                              }`}
+                            >
+                              <Checkbox
+                                checked={selectedZones.has(zone.name)}
+                                disabled={already}
+                                onCheckedChange={() => toggle(zone.name)}
+                              />
+                              <span className="font-mono">{zone.name}</span>
+                              {already && (
+                                <Badge variant="outline" className="ml-auto text-muted-foreground">
+                                  Attached
+                                </Badge>
+                              )}
+                            </label>
+                          );
+                        })}
+                        {filtered.length === 0 && (
+                          <div className="px-3 py-2 text-sm text-muted-foreground">No match.</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">{selectedZones.size} selected</span>
                       <Button
                         size="sm"
-                        variant={already ? "outline" : "default"}
-                        disabled={already || attachMutation.isPending}
-                        onClick={() => attachMutation.mutate(zone.name)}
+                        disabled={selectedZones.size === 0 || attachMutation.isPending}
+                        onClick={() => attachMutation.mutate([...selectedZones])}
                       >
-                        {already ? (
-                          "Attached"
+                        {attachMutation.isPending ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         ) : (
-                          <>
-                            <Plus className="h-3.5 w-3.5" /> Attach
-                          </>
+                          <Plus className="h-3.5 w-3.5" />
                         )}
+                        Attach selected
                       </Button>
                     </div>
-                  );
-                })}
-              </div>
+                  </>
+                );
+              })()
             )}
           </CardContent>
         </Card>
