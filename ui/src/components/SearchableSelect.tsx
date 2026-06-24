@@ -113,12 +113,13 @@ export function SearchableSelect<
           .map((option, index) => {
             if (!normalizedQuery) return { option, index, score: 0 };
 
+            if (!filterOption(option, query)) return null;
+
             if (scoreOption) {
               const score = scoreOption(option, query);
               return score === null ? null : { option, index, score };
             }
 
-            if (!filterOption(option, query)) return null;
             return {
               option,
               index,

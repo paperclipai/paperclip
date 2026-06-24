@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import {
   buildReusableExecutionWorkspaceOptionGroups,
@@ -35,7 +36,7 @@ export function ReusableExecutionWorkspaceSelect<TWorkspace extends ReusableExec
   triggerClassName,
   disablePortal,
 }: ReusableExecutionWorkspaceSelectProps<TWorkspace>) {
-  const groups = buildReusableExecutionWorkspaceOptionGroups(workspaces);
+  const groups = useMemo(() => buildReusableExecutionWorkspaceOptionGroups(workspaces), [workspaces]);
 
   return (
     <SearchableSelect<string, ReusableWorkspaceOption<TWorkspace>>
@@ -50,8 +51,8 @@ export function ReusableExecutionWorkspaceSelect<TWorkspace extends ReusableExec
       disabled={disabled}
       className={className}
       triggerClassName={cn(COMPACT_TRIGGER_CLASS, triggerClassName)}
-      filterOption={(option, query) => reusableWorkspaceOptionMatches(option, query)}
-      scoreOption={(option, query) => scoreReusableWorkspaceOptionMatch(option, query)}
+      filterOption={reusableWorkspaceOptionMatches}
+      scoreOption={scoreReusableWorkspaceOptionMatch}
       disablePortal={disablePortal}
       renderOption={(option, { selected }) => (
         <span className="flex min-w-0 flex-col">

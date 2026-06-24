@@ -238,6 +238,49 @@ describe("SearchableSelect", () => {
     expect(commandList?.className).toContain("touch-pan-y");
   });
 
+  it("applies custom filtering before custom scoring", async () => {
+    const groups: SearchableSelectGroup[] = [
+      {
+        id: "all",
+        options: [
+          { key: "all:alpha", value: "alpha", label: "Alpha", searchText: "visible" },
+          { key: "all:hidden", value: "hidden", label: "Hidden", searchText: "visible" },
+        ],
+      },
+    ];
+
+    root = render(
+      <SearchableSelect
+        value=""
+        groups={groups}
+        onValueChange={vi.fn()}
+        placeholder="Pick one"
+        searchPlaceholder="Search options..."
+        disablePortal
+        filterOption={(option, query) => option.value !== "hidden" && option.searchText === query}
+        scoreOption={() => 0}
+        renderOption={(option) => <span data-option-key={option.key}>{option.label}</span>}
+      />,
+      container,
+    );
+
+    const trigger = container.querySelector("button[role='combobox']") as HTMLButtonElement | null;
+    act(() => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    const input = container.querySelector("input[placeholder='Search options...']") as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    setInputValue(input!, "visible");
+    await flush();
+
+    const renderedKeys = Array.from(container.querySelectorAll("[data-option-key]")).map((item) =>
+      item.getAttribute("data-option-key"),
+    );
+    expect(renderedKeys).toEqual(["all:alpha"]);
+  });
+
   it("shows loading, empty, and disabled states", async () => {
     const onValueChange = vi.fn();
 
