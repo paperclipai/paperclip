@@ -1647,4 +1647,344 @@ describe("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 20_000);
+
+  it("does not stamp executionRunId on a cross-tree issue when a prior mention run is still running (Fix 1)", async () => {
+    // Regression test for BAD-674: when agent A (TROO) has a prior "running" mention
+    // run whose contextSnapshot.issueId points at issue I (assigned to agent B/Anthony),
+    // a subsequent wakeup for A on I must NOT adopt that legacy run as the execution
+    // lock and stamp it onto issue I's executionRunId.
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const mentionedAgentId = randomUUID();
+    const issueOwnerAgentId = randomUUID();
+    const issueId = randomUUID();
+    const legacyRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: mentionedAgentId,
+          companyId,
+          name: "TROO",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: { "x-openclaw-token": "gateway-token" },
+            payloadTemplate: { message: "wake now" },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: issueOwnerAgentId,
+          companyId,
+          name: "Anthony",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: { "x-openclaw-token": "gateway-token" },
+            payloadTemplate: { message: "wake now" },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      // Issue assigned to Anthony (not TROO) with no active execution lock
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Cross-tree exec lock prevention",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: issueOwnerAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      // Insert TROO's prior "running" mention run whose contextSnapshot.issueId = Anthony's issue.
+      // This simulates the bug scenario: TROO was previously woken for an @-mention on this
+      // issue and that run is still active (contextSnapshot.issueId = the cross-tree issue).
+      await db.insert(heartbeatRuns).values({
+        id: legacyRunId,
+        companyId,
+        agentId: mentionedAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_comment_mentioned",
+          source: "comment.mention",
+        },
+      });
+
+      // A new @-mention comment arrives for TROO on Anthony's issue
+      const newComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          body: "@TROO please take another look",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      // Trigger a new wakeup for TROO on Anthony's issue
+      const newRun = await heartbeat.wakeup(mentionedAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_comment_mentioned",
+        payload: { issueId, commentId: newComment.id },
+        contextSnapshot: {
+          issueId,
+          commentId: newComment.id,
+          wakeReason: "issue_comment_mentioned",
+          source: "comment.mention",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      // The cross-tree guard must prevent TROO's legacy run from being stamped onto
+      // Anthony's issue. executionRunId must remain null (checked immediately after
+      // the synchronous wakeup transaction).
+      const issueState = await db
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(issueState?.assigneeAgentId).toBe(issueOwnerAgentId);
+      expect(issueState?.executionRunId).toBeNull();
+      expect(issueState?.executionAgentNameKey).toBeNull();
+
+      // Wait for the new run to finish so async DB operations don't leak into
+      // subsequent tests after the gateway and DB connection close.
+      if (newRun) {
+        await waitFor(() => gateway.getAgentPayloads().length >= 1, 10_000);
+        gateway.releaseFirstWait();
+        await waitFor(async () => {
+          const run = await db
+            .select({ status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, newRun.id))
+            .then((rows) => rows[0] ?? null);
+          return run?.status === "succeeded" || run?.status === "failed";
+        }, 20_000);
+      }
+
+      // Also verify after run completion that Anthony's issue still has no cross-tree lock
+      const issueStateAfter = await db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issueStateAfter?.executionRunId).toBeNull();
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 60_000);
+
+  it("clears a cross-tree execution lock when the offending run is finalized (Fix 2)", async () => {
+    // Regression test for BAD-674 Fix 2: when a run for agent A ends, any execution
+    // lock it holds on an issue assigned to a different agent B must be cleared.
+    const companyId = randomUUID();
+    const crossTreeAgentId = randomUUID();
+    const issueOwnerAgentId = randomUUID();
+    const crossTreeIssueId = randomUUID();
+    const crossTreeRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: crossTreeAgentId,
+        companyId,
+        name: "CrossTreeAgent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: issueOwnerAgentId,
+        companyId,
+        name: "IssueOwnerAgent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    // Insert the cross-tree run FIRST (issues.execution_run_id has FK to heartbeat_runs)
+    await db.insert(heartbeatRuns).values({
+      id: crossTreeRunId,
+      companyId,
+      agentId: crossTreeAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {
+        issueId: crossTreeIssueId,
+        wakeReason: "issue_comment_mentioned",
+      },
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+
+    // Issue assigned to issueOwner but erroneously locked by the cross-tree agent's run
+    await db.insert(issues).values({
+      id: crossTreeIssueId,
+      companyId,
+      title: "Issue with stale cross-tree exec lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: issueOwnerAgentId,
+      executionRunId: crossTreeRunId,
+      executionAgentNameKey: "cross-tree-agent",
+      executionLockedAt: new Date(),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    // Confirm the stale cross-tree lock is in place
+    const issueBefore = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, crossTreeIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueBefore?.executionRunId).toBe(crossTreeRunId);
+
+    // Reaping the run calls releaseIssueExecutionAndPromote which clears cross-tree locks
+    await heartbeat.reapOrphanedRuns();
+
+    const issueAfter = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, crossTreeIssueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issueAfter?.executionRunId).toBeNull();
+    expect(issueAfter?.executionAgentNameKey).toBeNull();
+    expect(issueAfter?.executionLockedAt).toBeNull();
+  });
+
+  it("reapOrphanedRuns clears a stale TTL-expired execution lock on an issue (Fix 3)", async () => {
+    // Regression test for BAD-674 Fix 3: the TTL sweep in reapOrphanedRuns must clear
+    // any execution lock older than 10 minutes whose referenced run has reached a
+    // terminal state, acting as a belt-and-suspenders catch-all for Fixes 1 and 2.
+    const companyId = randomUUID();
+    const ownerAgentId = randomUUID();
+    const staleRunId = randomUUID();
+    const staleIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+    const staleLockAt = new Date(Date.now() - 11 * 60 * 1000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: ownerAgentId,
+      companyId,
+      name: "OwnerAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // Insert the terminal run FIRST (issues.execution_run_id has FK to heartbeat_runs)
+    await db.insert(heartbeatRuns).values({
+      id: staleRunId,
+      companyId,
+      agentId: ownerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId: staleIssueId },
+    });
+
+    // Issue still pointing to the now-terminal run, locked more than 10 min ago
+    await db.insert(issues).values({
+      id: staleIssueId,
+      companyId,
+      title: "Issue with stale TTL exec lock",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: ownerAgentId,
+      executionRunId: staleRunId,
+      executionAgentNameKey: "owner-agent",
+      executionLockedAt: staleLockAt,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const issueBefore = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, staleIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueBefore?.executionRunId).toBe(staleRunId);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const issueAfter = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, staleIssueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issueAfter?.executionRunId).toBeNull();
+    expect(issueAfter?.executionAgentNameKey).toBeNull();
+    expect(issueAfter?.executionLockedAt).toBeNull();
+  });
 });
