@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
-const hermesExecuteMock = vi.hoisted(() =>
+const geminiExecuteMock = vi.hoisted(() =>
   vi.fn(async () => ({
     exitCode: 0,
     signal: null,
@@ -10,10 +10,10 @@ const hermesExecuteMock = vi.hoisted(() =>
   })),
 );
 
-vi.mock("hermes-paperclip-adapter/server", () => ({
-  execute: hermesExecuteMock,
+vi.mock("@paperclipai/adapter-gemini-local/server", () => ({
+  execute: geminiExecuteMock,
   testEnvironment: async () => ({
-    adapterType: "hermes_local",
+    adapterType: "gemini_local",
     status: "pass",
     checks: [],
     testedAt: new Date(0).toISOString(),
@@ -61,15 +61,15 @@ describe("server adapter registry", () => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
-    setOverridePaused("hermes_local", true);
+    setOverridePaused("gemini_local", true);
   });
 
   afterEach(() => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
-    setOverridePaused("hermes_local", false);
-    hermesExecuteMock.mockClear();
+    setOverridePaused("gemini_local", false);
+    geminiExecuteMock.mockClear();
   });
 
   it("registers external adapters and exposes them through lookup helpers", async () => {
@@ -214,7 +214,7 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("gemini_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gemini-2.5-flash-lite" }),
+        adapterConfig: expect.objectContaining({ model: "gemini-3.1-pro-low" }),
         source: "adapter_default",
       }),
     ]);
@@ -309,17 +309,17 @@ describe("server adapter registry", () => {
     expect(detectModel).toHaveBeenCalledTimes(1);
   });
 
-  it("injects the local agent JWT and Paperclip API auth guidance into Hermes", async () => {
-    const adapter = requireServerAdapter("hermes_local");
+  it("injects the local agent JWT and Paperclip API auth guidance into Gemini", async () => {
+    const adapter = requireServerAdapter("gemini_local");
 
     await adapter.execute({
       runId: "run-123",
       agent: {
         id: "agent-123",
         companyId: "company-123",
-        name: "Hermes Agent",
+        name: "Gemini Agent",
         role: "engineer",
-        adapterType: "hermes_local",
+        adapterType: "gemini_local",
         adapterConfig: {
           env: {
             OPENAI_API_KEY: "llm-token",
@@ -336,8 +336,8 @@ describe("server adapter registry", () => {
       authToken: "agent-run-jwt",
     });
 
-    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(geminiExecuteMock).toHaveBeenCalledTimes(1);
+    const [patchedCtx] = geminiExecuteMock.mock.calls[0];
     expect(patchedCtx.agent.adapterConfig).toMatchObject({
       env: {
         OPENAI_API_KEY: "llm-token",
@@ -354,24 +354,24 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Existing prompt");
   });
 
-  it("preserves Hermes command normalization while injecting auth", async () => {
-    const adapter = requireServerAdapter("hermes_local");
+  it("preserves Gemini command normalization while injecting auth", async () => {
+    const adapter = requireServerAdapter("gemini_local");
 
     await adapter.execute({
       runId: "run-123",
       agent: {
         id: "agent-123",
         companyId: "company-123",
-        name: "Hermes Agent",
+        name: "Gemini Agent",
         role: "engineer",
-        adapterType: "hermes_local",
+        adapterType: "gemini_local",
         adapterConfig: {
-          command: "agent-hermes",
+          command: "agent-gemini",
         },
       },
       runtime: {},
       config: {
-        command: "runtime-hermes",
+        command: "runtime-gemini",
       },
       context: {},
       onLog: async () => {},
@@ -380,24 +380,24 @@ describe("server adapter registry", () => {
       authToken: "agent-run-jwt",
     });
 
-    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    expect(patchedCtx.config.hermesCommand).toBe("runtime-hermes");
-    expect(patchedCtx.agent.adapterConfig.hermesCommand).toBe("agent-hermes");
+    expect(geminiExecuteMock).toHaveBeenCalledTimes(1);
+    const [patchedCtx] = geminiExecuteMock.mock.calls[0];
+    expect(patchedCtx.config.geminiCommand).toBe("runtime-gemini");
+    expect(patchedCtx.agent.adapterConfig.geminiCommand).toBe("agent-gemini");
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
 
-  it("passes Hermes custom providers through extraArgs while injecting auth", async () => {
-    const adapter = requireServerAdapter("hermes_local");
+  it("passes Gemini custom providers through extraArgs while injecting auth", async () => {
+    const adapter = requireServerAdapter("gemini_local");
 
     await adapter.execute({
       runId: "run-123",
       agent: {
         id: "agent-123",
         companyId: "company-123",
-        name: "Hermes Agent",
+        name: "Gemini Agent",
         role: "engineer",
-        adapterType: "hermes_local",
+        adapterType: "gemini_local",
         adapterConfig: {
           provider: "custom:paperclip-openai",
           extraArgs: ["--source", "tool"],
@@ -412,7 +412,7 @@ describe("server adapter registry", () => {
       authToken: "agent-run-jwt",
     });
 
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const [patchedCtx] = geminiExecuteMock.mock.calls[0];
     expect(patchedCtx.agent.adapterConfig.provider).toBe("custom:paperclip-openai");
     expect(patchedCtx.agent.adapterConfig.extraArgs).toEqual([
       "--source",
@@ -423,17 +423,17 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
 
-  it("does not duplicate an explicit Hermes provider extraArg", async () => {
-    const adapter = requireServerAdapter("hermes_local");
+  it("does not duplicate an explicit Gemini provider extraArg", async () => {
+    const adapter = requireServerAdapter("gemini_local");
 
     await adapter.execute({
       runId: "run-123",
       agent: {
         id: "agent-123",
         companyId: "company-123",
-        name: "Hermes Agent",
+        name: "Gemini Agent",
         role: "engineer",
-        adapterType: "hermes_local",
+        adapterType: "gemini_local",
         adapterConfig: {
           provider: "custom:paperclip-openai",
           extraArgs: ["--provider=custom:paperclip-openai"],
@@ -448,23 +448,23 @@ describe("server adapter registry", () => {
       authToken: "agent-run-jwt",
     });
 
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const [patchedCtx] = geminiExecuteMock.mock.calls[0];
     expect(patchedCtx.agent.adapterConfig.extraArgs).toEqual([
       "--provider=custom:paperclip-openai",
     ]);
   });
 
-  it("does not duplicate spaced Hermes provider extraArgs", async () => {
-    const adapter = requireServerAdapter("hermes_local");
+  it("does not duplicate spaced Gemini provider extraArgs", async () => {
+    const adapter = requireServerAdapter("gemini_local");
 
     await adapter.execute({
       runId: "run-123",
       agent: {
         id: "agent-123",
         companyId: "company-123",
-        name: "Hermes Agent",
+        name: "Gemini Agent",
         role: "engineer",
-        adapterType: "hermes_local",
+        adapterType: "gemini_local",
         adapterConfig: {
           provider: "custom:paperclip-openai",
           extraArgs: ["--provider", "custom:paperclip-openai"],
@@ -479,23 +479,23 @@ describe("server adapter registry", () => {
       authToken: "agent-run-jwt",
     });
 
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const [patchedCtx] = geminiExecuteMock.mock.calls[0];
     expect(patchedCtx.agent.adapterConfig.extraArgs).toEqual([
       "--provider",
       "custom:paperclip-openai",
     ]);
   });
 
-  it("passes the original Hermes context through when authToken is absent", async () => {
-    const adapter = requireServerAdapter("hermes_local");
+  it("passes the original Gemini context through when authToken is absent", async () => {
+    const adapter = requireServerAdapter("gemini_local");
     const ctx = {
       runId: "run-123",
       agent: {
         id: "agent-123",
         companyId: "company-123",
-        name: "Hermes Agent",
+        name: "Gemini Agent",
         role: "engineer",
-        adapterType: "hermes_local",
+        adapterType: "gemini_local",
         adapterConfig: {
           env: {
             PAPERCLIP_API_KEY: "server-level-key",
@@ -513,21 +513,21 @@ describe("server adapter registry", () => {
 
     await adapter.execute(ctx);
 
-    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
-    expect(hermesExecuteMock).toHaveBeenCalledWith(ctx);
+    expect(geminiExecuteMock).toHaveBeenCalledTimes(1);
+    expect(geminiExecuteMock).toHaveBeenCalledWith(ctx);
   });
 
-  it("preserves an explicit Hermes Paperclip API key and does not set promptTemplate when none was configured", async () => {
-    const adapter = requireServerAdapter("hermes_local");
+  it("preserves an explicit Gemini Paperclip API key and does not set promptTemplate when none was configured", async () => {
+    const adapter = requireServerAdapter("gemini_local");
 
     await adapter.execute({
       runId: "run-123",
       agent: {
         id: "agent-123",
         companyId: "company-123",
-        name: "Hermes Agent",
+        name: "Gemini Agent",
         role: "engineer",
-        adapterType: "hermes_local",
+        adapterType: "gemini_local",
         adapterConfig: {
           env: {
             PAPERCLIP_API_KEY: "explicit-agent-key",
@@ -544,26 +544,26 @@ describe("server adapter registry", () => {
       authToken: "agent-run-jwt",
     });
 
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const [patchedCtx] = geminiExecuteMock.mock.calls[0];
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("explicit-agent-key");
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
-    // No custom promptTemplate was set — Hermes must use its built-in default.
+    // No custom promptTemplate was set — Gemini must use its built-in default.
     // Setting promptTemplate here would replace the full default with just the auth guard text,
     // stripping assigned issue / workflow instructions.
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
   });
 
-  it("does not set promptTemplate when no custom template is configured, preserving Hermes default", async () => {
-    const adapter = requireServerAdapter("hermes_local");
+  it("does not set promptTemplate when no custom template is configured, preserving Gemini default", async () => {
+    const adapter = requireServerAdapter("gemini_local");
 
     await adapter.execute({
       runId: "run-123",
       agent: {
         id: "agent-123",
         companyId: "company-123",
-        name: "Hermes Agent",
+        name: "Gemini Agent",
         role: "engineer",
-        adapterType: "hermes_local",
+        adapterType: "gemini_local",
         adapterConfig: {},
       },
       runtime: {},
@@ -575,8 +575,8 @@ describe("server adapter registry", () => {
       authToken: "agent-run-jwt",
     });
 
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    // promptTemplate must remain unset so Hermes uses its built-in heartbeat/task prompt.
+    const [patchedCtx] = geminiExecuteMock.mock.calls[0];
+    // promptTemplate must remain unset so Gemini uses its built-in heartbeat/task prompt.
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
     // Auth token is still injected.
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");

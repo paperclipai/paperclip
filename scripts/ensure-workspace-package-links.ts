@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { repoRoot } from "./dev-service-profile.ts";
 
 type WorkspaceLinkMismatch = {
@@ -101,7 +102,11 @@ async function ensureWorkspaceLinksCurrent(workspaceDir: string) {
     const linkPath = path.join(repoRoot, mismatch.workspaceDir, "node_modules", ...mismatch.packageName.split("/"));
     await fs.mkdir(path.dirname(linkPath), { recursive: true });
     await fs.rm(linkPath, { recursive: true, force: true });
-    await fs.symlink(mismatch.expectedPath, linkPath);
+    await fs.symlink(
+      mismatch.expectedPath,
+      linkPath,
+      os.platform() === "win32" ? "junction" : "dir"
+    );
   }
 
   const remainingMismatches = findWorkspaceLinkMismatches(workspaceDir);

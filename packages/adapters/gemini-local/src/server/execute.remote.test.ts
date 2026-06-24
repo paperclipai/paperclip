@@ -383,4 +383,65 @@ describe("Gemini remote execution", () => {
     const argsString = (agyCall![0].args ?? []).join(" ");
     expect(argsString).not.toContain("test-key");
   });
+
+  it("pre-selects agy auth in the managed HOME for sandbox execution", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-sandbox-auth-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const runnerExecute = vi.fn(async (input: any) => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: 321,
+      startedAt: new Date().toISOString(),
+    }));
+
+    await execute({
+      runId: "run-sandbox-auth",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Gemini Builder",
+        adapterType: "gemini_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "agy",
+        env: { GEMINI_API_KEY: "test-key" },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "kubernetes",
+        remoteCwd: "/remote/workspace",
+        runner: { execute: runnerExecute },
+      },
+      onLog: async () => {},
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const shellCall = runnerExecute.mock.calls.find((call: any) => 
+      call[0].command === "/bin/sh" &&
+      (call[0].args?.[1] || "").includes(".agy/settings.json")
+    );
+    expect(shellCall).toBeDefined();
+    expect(shellCall![0].args[1]).toContain('selectedAuthType":"gemini-api-key"');
+  });
 });

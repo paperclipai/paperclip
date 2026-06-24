@@ -67,7 +67,7 @@ Notes:
 - Runs pass the prompt as a positional argument (index 1) for non-interactive execution, not stdin.
 - The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
 - Sessions resume with --conversation when stored session cwd matches the current cwd.
-- Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
+- Paperclip auto-injects local skills into \`~/.agy/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
 - Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY or local Gemini CLI login.
 - The agy CLI must be installed manually on the host or sandbox image. It is a native binary (not an npm package); install it by following https://antigravity.google/docs/cli-install.
 `;

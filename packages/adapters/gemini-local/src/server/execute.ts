@@ -123,11 +123,11 @@ function renderApiAccessNote(env: Record<string, string>): string {
 }
 
 function geminiSkillsHome(): string {
-  return path.join(os.homedir(), ".gemini", "skills");
+  return path.join(os.homedir(), ".agy", "skills");
 }
 
 /**
- * Inject Paperclip skills directly into `~/.gemini/skills/` via symlinks.
+ * Inject Paperclip skills directly into `~/.agy/skills/` via symlinks.
  * This avoids needing GEMINI_CLI_HOME overrides, so the CLI naturally finds
  * both its auth credentials and the injected skills in the real home directory.
  */
@@ -336,7 +336,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
         runId,
         target: executionTarget,
-        adapterKey: "gemini",
+        adapterKey: "agy",
         timeoutSec,
         workspaceLocalDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
@@ -383,7 +383,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           onLog,
         }));
       if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
-        remoteSkillsDir = path.posix.join(remoteHomeDir, ".gemini", "skills");
+        remoteSkillsDir = path.posix.join(remoteHomeDir, ".agy", "skills");
         await runAdapterExecutionTargetShellCommand(
           runId,
           executionTarget,
@@ -392,7 +392,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         );
       }
       // Gemini CLI refuses headless runs without an auth selection persisted in
-      // $HOME/.gemini/settings.json ("Invalid auth method selected."); env vars
+      // $HOME/.agy/settings.json ("Invalid auth method selected."); env vars
       // alone (GEMINI_DEFAULT_AUTH_TYPE) do not satisfy it. With a managed HOME
       // the runtime root replaces the image home, so any settings baked into the
       // image are invisible -- pre-select the api-key auth whenever an API key
@@ -411,7 +411,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
       );
       if (managedRemoteHomeDir && hasGeminiApiKey) {
-        const remoteSettingsPath = path.posix.join(managedRemoteHomeDir, ".gemini", "settings.json");
+        const remoteSettingsPath = path.posix.join(managedRemoteHomeDir, ".agy", "settings.json");
         const authSettingsJson = JSON.stringify({
           selectedAuthType: "gemini-api-key",
           security: { auth: { selectedType: "gemini-api-key" } },
@@ -437,7 +437,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runId,
       target: runtimeExecutionTarget,
       runtimeRootDir: remoteRuntimeRootDir,
-      adapterKey: "gemini",
+      adapterKey: "agy",
       timeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
       onLog,

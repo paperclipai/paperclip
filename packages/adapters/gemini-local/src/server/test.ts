@@ -193,7 +193,10 @@ export async function testEnvironment(
         args,
         {
           cwd,
-          env,
+          env: {
+            ...env,
+            ...(targetIsRemote ? { GEMINI_CLI_TRUST_WORKSPACE: "true" } : {}),
+          },
           timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           onLog: async () => { },

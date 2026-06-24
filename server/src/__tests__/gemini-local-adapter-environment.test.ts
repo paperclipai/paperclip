@@ -5,7 +5,7 @@ import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-gemini-local/server";
 
 async function writeFakeGeminiCommand(binDir: string, argsCapturePath: string): Promise<string> {
-  const commandPath = path.join(binDir, "gemini");
+  const commandPath = path.join(binDir, "agy");
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
@@ -24,11 +24,14 @@ console.log(JSON.stringify({
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
+  if (os.platform() === "win32") {
+    await fs.writeFile(commandPath + ".cmd", `@node "%~dp0\\agy" %*`, "utf8");
+  }
   return commandPath;
 }
 
 async function writeQuotaGeminiCommand(binDir: string): Promise<string> {
-  const commandPath = path.join(binDir, "gemini");
+  const commandPath = path.join(binDir, "agy");
   const script = `#!/usr/bin/env node
 if (process.argv.includes("--help")) {
   process.exit(0);
@@ -38,6 +41,9 @@ process.exit(1);
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
+  if (os.platform() === "win32") {
+    await fs.writeFile(commandPath + ".cmd", `@node "%~dp0\\agy" %*`, "utf8");
+  }
   return commandPath;
 }
 
@@ -67,7 +73,7 @@ describe("gemini_local environment diagnostics", () => {
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
 
-  it("passes model and yolo flags to the hello probe", async () => {
+  it("passes extra config args to the hello probe", async () => {
     const root = path.join(
       os.tmpdir(),
       `paperclip-gemini-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -82,10 +88,9 @@ describe("gemini_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
-        command: "gemini",
+        command: "agy",
         cwd,
-        model: "gemini-2.5-pro",
-        yolo: true,
+        extraArgs: ["--custom-flag"],
         env: {
           GEMINI_API_KEY: "test-key",
           PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
@@ -96,11 +101,11 @@ describe("gemini_local environment diagnostics", () => {
 
     expect(result.status).not.toBe("fail");
     const args = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as string[];
-    expect(args).toContain("--model");
-    expect(args).toContain("gemini-2.5-pro");
-    expect(args).toContain("--approval-mode");
-    expect(args).toContain("yolo");
-    expect(args).toContain("--prompt");
+    const argsString = args.join(" ");
+    expect(argsString).toContain("--print");
+    expect(argsString).toContain("Respond with hello");
+    expect(argsString).toContain("--sandbox=false");
+    expect(argsString).toContain("--custom-flag");
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -118,7 +123,7 @@ describe("gemini_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
-        command: "gemini",
+        command: "agy",
         cwd,
         env: {
           GEMINI_API_KEY: "test-key",
@@ -139,7 +144,7 @@ describe("gemini_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
-        command: "gemini",
+        command: "agy",
       },
       executionTarget: {
         kind: "remote",
@@ -148,7 +153,7 @@ describe("gemini_local environment diagnostics", () => {
         remoteCwd: "/workspace/paperclip",
         runner: {
           execute: async (input) => {
-            if (input.command === "gemini") {
+            if (input.command === "agy") {
               probeEnv = input.env;
               return {
                 exitCode: 0,
