@@ -7,6 +7,8 @@ export { agentService, deduplicateAgentName } from "./agents.js";
 export { agentMemoryService } from "./agent-memories.js";
 export { agentMcpServerService } from "./agent-mcp-servers.js";
 export { agentMemoryConsolidationService } from "./agent-memory-consolidation.js";
+export { cloudflareService } from "./cloudflare.js";
+export { mailDomainService } from "./mail-domains.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";

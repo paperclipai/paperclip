@@ -419,6 +419,7 @@ export type {
 } from "./secrets.js";
 export type { AgentMemory, AgentMemoryConsolidationRun } from "./agent-memory.js";
 export type { AgentMcpServer, RuntimeMcpServer } from "./agent-mcp.js";
+export type { CloudflareConnection, CloudflareZone, MailDomain } from "./mail.js";
 export type {
   Routine,
   RoutineEnvConfig,

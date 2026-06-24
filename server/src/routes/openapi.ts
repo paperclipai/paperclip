@@ -135,6 +135,8 @@ import {
   correctAgentMemorySchema,
   createAgentMcpServerSchema,
   setAgentMcpServerStatusSchema,
+  connectCloudflareSchema,
+  attachDomainSchema,
   provideCredentialSchema,
 } from "@paperclipai/shared";
 
@@ -544,6 +546,14 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/agents/{agentId}/mcp-servers",
   "POST /api/agents/{agentId}/mcp-servers/{id}/status",
   "DELETE /api/agents/{agentId}/mcp-servers/{id}",
+  "GET /api/companies/{companyId}/integrations/cloudflare",
+  "POST /api/companies/{companyId}/integrations/cloudflare",
+  "DELETE /api/companies/{companyId}/integrations/cloudflare",
+  "GET /api/companies/{companyId}/integrations/cloudflare/zones",
+  "GET /api/companies/{companyId}/mail/domains",
+  "POST /api/companies/{companyId}/mail/domains",
+  "POST /api/companies/{companyId}/mail/domains/{id}/verify",
+  "DELETE /api/companies/{companyId}/mail/domains/{id}",
   "GET /api/companies",
   "POST /api/companies",
   "GET /api/companies/stats",
@@ -4611,6 +4621,60 @@ registerCurrentRoute({
   path: "/api/agents/{agentId}/mcp-servers/{id}",
   tags: ["agents"],
   summary: "Remove an installed MCP server",
+});
+
+// ─── Cloudflare integration + mail domains (embedded mail) ───────────────────
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/integrations/cloudflare",
+  tags: ["companies"],
+  summary: "Get the company's Cloudflare connection",
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/integrations/cloudflare",
+  tags: ["companies"],
+  summary: "Connect a Cloudflare account",
+  body: connectCloudflareSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/integrations/cloudflare",
+  tags: ["companies"],
+  summary: "Disconnect the Cloudflare account",
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/integrations/cloudflare/zones",
+  tags: ["companies"],
+  summary: "List attachable Cloudflare zones",
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/mail/domains",
+  tags: ["companies"],
+  summary: "List attached mail domains",
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/mail/domains",
+  tags: ["companies"],
+  summary: "Attach an existing domain for email",
+  body: attachDomainSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/mail/domains/{id}/verify",
+  tags: ["companies"],
+  summary: "Re-publish and verify a mail domain's DNS",
+});
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/mail/domains/{id}",
+  tags: ["companies"],
+  summary: "Detach a mail domain",
 });
 
 // ─── Spec builder ─────────────────────────────────────────────────────────────

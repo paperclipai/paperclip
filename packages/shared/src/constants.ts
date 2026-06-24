@@ -516,6 +516,12 @@ export type McpTransport = (typeof MCP_TRANSPORTS)[number];
 export const MCP_SERVER_STATUSES = ["enabled", "disabled"] as const;
 export type McpServerStatus = (typeof MCP_SERVER_STATUSES)[number];
 
+export const CLOUDFLARE_CONNECTION_STATUSES = ["pending", "active", "invalid"] as const;
+export type CloudflareConnectionStatus = (typeof CLOUDFLARE_CONNECTION_STATUSES)[number];
+
+export const MAIL_DOMAIN_STATUSES = ["pending", "dns_configured", "active", "failed"] as const;
+export type MailDomainStatus = (typeof MAIL_DOMAIN_STATUSES)[number];
+
 export const APPROVAL_STATUSES = [
   "pending",
   "revision_requested",

@@ -308,6 +308,10 @@ export {
   CAPABILITY_REQUEST_APPROVAL_TYPES,
   type McpTransport,
   type McpServerStatus,
+  CLOUDFLARE_CONNECTION_STATUSES,
+  MAIL_DOMAIN_STATUSES,
+  type CloudflareConnectionStatus,
+  type MailDomainStatus,
 } from "./constants.js";
 
 export {
@@ -813,6 +817,9 @@ export type {
   AgentMemoryConsolidationRun,
   AgentMcpServer,
   RuntimeMcpServer,
+  CloudflareConnection,
+  CloudflareZone,
+  MailDomain,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
 export {
@@ -950,6 +957,10 @@ export {
   provideCredentialSchema,
   type RequestCredential,
   type ProvideCredential,
+  connectCloudflareSchema,
+  attachDomainSchema,
+  type ConnectCloudflare,
+  type AttachDomain,
 } from "./validators/index.js";
 
 export {

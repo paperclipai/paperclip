@@ -18,6 +18,8 @@ const apiPrefixes: Record<string, string> = {
   "agent-mcp-servers.ts": "/api",
   "agents.ts": "/api",
   "approvals.ts": "/api",
+  "cloudflare-integration.ts": "/api",
+  "mail-domains.ts": "/api",
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",

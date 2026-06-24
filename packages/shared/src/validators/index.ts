@@ -483,6 +483,13 @@ export {
 } from "./agent-credential.js";
 
 export {
+  connectCloudflareSchema,
+  attachDomainSchema,
+  type ConnectCloudflare,
+  type AttachDomain,
+} from "./mail.js";
+
+export {
   createRoutineSchema,
   updateRoutineSchema,
   createRoutineTriggerSchema,
