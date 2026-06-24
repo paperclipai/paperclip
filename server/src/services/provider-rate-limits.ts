@@ -580,20 +580,6 @@ export function providerRateLimitService(db: Db) {
       .returning();
   }
 
-  async function listAgentIdsForBlockScope(
-    companyId: string,
-    adapterType: string,
-    modelFamily: string | null,
-  ) {
-    const filter = buildAgentScopeFilter(companyId, adapterType, modelFamily);
-
-    return db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(filter)
-      .then((rows) => rows.map((row) => row.id));
-  }
-
   async function isWindowStillBlocked(
     adapterType: string,
     limitKind: string,
