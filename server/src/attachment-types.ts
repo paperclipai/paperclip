@@ -121,10 +121,14 @@ export function inferOfficeAttachmentContentTypeFromFilename(
 export function normalizeUploadAttachmentContentType(input: {
   contentType: string | null | undefined;
   originalFilename?: string | null;
+  isAllowedContentType?: (contentType: string) => boolean;
 }): string {
   const normalized = normalizeContentType(input.contentType);
   if (!GENERIC_ATTACHMENT_CONTENT_TYPES.includes(normalized)) return normalized;
-  return inferOfficeAttachmentContentTypeFromFilename(input.originalFilename) ?? normalized;
+  const inferred = inferOfficeAttachmentContentTypeFromFilename(input.originalFilename);
+  if (!inferred) return normalized;
+  if (input.isAllowedContentType && !input.isAllowedContentType(inferred)) return normalized;
+  return inferred;
 }
 
 export function isInlineAttachmentContentType(contentType: string): boolean {

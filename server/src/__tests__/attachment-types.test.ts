@@ -166,6 +166,16 @@ describe("normalizeUploadAttachmentContentType", () => {
     ).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   });
 
+  it("keeps generic binary uploads generic when the inferred Office type is not allowed", () => {
+    expect(
+      normalizeUploadAttachmentContentType({
+        contentType: "application/octet-stream",
+        originalFilename: "raw-data.xlsx",
+        isAllowedContentType: (contentType) => contentType === "application/octet-stream",
+      }),
+    ).toBe("application/octet-stream");
+  });
+
   it("keeps generic binary uploads generic for unknown filenames", () => {
     expect(
       normalizeUploadAttachmentContentType({
