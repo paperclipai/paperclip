@@ -97,12 +97,23 @@ vi.mock("../context/CompanyContext", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).ResizeObserver = (globalThis as any).ResizeObserver ?? ResizeObserverStub;
 
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
+}
+
+function getOpenDialog(): HTMLElement | null {
+  return document.body.querySelector("[role='dialog']");
 }
 
 describe("CompanyEnvironments", () => {
@@ -198,7 +209,20 @@ describe("CompanyEnvironments", () => {
     await flushReact();
     await flushReact();
 
-    const driverSelect = Array.from(container.querySelectorAll("select"))
+    const addEnvironmentButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add environment",
+    );
+    expect(addEnvironmentButton).toBeTruthy();
+
+    await act(async () => {
+      addEnvironmentButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const dialog = getOpenDialog();
+    expect(dialog).toBeTruthy();
+
+    const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
       .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
       | HTMLSelectElement
       | undefined;
@@ -254,7 +278,10 @@ describe("CompanyEnvironments", () => {
     });
     await flushReact();
 
-    const driverSelect = Array.from(container.querySelectorAll("select"))
+    const dialog = getOpenDialog();
+    expect(dialog).toBeTruthy();
+
+    const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
       .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
       | HTMLSelectElement
       | undefined;
@@ -324,9 +351,7 @@ describe("CompanyEnvironments", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Installed sandbox providers:");
     expect(container.textContent).toContain("Secure Sandbox");
-    expect(container.textContent).toContain("These are not adapter types.");
 
     const editButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Edit");
@@ -337,8 +362,12 @@ describe("CompanyEnvironments", () => {
     });
     await flushReact();
 
-    const providerSelect = Array.from(container.querySelectorAll("select"))
-      .find((select) => Array.from(select.options).some((option) => option.value === "secure-plugin")) as HTMLSelectElement | undefined;
+    const dialog = getOpenDialog();
+    expect(dialog).toBeTruthy();
+
+    const providerSelect = Array.from(dialog?.querySelectorAll("select") ?? []).find((select) =>
+      Array.from(select.options).some((option) => option.value === "secure-plugin"),
+    ) as HTMLSelectElement | undefined;
     expect(providerSelect).toBeTruthy();
 
     await act(async () => {
@@ -347,7 +376,7 @@ describe("CompanyEnvironments", () => {
     });
     await flushReact();
 
-    const templateInput = Array.from(container.querySelectorAll("input"))
+    const templateInput = Array.from(dialog?.querySelectorAll("input") ?? [])
       .find((input) => (input as HTMLInputElement).value === "saved-template") as HTMLInputElement | undefined;
     expect(templateInput?.value).toBe("saved-template");
 

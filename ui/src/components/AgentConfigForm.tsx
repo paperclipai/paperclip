@@ -116,22 +116,6 @@ export function supportsAdapterModelRefresh(adapterType: string): boolean {
   return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "acpx_local";
 }
 
-export function getAgentConfigTestActionLabel(input: { isCreate: boolean; isDirty: boolean }): string {
-  return !input.isCreate && input.isDirty ? "Save + Test" : "Test";
-}
-
-export async function runAgentConfigEnvironmentTest(input: {
-  isCreate: boolean;
-  isDirty: boolean;
-  saveDraft?: () => void | Promise<unknown>;
-  runTest: () => Promise<AdapterEnvironmentTestResult>;
-}) {
-  if (!input.isCreate && input.isDirty) {
-    await input.saveDraft?.();
-  }
-  return await input.runTest();
-}
-
 function isOverlayDirty(o: AgentConfigOverlay): boolean {
   return (
     Object.keys(o.identity).length > 0 ||
@@ -416,10 +400,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }),
     [environments, supportedEnvironmentDrivers],
   );
+  const environmentOptions = useMemo(() => {
+    if (!currentDefaultEnvironment) return runnableEnvironments;
+    if (runnableEnvironments.some((environment) => environment.id === currentDefaultEnvironment.id)) {
+      return runnableEnvironments;
+    }
+    return [...runnableEnvironments, currentDefaultEnvironment];
+  }, [currentDefaultEnvironment, runnableEnvironments]);
+  // `runnableEnvironments` excludes the always-available Local environment, so a
+  // single entry already means the user has more than one environment configured
+  // (Local + that environment) and the override selector is meaningful.
   const showEnvironmentOverrideControl = environmentsEnabled && (
     forcedKubernetes ||
     currentDefaultEnvironmentId.length > 0 ||
-    runnableEnvironments.length > 1
+    runnableEnvironments.length >= 1
   );
   const inheritedEnvironmentLabel = instanceDefaultEnvironment
     ? `${instanceDefaultEnvironment.name} (${instanceDefaultEnvironment.driver})`
@@ -555,7 +549,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   });
   const [testActionPending, setTestActionPending] = useState(false);
   const [testActionError, setTestActionError] = useState<string | null>(null);
-  const testActionLabel = getAgentConfigTestActionLabel({ isCreate, isDirty });
+  const testActionLabel = "Test";
   const isSavePending = !isCreate && Boolean(props.isSaving);
   const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId;
   const runEnvironmentTest = useCallback(async () => {
@@ -566,19 +560,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setTestActionError(null);
     testEnvironment.reset();
     try {
-      return await runAgentConfigEnvironmentTest({
-        isCreate,
-        isDirty,
-        saveDraft: !isCreate ? handleSave : undefined,
-        runTest: () => testEnvironment.mutateAsync(),
-      });
+      return await testEnvironment.mutateAsync();
     } catch (error) {
       setTestActionError(error instanceof Error ? error.message : "Environment test failed");
       throw error;
     } finally {
       setTestActionPending(false);
     }
-  }, [selectedCompanyId, isCreate, isDirty, handleSave, testEnvironment]);
+  }, [selectedCompanyId, testEnvironment]);
   // `runEnvironmentTest` (and `testEnvironmentDisabled`) change identity on every
   // render because `useMutation` returns a fresh result object each time. Hold the
   // latest behavior in a ref so the trigger handed to the parent stays referentially
@@ -904,8 +893,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // Render the environment read-only instead of the selectable picker.
         <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Execution</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Execution</div>
+            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
             <Field
@@ -929,20 +918,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : showEnvironmentOverrideControl ? (
         <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Execution</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Execution</div>
+            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <Field
-              label="Environment override"
-              hint="Leave this unset to inherit the instance default. Agent-specific overrides only appear when there is a real alternative."
-            >
+            <Field label="Environment override">
               <div className="space-y-2">
-                <div className="text-xs text-muted-foreground">
-                  {currentDefaultEnvironment
-                    ? `Overriding the instance default with ${currentDefaultEnvironment.name}.`
-                    : `Inheriting the instance default: ${inheritedEnvironmentLabel}.`}
-                </div>
                 <select
                   className={inputClass}
                   value={currentDefaultEnvironmentId}
@@ -955,8 +936,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     mark("identity", "defaultEnvironmentId", nextValue || null);
                   }}
                 >
-                  <option value="">Inherit instance default ({inheritedEnvironmentLabel})</option>
-                  {runnableEnvironments.map((environment) => (
+                  <option value="">Default: {inheritedEnvironmentLabel}</option>
+                  {environmentOptions.map((environment) => (
                     <option key={environment.id} value={environment.id}>
                       {environment.name} · {environment.driver}
                     </option>

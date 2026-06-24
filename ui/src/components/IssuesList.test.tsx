@@ -42,6 +42,10 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
+const mockExternalObjectsApi = vi.hoisted(() => ({
+  getIssueSummaries: vi.fn(),
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => companyState,
 }));
@@ -87,6 +91,10 @@ vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
+vi.mock("../api/externalObjects", () => ({
+  externalObjectsApi: mockExternalObjectsApi,
+}));
+
 vi.mock("./IssueRow", () => ({
   IssueRow: ({
     issue,
@@ -97,6 +105,7 @@ vi.mock("./IssueRow", () => ({
     checklistCurrentStep,
     checklistDependencyChips,
     checklistRowId,
+    externalObjectSummary,
   }: {
     issue: Issue;
     desktopMetaLeading?: ReactNode;
@@ -106,6 +115,7 @@ vi.mock("./IssueRow", () => ({
     checklistCurrentStep?: boolean;
     checklistDependencyChips?: ReactNode;
     checklistRowId?: string;
+    externalObjectSummary?: { total: number } | null;
   }) => (
     <div
       data-testid="issue-row"
@@ -115,6 +125,9 @@ vi.mock("./IssueRow", () => ({
       data-title-class={titleClassName ?? undefined}
     >
       <span>{issue.title}</span>
+      {externalObjectSummary ? (
+        <span data-testid="external-object-summary">{externalObjectSummary.total}</span>
+      ) : null}
       {desktopMetaLeading}
       {desktopTrailing}
       {checklistDependencyChips}
@@ -286,6 +299,7 @@ describe("IssuesList", () => {
     mockExecutionWorkspacesApi.list.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockReset();
     mockInstanceSettingsApi.getExperimental.mockReset();
+    mockExternalObjectsApi.getIssueSummaries.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: null, session: null });
@@ -293,14 +307,142 @@ describe("IssuesList", () => {
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: false,
+    });
     setDocumentScrollMetrics({ innerHeight: 600, scrollY: 0, scrollHeight: 2400 });
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({ summaries: {} });
     localStorage.clear();
   });
 
   afterEach(() => {
     vi.useRealTimers();
     container.remove();
+  });
+
+  it("forwards external-object summaries into issue rows", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: true,
+    });
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({
+      summaries: {
+        "issue-1": {
+          total: 2,
+          byStatusCategory: { failed: 1, succeeded: 1 },
+          byLiveness: { fresh: 2 },
+          highestSeverity: "danger",
+          staleCount: 0,
+          authRequiredCount: 0,
+          unreachableCount: 0,
+          objects: [],
+        },
+      },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue()]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledWith("company-1", ["issue-1"]);
+      expect(container.querySelector("[data-testid='external-object-summary']")?.textContent).toBe("2");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not load external-object summaries when the experimental flag is disabled", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue()]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled();
+      expect(container.querySelector("[data-testid='issue-row']")).not.toBeNull();
+    });
+    expect(mockExternalObjectsApi.getIssueSummaries).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("filters issue rows by external-object status summaries", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: true,
+    });
+    const failedIssue = createIssue({ id: "issue-failed", identifier: "PAP-10", title: "Failed external object" });
+    const freshIssue = createIssue({ id: "issue-fresh", identifier: "PAP-11", title: "Fresh external object" });
+    const noObjectIssue = createIssue({ id: "issue-none", identifier: "PAP-12", title: "No external object" });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ externalObjectStatuses: ["failed"] }));
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({
+      summaries: {
+        "issue-failed": {
+          total: 1,
+          byStatusCategory: { failed: 1 },
+          byLiveness: { fresh: 1 },
+          highestSeverity: "danger",
+          staleCount: 0,
+          authRequiredCount: 0,
+          unreachableCount: 0,
+          objects: [],
+        },
+        "issue-fresh": {
+          total: 1,
+          byStatusCategory: { succeeded: 1 },
+          byLiveness: { fresh: 1 },
+          highestSeverity: "success",
+          staleCount: 0,
+          authRequiredCount: 0,
+          unreachableCount: 0,
+          objects: [],
+        },
+      },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[failedIssue, freshIssue, noObjectIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledWith(
+        "company-1",
+        ["issue-failed", "issue-fresh", "issue-none"],
+      );
+      expect(container.textContent).toContain("Failed external object");
+      expect(container.textContent).not.toContain("Fresh external object");
+      expect(container.textContent).not.toContain("No external object");
+    });
+
+    act(() => {
+      root.unmount();
+    });
   });
 
   it("renders server search results instead of filtering the full issue list locally", async () => {

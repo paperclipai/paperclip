@@ -43,8 +43,22 @@ vi.mock("@/lib/router", () => ({
 }));
 
 vi.mock("./MarkdownBody", () => ({
-  MarkdownBody: ({ children, className }: { children: string; className?: string }) => (
-    <div className={className}>{children}</div>
+  MarkdownBody: ({
+    children,
+    className,
+    externalReferences,
+  }: {
+    children: string;
+    className?: string;
+    externalReferences?: Record<string, unknown>;
+  }) => (
+    <div
+      className={className}
+      data-testid="markdown-body"
+      data-external-reference-keys={externalReferences ? Object.keys(externalReferences).join(",") : ""}
+    >
+      {children}
+    </div>
   ),
 }));
 
@@ -677,6 +691,61 @@ describe("IssueDocumentsSection", () => {
 
     expect(container.textContent).toContain("Loaded plan body");
     expect(container.textContent).not.toContain("Markdown body");
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("forwards externalReferences to the rendered document body so URL decoration applies", async () => {
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    mockIssuesApi.listDocuments.mockResolvedValue([
+      createIssueDocument({
+        body: "Linked work: https://github.com/example/repo/pull/99",
+      }),
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection
+            issue={issue}
+            canDeleteDocuments={false}
+            externalReferences={{
+              "https://github.com/example/repo/pull/99": {
+                providerKey: "github",
+                objectType: "pull_request",
+                statusCategory: "open",
+                liveness: "fresh",
+                statusLabel: "Open",
+                displayTitle: "PR #99",
+              },
+            }}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const markdownBodies = Array.from(
+      container.querySelectorAll('[data-testid="markdown-body"]'),
+    ) as HTMLElement[];
+    expect(markdownBodies.length).toBeGreaterThan(0);
+    const rendered = markdownBodies.find((element) =>
+      (element.textContent ?? "").includes("Linked work"),
+    );
+    expect(rendered?.getAttribute("data-external-reference-keys"))
+      .toContain("https://github.com/example/repo/pull/99");
 
     await act(async () => {
       root.unmount();

@@ -159,6 +159,203 @@ describe("plugin environment driver seam", () => {
   });
 });
 
+const objectReferenceManifest: PaperclipPluginManifestV1 = {
+  id: "test.external-object-provider",
+  apiVersion: 1,
+  version: "1.0.0",
+  displayName: "External Object Provider",
+  description: "Test external object provider plugin",
+  author: "Paperclip",
+  categories: ["connector"],
+  capabilities: ["external.objects.detect", "external.objects.read"],
+  entrypoints: { worker: "dist/worker.js" },
+  objectReferences: [
+    {
+      providerKey: "mocktracker",
+      displayName: "Mock Tracker",
+      objectTypes: ["ticket"],
+      urlPatterns: ["https://mock.example/tickets/:id"],
+      refreshPolicy: { defaultTtlSeconds: 300, staleAfterSeconds: 1800 },
+    },
+  ],
+};
+
+describe("plugin external object provider seam", () => {
+  it("validates provider manifest declarations and capabilities", () => {
+    expect(pluginManifestV1Schema.safeParse(objectReferenceManifest).success).toBe(true);
+
+    const missingCapability = pluginManifestV1Schema.safeParse({
+      ...objectReferenceManifest,
+      capabilities: ["external.objects.detect"],
+    });
+    expect(missingCapability.success).toBe(false);
+    expect(JSON.stringify(missingCapability.error?.issues)).toContain("external.objects.read");
+
+    const duplicateProvider = pluginManifestV1Schema.safeParse({
+      ...objectReferenceManifest,
+      objectReferences: [
+        objectReferenceManifest.objectReferences![0],
+        { ...objectReferenceManifest.objectReferences![0], displayName: "Duplicate" },
+      ],
+    });
+    expect(duplicateProvider.success).toBe(false);
+    expect(JSON.stringify(duplicateProvider.error?.issues)).toContain(
+      "Duplicate object reference provider keys",
+    );
+  });
+
+  it("enforces provider capability requirements", () => {
+    const validator = pluginCapabilityValidator();
+    expect(validator.getRequiredCapabilities("external.objects.detect")).toEqual([
+      "external.objects.detect",
+    ]);
+    expect(validator.getRequiredCapabilities("external.objects.read")).toEqual([
+      "external.objects.read",
+    ]);
+    expect(validator.checkOperation(objectReferenceManifest, "external.objects.read").allowed).toBe(true);
+
+    const withoutCapability = {
+      ...objectReferenceManifest,
+      capabilities: ["external.objects.detect"],
+    } satisfies PaperclipPluginManifestV1;
+
+    expect(validator.checkOperation(withoutCapability, "external.objects.read")).toMatchObject({
+      allowed: false,
+      missing: ["external.objects.read"],
+    });
+    expect(validator.validateManifestCapabilities(withoutCapability)).toMatchObject({
+      allowed: false,
+      missing: ["external.objects.read"],
+    });
+  });
+
+  it("dispatches provider detection and resolution worker hooks", async () => {
+    const plugin = definePlugin({
+      async setup() {},
+      async onDetectExternalObjects(params) {
+        return {
+          detections: params.urls.map((url) => ({
+            urlIdentityHash: url.canonicalIdentityHash,
+            providerKey: "mocktracker",
+            objectType: "ticket",
+            externalId: "MOCK-123",
+            displayTitle: "Mock ticket",
+            confidence: "exact",
+          })),
+        };
+      },
+      async onResolveExternalObject(params) {
+        return {
+          ok: true,
+          snapshot: {
+            displayTitle: `Resolved ${params.externalId}`,
+            statusKey: "ready",
+            statusLabel: "Ready",
+            statusCategory: "succeeded",
+            statusTone: "success",
+            isTerminal: true,
+            ttlSeconds: 600,
+          },
+        };
+      },
+    });
+
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const host = startWorkerRpcHost({ plugin, stdin, stdout });
+    const responses: unknown[] = [];
+    stdout.on("data", (chunk) => {
+      const lines = String(chunk).split("\n").filter(Boolean);
+      for (const line of lines) {
+        responses.push(parseMessage(line));
+      }
+    });
+
+    stdin.write(serializeMessage(createRequest("initialize", {
+      manifest: objectReferenceManifest,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+    }, 1)));
+    await waitForResponses(responses, 1);
+
+    const initializeResponse = responses[0];
+    expect(isJsonRpcSuccessResponse(initializeResponse)).toBe(true);
+    if (!isJsonRpcSuccessResponse(initializeResponse)) return;
+    expect(initializeResponse.result.supportedMethods).toContain("detectExternalObjects");
+    expect(initializeResponse.result.supportedMethods).toContain("resolveExternalObject");
+
+    stdin.write(serializeMessage(createRequest("detectExternalObjects", {
+      companyId: "company-1",
+      urls: [{
+        sanitizedCanonicalUrl: "https://mock.example/tickets/123",
+        sanitizedDisplayUrl: "https://mock.example/tickets/123",
+        canonicalIdentityHash: "hash-123",
+        canonicalIdentity: { scheme: "https", host: "mock.example", path: "/tickets/123" },
+        redactedMatchedText: "https://mock.example/tickets/123",
+      }],
+      sourceContext: {
+        companyId: "company-1",
+        sourceIssueId: "issue-1",
+        sourceKind: "description",
+        sourceRecordId: null,
+        documentKey: null,
+        propertyKey: null,
+      },
+    }, 2)));
+    await waitForResponses(responses, 2);
+
+    const detectResponse = responses[1];
+    expect(isJsonRpcSuccessResponse(detectResponse)).toBe(true);
+    if (!isJsonRpcSuccessResponse(detectResponse)) return;
+    expect(detectResponse.result.detections[0]).toMatchObject({
+      providerKey: "mocktracker",
+      objectType: "ticket",
+      externalId: "MOCK-123",
+    });
+
+    stdin.write(serializeMessage(createRequest("resolveExternalObject", {
+      companyId: "company-1",
+      providerKey: "mocktracker",
+      objectType: "ticket",
+      externalId: "MOCK-123",
+      object: {
+        id: "object-1",
+        companyId: "company-1",
+        providerKey: "mocktracker",
+        objectType: "ticket",
+        externalId: "MOCK-123",
+        sanitizedCanonicalUrl: "https://mock.example/tickets/123",
+        canonicalIdentityHash: "hash-123",
+        displayTitle: "Mock ticket",
+        statusKey: null,
+        statusLabel: null,
+        statusCategory: "unknown",
+        statusTone: "neutral",
+        liveness: "unknown",
+        isTerminal: false,
+        data: {},
+        remoteVersion: null,
+        etag: null,
+      },
+    }, 3)));
+    await waitForResponses(responses, 3);
+
+    const resolveResponse = responses[2];
+    expect(isJsonRpcSuccessResponse(resolveResponse)).toBe(true);
+    if (!isJsonRpcSuccessResponse(resolveResponse)) return;
+    expect(resolveResponse.result).toMatchObject({
+      ok: true,
+      snapshot: {
+        statusCategory: "succeeded",
+        statusTone: "success",
+      },
+    });
+
+    host.stop();
+  });
+});
+
 async function waitForResponses(responses: unknown[], count: number): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (responses.length < count && Date.now() < deadline) {
