@@ -613,6 +613,8 @@ export type {
   DocumentRevision,
   DocumentFormat,
   LegacyPlanDocument,
+  IssueRootHumanRequester,
+  IssueRootHumanRequesterSource,
   IssueAttachment,
   IssueLabel,
   IssueTreeControlPreview,

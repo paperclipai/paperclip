@@ -98,6 +98,7 @@ import {
   resolveTaskWatchdogMutationScope,
   taskWatchdogScopeAllowsIssueMutation,
 } from "../services/task-watchdog-scope.js";
+import { resolveRootHumanRequesterFromIssuePath } from "../services/issue-requester.js";
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
@@ -3270,27 +3271,7 @@ export function issueRoutes(
       actor: getActorInfo(req),
       activeRecoveryAction,
     });
-    const rootHumanRequesterAncestor = [...ancestors]
-      .reverse()
-      .find((ancestor) => ancestor.createdByUserId);
-    const rootHumanRequesterAncestorUserId = rootHumanRequesterAncestor?.createdByUserId ?? null;
-    const rootHumanRequester = rootHumanRequesterAncestor && rootHumanRequesterAncestorUserId
-      ? {
-          userId: rootHumanRequesterAncestorUserId,
-          issueId: rootHumanRequesterAncestor.id,
-          identifier: rootHumanRequesterAncestor.identifier,
-          title: rootHumanRequesterAncestor.title,
-          source: "ancestor",
-        }
-      : issue.createdByUserId
-        ? {
-            userId: issue.createdByUserId,
-            issueId: issue.id,
-            identifier: issue.identifier,
-            title: issue.title,
-            source: "current_issue",
-          }
-        : null;
+    const rootHumanRequester = resolveRootHumanRequesterFromIssuePath({ issue, ancestors });
     const redactLowTrust = await shouldRedactLowTrustForHeartbeatContext(issue, getActorInfo(req));
     const safeWakeComment =
       wakeComment && wakeComment.issueId === issue.id
