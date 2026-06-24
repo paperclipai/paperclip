@@ -21,6 +21,16 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Card,
   CardContent,
   CardDescription,
@@ -35,6 +45,7 @@ export function CompanySettingsCloudflare() {
   const queryClient = useQueryClient();
   const [apiToken, setApiToken] = useState("");
   const [zoneFilter, setZoneFilter] = useState("");
+  const [detachTarget, setDetachTarget] = useState<{ id: string; domain: string } | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Cloudflare" }]);
@@ -252,13 +263,7 @@ export function CompanySettingsCloudflare() {
                                   aria-label={isAttached ? `Detach ${zone.name}` : `Attach ${zone.name}`}
                                   onCheckedChange={() => {
                                     if (isAttached && attached) {
-                                      if (
-                                        window.confirm(
-                                          `Detach ${zone.name}? This removes its mail DNS records (MX/SPF/DKIM/DMARC) from Cloudflare.`,
-                                        )
-                                      ) {
-                                        removeMutation.mutate(attached.id);
-                                      }
+                                      setDetachTarget({ id: attached.id, domain: zone.name });
                                     } else {
                                       attachMutation.mutate(zone.name);
                                     }
@@ -310,6 +315,29 @@ export function CompanySettingsCloudflare() {
           </CardContent>
         </Card>
       )}
+
+      <AlertDialog open={detachTarget !== null} onOpenChange={(open) => !open && setDetachTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Detach {detachTarget?.domain}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes its mail DNS records (MX/SPF/DKIM/DMARC) from Cloudflare. You can re-attach
+              it later.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (detachTarget) removeMutation.mutate(detachTarget.id);
+                setDetachTarget(null);
+              }}
+            >
+              Detach
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
