@@ -27,7 +27,7 @@
     "issue-references:backfill": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/server exec tsx ../scripts/backfill-issue-reference-mentions.ts",
     "secrets:migrate-inline-env": "pnpm --filter @paperclipai/server exec tsx ../scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
-    "paperclipai": "pnpm --filter @paperclipai/cli exec tsx src/index.ts",
+    "paperclipai": "pnpm --filter paperclipai exec tsx src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
     "release": "./scripts/release.sh",
     "release:canary": "./scripts/release.sh canary",
