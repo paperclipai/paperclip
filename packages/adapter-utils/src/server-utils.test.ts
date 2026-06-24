@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -16,6 +17,7 @@ import {
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
+  signalRunningProcess,
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
@@ -505,6 +507,59 @@ describe("runChildProcess", () => {
       expect(result.signal).toBe("SIGKILL");
       expect(Number.isInteger(childPid) && childPid > 0).toBe(true);
       expect(await waitForPidExit(childPid, 2_000)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "signalRunningProcess escalates SIGKILL on the direct-child fallback after SIGTERM is sent",
+    async () => {
+      // Directly cover the branch this PR changed: the direct-child fallback
+      // (processGroupId === null), which runChildProcess's POSIX timeout tests
+      // never reach because they always spawn detached and take the
+      // process-group path. This reproduces the exact regression: once SIGTERM
+      // has been *sent*, `child.killed` is already true, so the old
+      // `!child.killed` guard would suppress the SIGKILL escalation and leave a
+      // SIGTERM-ignoring child alive. The liveness guard
+      // (exitCode === null && signalCode === null) must still let SIGKILL through.
+      const child = spawn(
+        process.execPath,
+        [
+          "-e",
+          [
+            "process.on('SIGTERM', () => {});",
+            "process.stdout.write(String(process.pid));",
+            "setInterval(() => {}, 1000);",
+          ].join(" "),
+        ],
+        { detached: false, stdio: ["ignore", "pipe", "ignore"] },
+      );
+      try {
+        const pid = await new Promise<number>((resolvePid, rejectPid) => {
+          child.stdout!.on("data", (d) => resolvePid(Number.parseInt(String(d).trim(), 10)));
+          child.on("error", rejectPid);
+        });
+        expect(Number.isInteger(pid) && pid > 0).toBe(true);
+
+        // First SIGTERM via the fallback (no process group). The child swallows
+        // it and stays alive — but child.killed is now true.
+        signalRunningProcess({ child, processGroupId: null }, "SIGTERM");
+        await new Promise((r) => setTimeout(r, 300));
+        expect(child.killed).toBe(true); // signal was sent…
+        expect(isPidAlive(pid)).toBe(true); // …but the process ignored it and lives
+
+        // Escalation: with the old `!child.killed` guard this would be a no-op
+        // and the child would survive. The liveness guard must still fire.
+        signalRunningProcess({ child, processGroupId: null }, "SIGKILL");
+        expect(await waitForPidExit(pid, 2_000)).toBe(true);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            /* already gone */
+          }
+        }
+      }
     },
   );
 

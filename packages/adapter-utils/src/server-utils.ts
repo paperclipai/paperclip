@@ -58,7 +58,11 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
-function signalRunningProcess(
+// Exported for direct unit testing of the direct-child fallback branch. The
+// process-group path (POSIX, detached child) is covered end-to-end by the
+// runChildProcess timeout tests; this export lets a test force the fallback
+// (processGroupId === null) that those tests never reach.
+export function signalRunningProcess(
   running: Pick<RunningProcess, "child" | "processGroupId">,
   signal: NodeJS.Signals,
 ) {
