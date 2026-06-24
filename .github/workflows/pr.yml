@@ -58,6 +58,9 @@ jobs:
       - name: Test general-server shard partition
         run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
 
+      - name: Test standalone package build concurrency
+        run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
