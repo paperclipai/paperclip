@@ -1567,6 +1567,73 @@ export function mergeModelProfileAdapterConfig(input: {
   };
 }
 
+export type ThinkLevel = "off" | "low" | "medium" | "high";
+export type OpenCodeVariant = "low" | "medium" | "high" | "xhigh";
+
+const THINK_LEVELS: ThinkLevel[] = ["off", "low", "medium", "high"];
+const OPEN_CODE_VARIANTS: OpenCodeVariant[] = ["low", "medium", "high", "xhigh"];
+
+export function thinkLevelToOpenCodeVariant(
+  thinkLevel: ThinkLevel | undefined,
+): OpenCodeVariant | undefined {
+  switch (thinkLevel) {
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    case "off":
+    default:
+      return undefined;
+  }
+}
+
+export function readThinkLevel(value: unknown): ThinkLevel | null {
+  const normalized = readNonEmptyString(value);
+  return normalized && THINK_LEVELS.includes(normalized as ThinkLevel)
+    ? (normalized as ThinkLevel)
+    : null;
+}
+
+export function readOpenCodeVariant(value: unknown): OpenCodeVariant | null {
+  const normalized = readNonEmptyString(value);
+  return normalized && OPEN_CODE_VARIANTS.includes(normalized as OpenCodeVariant)
+    ? (normalized as OpenCodeVariant)
+    : null;
+}
+
+export function applyThinkVariantToAdapterConfig(input: {
+  config: Record<string, unknown>;
+  thinkLevel: ThinkLevel | undefined | null;
+  openCodeVariant: OpenCodeVariant | undefined | null;
+}): Record<string, unknown> {
+  const variant =
+    input.openCodeVariant ??
+    thinkLevelToOpenCodeVariant(input.thinkLevel ?? undefined);
+  if (!variant) {
+    const next = { ...input.config };
+    delete next.variant;
+    return next;
+  }
+  return { ...input.config, variant };
+}
+
+export function normalizeThinkVariantWakeContext(input: {
+  contextSnapshot: Record<string, unknown>;
+  payload: Record<string, unknown> | null | undefined;
+}): Record<string, unknown> {
+  const thinkLevelFromPayload = readThinkLevel(input.payload?.thinkLevel);
+  if (!readThinkLevel(input.contextSnapshot.thinkLevel) && thinkLevelFromPayload) {
+    input.contextSnapshot.thinkLevel = thinkLevelFromPayload;
+  }
+  const openCodeVariantFromPayload = readOpenCodeVariant(input.payload?.openCodeVariant);
+  if (!readOpenCodeVariant(input.contextSnapshot.openCodeVariant) && openCodeVariantFromPayload) {
+    input.contextSnapshot.openCodeVariant = openCodeVariantFromPayload;
+  }
+  return input.contextSnapshot;
+}
+
 function modelProfileRunMetadata(
   modelProfile: ModelProfileApplication,
 ): Record<string, unknown> | null {
@@ -2358,6 +2425,7 @@ function enrichWakeContextSnapshot(input: {
     delete contextSnapshot[WAKE_COMMENT_IDS_KEY];
     delete contextSnapshot[PAPERCLIP_WAKE_PAYLOAD_KEY];
     normalizeModelProfileWakeContext({ contextSnapshot, payload });
+    normalizeThinkVariantWakeContext({ contextSnapshot, payload });
     normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
 
     return {
@@ -2408,6 +2476,7 @@ function enrichWakeContextSnapshot(input: {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
   normalizeModelProfileWakeContext({ contextSnapshot, payload });
+  normalizeThinkVariantWakeContext({ contextSnapshot, payload });
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
 
   return {
@@ -8347,10 +8416,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipModelProfile;
     }
-    const mergedConfig = mergeModelProfileAdapterConfig({
-      baseConfig: persistedWorkspaceManagedConfig,
-      modelProfile: modelProfileApplication,
-      issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
+    const mergedConfig = applyThinkVariantToAdapterConfig({
+      config: mergeModelProfileAdapterConfig({
+        baseConfig: persistedWorkspaceManagedConfig,
+        modelProfile: modelProfileApplication,
+        issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
+      }),
+      thinkLevel: readThinkLevel(context.thinkLevel) ?? undefined,
+      openCodeVariant: readOpenCodeVariant(context.openCodeVariant) ?? undefined,
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
