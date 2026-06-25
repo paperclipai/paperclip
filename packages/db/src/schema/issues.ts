@@ -149,5 +149,12 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    activeGithubWebhookIdx: uniqueIndex("issues_active_github_webhook_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'github:webhook'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null`,
+      ),
   }),
 );
