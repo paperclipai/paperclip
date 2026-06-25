@@ -24,6 +24,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
+import { Label } from "./ui/label";
 import { PriorityIcon } from "./PriorityIcon";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -1545,7 +1546,7 @@ function CheckboxOptionRow({
   onToggle: (checked: boolean) => void;
 }) {
   return (
-    <label
+    <Label
       htmlFor={id}
       className={cn(
         "flex cursor-pointer items-start gap-2.5 border-b border-border/60 px-3 py-2 last:border-b-0 transition-colors",
@@ -1567,7 +1568,7 @@ function CheckboxOptionRow({
           <p className="mt-0.5 text-sm leading-5 text-muted-foreground">{description}</p>
         ) : null}
       </div>
-    </label>
+    </Label>
   );
 }
 

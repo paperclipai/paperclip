@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -132,17 +133,22 @@ export function RoutineVariablesEditor({
               <div className="space-y-1.5 md:col-span-2">
                 <div className="flex items-center justify-between gap-3">
                   <Label className="text-xs">Default value</Label>
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <input
-                      type="checkbox"
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Checkbox
+                      id={`routine-var-required-${variable.name}`}
                       checked={variable.required}
-                      onChange={(event) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
+                      onCheckedChange={(checked) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
                         ...current,
-                        required: event.target.checked,
+                        required: checked === true,
                       })))}
                     />
-                    Required
-                  </label>
+                    <Label
+                      htmlFor={`routine-var-required-${variable.name}`}
+                      className="text-xs font-normal text-muted-foreground"
+                    >
+                      Required
+                    </Label>
+                  </div>
                 </div>
 
                 {variable.type === "textarea" ? (

@@ -4,6 +4,7 @@ import { Check, Copy, ExternalLink, MailPlus } from "lucide-react";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
@@ -290,13 +291,13 @@ export function CompanyInvites() {
             </div>
             <label className="block space-y-1">
               <span className="sr-only">Latest invite URL</span>
-              <input
+              <Input
                 ref={latestInviteInputRef}
                 readOnly
                 value={latestInviteUrl}
                 onFocus={(event) => event.currentTarget.select()}
                 onClick={(event) => event.currentTarget.select()}
-                className="w-full rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-foreground outline-none transition-colors selection:bg-primary selection:text-primary-foreground focus:border-ring"
+                className="bg-muted/60"
                 aria-label="Latest invite URL"
               />
             </label>

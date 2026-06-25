@@ -16,6 +16,9 @@ import {
   PopoverTrigger
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { cn } from "../lib/utils";
 import {
   extractModelName,
@@ -802,36 +805,38 @@ export function OnboardingWizard() {
                     </div>
                   </div>
                   <div className="group">
-                    <label className="text-xs text-muted-foreground mb-1 block">What does your team work on?</label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                    <Label htmlFor="onboarding-grow-q1" className="text-xs text-muted-foreground mb-1 block">What does your team work on?</Label>
+                    <Input
+                      id="onboarding-grow-q1"
                       placeholder="e.g. We create educational YouTube content about AI"
                       value={q1}
                       onChange={(e) => setQ1(e.target.value)}
                     />
                   </div>
                   <div className="group">
-                    <label className="text-xs text-muted-foreground mb-1 block">What are your current workflows?</label>
-                    <textarea
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                    <Label htmlFor="onboarding-grow-workflows" className="text-xs text-muted-foreground mb-1 block">What are your current workflows?</Label>
+                    <Textarea
+                      id="onboarding-grow-workflows"
+                      className="resize-none min-h-[60px]"
                       placeholder="e.g. Manual content creation, spreadsheet tracking, email outreach"
                       value={growWorkflows}
                       onChange={(e) => setGrowWorkflows(e.target.value)}
                     />
                   </div>
                   <div className="group">
-                    <label className="text-xs text-muted-foreground mb-1 block">What pain points would you solve with AI?</label>
-                    <textarea
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                    <Label htmlFor="onboarding-grow-painpoints" className="text-xs text-muted-foreground mb-1 block">What pain points would you solve with AI?</Label>
+                    <Textarea
+                      id="onboarding-grow-painpoints"
+                      className="resize-none min-h-[60px]"
                       placeholder="e.g. Can't produce content fast enough, no time for social media"
                       value={growPainPoints}
                       onChange={(e) => setGrowPainPoints(e.target.value)}
                     />
                   </div>
                   <div className="group">
-                    <label className="text-xs text-muted-foreground mb-1 block">What would you automate first?</label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                    <Label htmlFor="onboarding-grow-automate" className="text-xs text-muted-foreground mb-1 block">What would you automate first?</Label>
+                    <Input
+                      id="onboarding-grow-automate"
                       placeholder="e.g. Social media scheduling and content repurposing"
                       value={growAutomate}
                       onChange={(e) => setGrowAutomate(e.target.value)}
@@ -855,9 +860,10 @@ export function OnboardingWizard() {
                       )}
                       {companyGoal.trim() && (
                         <div className="group">
-                          <label className="text-xs text-foreground mb-1 block">Generated mission — edit however you like:</label>
-                          <textarea
-                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                          <Label htmlFor="onboarding-grow-mission" className="text-xs text-foreground mb-1 block">Generated mission — edit however you like:</Label>
+                          <Textarea
+                            id="onboarding-grow-mission"
+                            className="resize-none min-h-[60px]"
                             value={companyGoal}
                             onChange={(e) => setCompanyGoal(e.target.value)}
                           />
@@ -889,7 +895,8 @@ export function OnboardingWizard() {
                     </div>
                   </div>
                   <div className="mt-3 group">
-                    <label
+                    <Label
+                      htmlFor="onboarding-team-name"
                       className={cn(
                         "text-xs mb-1 block transition-colors",
                         companyName.trim()
@@ -898,9 +905,9 @@ export function OnboardingWizard() {
                       )}
                     >
                       Team name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                    </Label>
+                    <Input
+                      id="onboarding-team-name"
                       placeholder="Acme Corp"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
@@ -981,7 +988,8 @@ export function OnboardingWizard() {
                   {missionPath === "direct" && (
                     <div className="space-y-3 animate-in fade-in duration-200">
                       <div className="group">
-                        <label
+                        <Label
+                          htmlFor="onboarding-mission-direct"
                           className={cn(
                             "text-xs mb-1 block transition-colors",
                             companyGoal.trim()
@@ -990,9 +998,10 @@ export function OnboardingWizard() {
                           )}
                         >
                           Mission
-                        </label>
-                        <textarea
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                        </Label>
+                        <Textarea
+                          id="onboarding-mission-direct"
+                          className="resize-none min-h-[60px]"
                           placeholder="What is your team trying to achieve?"
                           value={companyGoal}
                           onChange={(e) => setCompanyGoal(e.target.value)}
@@ -1023,11 +1032,11 @@ export function OnboardingWizard() {
                   {missionPath === "questionnaire" && !missionConfirmed && (
                     <div className="space-y-3 animate-in fade-in duration-200">
                       <div className="group">
-                        <label className="text-xs text-muted-foreground mb-1 block">
+                        <Label htmlFor="onboarding-q1" className="text-xs text-muted-foreground mb-1 block">
                           What does your team work on?
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                        </Label>
+                        <Input
+                          id="onboarding-q1"
                           placeholder="e.g. We create educational YouTube content about AI"
                           value={q1}
                           onChange={(e) => setQ1(e.target.value)}
@@ -1035,33 +1044,33 @@ export function OnboardingWizard() {
                         />
                       </div>
                       <div className="group">
-                        <label className="text-xs text-muted-foreground mb-1 block">
+                        <Label htmlFor="onboarding-q2" className="text-xs text-muted-foreground mb-1 block">
                           Who do you serve?
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                        </Label>
+                        <Input
+                          id="onboarding-q2"
                           placeholder="e.g. Non-technical professionals curious about AI tools"
                           value={q2}
                           onChange={(e) => setQ2(e.target.value)}
                         />
                       </div>
                       <div className="group">
-                        <label className="text-xs text-muted-foreground mb-1 block">
+                        <Label htmlFor="onboarding-q3" className="text-xs text-muted-foreground mb-1 block">
                           What's your biggest bottleneck right now?
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                        </Label>
+                        <Input
+                          id="onboarding-q3"
                           placeholder="e.g. Can't produce content fast enough across multiple channels"
                           value={q3}
                           onChange={(e) => setQ3(e.target.value)}
                         />
                       </div>
                       <div className="group">
-                        <label className="text-xs text-muted-foreground mb-1 block">
+                        <Label htmlFor="onboarding-q4" className="text-xs text-muted-foreground mb-1 block">
                           What would success look like in 6 months?
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                        </Label>
+                        <Input
+                          id="onboarding-q4"
                           placeholder="e.g. Publishing daily content across 4 platforms with a team of AI agents"
                           value={q4}
                           onChange={(e) => setQ4(e.target.value)}
@@ -1086,11 +1095,12 @@ export function OnboardingWizard() {
                   {missionPath === "questionnaire" && missionConfirmed && (
                     <div className="space-y-3 animate-in fade-in duration-200">
                       <div className="group">
-                        <label className="text-xs text-foreground mb-1 block">
+                        <Label htmlFor="onboarding-mission-draft" className="text-xs text-foreground mb-1 block">
                           Here's your draft mission — edit it however you like:
-                        </label>
-                        <textarea
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[80px]"
+                        </Label>
+                        <Textarea
+                          id="onboarding-mission-draft"
+                          className="resize-none min-h-[80px]"
                           value={companyGoal}
                           onChange={(e) => setCompanyGoal(e.target.value)}
                           autoFocus
@@ -1125,11 +1135,11 @@ export function OnboardingWizard() {
               {step === 3 && (
                 <div className="space-y-5">
                   <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
+                    <Label htmlFor="onboarding-agent-name" className="text-xs text-muted-foreground mb-1 block">
                       Name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                    </Label>
+                    <Input
+                      id="onboarding-agent-name"
                       placeholder="Chief of staff"
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
@@ -1473,13 +1483,14 @@ export function OnboardingWizard() {
                   {(adapterType === "http" ||
                     adapterType === "openclaw_gateway") && (
                     <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">
+                      <Label htmlFor="onboarding-adapter-url" className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
                           ? "Gateway URL"
                           : "Webhook URL"}
-                      </label>
-                      <input
-                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                      </Label>
+                      <Input
+                        id="onboarding-adapter-url"
+                        className="font-mono"
                         placeholder={
                           adapterType === "openclaw_gateway"
                             ? "ws://127.0.0.1:18789"

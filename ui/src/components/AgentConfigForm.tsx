@@ -129,7 +129,7 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
 
 /* ---- Shared input class ---- */
 const inputClass =
-  "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
+  "font-mono placeholder:text-muted-foreground/40";
 
 function parseCommaArgs(value: string): string[] {
   return value

@@ -73,6 +73,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   AlertTriangle,
   ArrowUpCircle,
@@ -126,6 +134,13 @@ type SkillTreeNode = {
 const SKILL_TREE_BASE_INDENT = 16;
 const SKILL_TREE_STEP_INDENT = 24;
 const SKILL_TREE_ROW_HEIGHT_CLASS = "min-h-9";
+
+/**
+ * Sentinel for the "Initial" (pre-first-version) row of the diff "Old" version
+ * picker. Radix `Select` forbids an empty-string item value, so the initial
+ * state maps onto this sentinel and is translated back to `null` on change.
+ */
+const DIFF_INITIAL_VERSION_VALUE = "__initial__";
 
 function VercelMark(props: SVGProps<SVGSVGElement>) {
   return (
@@ -1955,13 +1970,13 @@ function InstallPreviewDialog({
           {advancedOpen ? (
             <div className="space-y-3 rounded-md border border-border p-3 text-xs">
               <div>
-                <label className="mb-1 block uppercase tracking-wide text-muted-foreground">Slug override</label>
-                <Input value={slug} onChange={(event) => setSlug(event.target.value)} placeholder={defaultSlug ?? skill.slug} className="h-8" />
+                <Label htmlFor="skill-install-slug" className="mb-1 block uppercase tracking-wide text-muted-foreground">Slug override</Label>
+                <Input id="skill-install-slug" value={slug} onChange={(event) => setSlug(event.target.value)} placeholder={defaultSlug ?? skill.slug} className="h-8" />
               </div>
-              <label className="flex items-center gap-2">
+              <Label className="flex items-center gap-2">
                 <Checkbox checked={force} onCheckedChange={(value) => setForce(Boolean(value))} />
                 <span>Force replace existing same-key skill</span>
-              </label>
+              </Label>
             </div>
           ) : null}
 
@@ -2064,18 +2079,22 @@ function AttachAgentsPopover({
           {sortedVersions.length > 0 ? (
             <div className="mt-2 flex items-center gap-2 text-xs">
               <span className="shrink-0 text-muted-foreground">Version</span>
-              <select
+              <Select
                 value={draftVersionId ?? "__latest__"}
-                onChange={(event) => setDraftVersionId(event.target.value === "__latest__" ? null : event.target.value)}
-                className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground"
+                onValueChange={(value) => setDraftVersionId(value === "__latest__" ? null : value)}
               >
-                <option value="__latest__">Latest</option>
-                {sortedVersions.map((version) => (
-                  <option key={version.id} value={version.id}>
-                    v{version.revisionNumber}{version.label ? ` · ${version.label}` : ""}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger size="sm" className="min-w-0 flex-1 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__latest__">Latest</SelectItem>
+                  {sortedVersions.map((version) => (
+                    <SelectItem key={version.id} value={version.id}>
+                      v{version.revisionNumber}{version.label ? ` · ${version.label}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           ) : null}
         </div>
@@ -2465,31 +2484,39 @@ function SkillVersionDiffDialog({
             <DialogTitle>Diff · skill files</DialogTitle>
           </DialogHeader>
           <div className="flex flex-wrap items-center gap-3 text-xs">
-            <label className="flex items-center gap-2">
+            <Label className="flex items-center gap-2">
               <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 font-medium uppercase tracking-wider text-red-400">Old</span>
-              <select
-                value={leftVersionId ?? ""}
-                onChange={(event) => onLeftVersionChange(event.target.value || null)}
-                className="h-8 w-44 rounded-md border border-border bg-background px-2 text-xs"
+              <Select
+                value={leftVersionId ?? DIFF_INITIAL_VERSION_VALUE}
+                onValueChange={(value) => onLeftVersionChange(value === DIFF_INITIAL_VERSION_VALUE ? null : value)}
               >
-                <option value="">Initial</option>
-                {sorted.map((version) => (
-                  <option key={version.id} value={version.id}>{versionLabel(version)}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-2">
+                <SelectTrigger size="sm" className="w-44 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={DIFF_INITIAL_VERSION_VALUE}>Initial</SelectItem>
+                  {sorted.map((version) => (
+                    <SelectItem key={version.id} value={version.id}>{versionLabel(version)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Label>
+            <Label className="flex items-center gap-2">
               <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 font-medium uppercase tracking-wider text-green-400">New</span>
-              <select
-                value={right?.id ?? ""}
-                onChange={(event) => onRightVersionChange(event.target.value || null)}
-                className="h-8 w-44 rounded-md border border-border bg-background px-2 text-xs"
+              <Select
+                value={right?.id ?? undefined}
+                onValueChange={(value) => onRightVersionChange(value || null)}
               >
-                {sorted.map((version) => (
-                  <option key={version.id} value={version.id}>{versionLabel(version)}</option>
-                ))}
-              </select>
-            </label>
+                <SelectTrigger size="sm" className="w-44 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {sorted.map((version) => (
+                    <SelectItem key={version.id} value={version.id}>{versionLabel(version)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Label>
           </div>
         </div>
         <div className="flex min-h-0 flex-1 gap-3">
@@ -3262,16 +3289,20 @@ export function SkillDetailPage({
           </DialogHeader>
           <div className="space-y-5">
             <div className="space-y-1.5">
-              <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sharing</label>
-              <select
+              <Label htmlFor="skill-sharing-scope" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sharing</Label>
+              <Select
                 value={detail.sharingScope === "public_link" ? "company" : detail.sharingScope}
-                onChange={(event) => onUpdateSharingScope(event.target.value as Exclude<CompanySkillSharingScope, "public_link">)}
+                onValueChange={(value) => onUpdateSharingScope(value as Exclude<CompanySkillSharingScope, "public_link">)}
                 disabled={updateSharingPending}
-                className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground"
               >
-                <option value="company">Company — visible inside this company</option>
-                <option value="private">Private — only visible in your library</option>
-              </select>
+                <SelectTrigger id="skill-sharing-scope" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="company">Company — visible inside this company</SelectItem>
+                  <SelectItem value="private">Private — only visible in your library</SelectItem>
+                </SelectContent>
+              </Select>
               <p className="text-xs text-muted-foreground">Public link sharing is coming later.</p>
             </div>
             {detail.editable ? (

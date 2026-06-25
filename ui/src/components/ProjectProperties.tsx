@@ -14,6 +14,15 @@ import { queryKeys } from "../lib/queryKeys";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Github, Loader2, Plus, Trash2, X } from "lucide-react";
@@ -828,8 +837,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           {workspaceMode === "local" && (
             <div className="space-y-1.5 rounded-md border border-border p-2">
               <div className="flex items-center gap-2">
-                <input
-                  className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                <Input
+                  className="text-xs font-mono"
                   value={workspaceCwd}
                   onChange={(e) => setWorkspaceCwd(e.target.value)}
                   placeholder="/absolute/path/to/workspace"
@@ -863,8 +872,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           )}
           {workspaceMode === "repo" && (
             <div className="space-y-1.5 rounded-md border border-border p-2">
-              <input
-                className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
+              <Input
+                className="text-xs"
                 value={workspaceRepoUrl}
                 onChange={(e) => setWorkspaceRepoUrl(e.target.value)}
                 placeholder="https://github.com/org/repo"
@@ -1004,29 +1013,33 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         {showExecutionWorkspaceEnvironmentControl ? (
                           <div>
                             <div className="mb-1 flex items-center gap-1.5">
-                              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <Label htmlFor="execution-workspace-environment" className="flex items-center gap-2 text-xs text-muted-foreground">
                                 <span>Environment</span>
                                 <SaveIndicator state={fieldState("execution_workspace_environment")} />
-                              </label>
+                              </Label>
                             </div>
-                            <select
-                              className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-                              value={executionWorkspaceEnvironmentId}
-                              onChange={(e) =>
+                            <Select
+                              value={executionWorkspaceEnvironmentId || "__unset__"}
+                              onValueChange={(value) =>
                                 commitField(
                                   "execution_workspace_environment",
                                   updateExecutionWorkspacePolicy({
-                                    environmentId: e.target.value || null,
+                                    environmentId: value === "__unset__" ? null : value,
                                   })!,
                                 )}
                             >
-                              <option value="">No environment</option>
-                              {runSelectableEnvironments.map((environment) => (
-                                <option key={environment.id} value={environment.id}>
-                                  {environment.name} · {environment.driver}
-                                </option>
-                              ))}
-                            </select>
+                              <SelectTrigger id="execution-workspace-environment" className="w-full text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__unset__">No environment</SelectItem>
+                                {runSelectableEnvironments.map((environment) => (
+                                  <SelectItem key={environment.id} value={environment.id}>
+                                    {environment.name} · {environment.driver}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           </div>
                         ) : null}
                         <div>

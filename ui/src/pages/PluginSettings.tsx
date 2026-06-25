@@ -9,6 +9,8 @@ import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi, type PluginLocalFolderStatus } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { ChoosePathButton } from "@/components/PathInstructionsModal";
 import {
@@ -733,13 +735,13 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
       ) : null}
 
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground" htmlFor={`local-folder-${declaration.folderKey}`}>
+        <Label className="text-xs font-medium text-muted-foreground" htmlFor={`local-folder-${declaration.folderKey}`}>
           Local folder path
-        </label>
+        </Label>
         <div className="flex items-center gap-2">
-          <input
+          <Input
             id={`local-folder-${declaration.folderKey}`}
-            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-sm outline-none focus:border-foreground/40 focus:ring-2 focus:ring-ring/20"
+            className="min-w-0 flex-1 font-mono text-sm"
             value={pathValue}
             onChange={(event) => {
               setPathValue(event.target.value);

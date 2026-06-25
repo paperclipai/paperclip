@@ -78,6 +78,9 @@ import {
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import {
@@ -2465,10 +2468,10 @@ function PromptsTab({
               }}
             />
           ) : (
-            <textarea
+            <Textarea
               value={displayValue}
               onChange={(event) => setDraft(event.target.value)}
-              className="min-h-[420px] w-full min-w-0 rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
+              className="min-h-[420px] min-w-0 font-mono text-sm"
               placeholder="File contents"
             />
           )}
@@ -2805,23 +2808,24 @@ export function AgentSkillsTab({
 
               const checked = skillDraft.includes(skill.key);
               const disabled = skillSnapshot?.mode === "unsupported";
+              const checkboxId = `skill-toggle-${skill.id}`;
               const checkbox = (
-                <input
-                  type="checkbox"
+                <Checkbox
+                  id={checkboxId}
                   checked={checked}
                   disabled={disabled}
-                  onChange={(event) => {
-                    const next = event.target.checked
+                  onCheckedChange={(value) => {
+                    const next = value === true
                       ? Array.from(new Set([...skillDraft, skill.key]))
-                      : skillDraft.filter((value) => value !== skill.key);
+                      : skillDraft.filter((entry) => entry !== skill.key);
                     setSkillDraft(next);
                   }}
-                  className="mt-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="mt-0.5"
                 />
               );
 
               return (
-                <label key={skill.id} className={rowClassName}>
+                <div key={skill.id} className={rowClassName}>
                   {skillSnapshot?.mode === "unsupported" ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -2834,8 +2838,10 @@ export function AgentSkillsTab({
                   ) : (
                     checkbox
                   )}
-                  {body}
-                </label>
+                  <Label htmlFor={checkboxId} className="block min-w-0 flex-1 font-normal leading-normal">
+                    {body}
+                  </Label>
+                </div>
               );
             };
 

@@ -6,6 +6,8 @@ import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -1004,13 +1006,11 @@ export function ExecutionWorkspaceDetail() {
                     <div className="mt-3">
                       <Field label="Workspace commands JSON" hint="Legacy `services` arrays still work, but `commands` supports both services and jobs.">
                         <div className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
-                          <input
+                          <Checkbox
                             id="inherit-runtime-config"
-                            type="checkbox"
-                            className="rounded border-border"
                             checked={form.inheritRuntime}
-                            onChange={(event) => {
-                              const checked = event.target.checked;
+                            onCheckedChange={(value) => {
+                              const checked = value === true;
                               setForm((current) => {
                                 if (!current) return current;
                                 if (!checked && !current.workspaceRuntime.trim() && inheritedRuntimeConfig) {
@@ -1020,7 +1020,7 @@ export function ExecutionWorkspaceDetail() {
                               });
                             }}
                           />
-                          <label htmlFor="inherit-runtime-config">Inherit project workspace runtime config</label>
+                          <Label htmlFor="inherit-runtime-config">Inherit project workspace runtime config</Label>
                         </div>
                         <Textarea
                           className="min-h-64 font-mono sm:min-h-96"

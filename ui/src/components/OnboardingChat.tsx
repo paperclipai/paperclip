@@ -5,6 +5,7 @@ import { issuesApi } from "../api/issues";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { MarkdownBody } from "./MarkdownBody";
 import { cn } from "../lib/utils";
 import { Loader2, Send, CheckCircle2, ArrowRight } from "lucide-react";
@@ -367,10 +368,10 @@ export function OnboardingChat({
 
       {/* Input area */}
       <div className="flex items-center gap-2 border-t border-border pt-3">
-        <input
+        <Input
           ref={inputRef}
           type="text"
-          className="flex-1 rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+          className="flex-1"
           placeholder={detectedPlanCommentId ? `Ask ${agentName} to revise the plan...` : `Message ${agentName}...`}
           value={input}
           onChange={(e) => setInput(e.target.value)}

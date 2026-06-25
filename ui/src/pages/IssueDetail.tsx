@@ -118,6 +118,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
@@ -4303,9 +4305,9 @@ export function IssueDetail() {
             ) : null}
 
             <div className="space-y-1.5">
-              <label className="text-xs text-muted-foreground">
+              <Label className="text-xs text-muted-foreground">
                 Reason (optional)
-              </label>
+              </Label>
               <Textarea
                 value={treeControlReason}
                 onChange={(event) => setTreeControlReason(event.target.value)}
@@ -4316,23 +4318,23 @@ export function IssueDetail() {
 
             {(treeControlMode === "resume" || treeControlMode === "restore") ? (
               <div className="space-y-2">
-                <label className="flex items-start gap-2 text-sm">
-                  <input
-                    type="checkbox"
+                <div className="flex items-start gap-2 text-sm">
+                  <Checkbox
+                    id="tree-control-wake-agents"
                     className="mt-0.5"
                     disabled={previewAffectedAgentCount === 0}
                     checked={treeControlWakeAgentsOnResume}
-                    onChange={(event) => setTreeControlWakeAgentsOnResume(event.target.checked)}
+                    onCheckedChange={(value) => setTreeControlWakeAgentsOnResume(value === true)}
                   />
-                  <span>
+                  <Label htmlFor="tree-control-wake-agents" className="block font-normal leading-normal">
                     <span className="block font-medium">Wake affected agents ({previewAffectedAgentCount})</span>
                     <span className="text-xs text-muted-foreground">
                       {previewAffectedAgentCount === 0
                         ? "No assigned agents are eligible to wake from this preview."
                         : "Wake assigned agents after this operation completes."}
                     </span>
-                  </span>
-                </label>
+                  </Label>
+                </div>
                 {treeControlWakeAgentsOnResume && treePreviewAffectedAgentRows.length > 0 ? (
                   <div className="max-h-32 space-y-1 overflow-y-auto overscroll-contain">
                     {treePreviewAffectedAgentRows.map(({ agentId, agent }) => (
@@ -4349,15 +4351,17 @@ export function IssueDetail() {
             ) : null}
 
             {treeControlMode === "cancel" ? (
-              <label className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-sm">
-                <input
-                  type="checkbox"
+              <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-sm">
+                <Checkbox
+                  id="tree-control-cancel-confirm"
                   className="mt-0.5"
                   checked={treeControlCancelConfirmed}
-                  onChange={(event) => setTreeControlCancelConfirmed(event.target.checked)}
+                  onCheckedChange={(value) => setTreeControlCancelConfirmed(value === true)}
                 />
-                <span>I understand this will cancel {previewAffectedIssueCount} tasks.</span>
-              </label>
+                <Label htmlFor="tree-control-cancel-confirm" className="font-normal leading-normal">
+                  I understand this will cancel {previewAffectedIssueCount} tasks.
+                </Label>
+              </div>
             ) : null}
 
             <div className="space-y-2">

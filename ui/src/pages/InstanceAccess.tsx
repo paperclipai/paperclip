@@ -5,6 +5,8 @@ import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
@@ -112,15 +114,15 @@ export function InstanceAccess() {
 
       <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
         <section className="space-y-4 rounded-xl border border-border bg-card p-4">
-          <label className="block space-y-2 text-sm">
-            <span className="font-medium">Search users</span>
-            <input
-              className="w-full rounded-md border border-border bg-background px-3 py-2"
+          <div className="space-y-2 text-sm">
+            <Label htmlFor="instance-access-search" className="font-medium">Search users</Label>
+            <Input
+              id="instance-access-search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search by name or email"
             />
-          </label>
+          </div>
           <div className="space-y-2">
             {(usersQuery.data ?? []).map((user) => (
               <button
@@ -188,7 +190,7 @@ export function InstanceAccess() {
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   {companies.map((company) => (
-                    <label
+                    <Label
                       key={company.id}
                       className="flex items-start gap-3 rounded-lg border border-border px-3 py-3"
                     >
@@ -207,7 +209,7 @@ export function InstanceAccess() {
                         <span className="block text-sm font-medium">{company.name}</span>
                         <span className="block text-xs text-muted-foreground">{company.issuePrefix}</span>
                       </span>
-                    </label>
+                    </Label>
                   ))}
                 </div>
                 <div className="flex justify-end">
