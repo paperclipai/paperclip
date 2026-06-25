@@ -122,6 +122,18 @@ export class PaperclipApiClient {
       headers["x-paperclip-run-id"] = this.runId;
     }
 
+    if (!headers.origin) {
+      // RES-1298: in local_trusted deployments the actor middleware only
+      // promotes a request to the implicit board actor for unsafe verbs when
+      // it carries a trusted browser Origin/Referer. The CLI is the board's
+      // first-party local interface, so present Origin = apiBase (which the
+      // server already trusts because it matches the listening host) when
+      // the caller has not set one explicitly. Without this, every local
+      // write (`company export/import`, `agent create`, etc.) bounces with
+      // 401 against `pnpm dev` / `local_trusted` servers.
+      headers.origin = this.apiBase;
+    }
+
     let response: Response;
     try {
       response = await fetch(url, {
