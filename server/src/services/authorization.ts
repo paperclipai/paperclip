@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -507,7 +507,13 @@ export function authorizationService(db: Db) {
     principalId: string,
     targetCompanyId: string,
     capability: CrossCompanyAgentGrantCapability,
+    now: Date = new Date(),
   ) {
+    // A grant is only "active" for authorization when it is status=active AND
+    // within its lifetime window (expiresAt null or in the future) AND under its
+    // usage quota (maxUses null or usedCount < maxUses). Expired or exhausted
+    // grants are treated as inactive here so a compromised source-company agent
+    // cannot keep exercising a grant past its configured limits (TWX-1036).
     return db
       .select()
       .from(crossCompanyAgentGrants)
@@ -519,6 +525,14 @@ export function authorizationService(db: Db) {
           eq(crossCompanyAgentGrants.targetCompanyId, targetCompanyId),
           eq(crossCompanyAgentGrants.capability, capability),
           eq(crossCompanyAgentGrants.status, "active"),
+          or(
+            isNull(crossCompanyAgentGrants.expiresAt),
+            gt(crossCompanyAgentGrants.expiresAt, now),
+          ),
+          or(
+            isNull(crossCompanyAgentGrants.maxUses),
+            lt(crossCompanyAgentGrants.usedCount, crossCompanyAgentGrants.maxUses),
+          ),
         ),
       )
       .then((rows) => rows[0] ?? null);

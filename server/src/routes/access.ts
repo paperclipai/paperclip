@@ -4546,6 +4546,8 @@ export function accessRoutes(
         principalId: grant.principalId,
         targetCompanyId: grant.targetCompanyId,
         capability: grant.capability,
+        expiresAt: grant.expiresAt,
+        maxUses: grant.maxUses,
       };
       await logActivity(db, {
         companyId: grant.sourceCompanyId,

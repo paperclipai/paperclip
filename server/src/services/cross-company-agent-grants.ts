@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { agents, companies, crossCompanyAgentGrants } from "@paperclipai/db";
@@ -48,6 +48,10 @@ function mapGrantRecord(
     targetCompanyName: row.targetCompanyName,
     capability: row.capability as CrossCompanyAgentGrantCapability,
     status: row.status as CrossCompanyAgentGrantStatus,
+    expiresAt: row.expiresAt,
+    maxUses: row.maxUses,
+    usedCount: row.usedCount,
+    lastUsedAt: row.lastUsedAt,
     createdByUserId: row.createdByUserId,
     revokedByUserId: row.revokedByUserId,
     createdAt: row.createdAt,
@@ -101,6 +105,10 @@ export function crossCompanyAgentGrantService(db: Db) {
         targetCompanyId: crossCompanyAgentGrants.targetCompanyId,
         capability: crossCompanyAgentGrants.capability,
         status: crossCompanyAgentGrants.status,
+        expiresAt: crossCompanyAgentGrants.expiresAt,
+        maxUses: crossCompanyAgentGrants.maxUses,
+        usedCount: crossCompanyAgentGrants.usedCount,
+        lastUsedAt: crossCompanyAgentGrants.lastUsedAt,
         createdByUserId: crossCompanyAgentGrants.createdByUserId,
         revokedByUserId: crossCompanyAgentGrants.revokedByUserId,
         createdAt: crossCompanyAgentGrants.createdAt,
@@ -138,6 +146,10 @@ export function crossCompanyAgentGrantService(db: Db) {
         targetCompanyId: crossCompanyAgentGrants.targetCompanyId,
         capability: crossCompanyAgentGrants.capability,
         status: crossCompanyAgentGrants.status,
+        expiresAt: crossCompanyAgentGrants.expiresAt,
+        maxUses: crossCompanyAgentGrants.maxUses,
+        usedCount: crossCompanyAgentGrants.usedCount,
+        lastUsedAt: crossCompanyAgentGrants.lastUsedAt,
         createdByUserId: crossCompanyAgentGrants.createdByUserId,
         revokedByUserId: crossCompanyAgentGrants.revokedByUserId,
         createdAt: crossCompanyAgentGrants.createdAt,
@@ -181,11 +193,22 @@ export function crossCompanyAgentGrantService(db: Db) {
       )
       .then((rows) => rows[0] ?? null);
 
+    // Re-issuing a grant resets its lifetime/quota state: a fresh expiry window,
+    // a fresh max-uses cap, and usedCount back to 0. This makes the admin action
+    // "issue this grant (again) with these limits" total and predictable rather
+    // than silently carrying over a previously-exhausted usedCount.
+    const expiresAt = input.expiresAt ?? null;
+    const maxUses = input.maxUses ?? null;
+
     if (existing) {
       await db
         .update(crossCompanyAgentGrants)
         .set({
           status: "active",
+          expiresAt,
+          maxUses,
+          usedCount: 0,
+          lastUsedAt: null,
           createdByUserId: input.createdByUserId,
           revokedByUserId: null,
           revokedAt: null,
@@ -204,6 +227,10 @@ export function crossCompanyAgentGrantService(db: Db) {
         targetCompanyId: input.targetCompanyId,
         capability: input.capability,
         status: "active",
+        expiresAt,
+        maxUses,
+        usedCount: 0,
+        lastUsedAt: null,
         createdByUserId: input.createdByUserId,
         revokedByUserId: null,
         createdAt: now,
@@ -214,6 +241,42 @@ export function crossCompanyAgentGrantService(db: Db) {
       .then((rows) => rows[0]!);
 
     return (await getById(created.id))!;
+  }
+
+  // Atomically reserve one use of a grant. The WHERE clause re-checks the full
+  // active condition (status + expiry + remaining quota) so the increment cannot
+  // push usedCount past maxUses even under concurrent delegations — the database
+  // serializes the guarded UPDATE and only the rows that still satisfy the cap
+  // are touched. Returns the updated row when a use was reserved, or null when
+  // the grant is no longer exercisable (revoked, expired, or exhausted).
+  async function recordUse(grantId: string, at: Date = new Date()) {
+    return db
+      .update(crossCompanyAgentGrants)
+      .set({
+        usedCount: sql`${crossCompanyAgentGrants.usedCount} + 1`,
+        lastUsedAt: at,
+        updatedAt: at,
+      })
+      .where(
+        and(
+          eq(crossCompanyAgentGrants.id, grantId),
+          eq(crossCompanyAgentGrants.status, "active"),
+          or(
+            isNull(crossCompanyAgentGrants.expiresAt),
+            gt(crossCompanyAgentGrants.expiresAt, at),
+          ),
+          or(
+            isNull(crossCompanyAgentGrants.maxUses),
+            lt(crossCompanyAgentGrants.usedCount, crossCompanyAgentGrants.maxUses),
+          ),
+        ),
+      )
+      .returning({
+        id: crossCompanyAgentGrants.id,
+        usedCount: crossCompanyAgentGrants.usedCount,
+        maxUses: crossCompanyAgentGrants.maxUses,
+      })
+      .then((rows) => rows[0] ?? null);
   }
 
   async function revoke(grantId: string, revokedByUserId: string | null) {
@@ -239,6 +302,7 @@ export function crossCompanyAgentGrantService(db: Db) {
   return {
     getById,
     list,
+    recordUse,
     revoke,
     upsert,
   };

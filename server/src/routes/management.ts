@@ -15,7 +15,13 @@ import {
   managementIssueListQuerySchema,
   managementRunListQuerySchema,
 } from "@paperclipai/shared";
-import { accessService, issueService, logActivity, managementService } from "../services/index.js";
+import {
+  accessService,
+  crossCompanyAgentGrantService,
+  issueService,
+  logActivity,
+  managementService,
+} from "../services/index.js";
 import { assertBoardOrAgent, getActorInfo } from "./authz.js";
 
 export function managementRoutes(db: Db) {
@@ -23,6 +29,7 @@ export function managementRoutes(db: Db) {
   const access = accessService(db);
   const management = managementService(db);
   const issues = issueService(db);
+  const crossCompanyGrants = crossCompanyAgentGrantService(db);
 
   async function companyReadAllowed(req: Request, companyId: string) {
     return access.decide({
@@ -285,6 +292,24 @@ export function managementRoutes(db: Db) {
     const grantId = decision.crossCompanyGrant?.id ?? null;
     const isCrossCompany = Boolean(decision.crossCompanyGrant);
 
+    // For cross-company delegation, atomically reserve one use of the grant
+    // BEFORE creating the issue. This closes the window where two concurrent
+    // delegations both pass the authorization gate and then both create an issue,
+    // which would exceed maxUses. The reservation re-checks expiry/quota under a
+    // guarded UPDATE, so a grant exhausted or expired between the authorization
+    // read and now is correctly denied here (TWX-1036). Same-company delegation
+    // has no grant and skips this.
+    let reservedUsage: Awaited<ReturnType<typeof crossCompanyGrants.recordUse>> | null = null;
+    if (isCrossCompany && grantId) {
+      reservedUsage = await crossCompanyGrants.recordUse(grantId);
+      if (!reservedUsage) {
+        res.status(403).json({
+          error: "Cross-company delegation grant is expired or has reached its usage limit",
+        });
+        return;
+      }
+    }
+
     let created;
     try {
       created = await issues.create(companyId, {
@@ -318,6 +343,8 @@ export function managementRoutes(db: Db) {
       targetCompanyId: companyId,
       grantId,
       mode: isCrossCompany ? "cross_company_grant" : "same_company",
+      grantUsedCount: reservedUsage?.usedCount ?? null,
+      grantMaxUses: reservedUsage?.maxUses ?? null,
       issueId: created.id,
       identifier: created.identifier,
       assigneeAgentId,
@@ -363,6 +390,8 @@ export function managementRoutes(db: Db) {
         mode: isCrossCompany ? "cross_company_grant" : "same_company",
         grantId,
         sourceCompanyId,
+        grantUsedCount: reservedUsage?.usedCount ?? null,
+        grantMaxUses: reservedUsage?.maxUses ?? null,
       },
     });
   });
