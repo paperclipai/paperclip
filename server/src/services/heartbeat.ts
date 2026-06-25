@@ -1567,23 +1567,27 @@ export function mergeModelProfileAdapterConfig(input: {
   };
 }
 
-export type ThinkLevel = "off" | "low" | "medium" | "high";
-export type OpenCodeVariant = "low" | "medium" | "high" | "xhigh";
+export type ThinkLevel = "low" | "auto" | "high" | "max";
+export type OpenCodeVariant = "minimal" | "low" | "high" | "max" | "xhigh";
 
-const THINK_LEVELS: ThinkLevel[] = ["off", "low", "medium", "high"];
-const OPEN_CODE_VARIANTS: OpenCodeVariant[] = ["low", "medium", "high", "xhigh"];
+const THINK_LEVELS: ThinkLevel[] = ["low", "auto", "high", "max"];
+const OPEN_CODE_VARIANTS: OpenCodeVariant[] = ["minimal", "low", "high", "max", "xhigh"];
+const LEGACY_THINK_LEVELS: Record<string, ThinkLevel> = {
+  off: "low",
+  medium: "high",
+};
 
 export function thinkLevelToOpenCodeVariant(
   thinkLevel: ThinkLevel | undefined,
 ): OpenCodeVariant | undefined {
   switch (thinkLevel) {
     case "low":
-      return "low";
-    case "medium":
-      return "medium";
+      return "minimal";
     case "high":
       return "high";
-    case "off":
+    case "max":
+      return "max";
+    case "auto":
     default:
       return undefined;
   }
@@ -1591,9 +1595,11 @@ export function thinkLevelToOpenCodeVariant(
 
 export function readThinkLevel(value: unknown): ThinkLevel | null {
   const normalized = readNonEmptyString(value);
-  return normalized && THINK_LEVELS.includes(normalized as ThinkLevel)
-    ? (normalized as ThinkLevel)
-    : null;
+  if (!normalized) return null;
+  if (THINK_LEVELS.includes(normalized as ThinkLevel)) {
+    return normalized as ThinkLevel;
+  }
+  return LEGACY_THINK_LEVELS[normalized] ?? null;
 }
 
 export function readOpenCodeVariant(value: unknown): OpenCodeVariant | null {
