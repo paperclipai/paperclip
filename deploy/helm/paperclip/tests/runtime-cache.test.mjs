@@ -67,7 +67,29 @@ function countMatches(value, pattern) {
   return Array.from(value.matchAll(pattern)).length;
 }
 
-function assertPenstockProxySecretEnv(rendered, envName) {
+function assertValueEnv(rendered, envName, value) {
+  assert.match(
+    rendered,
+    new RegExp(
+      `- name: ${escapeRegExp(envName)}\\n` +
+        `\\s+value: "?${escapeRegExp(value)}"?`,
+    ),
+    `${envName} should render as ${value}`,
+  );
+}
+
+function extractValueEnv(rendered, envName) {
+  const match = rendered.match(
+    new RegExp(
+      `- name: ${escapeRegExp(envName)}\\n` +
+        "\\s+value: (?<quote>[\"']?)(?<value>.*?)(?:\\k<quote>)\\n",
+    ),
+  );
+  assert.ok(match?.groups?.value, `${envName} should render a literal value`);
+  return match.groups.value;
+}
+
+function assertPenstockOrgKeySecretEnv(rendered, envName) {
   assert.match(
     rendered,
     new RegExp(
@@ -81,7 +103,7 @@ function assertPenstockProxySecretEnv(rendered, envName) {
   );
 }
 
-function assertNoLegacyAnthropicSecretEnv(rendered, envName) {
+function assertNoLegacyProviderSecretEnv(rendered, envName) {
   const envBlock = rendered.match(
     new RegExp(`- name: ${escapeRegExp(envName)}\\n(?:\\s{12,}.+\\n)+`),
   )?.[0];
@@ -92,6 +114,19 @@ function assertNoLegacyAnthropicSecretEnv(rendered, envName) {
     /paperclip-ccrotate-serve-secrets|paperclip-ccrotate-board-token/,
     `${envName} should not inherit a legacy ccrotate secret`,
   );
+}
+
+function assertCodexPenstockProvider(rendered) {
+  const value = extractValueEnv(rendered, "PAPERCLIP_CODEX_PROVIDERS");
+  const parsed = JSON.parse(value);
+
+  assert.equal(parsed.model_provider, "penstock");
+  assert.deepEqual(parsed.providers?.penstock, {
+    name: "Penstock OpenAI gateway",
+    base_url: "https://api.penstock.run/v1",
+    env_key: "OPENAI_API_KEY",
+    wire_api: "responses",
+  });
 }
 
 test("runtimeCache mounts emptyDir and redirects regenerable caches", () => {
@@ -166,29 +201,31 @@ test("runtimeCache can be disabled for API tier rollback", () => {
   assert.doesNotMatch(rendered, /XDG_CACHE_HOME/);
 });
 
-test("Blockcast values route Anthropic agent traffic through Penstock gateway", () => {
+test("Blockcast values route agent LLM traffic through Penstock gateway", () => {
   const renderedStatefulSet = renderStatefulSet();
   const renderedApiDeployment = renderApiDeployment();
 
   for (const rendered of [renderedStatefulSet, renderedApiDeployment]) {
-    assert.match(
-      rendered,
-      /- name: ANTHROPIC_BASE_URL\n\s+value: "?https:\/\/api\.penstock\.run\/anthropic"?/,
-      "agent Anthropic traffic should use the Penstock gateway",
-    );
-    assertPenstockProxySecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
-    assertPenstockProxySecretEnv(rendered, "ANTHROPIC_API_KEY");
-    assertNoLegacyAnthropicSecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
-    assertNoLegacyAnthropicSecretEnv(rendered, "ANTHROPIC_API_KEY");
+    assertValueEnv(rendered, "ANTHROPIC_BASE_URL", "https://api.penstock.run/anthropic");
+    assertPenstockOrgKeySecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
+    assertPenstockOrgKeySecretEnv(rendered, "ANTHROPIC_API_KEY");
+    assertNoLegacyProviderSecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
+    assertNoLegacyProviderSecretEnv(rendered, "ANTHROPIC_API_KEY");
+    assertValueEnv(rendered, "OPENAI_BASE_URL", "https://api.penstock.run/v1");
+    assertValueEnv(rendered, "OPENAI_API_BASE", "https://api.penstock.run/v1");
+    assertValueEnv(rendered, "OPENAI_API_BASE_URL", "https://api.penstock.run/v1");
+    assertPenstockOrgKeySecretEnv(rendered, "OPENAI_API_KEY");
+    assertNoLegacyProviderSecretEnv(rendered, "OPENAI_API_KEY");
+    assertCodexPenstockProvider(rendered);
     assert.doesNotMatch(
       rendered,
       /https:\/\/paperclip\.blockcast\.net\/ccrotate/,
-      "agent Anthropic traffic must not use the public auth-proxy endpoint",
+      "agent LLM traffic must not use the public auth-proxy endpoint",
     );
     assert.doesNotMatch(
       rendered,
       /paperclip-ccrotate-board-token/,
-      "agent Anthropic env refs must not inherit the board-session bearer",
+      "agent provider env refs must not inherit the board-session bearer",
     );
   }
 });
