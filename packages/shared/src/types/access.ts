@@ -182,6 +182,10 @@ export interface CrossCompanyAgentGrantRecord {
   targetCompanyName: string | null;
   capability: CrossCompanyAgentGrantCapability;
   status: CrossCompanyAgentGrantStatus;
+  expiresAt: Date | null;
+  maxUses: number | null;
+  usedCount: number;
+  lastUsedAt: Date | null;
   createdByUserId: string | null;
   revokedByUserId: string | null;
   createdAt: Date;

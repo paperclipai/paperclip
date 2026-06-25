@@ -164,6 +164,12 @@ export const createCrossCompanyAgentGrantSchema = z.object({
   principalId: z.string().uuid(),
   targetCompanyId: z.string().uuid(),
   capability: crossCompanyAgentGrantCapabilitySchema.default("read"),
+  // Lifetime / quota controls (TWX-1036). Both are optional and null means
+  // "no limit on that axis". maxUses is a positive cap on exercises; expiresAt
+  // is a hard wall-clock expiry. The admin issuing a grant is encouraged to set
+  // at least one, but unlimited grants remain valid for backwards compatibility.
+  expiresAt: z.coerce.date().optional().nullable(),
+  maxUses: z.coerce.number().int().positive().max(1_000_000).optional().nullable(),
 }).refine((value) => value.sourceCompanyId !== value.targetCompanyId, {
   message: "sourceCompanyId and targetCompanyId must differ",
   path: ["targetCompanyId"],

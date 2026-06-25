@@ -757,6 +757,13 @@
       "when": 1781902000000,
       "tag": "0107_instance_scoped_environments",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1782080000000,
+      "tag": "0108_cross_company_grant_lifetime",
+      "breakpoints": true
     }
   ]
 }
