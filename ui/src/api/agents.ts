@@ -69,6 +69,7 @@ export interface AgentHireResponse {
 
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
+  canCreateSkills: boolean;
   canAssignTasks: boolean;
   trustPreset?: AgentPermissions["trustPreset"];
   authorizationPolicy?: AgentPermissions["authorizationPolicy"];
