@@ -128,7 +128,7 @@ describeEmbedded("run-data-retention", () => {
     await tempDb?.cleanup();
   }, 10_000);
 
-  // T6.2: FK-safe deletion ordering
+  // T6.2: FK-safe deletion ordering (child rows old enough to be pruned by their own age cutoffs)
   it("deletes in FK-safe order without FK violations", async () => {
     const runId = randomUUID();
     const wakeupId = randomUUID();
@@ -196,6 +196,60 @@ describeEmbedded("run-data-retention", () => {
     // Verify all expired rows are gone
     const remainingRuns = await db.select().from(heartbeatRuns);
     expect(remainingRuns).toHaveLength(0);
+  });
+
+  // T6.2b: FK cleanup — recent child rows that survive their own age cutoffs still block parent deletion.
+  // This is the production bug pattern: a heartbeat_run is old enough to prune (> 14d), but its
+  // cost_events (occurredAt < 90d) and activity_log (createdAt < 30d) rows are NOT old enough
+  // to be pruned by their own age-based sweeps. Without explicit FK cleanup before parent deletion
+  // these would throw: DrizzleQueryError: foreign key constraint violation.
+  it("FK-cleanup deletes run-linked cost_events and activity_log rows newer than their age cutoffs", async () => {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "completed",
+      createdAt: daysAgo(20),
+      finishedAt: daysAgo(20),
+    });
+    // cost_events row is only 5 days old — NOT pruned by step 2's 90-day age cutoff
+    await db.insert(costEvents).values({
+      companyId,
+      agentId,
+      heartbeatRunId: runId,
+      provider: "anthropic",
+      model: "claude",
+      inputTokens: 10,
+      outputTokens: 5,
+      costCents: 1,
+      occurredAt: daysAgo(5),
+    });
+    // activity_log row is only 1 day old — NOT pruned by step 3's 30-day age cutoff
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      action: "run.completed",
+      entityType: "heartbeat_run",
+      entityId: runId,
+      runId,
+      createdAt: daysAgo(1),
+    });
+
+    const config = makeConfig();
+    // Without FK cleanup steps 4a/4b this throws a foreign key constraint violation
+    await pruneRunData(db, config);
+
+    // Run was pruned despite recent child rows
+    const runs = await db.select().from(heartbeatRuns);
+    expect(runs).toHaveLength(0);
+
+    // Child rows were cleaned up by FK cleanup pass
+    const costs = await db.select().from(costEvents);
+    expect(costs).toHaveLength(0);
+    const activity = await db.select().from(activityLog);
+    expect(activity).toHaveLength(0);
   });
 
   // T6.3: Retention age filtering

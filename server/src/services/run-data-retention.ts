@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { and, lt, notInArray, sql } from "drizzle-orm";
+import { and, eq, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   financeEvents,
@@ -259,10 +259,55 @@ export async function pruneRunData(
       .then((rows) => rows.length);
   });
 
-  // 5. heartbeat_runs — terminal-status filter + COALESCE timestamp (AD8)
-  //    Collect logRef from .returning() for DB-driven file deletion (AD6 Stage 1)
+  // Compute the heartbeat_runs cutoff once so FK-cleanup steps share it.
   const runsCutoff = cutoffDate(config.retentionHeartbeatRunsDays);
   const runsCutoffIso = runsCutoff.toISOString();
+
+  // 4a. cost_events referencing old heartbeat_runs — FK cleanup before parent delete.
+  //     Uses a JOIN so batchDelete terminates on child-row count, not parent count.
+  //     NOT EXISTS guard preserves cost_events still referenced by finance_events.
+  await batchDelete(db, "cost_events (run-linked)", async () => {
+    const subquery = db
+      .select({ id: costEvents.id })
+      .from(costEvents)
+      .innerJoin(heartbeatRuns, eq(costEvents.heartbeatRunId, heartbeatRuns.id))
+      .where(
+        and(
+          notInArray(heartbeatRuns.status, ACTIVE_STATUSES),
+          sql`COALESCE(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) < ${runsCutoffIso}::timestamptz`,
+          sql`NOT EXISTS (SELECT 1 FROM finance_events WHERE finance_events.cost_event_id = ${costEvents.id})`,
+        ),
+      )
+      .limit(DELETE_BATCH_SIZE);
+    return db
+      .delete(costEvents)
+      .where(sql`${costEvents.id} IN (${subquery})`)
+      .returning({ id: costEvents.id })
+      .then((rows) => rows.length);
+  });
+
+  // 4b. activity_log referencing old heartbeat_runs — FK cleanup before parent delete.
+  await batchDelete(db, "activity_log (run-linked)", async () => {
+    const subquery = db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .innerJoin(heartbeatRuns, eq(activityLog.runId, heartbeatRuns.id))
+      .where(
+        and(
+          notInArray(heartbeatRuns.status, ACTIVE_STATUSES),
+          sql`COALESCE(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) < ${runsCutoffIso}::timestamptz`,
+        ),
+      )
+      .limit(DELETE_BATCH_SIZE);
+    return db
+      .delete(activityLog)
+      .where(sql`${activityLog.id} IN (${subquery})`)
+      .returning({ id: activityLog.id })
+      .then((rows) => rows.length);
+  });
+
+  // 5. heartbeat_runs — terminal-status filter + COALESCE timestamp (AD8)
+  //    Collect logRef from .returning() for DB-driven file deletion (AD6 Stage 1)
   const allLogRefs: string[] = [];
   await batchDelete(db, "heartbeat_runs", async () => {
     const subquery = db
