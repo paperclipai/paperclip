@@ -12,11 +12,9 @@
 // PAP-75 brand mapping ("blue = liveness"): todo → amber (queued), in_progress
 // → blue (live). See `issueStatusColor` below for the canonical chip palette.
 //
-// The brand mapping ships behind the "Conference Room Chat" experimental flag
-// (PAP-136/PAP-139): each record below also has a `*Classic` variant pinning
-// master's hues (todo → blue, in_progress → yellow). Consumers (StatusIcon,
-// StatusBadge, NewIssueDialog) select the palette by flag; delete the Classic
-// variants when the flag graduates or dies.
+// The brand mapping is the default status palette. Chat-specific gating stays
+// isolated to the Conference Room route/nav/API and does not control task
+// status presentation.
 
 /** StatusIcon circle: text + border classes */
 export const issueStatusIcon: Record<string, string> = {
