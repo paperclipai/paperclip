@@ -23,6 +23,7 @@ import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "./IssueD
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -874,9 +875,9 @@ export function IssueDocumentsSection({
         >
           <div className="mb-2 flex items-center gap-2">
             <FileText className="h-4 w-4 text-amber-600" />
-            <span className="rounded-full border border-amber-500/30 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+            <Badge variant="outline" className="border-amber-500/30 font-mono text-[10px] uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
               PLAN
-            </span>
+            </Badge>
           </div>
           {renderFoldableBody(issue.legacyPlanDocument.body, documentBodyContentClassName)}
         </div>
@@ -928,9 +929,9 @@ export function IssueDocumentsSection({
                     >
                       {isFolded ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                     </button>
-                    <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                    <Badge variant="outline" className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
                       {doc.key}
-                    </span>
+                    </Badge>
                     <SourceTrustBadge sourceTrust={doc.sourceTrust} artifactLabel="document" />
                     <DropdownMenu
                       open={revisionMenuOpenKey === doc.key}
@@ -968,9 +969,9 @@ export function IssueDocumentsSection({
                                     <div className="flex items-center gap-2">
                                       <span className="font-medium">rev {revision.revisionNumber}</span>
                                       {isCurrentRevision ? (
-                                        <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                                        <Badge variant="outline" className="px-1.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
                                           Current
-                                        </span>
+                                        </Badge>
                                       ) : null}
                                     </div>
                                     <span className="text-xs text-muted-foreground">

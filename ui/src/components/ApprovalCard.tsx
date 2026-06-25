@@ -3,6 +3,7 @@ import { Link } from "@/lib/router";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Identity } from "./Identity";
+import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import {
   approvalSubject,
   typeIcon,
@@ -52,8 +53,8 @@ export function ApprovalCard({
   const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen);
 
   return (
-    <div className="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-4">
+    <Card className="gap-0 rounded-xl border-border/70 py-4">
+      <CardHeader className="grid-cols-[1fr_auto] grid-rows-1 items-start gap-4 px-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border/70 bg-background/80">
@@ -86,29 +87,32 @@ export function ApprovalCard({
           </div>
         </div>
         <div className="shrink-0">
-          <div className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background/80 px-2.5 py-1 text-xs text-muted-foreground">
+          <Badge
+            variant="outline"
+            className="gap-1.5 border-border/70 bg-background/80 px-2.5 py-1 text-xs text-muted-foreground [&>svg]:size-3.5"
+          >
             {statusIcon(approval.status)}
             <span className="capitalize">{approval.status.replace(/_/g, " ")}</span>
-          </div>
+          </Badge>
         </div>
-      </div>
+      </CardHeader>
 
-      <div className="mt-4 border-t border-border/60 pt-4">
+      <CardContent className="mt-4 border-t border-border/60 px-4 pt-4">
         <ApprovalPayloadRenderer
           type={approval.type}
           payload={approval.payload}
           hidePrimaryTitle={Boolean(subject)}
         />
-      </div>
+      </CardContent>
 
       {approval.decisionNote && (
-        <div className="mt-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
+        <div className="mt-4 mx-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
           <span className="font-medium text-foreground">Decision note.</span> {approval.decisionNote}
         </div>
       )}
 
       {hasFooter ? (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
+        <CardFooter className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border/60 px-4 pt-4">
           <div className="flex flex-wrap items-center gap-2">
             {showResolutionButtons && (
               <>
@@ -145,8 +149,8 @@ export function ApprovalCard({
               </Button>
             )
           ) : null}
-        </div>
+        </CardFooter>
       ) : null}
-    </div>
+    </Card>
   );
 }

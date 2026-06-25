@@ -12,6 +12,7 @@ import {
   RECOVERY_CHIP_DEFAULT_TONE,
 } from "../lib/recovery-display";
 import { ExternalLink } from "lucide-react";
+import { Badge } from "./ui/badge";
 import { Identity } from "./Identity";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
@@ -22,20 +23,18 @@ function RunCardRecoveryChip({ action }: { action: IssueRecoveryAction }) {
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
   return (
-    <span
+    <Badge
+      variant="outline"
       data-testid="active-agent-run-recovery-indicator"
       data-recovery-state={state}
       role="status"
       aria-label={tone.label}
       title={`${tone.label} — open the source task to act.`}
-      className={cn(
-        "inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
-        tone.className,
-      )}
+      className={cn("gap-0.5 px-1.5 text-[10px] [&>svg]:size-2.5", tone.className)}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
       {tone.label}
-    </span>
+    </Badge>
   );
 }
 

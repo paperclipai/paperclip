@@ -8,6 +8,7 @@ import {
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
 import { cn } from "../lib/utils";
+import { Badge } from "./ui/badge";
 import {
   deriveActiveRecoveryDisplayState,
   RECOVERY_CHIP_DEFAULT_TONE,
@@ -92,14 +93,15 @@ export function IssueRow({
   const recoveryAction = issue.activeRecoveryAction ?? null;
   const recoveryIndicator = recoveryAction ? renderRecoveryChip(recoveryAction, selected) : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
-    <span
+    <Badge
+      variant="outline"
       data-testid="issue-row-parked-blocker"
-      className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+      className="ml-1.5 gap-0.5 border-amber-500/60 bg-amber-500/15 px-2 text-[10px] text-amber-700 dark:text-amber-300 [&>svg]:size-2.5"
       title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
     >
-      <Flag className="h-2.5 w-2.5" aria-hidden />
+      <Flag aria-hidden />
       Blocked by parked work
-    </span>
+    </Badge>
   ) : null;
 
   return (
@@ -239,21 +241,22 @@ function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): Rea
   const Icon = tone.icon;
   const label = recoveryChipLabel(state, action.kind);
   return (
-    <span
+    <Badge
+      variant="outline"
       data-testid="issue-row-recovery-indicator"
       data-recovery-state={state}
       data-recovery-kind={action.kind}
       role="status"
       aria-label={label}
       className={cn(
-        "ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+        "ml-1.5 gap-0.5 px-2 text-[10px] [&>svg]:size-2.5",
         tone.className,
         selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}
       title={`${label} — open the source task to act.`}
     >
-      <Icon className="h-2.5 w-2.5" aria-hidden />
+      <Icon aria-hidden />
       {label}
-    </span>
+    </Badge>
   );
 }

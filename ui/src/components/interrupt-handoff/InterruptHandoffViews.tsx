@@ -1,5 +1,6 @@
 import { AlertTriangle, Info, PauseCircle, User, X } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { Badge } from "../ui/badge";
 import { AgentIcon } from "../AgentIconPicker";
 import {
   classifyAssigneeHandoff,
@@ -42,9 +43,6 @@ function userLabel(userId: string, resolvers: HandoffChipResolvers): string {
   return resolvers.currentUserId && resolvers.currentUserId === userId ? `${base} (you)` : base;
 }
 
-const CHIP_CLASS =
-  "inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs";
-
 /** A labelled assignee chip — agent, user, or unassigned — that never lets a
  * user owner read like an agent. */
 export function AssigneeChip({
@@ -58,20 +56,20 @@ export function AssigneeChip({
 }) {
   if (assignee.agentId) {
     return (
-      <span className={cn(CHIP_CLASS, className)} data-testid="handoff-assignee-chip" data-kind="agent">
+      <Badge variant="outline" className={cn("bg-muted/40", className)} data-testid="handoff-assignee-chip" data-kind="agent">
         <span className="sr-only">Agent </span>
         <AgentIcon icon={agentIcon(assignee.agentId, resolvers)} className="h-3 w-3 shrink-0 text-muted-foreground" />
         <span className="max-w-[12rem] truncate">{agentName(assignee.agentId, resolvers)}</span>
-      </span>
+      </Badge>
     );
   }
   if (assignee.userId) {
     return (
-      <span className={cn(CHIP_CLASS, className)} data-testid="handoff-assignee-chip" data-kind="user">
+      <Badge variant="outline" className={cn("bg-muted/40", className)} data-testid="handoff-assignee-chip" data-kind="user">
         <span className="sr-only">User </span>
         <User className="h-3 w-3 shrink-0 text-muted-foreground" />
         <span className="max-w-[12rem] truncate">{userLabel(assignee.userId, resolvers)}</span>
-      </span>
+      </Badge>
     );
   }
   return (

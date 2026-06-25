@@ -7,6 +7,7 @@ import type {
 } from "@paperclipai/shared";
 import { AlertTriangle, CheckCircle2, Flag, Loader2, RotateCcw } from "lucide-react";
 import { Link } from "@/lib/router";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { formatMonitorOffset } from "../lib/issue-monitor";
@@ -27,18 +28,19 @@ function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
   const Icon = tone.icon;
   const label = recoveryChipLabel(state, action.kind);
   return (
-    <span
+    <Badge
+      variant="outline"
       data-testid="issue-blocked-notice-recovery-indicator"
       data-recovery-state={state}
       data-recovery-kind={action.kind}
       role="status"
       aria-label={label}
       title={`${label} — open the source task to act.`}
-      className={`inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${tone.className}`}
+      className={`gap-0.5 px-1.5 text-[10px] [&>svg]:size-2.5 ${tone.className}`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
       {label}
-    </span>
+    </Badge>
   );
 }
 
@@ -182,18 +184,23 @@ export function IssueBlockedNotice({
     const issuePathId = blocker.identifier ?? blocker.id;
     const recoveryAction = blocker.activeRecoveryAction ?? null;
     return (
-      <IssueLinkQuicklook
+      <Badge
         key={blocker.id}
-        issuePathId={issuePathId}
-        to={createIssueDetailPath(issuePathId)}
-        className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
+        asChild
+        variant="outline"
+        className="max-w-full rounded-md border-amber-300/70 bg-background/80 py-1 font-mono text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
       >
-        <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
-        <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
-          {blocker.title}
-        </span>
-        {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
-      </IssueLinkQuicklook>
+        <IssueLinkQuicklook
+          issuePathId={issuePathId}
+          to={createIssueDetailPath(issuePathId)}
+        >
+          <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
+          <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
+            {blocker.title}
+          </span>
+          {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
+        </IssueLinkQuicklook>
+      </Badge>
     );
   };
 

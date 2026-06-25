@@ -11,6 +11,7 @@ import {
 } from "@/lib/issue-output";
 import { OutputVideoPlayer } from "./OutputVideoPlayer";
 import { OutputFileTile } from "./OutputFileTile";
+import { Card, CardContent } from "@/components/ui/card";
 
 interface OutputPrimaryCardProps {
   item: IssueOutputItem;
@@ -28,7 +29,7 @@ export function OutputPrimaryCard({ item, creatorName }: OutputPrimaryCardProps)
   const contentType = meta?.contentType;
 
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-card">
+    <Card className="gap-0 overflow-hidden rounded-md py-0">
       {/* Media region */}
       {meta && isVideoContentType(contentType) ? (
         <OutputVideoPlayer src={meta.contentPath} title={filename} />
@@ -49,7 +50,7 @@ export function OutputPrimaryCard({ item, creatorName }: OutputPrimaryCardProps)
       )}
 
       {/* Metadata strip */}
-      <div className="flex flex-col gap-2 p-3 md:flex-row md:items-center md:justify-between">
+      <CardContent className="flex flex-col gap-2 p-3 md:flex-row md:items-center md:justify-between">
         <div className="min-w-0 flex-1">
           <p className="break-words text-sm font-semibold text-foreground">{filename}</p>
           {item.degraded ? (
@@ -90,7 +91,7 @@ export function OutputPrimaryCard({ item, creatorName }: OutputPrimaryCardProps)
             </Button>
           </div>
         ) : null}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }

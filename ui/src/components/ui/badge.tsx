@@ -18,6 +18,15 @@ const badgeVariants = cva(
           "border-border text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
         ghost: "[a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
         link: "text-primary underline-offset-4 [a&]:hover:underline",
+        // Semantic tones — token-driven (see --badge-* in index.css). Used for
+        // status / health surfaces where a colour carries meaning (done →
+        // success, paused/queued → warning, running/scheduled → info).
+        success:
+          "bg-[var(--badge-success-bg)] text-[var(--badge-success-fg)]",
+        warning:
+          "bg-[var(--badge-warning-bg)] text-[var(--badge-warning-fg)]",
+        info:
+          "bg-[var(--badge-info-bg)] text-[var(--badge-info-fg)]",
       },
     },
     defaultVariants: {

@@ -1,4 +1,5 @@
 import { cn } from "../lib/utils";
+import { Badge } from "./ui/badge";
 import {
   statusBadge,
   statusBadgeClassic,
@@ -21,14 +22,12 @@ export function StatusBadge({ status }: { status: string }) {
   const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
   const palette = conferenceRoomChatEnabled ? statusBadge : statusBadgeClassic;
   return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0",
-        palette[status] ?? statusBadgeDefault
-      )}
+    <Badge
+      variant="secondary"
+      className={cn("px-2.5", palette[status] ?? statusBadgeDefault)}
     >
       {status.replace(/_/g, " ")}
-    </span>
+    </Badge>
   );
 }
 
@@ -42,14 +41,12 @@ export function AgentStatusBadge({ status }: { status: string }) {
   const color = agentStatusColor[status] ?? agentStatusColorDefault;
   const label = status === "active" ? "idle" : status;
   return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium leading-none whitespace-nowrap shrink-0",
-        agentStatusBadge[color]
-      )}
+    <Badge
+      variant="outline"
+      className={cn("px-3 py-1 leading-none", agentStatusBadge[color])}
     >
       {label.replace(/_/g, " ")}
-    </span>
+    </Badge>
   );
 }
 
@@ -158,15 +155,16 @@ export function IssueStatusBadge({ status }: { status: string }) {
     return <StatusBadge status={status} />;
   }
   return (
-    <span
+    <Badge
+      variant="outline"
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium leading-none whitespace-nowrap shrink-0",
+        "gap-1.5 px-3 py-1 leading-none [&>svg]:size-auto",
         brandChipBadge[color],
         status === "cancelled" && "line-through"
       )}
     >
       <IssueStatusGlyph status={status} />
       {status.replace(/_/g, " ")}
-    </span>
+    </Badge>
   );
 }

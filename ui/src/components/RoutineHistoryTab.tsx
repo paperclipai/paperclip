@@ -21,6 +21,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { buildLineDiff, type DiffRow } from "../lib/line-diff";
 import { relativeTime } from "../lib/utils";
 import { useToastActions } from "../context/ToastContext";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -460,14 +461,14 @@ function RevisionList({
             <div className="flex items-center gap-2 text-sm font-medium">
               <span>rev {revision.revisionNumber}</span>
               {isCurrent && (
-                <span className="rounded-full border border-border px-1.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                <Badge variant="outline" className="px-1.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
                   Current
-                </span>
+                </Badge>
               )}
               {revision.restoredFromRevisionId && (
-                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
+                <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
                   Restored
-                </span>
+                </Badge>
               )}
             </div>
             <div className="text-xs text-muted-foreground truncate">
@@ -644,9 +645,9 @@ function RevisionPreview({
           <ul className="divide-y divide-border">
             {triggers.map((trigger) => (
               <li key={trigger.id} className="py-2 flex flex-wrap items-center gap-2 text-sm">
-                <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
                   {trigger.kind}
-                </span>
+                </Badge>
                 <span className="font-medium">{trigger.label ?? trigger.kind}</span>
                 <span className="text-xs text-muted-foreground">
                   {summarizeTriggerSnapshot(trigger)}
@@ -911,11 +912,12 @@ function RevisionPicker({
     : "border-green-500/30 bg-green-500/10 text-green-300";
   return (
     <div className="flex items-center gap-2">
-      <span
-        className={`rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${toneClass}`}
+      <Badge
+        variant="outline"
+        className={`text-[10px] uppercase tracking-wider ${toneClass}`}
       >
         {label}
-      </span>
+      </Badge>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}

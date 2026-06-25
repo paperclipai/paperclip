@@ -4,6 +4,7 @@ import { Link } from "../lib/router";
 import { cn } from "../lib/utils";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { Badge } from "./ui/badge";
 
 const TRIGGER_LABELS: Record<string, string> = {
   no_comment_streak: "No-comment streak",
@@ -43,17 +44,22 @@ export function ProductivityReviewBadge({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Link
-          to={reviewPath}
+        <Badge
+          asChild
+          variant="outline"
           className={cn(
-            "inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 shrink-0 hover:bg-amber-500/20 transition-colors",
+            "border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-colors",
             className,
           )}
-          aria-label={`Under review · productivity review ${reviewIdentifier} (${label})`}
         >
-          <Eye className="h-3 w-3" aria-hidden />
-          {hideLabel ? null : <span>Under review</span>}
-        </Link>
+          <Link
+            to={reviewPath}
+            aria-label={`Under review · productivity review ${reviewIdentifier} (${label})`}
+          >
+            <Eye className="h-3 w-3" aria-hidden />
+            {hideLabel ? null : <span>Under review</span>}
+          </Link>
+        </Badge>
       </TooltipTrigger>
       <TooltipContent>
         <div className="space-y-1 text-xs">

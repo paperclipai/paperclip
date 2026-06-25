@@ -1,5 +1,6 @@
 import { Clock, RotateCcw, AlertCircle, Loader2, CheckCircle2 } from "lucide-react";
 import { Link } from "@/lib/router";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn, formatDateTime } from "@/lib/utils";
 import { formatMonitorOffset } from "@/lib/issue-monitor";
@@ -74,10 +75,13 @@ export function IssueScheduledRetryCard({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 font-medium text-cyan-700 dark:text-cyan-300">
+            <Badge
+              variant="outline"
+              className="border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300"
+            >
               <Clock className="h-3 w-3" aria-hidden="true" />
               {badgeLabel}
-            </span>
+            </Badge>
             {attempt !== null ? (
               <span className="text-muted-foreground">Attempt {attempt}</span>
             ) : null}
