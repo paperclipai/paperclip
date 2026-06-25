@@ -1,6 +1,12 @@
 import type { Goal } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { StatusBadge } from "./StatusBadge";
+import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useState } from "react";
@@ -28,20 +34,23 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
   const inner = (
     <>
       {hasChildren ? (
-        <button
-          className="p-0.5"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setExpanded(!expanded);
-          }}
-        >
-          <ChevronRight
-            className={cn("h-3 w-3 transition-transform", expanded && "rotate-90")}
-          />
-        </button>
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setExpanded(!expanded);
+            }}
+          >
+            <ChevronRight
+              className={cn("h-3 w-3 transition-transform", expanded && "rotate-90")}
+            />
+          </Button>
+        </CollapsibleTrigger>
       ) : (
-        <span className="w-4" />
+        <span className="size-6" />
       )}
       <span className="text-xs text-muted-foreground capitalize">{goal.level}</span>
       <span className="flex-1 truncate">{goal.title}</span>
@@ -54,7 +63,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
   );
 
   return (
-    <div>
+    <Collapsible open={expanded} onOpenChange={setExpanded}>
       {link ? (
         <Link
           to={link}
@@ -72,8 +81,8 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
           {inner}
         </div>
       )}
-      {hasChildren && expanded && (
-        <div>
+      {hasChildren && (
+        <CollapsibleContent>
           {children.map((child) => (
             <GoalNode
               key={child.id}
@@ -85,9 +94,9 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
               onSelect={onSelect}
             />
           ))}
-        </div>
+        </CollapsibleContent>
       )}
-    </div>
+    </Collapsible>
   );
 }
 

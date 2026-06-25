@@ -8,6 +8,8 @@ import { queryKeys } from "../lib/queryKeys";
 import { formatCents, relativeTime } from "../lib/utils";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -117,7 +119,7 @@ export function Companies() {
               : 0;
 
           return (
-            <div
+            <Card
               key={company.id}
               role="button"
               tabIndex={0}
@@ -128,7 +130,7 @@ export function Companies() {
                   setSelectedCompanyId(company.id);
                 }
               }}
-              className={`group text-left bg-card border rounded-lg p-5 transition-colors cursor-pointer ${
+              className={`group gap-0 rounded-lg p-5 py-0 text-left shadow-none transition-colors cursor-pointer ${
                 selected
                   ? "border-primary ring-1 ring-primary"
                   : "border-border hover:border-muted-foreground/30"
@@ -167,17 +169,18 @@ export function Companies() {
                   ) : (
                     <div className="flex items-center gap-2">
                       <h3 className="font-semibold text-base">{company.name}</h3>
-                      <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                      <Badge
+                        variant={
                           company.status === "active"
-                            ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                            ? "success"
                             : company.status === "paused"
-                              ? "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
-                              : "bg-muted text-muted-foreground"
-                        }`}
+                              ? "warning"
+                              : "secondary"
+                        }
+                        className="text-[11px]"
                       >
                         {company.status}
-                      </span>
+                      </Badge>
                       <Button
                         variant="ghost"
                         size="icon-xs"
@@ -288,7 +291,7 @@ export function Companies() {
                   </div>
                 </div>
               )}
-            </div>
+            </Card>
           );
         })}
       </div>
