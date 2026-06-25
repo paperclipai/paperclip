@@ -541,4 +541,182 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "rebuilds the routine execution uniqueness index to ignore closed historical issues",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const fixRoutineExecutionIndexHash = await migrationHash(
+          "0111_fix_routine_execution_index.sql",
+        );
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${fixRoutineExecutionIndexHash}'`,
+        );
+        await sql.unsafe(`DROP INDEX IF EXISTS "issues_open_routine_execution_uq"`);
+        await sql.unsafe(`
+          CREATE UNIQUE INDEX "issues_open_routine_execution_uq"
+            ON "issues" USING btree ("company_id", "origin_kind", "origin_id", "origin_fingerprint")
+            WHERE "issues"."origin_kind" = 'routine_execution'
+              AND "issues"."origin_id" IS NOT NULL
+        `);
+
+        const indexBefore = await sql.unsafe<{ indexdef: string }[]>(
+          `
+            SELECT indexdef
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND tablename = 'issues'
+              AND indexname = 'issues_open_routine_execution_uq'
+          `,
+        );
+        expect(indexBefore[0]?.indexdef).not.toContain("execution_run_id IS NOT NULL");
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0111_fix_routine_execution_index.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const indexAfter = await verifySql.unsafe<{ indexdef: string }[]>(
+          `
+            SELECT indexdef
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND tablename = 'issues'
+              AND indexname = 'issues_open_routine_execution_uq'
+          `,
+        );
+        expect(indexAfter[0]?.indexdef).toContain("execution_run_id IS NOT NULL");
+        expect(indexAfter[0]?.indexdef).toContain("hidden_at IS NULL");
+        expect(indexAfter[0]?.indexdef).toContain(
+          "status = ANY (ARRAY['backlog'::text, 'todo'::text, 'in_progress'::text, 'in_review'::text, 'blocked'::text])",
+        );
+
+        await verifySql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES ('00000000-0000-0000-0000-000000000001', 'Acme', 'ACM', now(), now())
+        `);
+        await verifySql.unsafe(`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "created_at", "updated_at")
+          VALUES (
+            '30000000-0000-0000-0000-000000000001',
+            '00000000-0000-0000-0000-000000000001',
+            'Runner',
+            'general',
+            now(),
+            now()
+          )
+        `);
+        await verifySql.unsafe(`
+          INSERT INTO "heartbeat_runs" ("id", "company_id", "agent_id", "status", "created_at", "updated_at")
+          VALUES
+            (
+              '20000000-0000-0000-0000-000000000001',
+              '00000000-0000-0000-0000-000000000001',
+              '30000000-0000-0000-0000-000000000001',
+              'running',
+              now(),
+              now()
+            ),
+            (
+              '20000000-0000-0000-0000-000000000002',
+              '00000000-0000-0000-0000-000000000001',
+              '30000000-0000-0000-0000-000000000001',
+              'running',
+              now(),
+              now()
+            )
+        `);
+        await verifySql.unsafe(`
+          INSERT INTO "issues" (
+            "id",
+            "company_id",
+            "title",
+            "status",
+            "origin_kind",
+            "origin_id",
+            "origin_fingerprint",
+            "execution_run_id"
+          )
+          VALUES (
+            '10000000-0000-0000-0000-000000000001',
+            '00000000-0000-0000-0000-000000000001',
+            'Historical routine execution',
+            'done',
+            'routine_execution',
+            'routine-1',
+            'same-dispatch',
+            NULL
+          )
+        `);
+        await verifySql.unsafe(`
+          INSERT INTO "issues" (
+            "id",
+            "company_id",
+            "title",
+            "status",
+            "origin_kind",
+            "origin_id",
+            "origin_fingerprint",
+            "execution_run_id"
+          )
+          VALUES (
+            '10000000-0000-0000-0000-000000000002',
+            '00000000-0000-0000-0000-000000000001',
+            'Open routine execution',
+            'in_progress',
+            'routine_execution',
+            'routine-1',
+            'same-dispatch',
+            '20000000-0000-0000-0000-000000000001'
+          )
+        `);
+
+        await expect(
+          verifySql.unsafe(`
+            INSERT INTO "issues" (
+              "id",
+              "company_id",
+              "title",
+              "status",
+              "origin_kind",
+              "origin_id",
+              "origin_fingerprint",
+              "execution_run_id"
+            )
+            VALUES (
+              '10000000-0000-0000-0000-000000000003',
+              '00000000-0000-0000-0000-000000000001',
+              'Duplicate open routine execution',
+              'blocked',
+              'routine_execution',
+              'routine-1',
+              'same-dispatch',
+              '20000000-0000-0000-0000-000000000002'
+            )
+          `),
+        ).rejects.toThrow(/issues_open_routine_execution_uq/);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
 });
