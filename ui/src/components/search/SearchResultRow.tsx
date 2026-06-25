@@ -1,5 +1,5 @@
-import { memo, type ComponentType, type SVGProps } from "react";
-import { Bot, FileText, Hexagon, MessageSquare, Paperclip, Quote } from "lucide-react";
+import { memo } from "react";
+import { Bot, FileText, Hexagon, MessageSquare, Paperclip, Quote, type LucideIcon } from "lucide-react";
 import type { Agent, CompanySearchResult } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -8,7 +8,7 @@ import { Identity } from "../Identity";
 import { HighlightedText, type HighlightedTextProps } from "./HighlightedText";
 
 type SnippetStyle = {
-  Icon: ComponentType<SVGProps<SVGSVGElement>>;
+  Icon: LucideIcon;
   label: string;
 };
 
