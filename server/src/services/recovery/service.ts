@@ -112,7 +112,7 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "resultJson"
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -152,6 +152,21 @@ export type RunOutputSilenceSummary = {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+// ART-43: transient-upstream failures (e.g. Claude "session limit reached · resets <time>")
+// carry a reset timestamp the adapter parsed into resultJson. The bounded heartbeat retry
+// path already defers to it; the continuation-recovery path must honor it too, otherwise it
+// burns its transient_infra attempts re-failing against a still-exhausted session before the
+// window opens. Mirror of readTransientRetryNotBeforeFromRun in services/heartbeat.ts.
+function readContinuationRetryNotBefore(run: LatestIssueRun): Date | null {
+  const resultJson = parseObject(run?.resultJson);
+  const value = resultJson.retryNotBefore ?? resultJson.transientRetryNotBefore;
+  if (!(typeof value === "string" || typeof value === "number" || value instanceof Date)) {
+    return null;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
@@ -497,6 +512,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        resultJson: heartbeatRuns.resultJson,
       })
       .from(heartbeatRuns)
       .where(
@@ -2966,6 +2982,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           } else {
             result.skipped += 1;
           }
+          continue;
+        }
+
+        // ART-43: do not requeue a transient-upstream failure (session-limit reset)
+        // before its reset window. Defer; a later recovery sweep requeues once the
+        // window has passed. Purely additive guard — never forces an extra retry.
+        const transientRetryNotBefore = readContinuationRetryNotBefore(latestRun);
+        if (transientRetryNotBefore && transientRetryNotBefore.getTime() > Date.now()) {
+          result.skipped += 1;
           continue;
         }
 
