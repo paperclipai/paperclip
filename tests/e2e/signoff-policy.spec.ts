@@ -239,7 +239,13 @@ test.describe("Signoff execution policy", () => {
   let ctx: TestContext;
 
   test.beforeAll(async () => {
-    const boardRequest = await pwRequest.newContext({ baseURL: BASE_URL });
+    const boardRequest = await pwRequest.newContext({
+      baseURL: BASE_URL,
+      // RES-1298: board context needs a trusted Origin so local_trusted promotes
+      // mutating verbs to the board actor. Agent contexts authenticate via the
+      // Authorization header above and are unaffected.
+      extraHTTPHeaders: { Origin: BASE_URL },
+    });
     ctx = await setupCompany(boardRequest);
   });
 

@@ -200,7 +200,15 @@ async function stopServerProcess(child: ServerProcess | null) {
 }
 
 async function api<T>(baseUrl: string, pathname: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${baseUrl}${pathname}`, init);
+  // RES-1298: in local_trusted mode the actor middleware only promotes a request
+  // to the implicit board actor when the verb is safe or the request carries a
+  // trusted browser Origin/Referer. Node's fetch does not set Origin, so attach
+  // it here so board mutations from this test resolve as the board.
+  const mergedHeaders = new Headers(init?.headers);
+  if (!mergedHeaders.has("origin")) {
+    mergedHeaders.set("origin", baseUrl);
+  }
+  const res = await fetch(`${baseUrl}${pathname}`, { ...init, headers: mergedHeaders });
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Request failed ${res.status} ${pathname}: ${text}`);
