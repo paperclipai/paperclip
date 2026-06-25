@@ -87,6 +87,8 @@ const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the
 - hire a founding engineer
 - write a hiring plan
 - break the roadmap into concrete tasks and start delegating work`;
+const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
+  "Onboarding state is incomplete. Please restart onboarding and try again.";
 
 function loadSavedState(): Record<string, unknown> | null {
   try {
@@ -405,7 +407,7 @@ export function OnboardingWizard() {
 
   async function handleLaunchToDashboard() {
     if (!createdCompanyId || !createdAgentId) {
-      setError("Onboarding state is incomplete. Please restart onboarding and try again.");
+      setError(INCOMPLETE_ONBOARDING_STATE_MESSAGE);
       return;
     }
     setLoading(true);
@@ -741,6 +743,9 @@ export function OnboardingWizard() {
   }
 
   if (!effectiveOnboardingOpen) return null;
+
+  const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
+  const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
 
   return (
     <Dialog
@@ -1619,9 +1624,9 @@ export function OnboardingWizard() {
               )}
 
               {/* Error */}
-              {error && (
+              {visibleError && (
                 <div className="mt-3">
-                  <p className="text-xs text-destructive">{error}</p>
+                  <p className="text-xs text-destructive">{visibleError}</p>
                 </div>
               )}
 
@@ -1693,7 +1698,11 @@ export function OnboardingWizard() {
                     </Button>
                   )}
                   {step === 5 && (
-                    <Button size="sm" onClick={handleLaunchToDashboard} disabled={loading}>
+                    <Button
+                      size="sm"
+                      onClick={handleLaunchToDashboard}
+                      disabled={loading || launchStateIncomplete}
+                    >
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                       ) : (
