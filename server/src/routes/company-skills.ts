@@ -94,9 +94,9 @@ export function companySkillRoutes(db: Db) {
 
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-      const allowed = await access.canUser(companyId, req.actor.userId, "skill:create");
+      const allowed = await access.canUser(companyId, req.actor.userId, "skills:create");
       if (!allowed) {
-        throw forbidden("Missing permission: skill:create");
+        throw forbidden("Missing permission: skills:create");
       }
       return;
     }
@@ -110,12 +110,16 @@ export function companySkillRoutes(db: Db) {
       throw forbidden("Agent key cannot access another company");
     }
 
-    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "skill:create");
-    if (allowedByGrant || canCreateSkills(actorAgent)) {
+    if (canCreateSkills(actorAgent)) {
       return;
     }
 
-    throw forbidden("Missing permission: skill:create");
+    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "skills:create");
+    if (allowedByGrant) {
+      return;
+    }
+
+    throw forbidden("Missing permission: skills:create");
   }
 
   router.get("/skills/catalog", async (req, res) => {

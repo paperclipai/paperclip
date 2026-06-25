@@ -404,7 +404,7 @@ describe("company skill mutation permissions", () => {
     });
   });
 
-  it("allows board users with skill:create to create, import, install, update, delete, audit, and reset company skills", async () => {
+  it("allows board users with skills:create to create, import, install, update, delete, audit, and reset company skills", async () => {
     const app = await createApp({
       type: "board",
       userId: "board-user",
@@ -441,7 +441,7 @@ describe("company skill mutation permissions", () => {
       .send({})
       .expect(200);
 
-    expect(mockAccessService.canUser).toHaveBeenCalledWith("company-1", "board-user", "skill:create");
+    expect(mockAccessService.canUser).toHaveBeenCalledWith("company-1", "board-user", "skills:create");
     expect(mockAccessService.canUser).not.toHaveBeenCalledWith("company-1", "board-user", "agents:create");
     expect(mockCompanySkillService.createLocalSkill).toHaveBeenCalled();
     expect(mockCompanySkillService.importFromSource).toHaveBeenCalled();
@@ -452,7 +452,7 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.resetSkill).toHaveBeenCalled();
   });
 
-  it("blocks board users without skill:create from mutating company skills", async () => {
+  it("blocks board users without skills:create from mutating company skills", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
 
     const res = await request(await createApp({
@@ -466,8 +466,8 @@ describe("company skill mutation permissions", () => {
       .send({ source: "https://github.com/vercel-labs/agent-browser" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Missing permission: skill:create");
-    expect(mockAccessService.canUser).toHaveBeenCalledWith("company-1", "board-user", "skill:create");
+    expect(res.body.error).toBe("Missing permission: skills:create");
+    expect(mockAccessService.canUser).toHaveBeenCalledWith("company-1", "board-user", "skills:create");
     expect(mockAccessService.canUser).not.toHaveBeenCalledWith("company-1", "board-user", "agents:create");
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
@@ -730,8 +730,8 @@ describe("company skill mutation permissions", () => {
       .send({ source: "https://github.com/vercel-labs/agent-browser" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Missing permission: skill:create");
-    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "skill:create");
+    expect(res.body.error).toBe("Missing permission: skills:create");
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "skills:create");
     expect(mockAccessService.hasPermission).not.toHaveBeenCalledWith("company-1", "agent", "agent-1", "agents:create");
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
@@ -884,7 +884,7 @@ describe("company skill mutation permissions", () => {
     );
   });
 
-  it("allows agents with explicit skill:create grants to mutate company skills", async () => {
+  it("allows agents with explicit skills:create grants to mutate company skills", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -896,7 +896,7 @@ describe("company skill mutation permissions", () => {
       _principalId: string,
       key: string,
     ) => {
-      return key === "skill:create";
+      return key === "skills:create";
     });
 
     const res = await request(await createApp({
@@ -909,7 +909,7 @@ describe("company skill mutation permissions", () => {
       .send({ source: "https://github.com/vercel-labs/agent-browser" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "skill:create");
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "skills:create");
     expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith(
       "company-1",
       "https://github.com/vercel-labs/agent-browser",
@@ -941,8 +941,8 @@ describe("company skill mutation permissions", () => {
       .send({ source: "https://github.com/vercel-labs/agent-browser" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Missing permission: skill:create");
-    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "skill:create");
+    expect(res.body.error).toBe("Missing permission: skills:create");
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "skills:create");
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
 

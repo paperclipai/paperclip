@@ -10,20 +10,21 @@ INSERT INTO "principal_permission_grants" (
 )
 SELECT
   "company_id",
-  'user',
+  "principal_type",
   "principal_id",
   'skills:create',
-  NULL,
-  NULL,
-  now(),
+  "scope",
+  "granted_by_user_id",
+  "created_at",
   now()
-FROM "company_memberships"
-WHERE "principal_type" = 'user'
-  AND "status" = 'active'
-  AND "membership_role" IN ('owner', 'admin')
+FROM "principal_permission_grants"
+WHERE "permission_key" = 'skill:create'
 ON CONFLICT (
   "company_id",
   "principal_type",
   "principal_id",
   "permission_key"
 ) DO NOTHING;
+
+DELETE FROM "principal_permission_grants"
+WHERE "permission_key" = 'skill:create';

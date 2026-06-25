@@ -400,7 +400,7 @@ Required Paperclip runtime skills (heartbeat, etc.) remain server-enforced and
 are added on top of whatever the desired set names.
 
 Company skill mutations (`skills install`, `skills import`, `skills create`, and
-`skills scan-projects`) require board authentication, an explicit `skill:create`
+`skills scan-projects`) require board authentication, an explicit `skills:create`
 grant, or an agent whose permissions keep `canCreateSkills` enabled. They do not
 require `agents:create` unless the command also creates agents.
 
