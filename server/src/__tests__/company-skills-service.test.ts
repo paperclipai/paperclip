@@ -303,6 +303,46 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
   });
 
+  it("updates categories, normalizes values, and reflects them in list filters and counts", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const skill = await svc.createLocalSkill(companyId, {
+      name: "Category Skill",
+      tagline: "A categorized skill",
+      categories: ["engineering"],
+    });
+
+    const updated = await svc.updateSkill(companyId, skill.id, {
+      categories: ["Memory", "review", "memory", "  "],
+    });
+
+    expect(updated.categories).toEqual(["memory", "review"]);
+    await expect(svc.detail(companyId, skill.id)).resolves.toMatchObject({
+      id: skill.id,
+      categories: ["memory", "review"],
+    });
+    await expect(svc.list(companyId, { categories: ["review"] })).resolves.toEqual([
+      expect.objectContaining({ id: skill.id, categories: ["memory", "review"] }),
+    ]);
+    await expect(svc.list(companyId, { categories: ["engineering"] })).resolves.toEqual([]);
+    await expect(svc.categoryCounts(companyId)).resolves.toEqual([
+      { slug: "memory", count: 1 },
+      { slug: "review", count: 1 },
+    ]);
+
+    await expect(svc.updateSkill(companyId, skill.id, { categories: [] })).resolves.toMatchObject({
+      id: skill.id,
+      categories: [],
+    });
+    await expect(svc.categoryCounts(companyId)).resolves.toEqual([]);
+  });
+
   it("creates a fork from the creation flow with copied files and lineage", async () => {
     const companyId = randomUUID();
     const sourceSkillId = randomUUID();

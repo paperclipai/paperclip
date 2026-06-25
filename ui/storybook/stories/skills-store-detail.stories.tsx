@@ -181,8 +181,8 @@ function SkillDetailHarness({ initialTab = "overview" as DetailTab }: { initialT
       onToggleStar={() => {}}
       starPending={false}
       onFork={() => {}}
-      onUpdateSharingScope={() => {}}
-      updateSharingPending={false}
+      onUpdateSettings={() => {}}
+      updateSettingsPending={false}
       onDelete={() => {}}
       deletePending={false}
     />
