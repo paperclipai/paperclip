@@ -4,6 +4,7 @@
 
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
+import type { RuntimeStatusSink } from "./runtime-progress.js";
 
 export interface AdapterAgent {
   id: string;
@@ -136,6 +137,7 @@ export interface AdapterExecutionContext {
   };
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
 }
