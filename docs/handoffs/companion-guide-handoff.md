@@ -13,7 +13,10 @@ the first has an "Open <X> →" deep link to the real destination.
 - **NEW** `ui/src/components/CompanionGuide.tsx` — the component (self-contained).
 - **EDIT** `ui/src/components/Layout.tsx` — import + `<CompanionGuide />` mounted next to the
   other global overlays (after `<ToastViewport />`).
+- **EDIT** `ui/src/pages/CompanySettings.tsx` — a **Help & Onboarding** section with a
+  **"Replay guide"** button that dispatches `OPEN_COMPANION_GUIDE_EVENT`.
 - No new dependencies (uses existing `lucide-react`, `@/components/ui/dialog`, `button`, `@/lib/router`).
+- Commits (local, on `rebrand/valadrien-os`, unpushed): `1bb28f90` (guide) + `0182c22e` (replay button).
 
 ## Behavior / gating
 - Auto-opens **once per browser** via `localStorage["valadrien-os.companionGuideSeenV1"]`,
@@ -37,7 +40,7 @@ the first has an "Open <X> →" deep link to the real destination.
    deep links route under the company prefix.
 
 ## Suggested follow-ups (optional, not required)
-- Add a **"Replay guide"** button in Company Settings that dispatches `OPEN_COMPANION_GUIDE_EVENT`.
+- ✅ Done: **"Replay guide"** button in Company Settings → General (Help & Onboarding section).
 - If you want **cross-device** first-run (not per-browser), gate on a server `user.onboardedAt`
   (or company-membership `createdAt`) instead of/alongside the localStorage flag.
 - Tenant owners like Venco's **Vanessa Celestin (admin@vencoai.com)** are the exact audience.
