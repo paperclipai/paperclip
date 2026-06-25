@@ -351,6 +351,24 @@ describe("SkillDetailPage settings", () => {
     });
   });
 
+  it("does not treat reordered categories as dirty", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        categories: ["memory", "review"],
+        sharingScope: "company",
+      }),
+    });
+
+    await click(buttonsNamed(node, "Settings")[0] as HTMLButtonElement);
+    const dialog = node.querySelector('[role="dialog"]') as HTMLElement;
+
+    await inputValue(dialog.querySelector("input") as HTMLInputElement, "review, memory");
+
+    expect((buttonsNamed(dialog, "Save settings")[0] as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("keeps the category draft visible while a failed save leaves detail unchanged", async () => {
     const v1 = makeVersion(1, "# Demo Skill");
     const detail = makeDetail(v1, {

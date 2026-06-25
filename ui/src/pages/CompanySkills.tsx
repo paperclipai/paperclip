@@ -623,6 +623,16 @@ function splitCategoryDraft(value: string) {
   );
 }
 
+function categorySetKey(categories: string[]) {
+  return [...categories].sort().join(",");
+}
+
+function skillSettingsToastBody(skill: Pick<CompanySkillDetail, "categories" | "sharingScope">) {
+  const sharing = skill.sharingScope === "private" ? "Sharing: private" : "Sharing: company";
+  const categories = skill.categories.length ? `Categories: ${skill.categories.join(", ")}` : "Categories: none";
+  return `${sharing} | ${categories}`;
+}
+
 function defaultSkillMarkdown(name: string, tagline: string) {
   const title = name.trim() || "New Skill";
   const summary = tagline.trim() || "Describe when agents should use this skill.";
@@ -2684,7 +2694,7 @@ export function SkillDetailPage({
   const selectedVersion = versions.find((version) => version.id === currentVersionSelection(skill)) ?? null;
   const subtitleText = resolveSkillSummaryText(skill) ?? source.label;
   const settingsCategories = splitCategoryDraft(settingsCategoryDraft);
-  const settingsCategoriesDirty = settingsCategories.join(",") !== skill.categories.join(",");
+  const settingsCategoriesDirty = categorySetKey(settingsCategories) !== categorySetKey(skill.categories);
   const settingsSharingDirty = settingsSharingScope !== (skill.sharingScope === "public_link" ? "company" : skill.sharingScope);
   const settingsDirty = settingsCategoriesDirty || settingsSharingDirty;
   // Look up the richer agent record (icon, paused) for agents using this skill.
@@ -4092,7 +4102,7 @@ export function CompanySkills() {
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(selectedCompanyId!, skill.id) }),
       ]);
-      pushToast({ tone: "success", title: "Skill settings updated", body: skill.categories.length ? skill.categories.join(", ") : "No categories" });
+      pushToast({ tone: "success", title: "Skill settings updated", body: skillSettingsToastBody(skill) });
     },
     onError: (error) => {
       pushToast({
