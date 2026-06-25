@@ -11,8 +11,9 @@ import { assetsApi } from "../api/assets";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, CloudUpload, Download, Upload } from "lucide-react";
+import { Settings, CloudUpload, Download, Upload, Sparkles } from "lucide-react";
 import { CompanyLogoUpload } from "../components/CompanyLogoUpload";
+import { OPEN_COMPANION_GUIDE_EVENT } from "../components/CompanionGuide";
 import {
   Field,
   ToggleField,
@@ -358,6 +359,29 @@ export function CompanySettings() {
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
                 Import
               </a>
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Help & Onboarding */}
+      <div className="space-y-4">
+        <div className="font-mono text-[10.5px] font-medium text-muted-foreground uppercase tracking-[0.14em]">
+          Help &amp; Onboarding
+        </div>
+        <div className="rounded-md border border-border px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            Replay the welcome guide — a quick tour of how to run your company: set goals, assign
+            tasks, create routines, and ask your Chief of Staff.
+          </p>
+          <div className="mt-3">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => window.dispatchEvent(new Event(OPEN_COMPANION_GUIDE_EVENT))}
+            >
+              <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+              Replay guide
             </Button>
           </div>
         </div>
