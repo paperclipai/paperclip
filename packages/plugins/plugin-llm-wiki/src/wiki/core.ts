@@ -36,6 +36,7 @@ const MAX_PAPERCLIP_PROFILE_ROOT_ISSUES = 25;
 const PROTECTED_WIKI_CONTROL_FILES = new Set(["AGENTS.md", "IDEA.md"]);
 export const PUBLIC_DISTILLATION_AUTO_APPLY_RESTRICTION =
   "Authenticated/public deployments always require manual review before wiki writes.";
+type LocalFolderStatus = Awaited<ReturnType<PluginContext["localFolders"]["status"]>>;
 
 export type WikiEventIngestionSource = "issues" | "comments" | "documents";
 export type PaperclipDistillationScope = "company" | "project" | "root_issue";
@@ -2174,6 +2175,23 @@ export async function listWikiProjectOptions(ctx: PluginContext, companyId: stri
   return projects.map((project) => ({ id: project.id, name: project.name, status: project.status, color: project.color ?? null }));
 }
 
+function formatFolderProblems(folder: LocalFolderStatus): string {
+  const details = folder.problems
+    .map((problem) => problem.path ? `${problem.message} ${problem.path}` : problem.message)
+    .filter(Boolean);
+  return details.length > 0 ? details.join("; ") : "No detailed health problem was reported.";
+}
+
+function assertWikiRootCanBootstrap(folder: LocalFolderStatus): void {
+  const blockingProblems = folder.problems.filter((problem) =>
+    problem.code !== "missing_directory" && problem.code !== "missing_file"
+  );
+  const writable = folder.access === "readWrite" && folder.writable;
+  if (!folder.configured || !folder.realPath || !folder.readable || !writable || blockingProblems.length > 0) {
+    throw new Error(`Wiki root folder is not ready: ${formatFolderProblems(folder)}`);
+  }
+}
+
 export async function bootstrapWikiRoot(ctx: PluginContext, input: BootstrapInput) {
   const wikiId = DEFAULT_WIKI_ID;
   const defaultSpace = await ensureDefaultSpace(ctx, { companyId: input.companyId, wikiId });
@@ -2193,6 +2211,7 @@ export async function bootstrapWikiRoot(ctx: PluginContext, input: BootstrapInpu
     : currentFolder?.configured && currentFolder.path
       ? await configureFolder(currentFolder.path)
       : currentFolder ?? await ctx.localFolders.status(input.companyId, WIKI_ROOT_FOLDER_KEY);
+  assertWikiRootCanBootstrap(folder);
 
   const writtenFiles: string[] = [];
   const preservedFiles: string[] = [];

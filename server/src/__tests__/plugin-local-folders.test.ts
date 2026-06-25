@@ -154,6 +154,39 @@ describe("plugin local folders", () => {
     expect(status.missingFiles).toEqual(["schema.md"]);
   });
 
+  it("prepares a missing read-write root before creating required directories", async () => {
+    const parent = await makeRoot();
+    const root = path.join(parent, "missing", "content-root");
+
+    await preparePluginLocalFolder({
+      folderKey: "content-root",
+      storedConfig: {
+        path: root,
+        access: "readWrite",
+        requiredDirectories: ["sources", "wiki/concepts"],
+        requiredFiles: ["schema.md"],
+      },
+    });
+
+    await expect(fs.stat(root)).resolves.toMatchObject({});
+    await expect(fs.stat(path.join(root, "sources"))).resolves.toMatchObject({});
+    await expect(fs.stat(path.join(root, "wiki/concepts"))).resolves.toMatchObject({});
+
+    const status = await inspectPluginLocalFolder({
+      folderKey: "content-root",
+      storedConfig: {
+        path: root,
+        access: "readWrite",
+        requiredDirectories: ["sources", "wiki/concepts"],
+        requiredFiles: ["schema.md"],
+      },
+    });
+    expect(status.readable).toBe(true);
+    expect(status.writable).toBe(true);
+    expect(status.missingDirectories).toEqual([]);
+    expect(status.missingFiles).toEqual(["schema.md"]);
+  });
+
   it("allows write access to repair folders that are only missing required paths", async () => {
     const root = await makeRoot();
     const status = await inspectPluginLocalFolder({

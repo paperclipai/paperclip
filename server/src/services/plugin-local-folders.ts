@@ -273,6 +273,11 @@ function isInsideRoot(rootRealPath: string, candidateRealPath: string) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function filesystemErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error);
+}
+
 async function assertPathInsideRoot(rootRealPath: string, candidatePath: string) {
   const candidateRealPath = await fs.realpath(candidatePath);
   if (!isInsideRoot(rootRealPath, candidateRealPath)) {
@@ -325,14 +330,18 @@ export async function preparePluginLocalFolder(input: {
   const configuredPath = path.resolve(config.path);
   try {
     const stat = await fs.stat(configuredPath);
-    if (!stat.isDirectory()) return;
+    if (!stat.isDirectory()) {
+      throw badRequest(`Local folder root exists but is not a directory: ${configuredPath}`);
+    }
   } catch (error) {
     const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
-    if (code !== "ENOENT") return;
+    if (code !== "ENOENT") {
+      throw badRequest(`Unable to inspect local folder root ${configuredPath}: ${filesystemErrorMessage(error)}`);
+    }
     try {
       await fs.mkdir(configuredPath, { recursive: true });
-    } catch {
-      return;
+    } catch (mkdirError) {
+      throw badRequest(`Unable to create local folder root ${configuredPath}: ${filesystemErrorMessage(mkdirError)}`);
     }
   }
   const rootRealPath = await fs.realpath(configuredPath);

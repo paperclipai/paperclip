@@ -84,6 +84,27 @@ const DEFAULT_ROUTE_SIDEBAR_EXPANDED_PATHS = [
   "wiki/synthesis",
 ] as const;
 
+function errorMessage(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (err && typeof err === "object") {
+    const record = err as { message?: unknown; error?: unknown; details?: unknown };
+    if (typeof record.message === "string" && record.message.trim()) return record.message;
+    if (typeof record.error === "string" && record.error.trim()) return record.error;
+    if (record.details && typeof record.details === "object") {
+      const details = record.details as { message?: unknown; error?: unknown };
+      if (typeof details.message === "string" && details.message.trim()) return details.message;
+      if (typeof details.error === "string" && details.error.trim()) return details.error;
+    }
+  }
+  try {
+    const json = JSON.stringify(err);
+    if (json && json !== "{}") return json;
+  } catch {
+    // Fall through to String().
+  }
+  return String(err);
+}
+
 // ---------------------------------------------------------------------------
 // Shared types coming back from the worker.
 // ---------------------------------------------------------------------------
@@ -662,7 +683,7 @@ function AutosaveMarkdownEditor({
         setStatus("saved");
         onStatusChange?.("saved");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         setError(message);
         setStatus("error");
         onStatusChange?.("error");
@@ -1880,7 +1901,7 @@ function IngestFilesModal({
       onIngested();
       onClose();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorMessage(err);
       setErrorMsg(message);
       toast({ tone: "error", title: "File ingest failed", body: message });
     } finally {
@@ -2090,7 +2111,7 @@ function CreateSpaceModal({
       toast({ tone: "success", title: "Space created", body: `${result.space.displayName} is ready for ingest.` });
       onCreated(result.space);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setErrorMsg(msg);
       toast({ tone: "error", title: "Could not create space", body: msg });
     } finally {
@@ -2838,7 +2859,7 @@ function SpaceRowMenu({
       toast({ tone: "success", title: "Space archived", body: `${space.displayName} hidden from sidebar.` });
       onArchived(space.slug);
     } catch (err) {
-      toast({ tone: "error", title: "Archive failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Archive failed", body: errorMessage(err) });
     } finally {
       setBusy(false);
     }
@@ -2852,7 +2873,7 @@ function SpaceRowMenu({
       toast({ tone: "success", title: "Space refreshed", body: `${space.displayName} index re-bootstrapped.` });
       onClose();
     } catch (err) {
-      toast({ tone: "error", title: "Refresh failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Refresh failed", body: errorMessage(err) });
     } finally {
       setBusy(false);
     }
@@ -3003,7 +3024,7 @@ function UnconfiguredFolder({ context, folder, refresh }: { context: { companyId
       toast({ tone: "success", title: "Wiki root configured", body: written.length ? `Created ${written.length} bootstrap file(s).` : "Existing files preserved." });
       refresh();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorMessage(err);
       setErrorMsg(message);
       toast({ tone: "error", title: "Could not configure wiki root", body: message });
     } finally {
@@ -4034,7 +4055,7 @@ function IngestTab({ context, refreshOverview }: { context: { companyId: string 
       setTitle("");
       refreshOverview();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorMessage(err);
       setErrorMsg(message);
       toast({ tone: "error", title: "Ingest failed", body: message });
     } finally {
@@ -4430,7 +4451,7 @@ function QueryTab({ context, overview }: { context: { companyId: string | null }
       ));
       setPrompt("");
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorMessage(err);
       setThread((prev) => prev.map((entry) =>
         entry.id === entryId ? { ...entry, status: "error", errorMessage: message } : entry,
       ));
@@ -4458,7 +4479,7 @@ function QueryTab({ context, overview }: { context: { companyId: string | null }
       toast({ tone: "success", title: "Answer filed", body: `Wrote ${filePath.trim()} and recorded a file-as-page task.` });
       setFileBody("");
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorMessage(err);
       toast({ tone: "error", title: "Could not file answer", body: message });
     } finally {
       setFiling(null);
@@ -4615,7 +4636,7 @@ function LintPanelContent({
       operations.refresh();
       refreshOverview();
     } catch (err) {
-      toast({ tone: "error", title: "Could not run lint", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Could not run lint", body: errorMessage(err) });
     } finally {
       setBusy(false);
     }
@@ -5468,7 +5489,7 @@ function DistillationSettingsPanel({ context, settings }: { context: { companyId
       });
       overview.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Distill now failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Distill now failed", body: errorMessage(err) });
     } finally {
       setBusy(null);
     }
@@ -5491,7 +5512,7 @@ function DistillationSettingsPanel({ context, settings }: { context: { companyId
       });
       overview.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Enable distillation failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Enable distillation failed", body: errorMessage(err) });
     } finally {
       setBusy(null);
     }
@@ -5515,7 +5536,7 @@ function DistillationSettingsPanel({ context, settings }: { context: { companyId
       toast({ tone: "success", title: "Backfill queued", body: target.projectName ?? target.rootIssueIdentifier ?? "Selected scope" });
       overview.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Backfill failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Backfill failed", body: errorMessage(err) });
     } finally {
       setBusy(null);
     }
@@ -5953,7 +5974,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
       toast({ tone: "success", title: "Folder updated" });
       settings.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Folder update failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Folder update failed", body: errorMessage(err) });
     } finally {
       setFolderBusy(false);
     }
@@ -5968,7 +5989,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
       toast({ tone: "success", title: "Maintainer agent selected" });
       settings.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Agent selection failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Agent selection failed", body: errorMessage(err) });
     } finally {
       setAgentBusy(false);
     }
@@ -5983,7 +6004,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
       toast({ tone: "success", title: "Project selected" });
       settings.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Project selection failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Project selection failed", body: errorMessage(err) });
     } finally {
       setProjectBusy(false);
     }
@@ -5998,7 +6019,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
       toast({ tone: "success", title: "Event ingestion controls saved" });
       settings.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Could not save event controls", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Could not save event controls", body: errorMessage(err) });
     } finally {
       setEventPolicyBusy(false);
     }
@@ -6012,7 +6033,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
       toast({ tone: "success", title: "Routines fixed" });
       settings.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Routine repair failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Routine repair failed", body: errorMessage(err) });
     } finally {
       setRoutineRepairBusy(false);
     }
@@ -6026,7 +6047,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
       toast({ tone: "success", title: "Skills synced" });
       settings.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Skill sync failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Skill sync failed", body: errorMessage(err) });
     } finally {
       setSkillBusy(false);
     }
@@ -6080,7 +6101,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
       toast({ tone: "success", title: "Configuration errors fixed" });
       settings.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Fix all failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Fix all failed", body: errorMessage(err) });
     } finally {
       setAllRepairBusy(false);
     }
@@ -6098,7 +6119,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
       toast({ tone: "success", title: enabled ? "Routine paused" : "Routine enabled" });
       settings.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Routine update failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Routine update failed", body: errorMessage(err) });
     } finally {
       setRoutineBusyKey(null);
     }
@@ -6124,7 +6145,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
       toast({ tone: "success", title: "Routine run started" });
       settings.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Routine run failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Routine run failed", body: errorMessage(err) });
     } finally {
       setRoutineBusyKey(null);
     }
@@ -6152,7 +6173,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
       toast({ tone: "success", title: "Routine defaults updated" });
       settings.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Routine reset failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Routine reset failed", body: errorMessage(err) });
     } finally {
       setRoutineBusyKey(null);
     }
@@ -6173,7 +6194,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
       toast({ tone: "success", title: "Agent reset to plugin defaults" });
       settings.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Reset failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Reset failed", body: errorMessage(err) });
     } finally {
       setAgentBusy(false);
     }
@@ -6331,7 +6352,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
                         toast({ tone: "success", title: "Agent reconciled" });
                         settings.refresh();
                       } catch (err) {
-                        toast({ tone: "error", title: "Reconcile failed", body: err instanceof Error ? err.message : String(err) });
+                        toast({ tone: "error", title: "Reconcile failed", body: errorMessage(err) });
                       } finally {
                         setAgentBusy(false);
                       }
@@ -6414,7 +6435,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
                         toast({ tone: "success", title: "Project reconciled" });
                         settings.refresh();
                       } catch (err) {
-                        toast({ tone: "error", title: "Reconcile failed", body: err instanceof Error ? err.message : String(err) });
+                        toast({ tone: "error", title: "Reconcile failed", body: errorMessage(err) });
                       } finally {
                         setProjectBusy(false);
                       }
@@ -6427,7 +6448,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
                         toast({ tone: "success", title: "Project reset to plugin defaults" });
                         settings.refresh();
                       } catch (err) {
-                        toast({ tone: "error", title: "Reset failed", body: err instanceof Error ? err.message : String(err) });
+                        toast({ tone: "error", title: "Reset failed", body: errorMessage(err) });
                       } finally {
                         setProjectBusy(false);
                       }
@@ -6746,7 +6767,7 @@ function SpaceEditCard({
       toast({ tone: "success", title: "Display name updated" });
       refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Update failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Update failed", body: errorMessage(err) });
     } finally {
       setBusy(false);
     }
@@ -6760,7 +6781,7 @@ function SpaceEditCard({
       toast({ tone: "success", title: "Baseline restored", body: `Re-created the standard skeleton for ${space.displayName}.` });
       folderStatusQuery.refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Bootstrap failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Bootstrap failed", body: errorMessage(err) });
     } finally {
       setFolderBusy(false);
     }
@@ -6778,7 +6799,7 @@ function SpaceEditCard({
       refresh();
       onArchived();
     } catch (err) {
-      toast({ tone: "error", title: "Archive failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Archive failed", body: errorMessage(err) });
     } finally {
       setArchiveBusy(false);
     }
@@ -6962,7 +6983,7 @@ function PaperclipIngestionSpaceCard({ companyId, space, refresh }: { companyId:
       profileQuery.refresh();
       refresh();
     } catch (err) {
-      toast({ tone: "error", title: "Profile save failed", body: err instanceof Error ? err.message : String(err) });
+      toast({ tone: "error", title: "Profile save failed", body: errorMessage(err) });
     } finally {
       setBusy(false);
     }

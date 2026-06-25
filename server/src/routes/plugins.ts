@@ -70,6 +70,7 @@ import {
   findLocalFolderDeclaration,
   getStoredLocalFolders,
   inspectPluginLocalFolder,
+  preparePluginLocalFolder,
   requireLocalFolderDeclaration,
   setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
@@ -2502,10 +2503,19 @@ export function pluginRoutes(
 
     const existing = await registry.getCompanySettings(plugin.id, companyId);
     const declaration = requireLocalFolderDeclaration(plugin.manifestJson.localFolders ?? [], folderKey);
+    const existingFolderConfig = getStoredLocalFolders(existing?.settingsJson)[folderKey] ?? null;
+    await preparePluginLocalFolder({
+      folderKey,
+      declaration,
+      storedConfig: existingFolderConfig,
+      overrideConfig: {
+        path: body.path,
+      },
+    });
     const status = await inspectPluginLocalFolder({
       folderKey,
       declaration,
-      storedConfig: getStoredLocalFolders(existing?.settingsJson)[folderKey] ?? null,
+      storedConfig: existingFolderConfig,
       overrideConfig: {
         path: body.path,
       },
