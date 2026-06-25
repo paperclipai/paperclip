@@ -302,6 +302,96 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("cross-company read grant");
   });
 
+  it("treats an expired cross-company grant as inactive", async () => {
+    const sourceCompany = await createNamedCompany(db, TEST_SOURCE_COMPANY_ID, "SourceExpired");
+    const targetCompany = await createCompany(db, "TargetExpired");
+    const actorAgent = await createAgent(db, sourceCompany.id);
+    const targetIssue = await createIssue(db, targetCompany.id);
+
+    await db.insert(crossCompanyAgentGrants).values({
+      sourceCompanyId: sourceCompany.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      targetCompanyId: targetCompany.id,
+      capability: "read",
+      status: "active",
+      expiresAt: new Date(Date.now() - 60_000),
+      createdByUserId: "owner",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: sourceCompany.id, source: "agent_jwt" },
+      action: "issue:read",
+      resource: { type: "issue", companyId: targetCompany.id, issueId: targetIssue.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
+  it("treats a max-uses-exhausted cross-company grant as inactive", async () => {
+    const sourceCompany = await createNamedCompany(db, TEST_SOURCE_COMPANY_ID, "SourceExhausted");
+    const targetCompany = await createCompany(db, "TargetExhausted");
+    const actorAgent = await createAgent(db, sourceCompany.id);
+    const targetIssue = await createIssue(db, targetCompany.id);
+
+    await db.insert(crossCompanyAgentGrants).values({
+      sourceCompanyId: sourceCompany.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      targetCompanyId: targetCompany.id,
+      capability: "read",
+      status: "active",
+      maxUses: 3,
+      usedCount: 3,
+      createdByUserId: "owner",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: sourceCompany.id, source: "agent_jwt" },
+      action: "issue:read",
+      resource: { type: "issue", companyId: targetCompany.id, issueId: targetIssue.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
+  it("allows a cross-company grant that is within its expiry window and under its usage cap", async () => {
+    const sourceCompany = await createNamedCompany(db, TEST_SOURCE_COMPANY_ID, "SourceWithinLimits");
+    const targetCompany = await createCompany(db, "TargetWithinLimits");
+    const actorAgent = await createAgent(db, sourceCompany.id);
+    const targetIssue = await createIssue(db, targetCompany.id);
+
+    await db.insert(crossCompanyAgentGrants).values({
+      sourceCompanyId: sourceCompany.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      targetCompanyId: targetCompany.id,
+      capability: "read",
+      status: "active",
+      expiresAt: new Date(Date.now() + 60_000),
+      maxUses: 3,
+      usedCount: 1,
+      createdByUserId: "owner",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: sourceCompany.id, source: "agent_jwt" },
+      action: "issue:read",
+      resource: { type: "issue", companyId: targetCompany.id, issueId: targetIssue.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_cross_company_grant",
+    });
+  });
+
   it("keeps non-allowlisted agents denied even if a cross-company grant row exists", async () => {
     const sourceCompany = await createCompany(db, "OtherSource");
     const targetCompany = await createCompany(db, "OtherTarget");

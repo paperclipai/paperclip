@@ -857,6 +857,120 @@ describeEmbeddedPostgres("management routes", () => {
     expect(auditRows.every((row) => row.runId === sourceRun.id)).toBe(true);
   }, 30_000);
 
+  it("increments grant usage on cross-company delegation and reports remaining quota", async () => {
+    const sourceCompany = await seedCompany(db, TEST_SOURCE_COMPANY_ID, "DelegUsageSource");
+    const targetCompany = await seedCompany(db, undefined, "DelegUsageTarget");
+    const sourceAgent = await seedAgent(db, sourceCompany.id, "DelegUsageSource");
+    await seedAgent(db, targetCompany.id, "DelegUsageCeo", "idle", "ceo");
+
+    const grant = await db
+      .insert(crossCompanyAgentGrants)
+      .values({
+        sourceCompanyId: sourceCompany.id,
+        principalType: "agent",
+        principalId: sourceAgent.id,
+        targetCompanyId: targetCompany.id,
+        capability: "delegate",
+        status: "active",
+        maxUses: 2,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const app = await createApp(db, {
+      type: "agent",
+      agentId: sourceAgent.id,
+      companyId: sourceCompany.id,
+    });
+
+    const res = await request(app)
+      .post(`/api/management/companies/${targetCompany.id}/delegated-issues`)
+      .send({ title: "First delegated issue" });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.access).toMatchObject({
+      mode: "cross_company_grant",
+      grantUsedCount: 1,
+      grantMaxUses: 2,
+    });
+
+    const stored = await db
+      .select({ usedCount: crossCompanyAgentGrants.usedCount, lastUsedAt: crossCompanyAgentGrants.lastUsedAt })
+      .from(crossCompanyAgentGrants)
+      .where(eq(crossCompanyAgentGrants.id, grant.id))
+      .then((rows) => rows[0]!);
+    expect(stored.usedCount).toBe(1);
+    expect(stored.lastUsedAt).not.toBeNull();
+  }, 30_000);
+
+  it("denies cross-company delegation once a max-uses grant is exhausted", async () => {
+    const sourceCompany = await seedCompany(db, TEST_SOURCE_COMPANY_ID, "DelegExhaustedSource");
+    const targetCompany = await seedCompany(db, undefined, "DelegExhaustedTarget");
+    const sourceAgent = await seedAgent(db, sourceCompany.id, "DelegExhaustedSource");
+    await seedAgent(db, targetCompany.id, "DelegExhaustedCeo", "idle", "ceo");
+
+    await db.insert(crossCompanyAgentGrants).values({
+      sourceCompanyId: sourceCompany.id,
+      principalType: "agent",
+      principalId: sourceAgent.id,
+      targetCompanyId: targetCompany.id,
+      capability: "delegate",
+      status: "active",
+      maxUses: 1,
+      usedCount: 1,
+    });
+
+    const app = await createApp(db, {
+      type: "agent",
+      agentId: sourceAgent.id,
+      companyId: sourceCompany.id,
+    });
+
+    const res = await request(app)
+      .post(`/api/management/companies/${targetCompany.id}/delegated-issues`)
+      .send({ title: "Should be denied (exhausted)" });
+    expect(res.status).toBe(403);
+
+    const issueCount = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.companyId, targetCompany.id));
+    expect(issueCount).toHaveLength(0);
+  }, 30_000);
+
+  it("denies cross-company delegation when the grant has expired", async () => {
+    const sourceCompany = await seedCompany(db, TEST_SOURCE_COMPANY_ID, "DelegExpiredSource");
+    const targetCompany = await seedCompany(db, undefined, "DelegExpiredTarget");
+    const sourceAgent = await seedAgent(db, sourceCompany.id, "DelegExpiredSource");
+    await seedAgent(db, targetCompany.id, "DelegExpiredCeo", "idle", "ceo");
+
+    await db.insert(crossCompanyAgentGrants).values({
+      sourceCompanyId: sourceCompany.id,
+      principalType: "agent",
+      principalId: sourceAgent.id,
+      targetCompanyId: targetCompany.id,
+      capability: "delegate",
+      status: "active",
+      expiresAt: minutesAgo(5),
+    });
+
+    const app = await createApp(db, {
+      type: "agent",
+      agentId: sourceAgent.id,
+      companyId: sourceCompany.id,
+    });
+
+    const res = await request(app)
+      .post(`/api/management/companies/${targetCompany.id}/delegated-issues`)
+      .send({ title: "Should be denied (expired)" });
+    expect(res.status).toBe(403);
+
+    const issueCount = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.companyId, targetCompany.id));
+    expect(issueCount).toHaveLength(0);
+  }, 30_000);
+
   it("denies cross-company delegation when only a read grant exists", async () => {
     const sourceCompany = await seedCompany(db, TEST_SOURCE_COMPANY_ID, "DelegReadOnlySource");
     const targetCompany = await seedCompany(db, undefined, "DelegReadOnlyTarget");

@@ -176,6 +176,70 @@ describeEmbeddedPostgres("cross-company agent grant admin routes", () => {
     ]);
   }, 15_000);
 
+  it("persists and returns expiry/usage controls, and recordUse enforces the cap", async () => {
+    const sourceCompany = await seedCompany(db, TEST_SOURCE_COMPANY_ID, "SourceLimits");
+    const targetCompany = await seedCompany(db, undefined, "TargetLimits");
+    const sourceAgent = await seedAgent(db, sourceCompany.id, "SourceLimits");
+    const app = await createApp(db, {
+      type: "board",
+      userId: "admin-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const expiresAt = new Date(Date.now() + 3_600_000);
+    const createRes = await request(app)
+      .post("/api/admin/cross-company-agent-grants")
+      .send({
+        sourceCompanyId: sourceCompany.id,
+        principalId: sourceAgent.id,
+        targetCompanyId: targetCompany.id,
+        capability: "delegate",
+        expiresAt: expiresAt.toISOString(),
+        maxUses: 2,
+      });
+    expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
+    expect(createRes.body).toMatchObject({
+      capability: "delegate",
+      maxUses: 2,
+      usedCount: 0,
+    });
+    expect(new Date(createRes.body.expiresAt).getTime()).toBe(expiresAt.getTime());
+    expect(createRes.body.lastUsedAt).toBeNull();
+
+    const listRes = await request(app)
+      .get("/api/admin/cross-company-agent-grants")
+      .query({ sourceCompanyId: sourceCompany.id });
+    expect(listRes.status).toBe(200);
+    expect(listRes.body.grants[0]).toMatchObject({ maxUses: 2, usedCount: 0 });
+
+    // recordUse reserves a use up to the cap, then returns null once exhausted.
+    const { crossCompanyAgentGrantService } = await import(
+      "../services/cross-company-agent-grants.js"
+    );
+    const service = crossCompanyAgentGrantService(db);
+    const first = await service.recordUse(createRes.body.id);
+    expect(first).toMatchObject({ usedCount: 1, maxUses: 2 });
+    const second = await service.recordUse(createRes.body.id);
+    expect(second).toMatchObject({ usedCount: 2, maxUses: 2 });
+    const third = await service.recordUse(createRes.body.id);
+    expect(third).toBeNull();
+
+    // Re-issuing the grant resets usage back to zero.
+    const reissueRes = await request(app)
+      .post("/api/admin/cross-company-agent-grants")
+      .send({
+        sourceCompanyId: sourceCompany.id,
+        principalId: sourceAgent.id,
+        targetCompanyId: targetCompany.id,
+        capability: "delegate",
+        maxUses: 5,
+      });
+    expect(reissueRes.status).toBe(201);
+    expect(reissueRes.body).toMatchObject({ id: createRes.body.id, maxUses: 5, usedCount: 0 });
+    expect(reissueRes.body.expiresAt).toBeNull();
+  }, 15_000);
+
   it("rejects non-instance-admin board actors", async () => {
     const sourceCompany = await seedCompany(db, TEST_SOURCE_COMPANY_ID, "SourceDenied");
     const targetCompany = await seedCompany(db, undefined, "TargetDenied");
