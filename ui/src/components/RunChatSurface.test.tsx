@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LiveRunForIssue } from "../api/heartbeats";
@@ -20,17 +20,21 @@ const run: LiveRunForIssue = {
   finishedAt: null,
 } as LiveRunForIssue;
 
+function act(callback: () => void) {
+  flushSync(callback);
+}
+
 async function renderSurface() {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  await act(async () => {
+  act(() => {
     root.render(<RunChatSurface run={run} transcript={[]} hasOutput={false} />);
   });
   return {
     container,
-    cleanup: async () => {
-      await act(async () => {
+    cleanup: () => {
+      act(() => {
         root.unmount();
       });
       container.remove();
