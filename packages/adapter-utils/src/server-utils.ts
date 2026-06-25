@@ -264,14 +264,17 @@ function skillLocationLabel(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function buildManagedSkillOrigin(): Pick<
+function buildManagedSkillOrigin(entry?: Pick<PaperclipSkillEntry, "required" | "requiredReason">): Pick<
   AdapterSkillEntry,
-  "origin" | "originLabel" | "readOnly"
+  "origin" | "originLabel" | "readOnly" | "required" | "requiredReason"
 > {
+  const required = Boolean(entry?.required);
   return {
-    origin: "company_managed",
-    originLabel: "Managed by Paperclip",
+    origin: required ? "paperclip_required" : "company_managed",
+    originLabel: required ? "Required by Paperclip" : "Managed by Paperclip",
     readOnly: false,
+    required,
+    requiredReason: entry?.requiredReason ?? null,
   };
 }
 
@@ -1678,7 +1681,7 @@ export function buildRuntimeMountedSkillSnapshot(
         sourcePath: null,
         targetPath: null,
         detail: resolvePaperclipSkillMissingDetail(available, missingDetail),
-        ...buildManagedSkillOrigin(),
+        ...buildManagedSkillOrigin(available),
       });
       continue;
     }
@@ -1703,7 +1706,7 @@ export function buildRuntimeMountedSkillSnapshot(
               available,
             )
         : null,
-      ...buildManagedSkillOrigin(),
+      ...buildManagedSkillOrigin(available),
     });
   }
 
@@ -1799,7 +1802,7 @@ export function buildPersistentSkillSnapshot(
           available,
           missingDetail,
         ),
-        ...buildManagedSkillOrigin(),
+        ...buildManagedSkillOrigin(available),
       });
       continue;
     }
@@ -1831,7 +1834,7 @@ export function buildPersistentSkillSnapshot(
       sourcePath: available.source,
       targetPath: path.join(skillsHome, available.runtimeName),
       detail,
-      ...buildManagedSkillOrigin(),
+      ...buildManagedSkillOrigin(available),
     });
   }
 
