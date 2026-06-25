@@ -134,6 +134,7 @@ import {
   workspaceFileListQuerySchema,
   workspaceFileResourceQuerySchema,
   managementAnalyzerSnapshotQuerySchema,
+  managementDelegatedIssueCreateSchema,
   managementIssueListQuerySchema,
   managementRunListQuerySchema,
 } from "@paperclipai/shared";
@@ -4233,6 +4234,15 @@ registerCurrentRoute({
   summary: "List management heartbeat runs for a company",
   query: managementRunListQuerySchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/management/companies/{companyId}/delegated-issues",
+  tags: ["management"],
+  summary: "Delegate a bounded issue into a company (audited cross-org delegation)",
+  body: managementDelegatedIssueCreateSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 for (const route of [

@@ -283,7 +283,9 @@ export function managementRoutes(db: Db) {
       },
     });
     if (!decision.allowed) {
-      res.status(403).json({ error: "Cross-company delegation is outside this actor's boundary" });
+      // Generic: the denial may be a missing cross-company delegate grant OR a
+      // same-company low-trust / assignment-policy boundary.
+      res.status(403).json({ error: "Issue delegation is outside this actor's boundary" });
       return;
     }
 
