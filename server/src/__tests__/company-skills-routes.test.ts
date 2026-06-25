@@ -299,6 +299,7 @@ describe("company skill mutation permissions", () => {
     mockCompanySkillService.updateSkill.mockResolvedValue({
       id: "skill-1",
       slug: "review",
+      categories: ["memory", "review"],
       sharingScope: "company",
     });
     mockCompanySkillService.updateFile.mockResolvedValue({
@@ -771,6 +772,38 @@ describe("company skill mutation permissions", () => {
 
     await request(app).get("/api/companies/company-1/skills/categories").expect(200);
     expect(mockCompanySkillService.categoryCounts).toHaveBeenCalledWith("company-1");
+  });
+
+  it("accepts category updates and logs the skill mutation", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1/skills/skill-1")
+      .send({ categories: ["memory", "review"], sharingScope: "company" })
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      id: "skill-1",
+      categories: ["memory", "review"],
+      sharingScope: "company",
+    });
+    expect(mockCompanySkillService.updateSkill).toHaveBeenCalledWith("company-1", "skill-1", {
+      categories: ["memory", "review"],
+      sharingScope: "company",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: "company-1",
+      actorType: "user",
+      actorId: "user-1",
+      action: "company.skill_updated",
+      entityType: "company_skill",
+      entityId: "skill-1",
+      details: {
+        slug: "review",
+        categories: ["memory", "review"],
+        sharingScope: "company",
+      },
+    }));
   });
 
   it("creates skill versions and logs the mutation", async () => {
