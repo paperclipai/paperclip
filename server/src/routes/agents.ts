@@ -3571,6 +3571,50 @@ export function agentRoutes(
     res.json(run);
   });
 
+  router.post("/runs/:runId/cancel", async (req, res) => {
+    const authHeader = req.headers.authorization;
+    const agentSyncSecret = process.env.AGENT_SYNC_SECRET;
+    const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
+
+    if (agentSyncSecret && authHeader === `Bearer ${agentSyncSecret}`) {
+      if (!companyId) {
+        res.status(400).json({ error: "companyId required for agent cancellation" });
+        return;
+      }
+    } else {
+      assertBoard(req);
+    }
+
+    const runId = req.params.runId as string;
+    const existing = await heartbeat.getRun(runId);
+    if (existing) {
+      assertCompanyAccess(req, existing.companyId);
+    }
+    if (!existing) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    if (companyId && existing.companyId !== companyId) {
+      res.status(403).json({ error: "Unauthorized: You do not have permission to cancel this run" });
+      return;
+    }
+    const run = await heartbeat.cancelRun(runId);
+
+    if (run && authHeader === `Bearer ${agentSyncSecret}`) {
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "agent",
+        actorId: run.agentId,
+        action: "heartbeat.cancelled",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: { agentId: run.agentId },
+      });
+    }
+
+    res.json(run);
+  });
+
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {
     const runId = req.params.runId as string;
     const existing = await heartbeat.getRun(runId);
