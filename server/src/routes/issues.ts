@@ -109,7 +109,6 @@ import {
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   isInlineAttachmentContentType,
-  isAllowedContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
   SVG_CONTENT_TYPE,
@@ -8196,10 +8195,6 @@ export function issueRoutes(
     const contentType = normalizeContentType(file.mimetype);
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: "Attachment is empty" });
-      return;
-    }
-    if (!isAllowedContentType(contentType)) {
-      res.status(422).json({ error: `Unsupported attachment content type: ${contentType}` });
       return;
     }
 
