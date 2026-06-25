@@ -302,6 +302,64 @@ describe("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("uses enriched error message 'queued for retry' on first process-loss retry", async () => {
+    const { runId } = await seedRunFixture({ processPid: 999_999_999 });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.error).toContain("queued for retry");
+    expect(run?.error).not.toContain("retrying once");
+  });
+
+  it("uses enriched error message 'affected issues released' when no retry remains", async () => {
+    const { runId } = await seedRunFixture({
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.error).toContain("affected issues released");
+    expect(run?.error).not.toContain("retrying once");
+  });
+
+  it("emits a lifecycle event with recoveryAction=retry_queued when retrying", async () => {
+    const { runId } = await seedRunFixture({ processPid: 999_999_999 });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    const lifecycleEvent = events.find((e) => e.eventType === "lifecycle");
+    expect(lifecycleEvent).toBeDefined();
+    expect((lifecycleEvent?.payload as Record<string, unknown>)?.recoveryAction).toBe("retry_queued");
+  });
+
+  it("emits a lifecycle event with recoveryAction=issues_released when no retry", async () => {
+    const { runId } = await seedRunFixture({
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    const lifecycleEvent = events.find((e) => e.eventType === "lifecycle");
+    expect(lifecycleEvent).toBeDefined();
+    expect((lifecycleEvent?.payload as Record<string, unknown>)?.recoveryAction).toBe("issues_released");
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,
