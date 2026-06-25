@@ -48,6 +48,12 @@ test.describe("Conference Room typing intro after onboarding wizard", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          // RES-1298: the route handler runs in Node, not in the page, so the
+          // browser-set Origin on the intercepted request is lost. Re-issue
+          // with Origin = baseURL so local_trusted promotes us to the board
+          // actor; without it the POST bounces with 401/403 and the wizard
+          // never reaches the Conference Room.
+          ...(baseURL ? { Origin: baseURL } : {}),
           ...(auth ? { Authorization: auth } : {}),
         },
         body: JSON.stringify({
