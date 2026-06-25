@@ -257,6 +257,12 @@ export type IssueThreadInteractionContinuationPolicy =
 
 export const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug";
 
+// Issues created through the audited cross-organization delegation endpoint
+// (`POST /api/management/companies/:companyId/delegated-issues`). The issue
+// lives in the target company; provenance back to the source company/agent is
+// captured via originId (source company id) and the activity log.
+export const CROSS_COMPANY_DELEGATION_ORIGIN_KIND = "cross_company_delegation";
+
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
   "routine_execution",
@@ -266,6 +272,7 @@ export const ISSUE_ORIGIN_KINDS = [
   "stranded_issue_recovery",
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
+  CROSS_COMPANY_DELEGATION_ORIGIN_KIND,
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
@@ -741,7 +748,7 @@ export const PERMISSION_KEYS = [
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
-export const CROSS_COMPANY_AGENT_GRANT_CAPABILITIES = ["read"] as const;
+export const CROSS_COMPANY_AGENT_GRANT_CAPABILITIES = ["read", "delegate"] as const;
 export type CrossCompanyAgentGrantCapability =
   (typeof CROSS_COMPANY_AGENT_GRANT_CAPABILITIES)[number];
 

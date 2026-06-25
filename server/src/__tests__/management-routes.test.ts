@@ -70,13 +70,14 @@ async function seedAgent(
   companyId: string,
   label: string,
   status = "idle",
+  role = "engineer",
 ) {
   return db
     .insert(agents)
     .values({
       companyId,
       name: `Agent ${label} ${randomUUID()}`,
-      role: "engineer",
+      role,
       adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
@@ -771,4 +772,152 @@ describeEmbeddedPostgres("management routes", () => {
       expect.objectContaining({ id: targetCompany.id }),
     ]));
   }, 15_000);
+
+  it("lets a granted source-company agent delegate a bounded issue to the target CEO with audit in both companies", async () => {
+    const sourceCompany = await seedCompany(db, TEST_SOURCE_COMPANY_ID, "DelegSource");
+    const targetCompany = await seedCompany(db, undefined, "DelegTarget");
+    const sourceAgent = await seedAgent(db, sourceCompany.id, "DelegSource");
+    const targetCeo = await seedAgent(db, targetCompany.id, "DelegTargetCeo", "idle", "ceo");
+    const sourceRun = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: sourceCompany.id,
+        agentId: sourceAgent.id,
+        status: "running",
+        invocationSource: "assignment",
+        livenessState: "completed",
+        startedAt: minutesAgo(10),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    await db.insert(crossCompanyAgentGrants).values({
+      sourceCompanyId: sourceCompany.id,
+      principalType: "agent",
+      principalId: sourceAgent.id,
+      targetCompanyId: targetCompany.id,
+      capability: "delegate",
+      status: "active",
+    });
+
+    const app = await createApp(db, {
+      type: "agent",
+      agentId: sourceAgent.id,
+      companyId: sourceCompany.id,
+      runId: sourceRun.id,
+    });
+
+    const res = await request(app)
+      .post(`/api/management/companies/${targetCompany.id}/delegated-issues`)
+      .send({
+        title: "Adapt confirmation discipline instruction",
+        description: "Board flagged unnecessary confirmation prompts; fix the routine instruction.",
+        priority: "high",
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.issue).toMatchObject({
+      companyId: targetCompany.id,
+      title: "Adapt confirmation discipline instruction",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: targetCeo.id,
+    });
+    expect(res.body.access).toMatchObject({
+      mode: "cross_company_grant",
+      sourceCompanyId: sourceCompany.id,
+    });
+
+    const createdIssue = await db
+      .select({
+        companyId: issues.companyId,
+        originKind: issues.originKind,
+        originId: issues.originId,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(eq(issues.id, res.body.issue.id))
+      .then((rows) => rows[0]!);
+    expect(createdIssue).toMatchObject({
+      companyId: targetCompany.id,
+      originKind: "cross_company_delegation",
+      originId: sourceCompany.id,
+      assigneeAgentId: targetCeo.id,
+    });
+
+    const auditRows = await db
+      .select({ companyId: activityLog.companyId, runId: activityLog.runId, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "cross_company_issue.delegated"));
+    expect(auditRows).toHaveLength(2);
+    expect(auditRows.map((row) => row.companyId).sort()).toEqual(
+      [sourceCompany.id, targetCompany.id].sort(),
+    );
+    expect(auditRows.every((row) => row.runId === sourceRun.id)).toBe(true);
+  }, 30_000);
+
+  it("denies cross-company delegation when only a read grant exists", async () => {
+    const sourceCompany = await seedCompany(db, TEST_SOURCE_COMPANY_ID, "DelegReadOnlySource");
+    const targetCompany = await seedCompany(db, undefined, "DelegReadOnlyTarget");
+    const sourceAgent = await seedAgent(db, sourceCompany.id, "DelegReadOnlySource");
+    await seedAgent(db, targetCompany.id, "DelegReadOnlyCeo", "idle", "ceo");
+
+    await db.insert(crossCompanyAgentGrants).values({
+      sourceCompanyId: sourceCompany.id,
+      principalType: "agent",
+      principalId: sourceAgent.id,
+      targetCompanyId: targetCompany.id,
+      capability: "read",
+      status: "active",
+    });
+
+    const app = await createApp(db, {
+      type: "agent",
+      agentId: sourceAgent.id,
+      companyId: sourceCompany.id,
+    });
+
+    const res = await request(app)
+      .post(`/api/management/companies/${targetCompany.id}/delegated-issues`)
+      .send({ title: "Should be denied" });
+    expect(res.status).toBe(403);
+
+    const issueCount = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.companyId, targetCompany.id));
+    expect(issueCount).toHaveLength(0);
+  }, 30_000);
+
+  it("rejects a delegated assignee that is not in the target company", async () => {
+    const sourceCompany = await seedCompany(db, TEST_SOURCE_COMPANY_ID, "DelegBadAssigneeSource");
+    const targetCompany = await seedCompany(db, undefined, "DelegBadAssigneeTarget");
+    const sourceAgent = await seedAgent(db, sourceCompany.id, "DelegBadAssigneeSource");
+    await seedAgent(db, targetCompany.id, "DelegBadAssigneeCeo", "idle", "ceo");
+
+    await db.insert(crossCompanyAgentGrants).values({
+      sourceCompanyId: sourceCompany.id,
+      principalType: "agent",
+      principalId: sourceAgent.id,
+      targetCompanyId: targetCompany.id,
+      capability: "delegate",
+      status: "active",
+    });
+
+    const app = await createApp(db, {
+      type: "agent",
+      agentId: sourceAgent.id,
+      companyId: sourceCompany.id,
+    });
+
+    const res = await request(app)
+      .post(`/api/management/companies/${targetCompany.id}/delegated-issues`)
+      .send({ title: "Wrong company assignee", assigneeAgentId: sourceAgent.id });
+    expect(res.status).toBe(422);
+
+    const issueCount = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.companyId, targetCompany.id));
+    expect(issueCount).toHaveLength(0);
+  }, 30_000);
 });

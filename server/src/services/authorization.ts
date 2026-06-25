@@ -54,6 +54,7 @@ export type AuthorizationAction =
   | "agent:wake"
   | "company_scope:read"
   | "issue:comment"
+  | "issue:delegate"
   | "issue:mutate"
   | "issue:read"
   | "project:read"
@@ -137,7 +138,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
   ) {
     return null;
   }
-  if (action === "issue:comment" || action === "issue:mutate") return null;
+  if (action === "issue:comment" || action === "issue:mutate" || action === "issue:delegate") return null;
   return action;
 }
 
@@ -162,6 +163,14 @@ const CROSS_COMPANY_AGENT_READ_ACTIONS = new Set<AuthorizationAction>([
   "issue:read",
   "project:read",
   "company_scope:read",
+]);
+
+// Write actions a source-company agent may perform across the company boundary
+// when it holds an active "delegate" cross-company grant. This is intentionally
+// limited to creating a single bounded issue in the target company — it does
+// NOT widen reads, instruction edits, config, or arbitrary mutation.
+const CROSS_COMPANY_AGENT_DELEGATE_ACTIONS = new Set<AuthorizationAction>([
+  "issue:delegate",
 ]);
 
 function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
@@ -1261,18 +1270,23 @@ export function authorizationService(db: Db) {
     }
 
     if (actorCompanyId !== companyId) {
-      if (!CROSS_COMPANY_AGENT_READ_ACTIONS.has(input.action)) {
+      const isCrossCompanyReadAction = CROSS_COMPANY_AGENT_READ_ACTIONS.has(input.action);
+      const isCrossCompanyDelegateAction = CROSS_COMPANY_AGENT_DELEGATE_ACTIONS.has(input.action);
+      if (!isCrossCompanyReadAction && !isCrossCompanyDelegateAction) {
         return deny({
           action: input.action,
           reason: "deny_company_boundary",
           explanation: "Agent key cannot access another company.",
         });
       }
+      const requiredCapability: CrossCompanyAgentGrantCapability = isCrossCompanyDelegateAction
+        ? "delegate"
+        : "read";
       if (!isAllowedCrossCompanyAgentSourceCompany(actorCompanyId)) {
         return deny({
           action: input.action,
           reason: "deny_company_boundary",
-          explanation: "Only configured source-company agents can use cross-company read delegation.",
+          explanation: "Only configured source-company agents can use cross-company delegation.",
         });
       }
 
@@ -1289,7 +1303,7 @@ export function authorizationService(db: Db) {
           explanation:
             sourceTrust.kind === "denied"
               ? sourceTrust.detail
-              : `${LOW_TRUST_REVIEW_PRESET} agents cannot use cross-company read delegation.`,
+              : `${LOW_TRUST_REVIEW_PRESET} agents cannot use cross-company delegation.`,
         });
       }
 
@@ -1297,20 +1311,20 @@ export function authorizationService(db: Db) {
         actorCompanyId,
         actorAgentId,
         companyId,
-        "read",
+        requiredCapability,
       );
       if (!crossCompanyGrant) {
         return deny({
           action: input.action,
           reason: "deny_missing_grant",
-          explanation: "Missing active cross-company read grant for the target company.",
+          explanation: `Missing active cross-company ${requiredCapability} grant for the target company.`,
         });
       }
 
       return allow({
         action: input.action,
         reason: "allow_cross_company_grant",
-        explanation: "Allowed by active cross-company read grant.",
+        explanation: `Allowed by active cross-company ${requiredCapability} grant.`,
         crossCompanyGrant: {
           id: crossCompanyGrant.id,
           sourceCompanyId: crossCompanyGrant.sourceCompanyId,
@@ -1368,6 +1382,17 @@ export function authorizationService(db: Db) {
         action: input.action,
         reason: "allow_self",
         explanation: "Allowed because the actor is waking itself.",
+      });
+    }
+
+    // A standard same-company agent that can create issues at all can also use
+    // the bounded delegation endpoint inside its own company. Cross-company use
+    // is gated above by the "delegate" grant.
+    if (input.action === "issue:delegate" && isSimpleAssignableAgentStatus(actorAgent.status)) {
+      return allow({
+        action: input.action,
+        reason: "allow_company_agent",
+        explanation: "Allowed by standard same-company agent delegation.",
       });
     }
 

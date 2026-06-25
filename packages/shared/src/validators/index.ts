@@ -32,9 +32,11 @@ export {
 } from "./company.js";
 export {
   managementAnalyzerSnapshotQuerySchema,
+  managementDelegatedIssueCreateSchema,
   managementIssueListQuerySchema,
   managementRunListQuerySchema,
   type ManagementAnalyzerSnapshotQuery,
+  type ManagementDelegatedIssueCreate,
   type ManagementIssueListQuery,
   type ManagementRunListQuery,
 } from "./management.js";
