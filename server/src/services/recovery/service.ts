@@ -67,6 +67,11 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "ti
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+// opencode_local runs outlive their source issues and can be legitimately silent for much longer
+// (waiting for user input, model thinking, etc.). Use higher per-adapter thresholds so the
+// watchdog does not fire flood issues for normal idle time.
+export const OPENCODE_LOCAL_SUSPICION_THRESHOLD_MS = 4 * 60 * 60 * 1000;
+export const OPENCODE_LOCAL_CRITICAL_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -844,6 +849,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findRecentlyClosedStaleRunEvaluation(companyId: string, runId: string, closedAfter: Date) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          gte(issues.updatedAt, closedAfter),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1453,8 +1482,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
+
+    // Per-adapter effective thresholds — opencode_local sessions can be legitimately silent
+    // for much longer than other adapters (waiting for user, model thinking, large file writes).
+    const effectiveSuspicionThresholdMs = runningAgent.adapterType === "opencode_local"
+      ? OPENCODE_LOCAL_SUSPICION_THRESHOLD_MS
+      : ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS;
+    const effectiveCriticalThresholdMs = runningAgent.adapterType === "opencode_local"
+      ? OPENCODE_LOCAL_CRITICAL_THRESHOLD_MS
+      : ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS;
+    const silenceAgeMs = silenceAgeMsForRun(input.run, input.now) ?? 0;
+
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
+
+    // Skip new-evaluation logic for this adapter if silence age is below effective threshold.
+    // We still process existing open evaluations to handle escalations and folds.
+    if (!existing && silenceAgeMs < effectiveSuspicionThresholdMs) {
+      return { kind: "skipped" as const };
+    }
+
+    // Dedup: if the evaluation was recently closed (within the REARM window) without a
+    // watchdog decision being recorded, suppress creating another issue for the same run.
+    // This prevents flood-creation when an agent closes the evaluation immediately and the
+    // scan fires again before the process has had time to terminate.
+    if (!existing) {
+      const closedCutoff = new Date(input.now.getTime() - ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS);
+      const recentlyClosed = await findRecentlyClosedStaleRunEvaluation(input.run.companyId, input.run.id, closedCutoff);
+      if (recentlyClosed) {
+        return { kind: "suppressed" as const, evaluationIssueId: recentlyClosed.id };
+      }
+    }
+
     if (sourceIssue && isRecoveryOriginIssue(sourceIssue)) {
       await logActivity(db, {
         companyId: input.run.companyId,
@@ -1503,7 +1562,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       prefix,
       now: input.now,
     });
-    const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    const level = (evidence.silenceAgeMs ?? 0) >= effectiveCriticalThresholdMs ? "critical" : "suspicious";
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
         await issuesSvc.update(existing.id, {
@@ -1640,6 +1699,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       folded: 0,
       snoozed: 0,
+      suppressed: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
     };
@@ -1654,6 +1714,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
       else if (outcome.kind === "folded") result.folded += 1;
+      else if (outcome.kind === "suppressed") result.suppressed += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);

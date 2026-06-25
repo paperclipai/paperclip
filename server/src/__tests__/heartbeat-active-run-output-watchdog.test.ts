@@ -22,6 +22,7 @@ import {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  OPENCODE_LOCAL_SUSPICION_THRESHOLD_MS,
   heartbeatService,
 } from "../services/heartbeat.ts";
 import { recoveryService } from "../services/recovery/service.ts";
@@ -131,6 +132,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
+    adapterType?: string;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -149,6 +151,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });
+    const coderAdapterType = opts.adapterType ?? "codex_local";
     await db.insert(agents).values([
       {
         id: managerId,
@@ -168,7 +171,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         role: "engineer",
         status: "running",
         reportsTo: managerId,
-        adapterType: "codex_local",
+        adapterType: coderAdapterType,
         adapterConfig: {},
         runtimeConfig: {},
         permissions: {},
@@ -822,5 +825,63 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  it("suppresses flood: does not create a second evaluation when one was recently closed within the REARM window", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // First scan creates the evaluation issue
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
+
+    // Simulate an agent closing the evaluation without a watchdog decision
+    await db.update(issues).set({ status: "done", updatedAt: now }).where(eq(issues.id, evaluationIssueId!));
+
+    // Second scan shortly after: REARM window not expired → should be suppressed, not created
+    const withinRearm = new Date(now.getTime() + 60_000);
+    const second = await heartbeat.scanSilentActiveRuns({ now: withinRearm, companyId });
+    expect(second.created).toBe(0);
+    expect(second.suppressed).toBe(1);
+
+    // Third scan after REARM window expires → may create a new one
+    const afterRearm = new Date(now.getTime() + ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS + 60_000);
+    const third = await heartbeat.scanSilentActiveRuns({ now: afterRearm, companyId });
+    expect(third.created).toBe(1);
+    expect(third.evaluationIssueIds[0]).not.toBe(evaluationIssueId);
+
+    // Total evaluation issues: exactly 2 (original + one after REARM), not hundreds
+    const allEvals = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(allEvals).toHaveLength(2);
+  });
+
+  it("opencode_local: does not fire before the elevated suspicion threshold", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      // Silent for longer than standard threshold but shorter than opencode_local threshold
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      adapterType: "opencode_local",
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Should not create an evaluation: silence age < OPENCODE_LOCAL_SUSPICION_THRESHOLD_MS
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(scan.created).toBe(0);
+    expect(scan.skipped).toBe(1);
+
+    // After opencode_local threshold: evaluation is created
+    const afterThreshold = new Date(now.getTime() + (OPENCODE_LOCAL_SUSPICION_THRESHOLD_MS - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS));
+    const scan2 = await heartbeat.scanSilentActiveRuns({ now: afterThreshold, companyId });
+    expect(scan2.created).toBe(1);
   });
 });
