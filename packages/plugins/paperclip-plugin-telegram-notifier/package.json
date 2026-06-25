@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Pushes Paperclip escalations, approvals, mentions, and run failures to a Telegram chat via the Bot API.",
   "type": "module",
+  "private": true,
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
   "repository": {
