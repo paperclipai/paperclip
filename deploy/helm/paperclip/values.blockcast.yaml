@@ -227,7 +227,7 @@ env:
     - name: NODE_OPTIONS
       value: "--max-old-space-size=6144"
     # Anthropic routing for paperclip-spawned agent Job pods. Routed through the
-    # managed Penstock proxy (ns penstock) instead of legacy ccrotate-serve.
+    # Penstock gateway instead of legacy ccrotate-serve.
     # The claude_k8s adapter copies these env entries onto every Job pod it
     # creates (inheritedEnvValueFrom) -- so this is an ALL-AGENTS cutover.
     #
@@ -235,15 +235,15 @@ env:
     # on push to master, gated on PAPERCLIP_CI_DEPLOY):
     #   1. Secret `paperclip-penstock-org-key` (key `token`) exists in ns paperclip
     #      -- the Penstock org API key (psk_... Bearer for api.penstock.run).
-    #   2. Egress NetworkPolicy permits paperclip Job pods -> penstock-proxy.penstock.svc:80.
-    #   3. Live provider verification through the proxy has passed (PEN-1075),
+    #   2. Egress NetworkPolicy permits paperclip Job pods -> api.penstock.run:443.
+    #   3. Live provider verification through the gateway has passed (PEN-1075),
     #      and PEN-1039 is ready to scale legacy ccrotate-serve to 0.
     # ROLLBACK: revert this block to http://ccrotate-serve.paperclip.svc:4001 +
     #   paperclip-ccrotate-serve-secrets/serveToken.
     # ANTHROPIC_AUTH_TOKEN is the Bearer-style var preferred by Claude Code /
     # Anthropic SDK >=0.30; ANTHROPIC_API_KEY mirrors it for older SDK paths.
     - name: ANTHROPIC_BASE_URL
-      value: "http://penstock-proxy.penstock.svc.cluster.local/anthropic"
+      value: "https://api.penstock.run/anthropic"
     - name: ANTHROPIC_AUTH_TOKEN
       valueFrom:
         secretKeyRef:
