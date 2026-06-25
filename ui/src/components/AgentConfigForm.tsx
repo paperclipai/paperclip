@@ -516,24 +516,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return typeof value === "string" ? value : "";
   }, [adapterCheapDefault]);
 
-  function buildAdapterConfigForTest(modelOverride?: string | null): Record<string, unknown> {
+  function buildAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
     if (isCreate) {
       const next = uiAdapter.buildAdapterConfig(val!);
-      if (typeof modelOverride === "string") {
-        const trimmed = modelOverride.trim();
-        if (trimmed) {
-          next.model = trimmed;
-        }
+      if (adapterConfigPatch) {
+        Object.assign(next, adapterConfigPatch);
       }
       return next;
     }
     const base = config as Record<string, unknown>;
     const next = { ...base, ...overlay.adapterConfig };
-    if (typeof modelOverride === "string") {
-      const trimmed = modelOverride.trim();
-      if (trimmed) {
-        next.model = trimmed;
-      }
+    if (adapterConfigPatch) {
+      Object.assign(next, adapterConfigPatch);
     }
     if (adapterType === "hermes_local") {
       const hermesCommand =
@@ -549,10 +543,30 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return next;
   }
 
-  function getCheapModelTestModel(): string | null {
+  function buildCheapAdapterConfigForTest(): Record<string, unknown> {
+    const adapterDefaultConfig = asObject(adapterCheapDefault?.adapterConfig);
+    const createCheapModel = isCreate ? (val!.cheapModel ?? "").trim() : "";
+    const cheapAdapterConfig = isCreate
+      ? {
+          ...adapterDefaultConfig,
+          ...(createCheapModel ? { model: createCheapModel } : {}),
+        }
+      : {
+          ...adapterDefaultConfig,
+          ...cheapProfileFromAgent.adapterConfig,
+          ...asObject(cheapOverlay?.adapterConfig),
+        };
+    return buildAdapterConfigForTest(cheapAdapterConfig);
+  }
+
+  function getCheapModelTestCase(): { model: string; adapterConfig: Record<string, unknown> } | null {
     if (!currentCheapEnabled) return null;
-    const model = currentCheapModel.trim();
-    return model.length > 0 ? model : null;
+    const adapterConfig = buildCheapAdapterConfigForTest();
+    const configModel = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+    const model = configModel || currentCheapModel.trim();
+    if (!model) return null;
+    adapterConfig.model = model;
+    return { model, adapterConfig };
   }
 
   function prefixEnvironmentTestChecks(
@@ -615,7 +629,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         throw new Error("Select a company to test adapter environment");
       }
       const primaryModel = currentModelId.trim() || null;
-      const cheapModel = getCheapModelTestModel();
+      const cheapTestCase = getCheapModelTestCase();
       const environmentId = currentDefaultEnvironmentId || null;
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {
@@ -630,14 +644,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         },
       ];
 
-      if (cheapModel) {
+      if (cheapTestCase) {
         testResults.push({
           label: "Cheap model",
-          model: cheapModel,
+          model: cheapTestCase.model,
           result: await runEnvironmentTestCase(
             "Cheap model",
-            cheapModel,
-            buildAdapterConfigForTest(cheapModel),
+            cheapTestCase.model,
+            cheapTestCase.adapterConfig,
             environmentId,
           ),
         });
@@ -793,9 +807,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const cheapProfileFromAgent = useMemo(() => {
     const profiles = (runtimeConfig.modelProfiles ?? {}) as Record<string, unknown>;
     const cheap = (profiles.cheap ?? {}) as Record<string, unknown>;
-    const cheapAdapterConfig = (cheap.adapterConfig ?? {}) as Record<string, unknown>;
+    const cheapAdapterConfig = asObject(cheap.adapterConfig);
     return {
       enabled: cheap.enabled !== false,
+      adapterConfig: cheapAdapterConfig,
       model: typeof cheapAdapterConfig.model === "string" ? cheapAdapterConfig.model : "",
     };
   }, [runtimeConfig]);

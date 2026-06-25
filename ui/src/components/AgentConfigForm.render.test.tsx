@@ -9,6 +9,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AgentConfigForm } from "./AgentConfigForm";
 
 const mockAgentsApi = vi.hoisted(() => ({
+  adapterModelProfiles: vi.fn(),
   adapterModels: vi.fn(),
   detectModel: vi.fn(),
   list: vi.fn(),
@@ -198,6 +199,7 @@ describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
 
   beforeEach(() => {
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
@@ -290,7 +292,11 @@ describe("AgentConfigForm environment selector", () => {
         modelProfiles: {
           cheap: {
             enabled: true,
-            adapterConfig: { model: "gpt-5.4-mini" },
+            adapterConfig: {
+              model: "gpt-5.4-mini",
+              baseUrl: "https://cheap-models.example.test",
+              provider: "budget-provider",
+            },
           },
         },
       },
@@ -314,7 +320,11 @@ describe("AgentConfigForm environment selector", () => {
       adapterConfig: expect.objectContaining({ model: "gpt-5.4" }),
     });
     expect(mockAgentsApi.testEnvironment.mock.calls[1]?.[2]).toMatchObject({
-      adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
+      adapterConfig: expect.objectContaining({
+        model: "gpt-5.4-mini",
+        baseUrl: "https://cheap-models.example.test",
+        provider: "budget-provider",
+      }),
     });
   });
 
