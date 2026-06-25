@@ -874,6 +874,8 @@ function IssueChatChainOfThought({
   const rawSegments = Array.isArray(custom.chainOfThoughtSegments)
     ? (custom.chainOfThoughtSegments as SegmentTiming[])
     : [];
+  const currentStatusMessage =
+    typeof custom.currentStatusMessage === "string" ? custom.currentStatusMessage.trim() : "";
   const segmentTiming = myIndex >= 0 ? rawSegments[myIndex] ?? null : null;
   const isActive = isCoTSegmentActive({
     isMessageRunning,
@@ -908,33 +910,45 @@ function IssueChatChainOfThought({
     <div>
       <button
         type="button"
-        className="group flex w-full items-center gap-2.5 rounded-lg px-1 py-2 text-left transition-colors hover:bg-accent/5"
+        className="group flex w-full items-start gap-2.5 rounded-lg px-1 py-2 text-left transition-colors hover:bg-accent/5"
         onClick={() => hasContent && setExpanded((v) => !v)}
       >
-        <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
-          {agentIcon ? (
-            <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
-          ) : isActive ? (
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-          ) : (
-            <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+              {agentIcon ? (
+                <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
+              ) : isActive ? (
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+              ) : (
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+                </span>
+              )}
+              {isActive ? (
+                <span className="shimmer-text">{headerVerb}</span>
+              ) : (
+                headerVerb
+              )}
             </span>
-          )}
-          {isActive ? (
-            <span className="shimmer-text">{headerVerb}</span>
-          ) : (
-            headerVerb
-          )}
-        </span>
-        {headerSuffix ? (
-          <span className="text-xs text-muted-foreground/60">{headerSuffix}</span>
-        ) : null}
-        {toolSummary ? (
-          <span className="text-xs text-muted-foreground/40">· {toolSummary}</span>
-        ) : null}
+            {headerSuffix ? (
+              <span className="text-xs text-muted-foreground/60">{headerSuffix}</span>
+            ) : null}
+            {toolSummary ? (
+              <span className="text-xs text-muted-foreground/40">· {toolSummary}</span>
+            ) : null}
+          </div>
+          {isActive && currentStatusMessage ? (
+            <span
+              className="mt-0.5 block truncate pl-6 text-xs leading-4 text-muted-foreground/70"
+              title={currentStatusMessage}
+            >
+              {currentStatusMessage}
+            </span>
+          ) : null}
+        </div>
         {hasContent ? (
-          <ChevronDown className={cn("ml-auto h-4 w-4 shrink-0 text-muted-foreground/50 transition-transform", expanded && "rotate-180")} />
+          <ChevronDown className={cn("mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/50 transition-transform", expanded && "rotate-180")} />
         ) : null}
       </button>
       {expanded && hasContent ? (
@@ -1579,6 +1593,8 @@ function IssueChatAssistantMessage({
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
     : [];
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
+  const currentStatusMessage =
+    typeof custom.currentStatusMessage === "string" ? custom.currentStatusMessage.trim() : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
   const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
@@ -1855,15 +1871,25 @@ function IssueChatAssistantMessage({
               <div className="space-y-3">
                 <IssueChatAssistantParts message={message} hasCoT={hasCoT} />
                 {message.content.length === 0 && waitingText ? (
-                  <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
-                    <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
-                      {agentIcon ? (
-                        <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
-                      ) : (
-                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-                      )}
-                      <span className="shimmer-text">{waitingText}</span>
-                    </span>
+                  <div className="rounded-lg px-1 py-2">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+                        {agentIcon ? (
+                          <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
+                        ) : (
+                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+                        )}
+                        <span className="shimmer-text">{waitingText}</span>
+                      </span>
+                    </div>
+                    {isRunning && currentStatusMessage ? (
+                      <div
+                        className="mt-0.5 truncate pl-6 text-xs leading-4 text-muted-foreground/70"
+                        title={currentStatusMessage}
+                      >
+                        {currentStatusMessage}
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
                 {notices.length > 0 ? (
@@ -4178,6 +4204,8 @@ export function IssueChatThread({
         adapterType: activeRun.adapterType,
         logBytes: activeRun.logBytes,
         lastOutputBytes: activeRun.lastOutputBytes,
+        currentStatusMessage: activeRun.currentStatusMessage ?? null,
+        currentStatusUpdatedAt: toIsoString(activeRun.currentStatusUpdatedAt),
       });
     }
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
