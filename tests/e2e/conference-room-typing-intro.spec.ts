@@ -14,7 +14,7 @@ import { test, expect } from "@playwright/test";
  * deterministic intercepts so no live LLM/CLI is needed:
  *  - the adapter env-test returns an instant pass, and
  *  - the team-lead hire is re-issued server-side as a REAL hire with an
- *    inert `http` adapter (dead URL, heartbeat disabled), so a real CEO
+ *    inert `http` adapter (dead URL, heartbeat disabled), so a real lead
  *    agent exists for the welcome bubble but no agent process ever runs.
  */
 
@@ -83,24 +83,38 @@ test.describe("Conference Room typing intro after onboarding wizard", () => {
     const frontDoor = page.getByText("Build a new team");
     if (await frontDoor.count()) await frontDoor.first().click();
 
-    // Step 1: company setup. Mission now lives on the first step.
-    await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
-    await page
-      .getByPlaceholder("What is this company trying to achieve?")
-      .fill(MISSION);
-    await page.getByRole("button", { name: /^Next/ }).click();
-
-    // Step 2: agent (prefilled) -> Next creates the inert CEO via the route
-    // above after the adapter probe is intercepted.
+    // Step 1: company setup.
     await expect(
-      page.locator("h3", { hasText: "Create your first agent" }),
+      page.getByRole("heading", { name: "Name your team" }),
     ).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator('input[placeholder="CEO"]')).toHaveValue("CEO");
+    await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
     await page.getByRole("button", { name: /^Next/ }).click();
 
     await expect(
-      page.locator("h3", { hasText: "Link a workspace" }),
+      page.getByRole("heading", { name: "Define your mission" }),
+    ).toBeVisible({ timeout: 10_000 });
+    await page
+      .getByPlaceholder("What is your team trying to achieve?")
+      .fill(MISSION);
+    await page.getByRole("button", { name: /Confirm mission/ }).click();
+
+    // Step 3: lead name (prefilled) -> Step 4 creates the inert CEO via the
+    // route above after the adapter probe is intercepted.
+    await expect(
+      page.getByRole("heading", { name: "Create your team lead" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.locator('input[placeholder="Chief of staff"]'),
+    ).toHaveValue("Chief of staff");
+    await page.getByRole("button", { name: /^Next/ }).click();
+
+    await expect(
+      page.getByRole("heading", { name: "Connect a model" }),
     ).toBeVisible({ timeout: 20_000 });
+    await page.getByRole("button", { name: /Give it a heartbeat/ }).click();
+    await expect(
+      page.getByRole("heading", { name: "Review" }),
+    ).toBeVisible({ timeout: 30_000 });
 
     const companiesRes = await page.request.get("/api/companies");
     expect(companiesRes.ok()).toBe(true);

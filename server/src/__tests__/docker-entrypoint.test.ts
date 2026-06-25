@@ -43,7 +43,7 @@ function installStubs(ids: { uid: number; gid: number; nodeUid?: number; nodeGid
       `else echo 0; fi`,
     ].join("\n"),
   );
-  for (const cmd of ["usermod", "groupmod", "chown"]) {
+  for (const cmd of ["usermod", "groupmod", "chown", "mkdir", "ln"]) {
     writeStub(cmd, `echo "${cmd} $*" >> "${logFile}"`);
   }
   writeStub("gosu", `echo "gosu $*" >> "${logFile}"\nshift\nexec "$@"`);
