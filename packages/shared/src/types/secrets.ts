@@ -38,6 +38,12 @@ export type EnvBinding = string | EnvPlainBinding | EnvSecretRefBinding;
 
 export type AgentEnvConfig = Record<string, EnvBinding>;
 
+export interface DynamicSecretCommandConfig {
+  provider: "host-command";
+  command: string;
+  ttlSeconds: number;
+}
+
 export interface CompanySecret {
   id: string;
   companyId: string;
@@ -47,6 +53,7 @@ export interface CompanySecret {
   status: SecretStatus;
   managedMode: SecretManagedMode;
   externalRef: string | null;
+  dynamicCommand: DynamicSecretCommandConfig | null;
   providerConfigId: string | null;
   providerMetadata: Record<string, unknown> | null;
   latestVersion: number;
@@ -197,6 +204,7 @@ export interface CompanySecretBinding {
   versionSelector: SecretVersionSelector;
   required: boolean;
   label: string | null;
+  staticArgv: string[];
   createdAt: Date;
   updatedAt: Date;
 }

@@ -14,6 +14,11 @@ export const companySecrets = pgTable(
     status: text("status").notNull().default("active"),
     managedMode: text("managed_mode").notNull().default("paperclip_managed"),
     externalRef: text("external_ref"),
+    dynamicCommand: jsonb("dynamic_command").$type<{
+      provider: "host-command";
+      command: string;
+      ttlSeconds: number;
+    }>(),
     providerConfigId: uuid("provider_config_id").references(() => companySecretProviderConfigs.id, { onDelete: "set null" }),
     providerMetadata: jsonb("provider_metadata").$type<Record<string, unknown>>(),
     latestVersion: integer("latest_version").notNull().default(1),

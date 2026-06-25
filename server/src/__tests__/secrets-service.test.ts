@@ -145,6 +145,50 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/already exists/i);
   });
 
+  it("persists dynamic command secrets and operator static argv bindings without secret material", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `dynamic-${randomUUID()}`,
+      provider: "host_command",
+      managedMode: "dynamic_command",
+      dynamicCommand: {
+        provider: "host-command",
+        command: "/usr/local/bin/mint-github-token",
+        ttlSeconds: 3600,
+      },
+    });
+
+    expect(secret).toMatchObject({
+      managedMode: "dynamic_command",
+      provider: "host_command",
+      externalRef: null,
+      latestVersion: 0,
+      dynamicCommand: {
+        provider: "host-command",
+        command: "/usr/local/bin/mint-github-token",
+        ttlSeconds: 3600,
+      },
+    });
+
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, secret.id));
+    expect(versions).toHaveLength(0);
+
+    const binding = await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: "agent-1",
+      configPath: "env.GITHUB_TOKEN",
+      staticArgv: ["--installation", "12345"],
+    });
+
+    expect(binding.staticArgv).toEqual(["--installation", "12345"]);
+  });
+
   it("syncs top-level secret refs idempotently", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

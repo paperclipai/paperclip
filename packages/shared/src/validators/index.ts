@@ -439,6 +439,8 @@ export {
   envBindingSecretRefSchema,
   envBindingSchema,
   envConfigSchema,
+  dynamicSecretCommandSchema,
+  staticArgvSchema,
   createSecretSchema,
   createSecretProviderConfigSchema,
   updateSecretProviderConfigSchema,

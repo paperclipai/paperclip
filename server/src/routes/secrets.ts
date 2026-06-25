@@ -279,10 +279,11 @@ export function secretRoutes(db: Db) {
       {
         name: req.body.name,
         key: req.body.key,
-        provider: req.body.provider ?? defaultProvider,
+        provider: req.body.provider ?? (req.body.managedMode === "dynamic_command" ? "host_command" : defaultProvider),
         providerConfigId: req.body.providerConfigId,
         managedMode: req.body.managedMode,
         value: req.body.value,
+        dynamicCommand: req.body.dynamicCommand,
         description: req.body.description,
         externalRef: req.body.externalRef,
         providerVersionRef: req.body.providerVersionRef,

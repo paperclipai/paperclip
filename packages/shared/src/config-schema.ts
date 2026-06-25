@@ -4,7 +4,7 @@ import {
   BIND_MODES,
   DEPLOYMENT_EXPOSURES,
   DEPLOYMENT_MODES,
-  SECRET_PROVIDERS,
+  SECRET_STORAGE_PROVIDERS,
   STORAGE_PROVIDERS,
 } from "./constants.js";
 import { validateConfiguredBindMode } from "./network-bind.js";
@@ -92,7 +92,7 @@ export const secretsLocalEncryptedConfigSchema = z.object({
 });
 
 export const secretsConfigSchema = z.object({
-  provider: z.enum(SECRET_PROVIDERS).default("local_encrypted"),
+  provider: z.enum(SECRET_STORAGE_PROVIDERS).default("local_encrypted"),
   strictMode: z.boolean().default(false),
   localEncrypted: secretsLocalEncryptedConfigSchema.default({
     keyFilePath: "~/.paperclip/instances/default/secrets/master.key",

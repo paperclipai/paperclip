@@ -27,6 +27,7 @@ import type {
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
   SecretVersionSelector,
+  DynamicSecretCommandConfig,
 } from "@paperclipai/shared";
 import {
   createSecretProviderConfigSchema,
@@ -64,6 +65,7 @@ const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
   "gcp_secret_manager",
   "vault",
 ]);
+const EMPTY_STATIC_ARGV: string[] = [];
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type SecretBindingDb = Pick<Db | DbTransaction, "select" | "delete" | "insert">;
 
@@ -1700,7 +1702,8 @@ export function secretService(db: Db) {
         providerConfigId?: string | null;
         value?: string | null;
         key?: string | null;
-        managedMode?: "paperclip_managed" | "external_reference";
+        managedMode?: "paperclip_managed" | "external_reference" | "dynamic_command";
+        dynamicCommand?: DynamicSecretCommandConfig | null;
         description?: string | null;
         externalRef?: string | null;
         providerVersionRef?: string | null;
@@ -1724,21 +1727,61 @@ export function secretService(db: Db) {
       if (duplicateKey) throw conflict(`Secret key already exists: ${key}`);
 
       const managedMode = input.managedMode ?? "paperclip_managed";
+      if (managedMode === "external_reference" && !input.externalRef?.trim()) {
+        throw unprocessable("External reference secrets require externalRef");
+      }
+      if (managedMode === "external_reference" && input.provider === "host_command") {
+        throw unprocessable("Host command provider requires dynamic_command mode");
+      }
+      if (managedMode === "paperclip_managed" && input.externalRef?.trim()) {
+        throw unprocessable("Managed secrets cannot override externalRef");
+      }
+      if (managedMode === "paperclip_managed" && input.provider === "host_command") {
+        throw unprocessable("Host command provider requires dynamic_command mode");
+      }
+      if (managedMode === "paperclip_managed" && !input.value?.trim()) {
+        throw unprocessable("Managed secrets require value");
+      }
+      if (managedMode === "dynamic_command") {
+        if (input.provider !== "host_command") {
+          throw unprocessable("Dynamic command secrets require host_command provider");
+        }
+        if (!input.dynamicCommand) {
+          throw unprocessable("Dynamic command secrets require generator command config");
+        }
+        if (input.value?.trim()) {
+          throw unprocessable("Dynamic command secrets cannot set value");
+        }
+        if (input.externalRef?.trim()) {
+          throw unprocessable("Dynamic command secrets cannot set externalRef");
+        }
+        return db
+          .insert(companySecrets)
+          .values({
+            companyId,
+            key,
+            name: input.name,
+            provider: input.provider,
+            providerConfigId: input.providerConfigId ?? null,
+            status: "active",
+            managedMode,
+            externalRef: null,
+            dynamicCommand: input.dynamicCommand,
+            providerMetadata: input.providerMetadata ?? null,
+            latestVersion: 0,
+            description: input.description ?? null,
+            createdByAgentId: actor?.agentId ?? null,
+            createdByUserId: actor?.userId ?? null,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+      }
       const provider = getSecretProvider(input.provider);
       const providerConfig = await getSelectableRuntimeProviderConfig({
         companyId,
         provider: input.provider,
         providerConfigId: input.providerConfigId,
       });
-      if (managedMode === "external_reference" && !input.externalRef?.trim()) {
-        throw unprocessable("External reference secrets require externalRef");
-      }
-      if (managedMode === "paperclip_managed" && input.externalRef?.trim()) {
-        throw unprocessable("Managed secrets cannot override externalRef");
-      }
-      if (managedMode === "paperclip_managed" && !input.value?.trim()) {
-        throw unprocessable("Managed secrets require value");
-      }
       const providerWriteContext = {
         companyId,
         secretKey: key,
@@ -1756,6 +1799,7 @@ export function secretService(db: Db) {
           status: "archived",
           managedMode,
           externalRef: null,
+          dynamicCommand: null,
           providerMetadata: input.providerMetadata ?? null,
           latestVersion: 0,
           description: input.description ?? null,
@@ -1894,6 +1938,9 @@ export function secretService(db: Db) {
         providerConfigId,
       });
       const nextVersion = secret.latestVersion + 1;
+      if (secret.managedMode === "dynamic_command") {
+        throw unprocessable("Dynamic command secrets do not support rotation; update generator config instead");
+      }
       if (secret.managedMode === "external_reference" && !(input.externalRef ?? secret.externalRef)?.trim()) {
         throw unprocessable("External reference secrets require externalRef");
       }
@@ -2049,7 +2096,10 @@ export function secretService(db: Db) {
       if (deleting && secret.managedMode === "paperclip_managed") {
         throw unprocessable("Managed secrets must be deleted through DELETE /secrets/:id");
       }
-      if (secret.managedMode !== "external_reference" && patch.externalRef !== undefined) {
+      if (secret.managedMode === "dynamic_command" && patch.externalRef !== undefined) {
+        throw unprocessable("Dynamic command secrets cannot override externalRef");
+      }
+      if (secret.managedMode === "paperclip_managed" && patch.externalRef !== undefined) {
         throw unprocessable("Managed secrets cannot override externalRef");
       }
       if (
@@ -2118,6 +2168,7 @@ export function secretService(db: Db) {
       versionSelector?: SecretVersionSelector;
       required?: boolean;
       label?: string | null;
+      staticArgv?: string[];
     }) => {
       await assertSecretInCompany(input.companyId, input.secretId);
       const existing = await db
@@ -2144,6 +2195,7 @@ export function secretService(db: Db) {
           versionSelector: String(input.versionSelector ?? "latest"),
           required: input.required ?? true,
           label: input.label ?? null,
+          staticArgv: input.staticArgv ?? EMPTY_STATIC_ARGV,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -2158,6 +2210,7 @@ export function secretService(db: Db) {
         versionSelector?: SecretVersionSelector;
         required?: boolean;
         label?: string | null;
+        staticArgv?: string[];
       }>,
     ) => {
       const normalizedRefs: Array<{
@@ -2166,6 +2219,7 @@ export function secretService(db: Db) {
         versionSelector: SecretVersionSelector;
         required: boolean;
         label: string | null;
+        staticArgv: string[];
       }> = [];
       for (const ref of refs) {
         await assertSecretInCompany(companyId, ref.secretId);
@@ -2175,6 +2229,7 @@ export function secretService(db: Db) {
           versionSelector: ref.versionSelector ?? "latest",
           required: ref.required ?? true,
           label: ref.label ?? null,
+          staticArgv: ref.staticArgv ?? EMPTY_STATIC_ARGV,
         });
       }
 
@@ -2219,6 +2274,7 @@ export function secretService(db: Db) {
             versionSelector: String(ref.versionSelector),
             required: ref.required,
             label: ref.label,
+            staticArgv: ref.staticArgv,
           })),
         );
       });

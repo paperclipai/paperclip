@@ -10,13 +10,13 @@ import {
   BIND_MODES,
   DEPLOYMENT_EXPOSURES,
   DEPLOYMENT_MODES,
-  SECRET_PROVIDERS,
+  SECRET_STORAGE_PROVIDERS,
   STORAGE_PROVIDERS,
   type BindMode,
   type AuthBaseUrlMode,
   type DeploymentExposure,
   type DeploymentMode,
-  type SecretProvider,
+  type SecretStorageProvider,
   type StorageProvider,
   inferBindModeFromHost,
   resolveRuntimeBind,
@@ -71,7 +71,7 @@ export interface Config {
   databaseBackupDir: string;
   serveUi: boolean;
   uiDevMiddleware: boolean;
-  secretsProvider: SecretProvider;
+  secretsProvider: SecretStorageProvider;
   secretsStrictMode: boolean;
   secretsMasterKeyFilePath: string;
   storageProvider: StorageProvider;
@@ -123,11 +123,11 @@ export function loadConfig(): Config {
 
   const providerFromEnvRaw = process.env.PAPERCLIP_SECRETS_PROVIDER;
   const providerFromEnv =
-    providerFromEnvRaw && SECRET_PROVIDERS.includes(providerFromEnvRaw as SecretProvider)
-      ? (providerFromEnvRaw as SecretProvider)
+    providerFromEnvRaw && SECRET_STORAGE_PROVIDERS.includes(providerFromEnvRaw as SecretStorageProvider)
+      ? (providerFromEnvRaw as SecretStorageProvider)
       : null;
   const providerFromFile = fileSecrets?.provider;
-  const secretsProvider: SecretProvider = providerFromEnv ?? providerFromFile ?? "local_encrypted";
+  const secretsProvider: SecretStorageProvider = providerFromEnv ?? providerFromFile ?? "local_encrypted";
 
   const storageProviderFromEnvRaw = process.env.PAPERCLIP_STORAGE_PROVIDER;
   const storageProviderFromEnv =
