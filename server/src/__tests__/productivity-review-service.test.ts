@@ -14,15 +14,18 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
+import {
+  DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+  MAX_ISSUE_REQUEST_DEPTH,
+} from "@paperclipai/shared";
 import {
   DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
-  DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
   productivityReviewService,
 } from "../services/productivity-review.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -44,6 +47,10 @@ describeEmbeddedPostgres("productivity review service", () => {
 
   afterEach(async () => {
     await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+    // instance_settings is a global singleton (not company-scoped); reset it so
+    // no-comment-streak override tests can't leak a non-default threshold into
+    // sibling tests that rely on the default.
+    await db.execute(sql.raw(`TRUNCATE TABLE "instance_settings" CASCADE`));
   });
 
   afterAll(async () => {
@@ -205,7 +212,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.originId).toBe(seeded.issueId);
     expect(reviews[0]?.originFingerprint).toBe(`productivity-review:${seeded.issueId}`);
     expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
-    expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
+    expect(reviews[0]?.description).toContain("No-comment completed-run streak: 3");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
   });
@@ -390,7 +397,10 @@ describeEmbeddedPostgres("productivity review service", () => {
       companyId: seeded.companyId,
       agentId: seeded.coderId,
       issueId: seeded.issueId,
-      count: 9,
+      // 2 coder runs stay below the default no-comment-streak threshold (3) so
+      // the only thing that could trigger a review here is the manager's churn,
+      // which must be ignored because the manager is not the assignee.
+      count: 2,
       now,
     });
     const managerRuns = await insertRuns({
@@ -562,5 +572,57 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(result.failed).toBe(0);
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("escalates at the productivityReviewNoCommentStreakRuns instance-setting instead of the hardcoded default", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    // Lower the operator-tunable threshold to 2 (below the default of 3). This
+    // is the "no redeploy to tune" path: the setting is read at reconcile time.
+    await instanceSettingsService(db).updateExperimental({ productivityReviewNoCommentStreakRuns: 2 });
+
+    // 2 consecutive no-comment terminal runs: below the default (3) but at the
+    // configured setting (2), so a review must be created.
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 2,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `no_comment_streak`");
+    // Effective threshold reflects the instance-setting (2), not the default (3).
+    expect(review?.description).toContain("No-comment streak: 2 completed runs");
+    expect(review?.description).toContain("No-comment completed-run streak: 2");
+  });
+
+  it("does not escalate below the default threshold when no instance-setting override is present", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // 2 consecutive no-comment terminal runs is below the default threshold (3)
+    // and no instance-setting override is configured, so no review is created.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 2,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 });

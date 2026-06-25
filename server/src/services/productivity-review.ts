@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { clampIssueRequestDepth } from "@paperclipai/shared";
+import { clampIssueRequestDepth, DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS } from "@paperclipai/shared";
 import {
   agents,
   companies,
@@ -14,6 +14,7 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -21,7 +22,6 @@ import {
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
-export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
@@ -203,6 +203,29 @@ function formatTrigger(trigger: ProductivityReviewTrigger) {
 export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
   const issuesSvc = issueService(db);
   const budgets = budgetService(db);
+  const instanceSettings = instanceSettingsService(db);
+
+  /**
+   * Resolve the no-comment-streak escalation threshold with precedence:
+   * explicit caller override > experimental instance-setting > default.
+   * The instance-setting is what makes the threshold operator-tunable
+   * without a redeploy.
+   */
+  async function resolveNoCommentStreakRuns(explicit?: number): Promise<number> {
+    if (Number.isFinite(explicit) && (explicit as number) > 0) {
+      return Math.floor(explicit as number);
+    }
+    try {
+      const fromSetting = (await instanceSettings.getExperimental()).productivityReviewNoCommentStreakRuns;
+      if (Number.isFinite(fromSetting) && fromSetting > 0) return Math.floor(fromSetting);
+    } catch (err) {
+      logger.warn(
+        { err },
+        "productivity review: failed to read no-comment-streak instance setting; using default",
+      );
+    }
+    return DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS;
+  }
 
   async function getCompanyIssuePrefix(companyId: string) {
     return db
@@ -764,7 +787,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     thresholds?: Partial<ProductivityReviewThresholds>;
   }) {
     const now = opts?.now ?? new Date();
-    const thresholds = buildThresholds(opts?.thresholds);
+    const noCommentStreakRuns = await resolveNoCommentStreakRuns(opts?.thresholds?.noCommentStreakRuns);
+    const thresholds = buildThresholds({ ...opts?.thresholds, noCommentStreakRuns });
     const candidates = await db
       .select()
       .from(issues)
@@ -856,7 +880,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     thresholds?: Partial<ProductivityReviewThresholds>;
   }) {
     const now = input.now ?? new Date();
-    const thresholds = buildThresholds(input.thresholds);
+    const noCommentStreakRuns = await resolveNoCommentStreakRuns(input.thresholds?.noCommentStreakRuns);
+    const thresholds = buildThresholds({ ...input.thresholds, noCommentStreakRuns });
     const [sourceIssue, sourceAgent, openReview] = await Promise.all([
       db
         .select()
