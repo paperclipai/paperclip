@@ -252,24 +252,6 @@ vi.mock("../components/IssueChatThread", () => ({
   },
 }));
 
-// PAP-139/PAP-140: IssueDetail picks the thread variant by the Conference
-// Room Chat flag. These suites assert against the NUX thread, so the flag is
-// seeded ON (and reset in beforeEach); flag-off parity tests flip it per test.
-// The classic fork is stubbed (its real import chain pulls sandpack into
-// jsdom) but still captures props so parity tests can inspect them.
-const conferenceRoomChatFlag = vi.hoisted(() => ({ enabled: true }));
-vi.mock("../hooks/useConferenceRoomChatEnabled", () => ({
-  useConferenceRoomChatEnabled: () => ({ enabled: conferenceRoomChatFlag.enabled, loaded: true }),
-}));
-
-const mockIssueChatThreadClassicRender = vi.hoisted(() => vi.fn());
-vi.mock("../components/IssueChatThreadClassic", () => ({
-  IssueChatThreadClassic: (props: Record<string, unknown>) => {
-    mockIssueChatThreadClassicRender(props);
-    return <div data-testid="issue-chat-thread-classic">Classic chat thread</div>;
-  },
-}));
-
 vi.mock("../components/IssueDocumentsSection", () => ({
   IssueDocumentsSection: () => <div>Documents</div>,
 }));
@@ -960,10 +942,8 @@ describe("IssueDetail", () => {
       enableExternalObjects: false,
     });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
-    conferenceRoomChatFlag.enabled = true;
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
-    mockIssueChatThreadClassicRender.mockClear();
     mockImageGalleryRender.mockClear();
     mockIssueWorkspaceCardRender.mockClear();
   });
@@ -1717,11 +1697,7 @@ describe("IssueDetail", () => {
     }
   });
 
-  // PAP-140 flag-off parity: with the Conference Room Chat flag off, the task
-  // thread surfaces must render master's behavior (classic fork, master copy,
-  // master mention set).
-  it("renders the frozen classic thread fork when the Conference Room Chat flag is off", async () => {
-    conferenceRoomChatFlag.enabled = false;
+  it("renders the graduated task thread without the chat flag", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
 
     await act(async () => {
@@ -1733,13 +1709,11 @@ describe("IssueDetail", () => {
     });
     await flushReact();
 
-    expect(container.querySelector('[data-testid="issue-chat-thread-classic"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="issue-chat-thread"]')).toBeNull();
-    expect(mockIssueChatThreadRender).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="issue-chat-thread"]')).not.toBeNull();
+    expect(mockIssueChatThreadRender).toHaveBeenCalled();
   });
 
-  it("falls back to master's Planning chip copy when the flag is off", async () => {
-    conferenceRoomChatFlag.enabled = false;
+  it("uses graduated Plan mode chip copy", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({ workMode: "planning" }));
 
     await act(async () => {
@@ -1751,11 +1725,11 @@ describe("IssueDetail", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Planning");
-    expect(container.textContent).not.toContain("Plan mode");
+    expect(container.textContent).toContain("Plan mode");
+    expect(container.textContent).not.toContain("Planning");
   });
 
-  it("passes @task mention options to the thread only when the flag is on", async () => {
+  it("passes @task mention options to the thread by default", async () => {
     const mentionPoolIssue = {
       ...createIssue(),
       id: "issue-mention-1",
@@ -1768,7 +1742,6 @@ describe("IssueDetail", () => {
     );
     mockIssuesApi.get.mockResolvedValue(createIssue());
 
-    // Flag ON: the mention pool query runs and issue options reach the thread.
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -1784,34 +1757,7 @@ describe("IssueDetail", () => {
         expect.arrayContaining([expect.objectContaining({ kind: "issue", issueIdentifier: "PAP-9" })]),
       );
     });
-
-    // Flag OFF: no mention-pool query, no issue options — master's mention set.
-    conferenceRoomChatFlag.enabled = false;
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
-    container = document.createElement("div");
-    document.body.appendChild(container);
-    root = createRoot(container);
-    queryClient.clear();
-    mockIssuesApi.list.mockClear();
-    mockIssueChatThreadClassicRender.mockClear();
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <IssueDetail />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-    await flushReact();
-
-    const classicMentions = mockIssueChatThreadClassicRender.mock.calls.at(-1)?.[0]
-      .mentions as Array<{ kind?: string }> | undefined;
-    expect(classicMentions?.some((option) => option.kind === "issue")).toBe(false);
-    expect(mockIssuesApi.list).not.toHaveBeenCalledWith(
+    expect(mockIssuesApi.list).toHaveBeenCalledWith(
       "company-1",
       expect.objectContaining({ sortField: "updated" }),
     );

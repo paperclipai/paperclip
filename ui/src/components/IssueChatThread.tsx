@@ -3796,8 +3796,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     );
   }
 
-  const workModeOptions = workModeMetaList(true);
-  const pendingWorkModeMeta = workModeMetaFor(pendingWorkMode, true);
+  const workModeOptions = workModeMetaList();
+  const pendingWorkModeMeta = workModeMetaFor(pendingWorkMode);
   const PendingWorkModeIcon = pendingWorkModeMeta.icon;
 
   function handleComposerKeyDown(evt: ReactKeyboardEvent<HTMLDivElement>) {
@@ -3809,7 +3809,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     const isPeriod = evt.code === "Period" || evt.key === ".";
     if (!(evt.metaKey || evt.ctrlKey) || !isPeriod) return;
     evt.preventDefault();
-    setPendingWorkMode((current) => nextWorkMode(current, true));
+    setPendingWorkMode((current) => nextWorkMode(current));
   }
 
   return (
@@ -3962,7 +3962,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   aria-expanded={workModeMenuOpen}
                   aria-pressed={pendingWorkMode !== "standard"}
                   aria-keyshortcuts="Meta+Period Control+Period"
-                  title={titleForPendingWorkMode(pendingWorkMode, true)}
+                  title={titleForPendingWorkMode(pendingWorkMode)}
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors",
                     pendingWorkModeMeta.classes.chip,

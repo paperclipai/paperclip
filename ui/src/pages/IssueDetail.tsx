@@ -68,8 +68,6 @@ import {
   type IssueChatComposerHandle,
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
-import { IssueChatThreadClassic } from "../components/IssueChatThreadClassic";
-import { useConferenceRoomChatEnabled } from "../hooks/useConferenceRoomChatEnabled";
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
@@ -809,11 +807,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   resumeFromBacklogPending,
   externalReferences,
 }: IssueDetailChatTabProps) {
-  // Conference Room Chat experimental flag (PAP-136/PAP-139): ON renders the
-  // NUX thread (bubbles, metadata rows, composer chrome); OFF renders the
-  // frozen master fork so the task thread looks exactly like master.
-  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
-  const ThreadComponent = conferenceRoomChatEnabled ? IssueChatThread : IssueChatThreadClassic;
+  const ThreadComponent = IssueChatThread;
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1500,15 +1494,12 @@ export function IssueDetail() {
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  // Bounded pool of recently-updated issues to back the `@task` reference picker
-  // (PAP-95f). The picker filters this list client-side by identifier/title.
-  // Gated on the Conference Room Chat flag (PAP-139): flag off keeps master's
-  // mention set (no task options, no extra query).
-  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
+  // Bounded pool of recently-updated issues to back the `@task` reference picker.
+  // The picker filters this list client-side by identifier/title.
   const { data: mentionIssues = [] } = useQuery({
     queryKey: resolvedCompanyId ? queryKeys.issues.mentionPool(resolvedCompanyId) : ["issues", "mention-pool", "pending"],
     queryFn: () => issuesApi.list(resolvedCompanyId!, { limit: 100, sortField: "updated", sortDir: "desc" }),
-    enabled: !!resolvedCompanyId && conferenceRoomChatEnabled,
+    enabled: !!resolvedCompanyId,
     staleTime: 60_000,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(resolvedCompanyId ?? "pending"),
   });
@@ -1644,9 +1635,9 @@ export function IssueDetail() {
       agents,
       projects: orderedProjects,
       members: companyMembers?.users,
-      issues: conferenceRoomChatEnabled ? mentionIssues : undefined,
+      issues: mentionIssues,
     });
-  }, [agents, companyMembers?.users, orderedProjects, mentionIssues, conferenceRoomChatEnabled]);
+  }, [agents, companyMembers?.users, orderedProjects, mentionIssues]);
 
   const resolvedProject = useMemo(
     () => (issue?.projectId ? orderedProjects.find((project) => project.id === issue.projectId) ?? issue.project ?? null : null),
@@ -3729,7 +3720,7 @@ export function IssueDetail() {
           ) : null}
 
           {issue.workMode === "ask" || issue.workMode === "planning" ? (() => {
-            const workModeMeta = workModeMetaFor(issue.workMode, conferenceRoomChatEnabled);
+            const workModeMeta = workModeMetaFor(issue.workMode);
             const WorkModeIcon = workModeMeta.icon;
             return (
               <span
