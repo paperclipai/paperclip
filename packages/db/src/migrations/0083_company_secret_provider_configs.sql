@@ -32,9 +32,20 @@ END $$;
 UPDATE "company_secrets"
 SET "provider_config_id" = NULL
 WHERE "provider_config_id" IS NOT NULL
-	AND "provider_config_id" !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
+	AND "provider_config_id"::text !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
 --> statement-breakpoint
-ALTER TABLE "company_secrets" ALTER COLUMN "provider_config_id" TYPE uuid USING "provider_config_id"::uuid;
+DO $$ BEGIN
+	IF EXISTS (
+		SELECT 1
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+			AND table_name = 'company_secrets'
+			AND column_name = 'provider_config_id'
+			AND udt_name = 'text'
+	) THEN
+		ALTER TABLE "company_secrets" ALTER COLUMN "provider_config_id" TYPE uuid USING NULLIF("provider_config_id", '')::uuid;
+	END IF;
+END $$;
 --> statement-breakpoint
 DO $$ BEGIN
 	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'company_secrets_provider_config_id_company_secret_provider_configs_id_fk') THEN
