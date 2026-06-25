@@ -93,9 +93,7 @@ export function writeAgentSortMode(storageKey: string, sortMode: AgentSidebarSor
 
 // Leadership roles surface at the top of each sibling group so the company's
 // lead (typically the freshly-hired CEO) is visible without scrolling the
-// sidebar (PAP-52). Anything outside this list falls back to alphabetical.
-// Opt-in via `leadershipFirst` — gated on the Conference Room Chat experimental
-// flag (PAP-139); the default keeps master's plain alphabetical sibling order.
+// sidebar. Anything outside this list falls back to alphabetical.
 const ROLE_SORT_PRIORITY: Record<string, number> = {
   ceo: 0,
   cto: 1,

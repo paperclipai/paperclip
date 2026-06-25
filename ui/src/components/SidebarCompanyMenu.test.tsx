@@ -24,14 +24,6 @@ const mockSidebarPreferencesApi = vi.hoisted(() => ({
   updateCompanyOrder: vi.fn(),
 }));
 
-// Team-centric copy ("Create new team...") ships behind the Conference Room
-// Chat experimental flag (PAP-139). This suite was written against the NUX
-// copy, so the flag is seeded ON; one test flips it OFF for master's copy.
-const conferenceRoomChatFlag = vi.hoisted(() => ({ enabled: true }));
-vi.mock("@/hooks/useConferenceRoomChatEnabled", () => ({
-  useConferenceRoomChatEnabled: () => ({ enabled: conferenceRoomChatFlag.enabled, loaded: true }),
-}));
-
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
 }));
@@ -143,11 +135,9 @@ describe("SidebarCompanyMenu", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
-    conferenceRoomChatFlag.enabled = true;
   });
 
-  it("keeps master's 'Add company...' copy when the Conference Room Chat flag is off (PAP-139)", async () => {
-    conferenceRoomChatFlag.enabled = false;
+  it("uses team-centric create copy without the chat flag", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -171,8 +161,8 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Add company...");
-    expect(document.body.textContent).not.toContain("Create new team...");
+    expect(document.body.textContent).toContain("Create new team...");
+    expect(document.body.textContent).not.toContain("Add company...");
 
     await act(async () => {
       root.unmount();

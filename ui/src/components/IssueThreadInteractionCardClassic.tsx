@@ -1,12 +1,10 @@
 /**
- * CLASSIC FORK — do not extend (PAP-136 / PAP-139).
+ * CLASSIC FORK — do not extend.
  *
  * Frozen copy of `IssueThreadInteractionCard.tsx` at merge-base e3aada1d
- * (`git show e3aada1d:ui/src/components/IssueThreadInteractionCard.tsx`),
- * rendered by `IssueChatThreadClassic` when the "Conference Room Chat"
- * experimental flag is OFF so task threads look exactly like master. New
- * features go in `IssueThreadInteractionCard.tsx`; delete this file when the
- * flag graduates or dies.
+ * (`git show e3aada1d:ui/src/components/IssueThreadInteractionCard.tsx`).
+ * New features go in `IssueThreadInteractionCard.tsx`; this stays only as a
+ * legacy reference while older branches/tests finish migrating.
  */
 import { useEffect, useMemo, useState } from "react";
 import type { Agent } from "@paperclipai/shared";

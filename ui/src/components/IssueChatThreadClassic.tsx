@@ -1,13 +1,10 @@
 /**
- * CLASSIC FORK — do not extend (PAP-136 / PAP-139).
+ * CLASSIC FORK — do not extend.
  *
  * Frozen copy of `IssueChatThread.tsx` at merge-base e3aada1d
- * (`git show e3aada1d:ui/src/components/IssueChatThread.tsx`), selected by
- * `IssueDetail` / `RunChatSurface` when the "Conference Room Chat"
- * experimental flag is OFF so task threads (bubbles, metadata rows, plan
- * cards, action rows, composer chrome) look exactly like master. New features
- * go in `IssueChatThread.tsx`; delete this file when the flag graduates or
- * dies.
+ * (`git show e3aada1d:ui/src/components/IssueChatThread.tsx`). Task and run
+ * threads now use `IssueChatThread`; keep this only as a legacy reference while
+ * older branches/tests finish migrating.
  */
 import {
   AssistantRuntimeProvider,
@@ -3586,8 +3583,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     );
   }
 
-  const workModeOptions = workModeMetaList(false);
-  const pendingWorkModeMeta = workModeMetaFor(pendingWorkMode, false);
+  const workModeOptions = workModeMetaList();
+  const pendingWorkModeMeta = workModeMetaFor(pendingWorkMode);
   const PendingWorkModeIcon = pendingWorkModeMeta.icon;
 
   function handleComposerKeyDown(evt: ReactKeyboardEvent<HTMLDivElement>) {
@@ -3599,7 +3596,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     const isPeriod = evt.code === "Period" || evt.key === ".";
     if (!(evt.metaKey || evt.ctrlKey) || !isPeriod) return;
     evt.preventDefault();
-    setPendingWorkMode((current) => nextWorkMode(current, false));
+    setPendingWorkMode((current) => nextWorkMode(current));
   }
 
   return (
@@ -3733,7 +3730,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   aria-expanded={workModeMenuOpen}
                   aria-pressed={pendingWorkMode !== "standard"}
                   aria-keyshortcuts="Meta+Period Control+Period"
-                  title={titleForPendingWorkMode(pendingWorkMode, false)}
+                  title={titleForPendingWorkMode(pendingWorkMode)}
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
                     pendingWorkModeMeta.classes.chip,
