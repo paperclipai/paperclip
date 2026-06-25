@@ -670,6 +670,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sessionHandoffChars: sessionHandoffNote.length,
     taskContextChars: taskContextNote.length,
     heartbeatPromptChars: renderedPrompt.length,
+    promptBundleKeyChars: promptBundle.bundleKey.length,
+    cachedInstructionChars: combinedInstructionsContents?.length ?? 0,
   };
 
   const buildClaudeArgs = (
@@ -724,6 +726,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const commandNotes: string[] = [];
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
+    } else {
+      commandNotes.push(`Resuming Claude session with stable prompt bundle ${promptBundle.bundleKey}.`);
     }
     if (dangerouslySkipPermissions && executionTargetIsSandbox) {
       commandNotes.push(

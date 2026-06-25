@@ -297,7 +297,7 @@ describe("claude execute", () => {
     }
   });
 
-  it("commandNotes is empty on a resumed session even when instructionsFile is set", async () => {
+  it("commandNotes reports stable bundle reuse on a resumed session even when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-notes-resume-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root);
     const instructionsFile = path.join(root, "instructions.md");
@@ -320,7 +320,8 @@ describe("claude execute", () => {
         onLog: async () => {},
         onMeta: async (meta) => { capturedNotes = (meta.commandNotes as string[]) ?? []; },
       });
-      expect(capturedNotes).toHaveLength(0);
+      expect(capturedNotes).toHaveLength(1);
+      expect(capturedNotes[0]).toContain("Resuming Claude session with stable prompt bundle");
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });
@@ -334,7 +335,11 @@ describe("claude execute", () => {
     });
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
-    const metaEvents: Array<{ commandArgs: string[]; commandNotes: string[] }> = [];
+    const metaEvents: Array<{
+      commandArgs: string[];
+      commandNotes: string[];
+      promptMetrics?: Record<string, number>;
+    }> = [];
     try {
       const result = await execute({
         runId: "run-resume-fallback",
@@ -357,6 +362,7 @@ describe("claude execute", () => {
           metaEvents.push({
             commandArgs: ((meta.commandArgs as string[]) ?? []).slice(),
             commandNotes: ((meta.commandNotes as string[]) ?? []).slice(),
+            promptMetrics: meta.promptMetrics,
           });
         },
       });
@@ -380,8 +386,10 @@ describe("claude execute", () => {
         `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`,
       );
       expect(metaEvents).toHaveLength(2);
-      expect(metaEvents[0]?.commandNotes).toHaveLength(0);
+      expect(metaEvents[0]?.commandNotes).toHaveLength(1);
+      expect(metaEvents[0]?.commandNotes[0]).toContain("Resuming Claude session with stable prompt bundle");
       expect(metaEvents[1]?.commandNotes.some((note) => note.includes("--append-system-prompt-file"))).toBe(true);
+      expect(metaEvents[0]?.promptMetrics?.cachedInstructionChars).toBeGreaterThan(0);
       expect(result.sessionId).toBe("claude-session-2");
       expect(result.clearSession).toBe(false);
     } finally {

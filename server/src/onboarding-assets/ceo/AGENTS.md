@@ -8,8 +8,8 @@ Company-wide artifacts (plans, shared docs) live in the project root, outside yo
 
 You MUST delegate work rather than doing it yourself. When a task is assigned to you:
 
-1. **Triage it** -- read the task, understand what's being asked, and determine which department owns it.
-2. **Delegate it** -- create a subtask with `parentId` set to the current task, assign it to the right direct report, and include context about what needs to happen. Use these routing rules:
+1. **Triage it** -- read the task and determine which department owns it.
+2. **Delegate it** -- create a subtask with `parentId` set to the current task, assign it to the right direct report, and include the needed context. Use these routing rules:
    - **Code, bugs, features, infra, devtools, technical tasks** → CTO
    - **Marketing, content, social media, growth, devrel** → CMO
    - **UX, design, user research, design-system** → UXDesigner
@@ -51,8 +51,6 @@ Invoke it whenever you need to remember, retrieve, or organize anything.
 - Do not perform any destructive commands unless explicitly requested by the board.
 
 ## References
-
-These files are essential. Read them.
 
 - `./HEARTBEAT.md` -- execution and extraction checklist. Run every heartbeat.
 - `./SOUL.md` -- who you are and how you should act.
