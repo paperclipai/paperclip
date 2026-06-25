@@ -74,6 +74,7 @@ import {
   getApprovalConfig,
   getMessageContext,
   getPaired,
+  isAuthorizedApprover,
   isHandshakeExpired,
   isPairedFor,
   listPairedCompanies,
@@ -371,7 +372,7 @@ async function sendConfirmationToCompanyChat(
       silent: config.silent ?? false,
     });
     if (result?.message_id) {
-      await saveMessageContext(ctx, result.message_id, {
+      await saveMessageContext(ctx, chat.chatId, result.message_id, {
         kind: "confirmation_decision",
         companyId,
         issueId: input.issueId,
@@ -619,7 +620,7 @@ async function onCommentCreated(
     return;
   }
   if (issueId) {
-    await saveMessageContext(ctx, sent.message_id, {
+    await saveMessageContext(ctx, chat.chatId, sent.message_id, {
       kind: "comment_thread",
       companyId: event.companyId,
       issueId,
@@ -806,6 +807,7 @@ async function handleHandshakeMessage(
         targetCompanyName: state.pairing.targetCompanyName,
         candidateChatId: incomingChatId,
         candidateLabel: label,
+        candidateUserId: message.from?.id,
         code,
         expiresAt: newHandshakeExpiry(),
       },
@@ -944,7 +946,7 @@ async function handleSlashCommand(
         // picker without us having to re-fetch the agent list.
         if (sent) {
           const agents = await ctx.agents.list({ companyId: pairing.companyId });
-          await saveMessageContext(ctx, sent.message_id, {
+          await saveMessageContext(ctx, incomingChatId, sent.message_id, {
             kind: "assign_picker",
             companyId: pairing.companyId,
             issueId: issue.id,
@@ -1071,12 +1073,17 @@ async function handleConfirmationDeclineReply(
   message: TelegramMessage,
   replyToMessageId: number,
 ): Promise<boolean> {
-  const context = await getMessageContext(ctx, replyToMessageId);
-  if (!context || context.kind !== "confirmation_decline_reason") return false;
   const incomingChatId = String(message.chat.id);
+  const context = await getMessageContext(ctx, incomingChatId, replyToMessageId);
+  if (!context || context.kind !== "confirmation_decline_reason") return false;
   const pairing = await readPairing(ctx);
   const found = findCompanyForChat(pairing, incomingChatId);
   if (!found || found.companyId !== context.companyId) return false;
+  // Only the authorized approver can supply the decline reason that actually
+  // rejects the interaction — mirrors the gate on the [Decline] button itself.
+  if (!isAuthorizedApprover(getApprovalConfig(pairing, context.companyId), found.chat, message.from?.id)) {
+    return false;
+  }
   const reason = (message.text ?? "").trim();
   if (!reason) {
     await replyTo(ctx, config, incomingChatId, {
@@ -1136,9 +1143,9 @@ async function handleCommentReply(
   message: TelegramMessage,
   replyToMessageId: number,
 ): Promise<boolean> {
-  const context = await getMessageContext(ctx, replyToMessageId);
-  if (!context || context.kind !== "comment_thread") return false;
   const incomingChatId = String(message.chat.id);
+  const context = await getMessageContext(ctx, incomingChatId, replyToMessageId);
+  if (!context || context.kind !== "comment_thread") return false;
   const pairing = await readPairing(ctx);
   const found = findCompanyForChat(pairing, incomingChatId);
   if (!found || found.companyId !== context.companyId) return false;
@@ -1168,6 +1175,41 @@ async function handleCommentReply(
   return true;
 }
 
+/**
+ * Gate for resolving a plan confirmation from an inline button. Confirms that
+ * (a) the firing chat is the one currently paired to the context's company —
+ * so a callback can't reach across chats — and (b) the pressing user is an
+ * authorized approver. Answers the callback with an alert and returns false
+ * when either check fails.
+ */
+async function assertConfirmationAuthorized(
+  ctx: PluginContext,
+  client: Awaited<ReturnType<typeof createTelegramClient>>,
+  query: NonNullable<TelegramUpdate["callback_query"]>,
+  chatId: string,
+  companyId: string,
+): Promise<boolean> {
+  const pairing = await readPairing(ctx);
+  const paired = getPaired(pairing, companyId);
+  if (!paired || paired.chatId !== chatId) {
+    await client.answerCallbackQuery({
+      callbackQueryId: query.id,
+      text: "Confirmation context expired. Open the issue in Paperclip.",
+      showAlert: true,
+    });
+    return false;
+  }
+  if (!isAuthorizedApprover(getApprovalConfig(pairing, companyId), paired, query.from.id)) {
+    await client.answerCallbackQuery({
+      callbackQueryId: query.id,
+      text: "Only the designated approver can act on this confirmation.",
+      showAlert: true,
+    });
+    return false;
+  }
+  return true;
+}
+
 async function handleCallbackQuery(
   ctx: PluginContext,
   config: PluginConfig,
@@ -1177,10 +1219,11 @@ async function handleCallbackQuery(
   if (!query.message) return;
   const client = await createTelegramClient(ctx, config.botToken);
   const data = query.data ?? "";
+  const chatId = String(query.message.chat.id);
   try {
     if (data === CALLBACK_KIND.reassignShow) {
       // Tap on 👤 Reassign — switch the message keyboard to a list of agents.
-      const context = await getMessageContext(ctx, query.message.message_id);
+      const context = await getMessageContext(ctx, chatId, query.message.message_id);
       if (!context || context.kind !== "assign_picker") {
         await client.answerCallbackQuery({
           callbackQueryId: query.id,
@@ -1206,7 +1249,7 @@ async function handleCallbackQuery(
         data.slice(CALLBACK_KIND.assignAgentPrefix.length),
         10,
       );
-      const context = await getMessageContext(ctx, query.message.message_id);
+      const context = await getMessageContext(ctx, chatId, query.message.message_id);
       if (
         !context ||
         context.kind !== "assign_picker" ||
@@ -1263,7 +1306,7 @@ async function handleCallbackQuery(
       // comment_thread context onto the new message_id so the reply handler
       // resolves it back to the original Paperclip issue when the operator
       // sends their text.
-      const context = await getMessageContext(ctx, query.message.message_id);
+      const context = await getMessageContext(ctx, chatId, query.message.message_id);
       if (!context || context.kind !== "comment_thread") {
         await client.answerCallbackQuery({
           callbackQueryId: query.id,
@@ -1278,7 +1321,7 @@ async function handleCallbackQuery(
         forceReply: { placeholder: `Reply to ${context.identifier}` },
         replyToMessageId: query.message.message_id,
       });
-      await saveMessageContext(ctx, sent.message_id, {
+      await saveMessageContext(ctx, chatId, sent.message_id, {
         kind: "comment_thread",
         companyId: context.companyId,
         issueId: context.issueId,
@@ -1289,7 +1332,7 @@ async function handleCallbackQuery(
       return;
     }
     if (data === CALLBACK_KIND.showFullComment) {
-      const context = await getMessageContext(ctx, query.message.message_id);
+      const context = await getMessageContext(ctx, chatId, query.message.message_id);
       if (
         !context ||
         context.kind !== "comment_thread" ||
@@ -1303,7 +1346,6 @@ async function handleCallbackQuery(
         return;
       }
       // Telegram caps single message at ~4096; chunk if larger.
-      const chatId = String(query.message.chat.id);
       const chunks: string[] = [];
       const body = context.fullBody;
       const chunkSize = 3500;
@@ -1324,13 +1366,16 @@ async function handleCallbackQuery(
       return;
     }
     if (data === CALLBACK_KIND.confirmAccept) {
-      const context = await getMessageContext(ctx, query.message.message_id);
+      const context = await getMessageContext(ctx, chatId, query.message.message_id);
       if (!context || context.kind !== "confirmation_decision") {
         await client.answerCallbackQuery({
           callbackQueryId: query.id,
           text: "Confirmation context expired. Open the issue in Paperclip.",
           showAlert: true,
         });
+        return;
+      }
+      if (!(await assertConfirmationAuthorized(ctx, client, query, chatId, context.companyId))) {
         return;
       }
       const result = await acceptInteraction(
@@ -1373,13 +1418,16 @@ async function handleCallbackQuery(
       return;
     }
     if (data === CALLBACK_KIND.confirmDecline) {
-      const context = await getMessageContext(ctx, query.message.message_id);
+      const context = await getMessageContext(ctx, chatId, query.message.message_id);
       if (!context || context.kind !== "confirmation_decision") {
         await client.answerCallbackQuery({
           callbackQueryId: query.id,
           text: "Confirmation context expired. Open the issue in Paperclip.",
           showAlert: true,
         });
+        return;
+      }
+      if (!(await assertConfirmationAuthorized(ctx, client, query, chatId, context.companyId))) {
         return;
       }
       const decliner = telegramUserLabel(query.from);
@@ -1389,7 +1437,7 @@ async function handleCallbackQuery(
         forceReply: { placeholder: `Reason for declining ${context.identifier}` },
         replyToMessageId: query.message.message_id,
       });
-      await saveMessageContext(ctx, sent.message_id, {
+      await saveMessageContext(ctx, chatId, sent.message_id, {
         kind: "confirmation_decline_reason",
         companyId: context.companyId,
         issueId: context.issueId,
@@ -2305,6 +2353,7 @@ const plugin = definePlugin({
         chatLabel: state.pairing.candidateLabel,
         pairedAt: new Date().toISOString(),
         companyName: state.pairing.targetCompanyName,
+        pairedByTelegramUserId: state.pairing.candidateUserId,
       };
       await setPairedChat(ctx, targetCompanyId, paired);
       await clearHandshake(ctx);

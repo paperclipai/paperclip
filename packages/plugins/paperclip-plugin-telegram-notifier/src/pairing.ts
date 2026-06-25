@@ -209,14 +209,28 @@ export function chatLabel(chat: TelegramChat): string {
 /** Cap on stored message contexts; oldest are evicted past this limit. */
 const MAX_MESSAGE_CONTEXTS = 200;
 
+/**
+ * Storage key for a message context. The Telegram message_id is only unique
+ * within a chat, so two paired chats can independently land on the same
+ * numeric id; scoping the key with the chat id prevents a callback in one
+ * chat from resolving a context created for another.
+ */
+function messageContextKey(
+  chatId: number | string,
+  messageId: number | string,
+): string {
+  return `${String(chatId)}:${String(messageId)}`;
+}
+
 export async function saveMessageContext(
   ctx: PluginContext,
+  chatId: number | string,
   messageId: number | string,
   value: import("./types.js").MessageContext,
 ): Promise<void> {
   const current = await readPairing(ctx);
   const map = { ...(current.messageContexts ?? {}) };
-  map[String(messageId)] = value;
+  map[messageContextKey(chatId, messageId)] = value;
   // Evict oldest entries by createdAt if over the cap.
   const entries = Object.entries(map);
   if (entries.length > MAX_MESSAGE_CONTEXTS) {
@@ -234,10 +248,11 @@ export async function saveMessageContext(
 
 export async function getMessageContext(
   ctx: PluginContext,
+  chatId: number | string,
   messageId: number | string,
 ): Promise<import("./types.js").MessageContext | undefined> {
   const current = await readPairing(ctx);
-  return current.messageContexts?.[String(messageId)];
+  return current.messageContexts?.[messageContextKey(chatId, messageId)];
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +279,33 @@ export async function setApprovalConfig(
       [companyId]: next,
     },
   });
+}
+
+/**
+ * Whether a Telegram user is allowed to resolve (approve/decline) plan
+ * confirmations for a company.
+ *
+ * Precedence:
+ *   1. Explicit `ApprovalConfig.approverTelegramUserId` — only that user.
+ *   2. Otherwise the operator who completed pairing
+ *      (`PairedChat.pairedByTelegramUserId`).
+ *   3. Legacy chats with neither recorded fall back to the chat-membership
+ *      boundary (allow) so an upgrade doesn't lock out already-paired
+ *      operators. New pairings always capture the operator id, so the hole
+ *      ("anyone in a group chat can approve") closes for them.
+ */
+export function isAuthorizedApprover(
+  approval: ApprovalConfig | undefined,
+  chat: PairedChat | undefined,
+  fromUserId: number | undefined,
+): boolean {
+  if (approval?.approverTelegramUserId != null) {
+    return fromUserId === approval.approverTelegramUserId;
+  }
+  if (chat?.pairedByTelegramUserId != null) {
+    return fromUserId === chat.pairedByTelegramUserId;
+  }
+  return true;
 }
 
 /** Constant-time-ish equality for short verification codes. */

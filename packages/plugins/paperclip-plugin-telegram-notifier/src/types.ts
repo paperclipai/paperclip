@@ -62,10 +62,12 @@ export interface PairingState {
    */
   pairedByCompany?: Record<string, PairedChat>;
   /**
-   * Per-message context for inline-keyboard callbacks. Keyed by the
-   * Telegram message_id of the bot's outbound message. Lets callback
-   * handlers stay under the 64-byte callback_data limit by referencing
-   * the message rather than embedding all the IDs in the data string.
+   * Per-message context for inline-keyboard callbacks. Keyed by
+   * `${chatId}:${message_id}` of the bot's outbound message — the chat id is
+   * part of the key so two paired chats can never collide on the same numeric
+   * Telegram message id. Lets callback handlers stay under the 64-byte
+   * callback_data limit by referencing the message rather than embedding all
+   * the IDs in the data string.
    */
   messageContexts?: Record<string, MessageContext>;
   /**
@@ -91,6 +93,16 @@ export interface ApprovalConfig {
    * to `requiresApproval: false`.
    */
   agents: Record<string, ApprovalAgentConfig>;
+  /**
+   * Telegram user id allowed to press [Approve]/[Decline] for this company.
+   * When set, only this user can resolve confirmations — everyone else in the
+   * chat is rejected. When unset, authority falls back to the operator who
+   * paired the chat (`PairedChat.pairedByTelegramUserId`), and only to the
+   * whole-chat membership boundary for chats paired before that id was
+   * captured. The approver in Paperclip is an *agent*, not a Telegram user, so
+   * this is the explicit bridge between the two identities.
+   */
+  approverTelegramUserId?: number;
 }
 
 export interface ApprovalAgentConfig {
@@ -187,6 +199,8 @@ export type PairingHandshake =
       /** Telegram chat ID that proved control by sending us the first message. */
       candidateChatId: string;
       candidateLabel: string;
+      /** Telegram user id of the sender who proved control (for approver gating). */
+      candidateUserId?: number;
       /** Code the bot already echoed to the candidate chat. The operator
        *  pastes it back via confirmPairing to complete the handshake. */
       code: string;
@@ -209,6 +223,13 @@ export interface PairedChat {
   lastDigestSentOn?: string;
   /** Display name of the company this chat is paired with. */
   companyName?: string;
+  /**
+   * Telegram user id of the operator who completed the pairing handshake.
+   * Used as the default authorized approver for plan confirmations when no
+   * explicit `ApprovalConfig.approverTelegramUserId` is set. Absent on chats
+   * paired before this was captured (those fall back to chat membership).
+   */
+  pairedByTelegramUserId?: number;
 }
 
 export interface TelegramUser {
