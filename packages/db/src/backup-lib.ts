@@ -411,7 +411,7 @@ async function runPgDumpBackup(opts: {
       waitForChildExit(child, pgDumpBin),
     ]);
 
-    if (timedOut) {
+    if (timedOut && pipelineResult.status === "rejected") {
       const elapsedMs = Date.now() - startedAt;
       const bytesWritten = fileWriter.bytesWritten;
       throw new BackupTimeoutError(
