@@ -40,7 +40,7 @@ describe("agent permissions service", () => {
     expect(updateAgentPermissionsSchema.parse({
       canCreateAgents: false,
       canAssignTasks: false,
-    }).canCreateSkills).toBe(true);
+    }).canCreateSkills).toBeUndefined();
     expect(updateAgentPermissionsSchema.parse({
       canCreateAgents: false,
       canCreateSkills: false,

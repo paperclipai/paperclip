@@ -162,7 +162,7 @@ export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema
 
 export const updateAgentPermissionsSchema = z.object({
   canCreateAgents: z.boolean(),
-  canCreateSkills: z.boolean().optional().default(true),
+  canCreateSkills: z.boolean().optional(),
   canAssignTasks: z.boolean(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
