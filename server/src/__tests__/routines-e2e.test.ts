@@ -8,12 +8,18 @@ import {
   agents,
   companies,
   createDb,
+  documentAnnotationAnchorSnapshots,
+  documentAnnotationComments,
+  documentAnnotationThreads,
+  documentRevisions,
+  documents,
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
   issues,
   projectWorkspaces,
   projects,
+  routineDocuments,
   routineRuns,
 } from "@paperclipai/db";
 import {

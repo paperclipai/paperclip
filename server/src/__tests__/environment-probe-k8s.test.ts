@@ -92,6 +92,7 @@ describe("probeEnvironment — k8s", () => {
     const result = await probeEnvironment(
       {} as any,
       makeEnv({ kubeconfigSecretRef: "11111111-1111-1111-1111-111111111111" }),
+      { companyId: "company-1" },
     );
 
     expect(result.ok).toBe(true);
@@ -139,6 +140,7 @@ describe("probeEnvironment — k8s", () => {
     const result = await probeEnvironment(
       {} as any,
       makeEnv({ kubeconfigSecretRef: "11111111-1111-1111-1111-111111111111" }),
+      { companyId: "company-1" },
     );
 
     expect(result.ok).toBe(false);
@@ -158,6 +160,7 @@ describe("probeEnvironment — k8s", () => {
     const result = await probeEnvironment(
       {} as any,
       makeEnv({ kubeconfigSecretRef: "11111111-1111-1111-1111-111111111111" }),
+      { companyId: "company-1" },
     );
 
     expect(result.ok).toBe(false);

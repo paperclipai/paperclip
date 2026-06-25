@@ -10,6 +10,24 @@ import type {
 } from "../constants.js";
 import type { EnvBinding } from "./secrets.js";
 
+export interface RoutineDescriptionDocument {
+  id: string;
+  companyId: string;
+  routineId: string;
+  key: "description";
+  title: string | null;
+  format: "markdown";
+  body: string;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface RoutineProjectSummary {
   id: string;
   name: string;
@@ -195,6 +213,7 @@ export interface RoutineDetail extends Routine {
   project: RoutineProjectSummary | null;
   assignee: RoutineAgentSummary | null;
   parentIssue: RoutineIssueSummary | null;
+  descriptionDocument?: RoutineDescriptionDocument | null;
   triggers: RoutineTrigger[];
   recentRuns: RoutineRunSummary[];
   activeIssue: RoutineIssueSummary | null;

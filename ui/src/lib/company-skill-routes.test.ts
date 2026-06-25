@@ -68,7 +68,12 @@ describe("company skill routes", () => {
     expect(parseSkillRoute("paperclip/deep-research/files/references/setup%20guide.md")).toEqual({
       skillToken: "paperclip/deep-research",
       filePath: "references/setup guide.md",
+      hasExplicitFilePath: true,
     });
-    expect(parseSkillRoute(undefined)).toEqual({ skillToken: null, filePath: "SKILL.md" });
+    expect(parseSkillRoute(undefined)).toEqual({
+      skillToken: null,
+      filePath: "SKILL.md",
+      hasExplicitFilePath: false,
+    });
   });
 });

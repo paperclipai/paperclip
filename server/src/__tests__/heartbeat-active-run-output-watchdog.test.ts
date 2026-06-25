@@ -18,7 +18,6 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.js";
 import {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -128,7 +127,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       model: "test-model",
     }));
     runningProcesses.clear();
-    await cleanupHeartbeatTestState(db, heartbeat);
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const activeRuns = await db
         .select({ id: heartbeatRuns.id })
@@ -333,7 +331,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluation?.description).not.toContain(leakedGithubToken);
   });
 
-  it("raises critical stale-run evaluations and blocks the source issue", async () => {
+  it("raises critical stale-run evaluations with high priority but does not hard-block the source issue", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, issueId } = await seedRunningRun({
       now,
@@ -349,14 +347,126 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
     expect(evaluation?.priority).toBe("high");
 
-    const [blocker] = await db
+    // Evaluation issues are observability-only — they must NOT be added as hard blockers
+    // on the source issue. That caused the self-amplifying loop (KIV-1590).
+    const blockerRelations = await db
       .select()
       .from(issueRelations)
       .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.relatedIssueId, issueId)));
-    expect(blocker?.issueId).toBe(evaluation?.id);
+    expect(blockerRelations).toHaveLength(0);
 
     const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
-    expect(source?.status).toBe("blocked");
+    expect(source?.status).not.toBe("blocked");
+  });
+
+  it("emits the source-issue escalation comment only once across repeated critical scans", async () => {
+    // Regression: when the same evaluation issue stays open and the watchdog re-evaluates the
+    // run as critical on every scan cycle, ensureSourceIssueCommentedForStaleEvaluation must NOT
+    // re-add the escalation comment to the source issue. Without the idempotency guard the
+    // source-issue thread is spammed once per scan cycle.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0]!;
+
+    const commentsAfterFirst = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(commentsAfterFirst).toHaveLength(1);
+
+    // Run the scan again at a slightly later time — the evaluation issue is still open
+    // and the run is still critical, so the existing-branch path re-invokes
+    // ensureSourceIssueCommentedForStaleEvaluation. The guard must suppress the second comment.
+    const later = new Date(now.getTime() + 60_000);
+    const second = await heartbeat.scanSilentActiveRuns({ now: later, companyId });
+    expect(second.created).toBe(0);
+
+    const commentsAfterSecond = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(commentsAfterSecond).toHaveLength(1);
+
+    // Activity-log escalation entries are the persistence record — also exactly one.
+    const escalations = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "heartbeat.output_stale_escalated"),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          sql`${activityLog.details} ->> 'evaluationIssueId' = ${evaluationIssueId}`,
+        ),
+      );
+    expect(escalations).toHaveLength(1);
+  });
+
+  it("skips ticket creation when the source issue is blocked (idle is expected)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
+
+    // Mark the source issue as blocked before scanning
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("does not re-file after a stale-run evaluation is dismissed as false positive", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId, managerId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0]!;
+
+    // Reviewer records a dismissed_false_positive decision and closes the ticket
+    await recovery.recordWatchdogDecision({
+      runId,
+      actor: { type: "agent", agentId: managerId },
+      decision: "dismissed_false_positive",
+      evaluationIssueId,
+      reason: "SADE is blocked on KIV-1066 — silence is expected",
+      now,
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, evaluationIssueId));
+
+    // Scan again — should not create a new ticket because of the dismissed_false_positive decision
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second.created).toBe(0);
+    expect(second.skipped).toBe(1);
+
+    const allEvaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(allEvaluations).toHaveLength(1);
   });
 
   it("does not file a review when the source issue is already blocked", async () => {
@@ -797,6 +907,95 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         reason: "closed evaluation should not authorize",
       }),
     ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("suppresses repeat alerts when evaluation is closed on the board without a watchdog decision", async () => {
+    // Regression: KIV-1519–KIV-1618 — watchdog re-fired 18+ times for the same run because
+    // CEO closed each alert as 'done' directly on the board without recording a watchdog decision.
+    // The unique constraint only prevents duplicates while an issue is open, so once it's closed
+    // the scanner created a fresh one every cycle.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
+
+    // First scan: creates the evaluation issue.
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
+
+    // Reviewer closes the issue on the board — no watchdog decision recorded.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, evaluationIssueId));
+
+    // Second scan: should NOT create a new issue. Instead it tallies a
+    // cooldown suppression on the closed wrapper.
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second.created).toBe(0);
+    expect(second.suppressed).toBe(1);
+
+    // Subsequent scans inside the cooldown are also suppressed.
+    const third = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(third.created).toBe(0);
+    expect(third.suppressed).toBe(1);
+
+    const wrappers = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(wrappers).toHaveLength(1);
+
+    const tallyComments = await db
+      .select()
+      .from(issueComments)
+      .where(and(eq(issueComments.issueId, evaluationIssueId!), eq(issueComments.authorType, "system")));
+    expect(tallyComments.filter((comment) =>
+      comment.body.startsWith(STALE_ACTIVE_RUN_EVALUATION_REFIRE_COMMENT_MARKER),
+    )).toHaveLength(2);
+
+    // Closing the wrapper directly is not a permanent false-positive decision.
+    const decisions = await db
+      .select()
+      .from(heartbeatRunWatchdogDecisions)
+      .where(and(eq(heartbeatRunWatchdogDecisions.runId, runId), eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive")));
+    expect(decisions).toHaveLength(0);
+  });
+
+  it("still allows re-arm after continue decision even when issue was closed on board", async () => {
+    // When a human explicitly recorded a 'continue' decision the watchdog lifecycle is active;
+    // closing the issue on the board should not permanently suppress future alerts.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const evaluationIssueId = scan.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
+
+    // Human records a 'continue' decision.
+    await recovery.recordWatchdogDecision({
+      runId,
+      actor: { type: "agent", agentId: managerId },
+      decision: "continue",
+      evaluationIssueId,
+      reason: "Expected quiet period.",
+      now,
+    });
+
+    // Board also closes the evaluation issue.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, evaluationIssueId));
+
+    // After the re-arm window, watchdog should still fire a new alert.
+    const rearmAt = new Date(now.getTime() + ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS + 60_000);
+    const rearm = await heartbeat.scanSilentActiveRuns({ now: rearmAt, companyId });
+    expect(rearm.created).toBe(1);
+    expect(rearm.evaluationIssueIds[0]).not.toBe(evaluationIssueId);
   });
 
   it("validates createdByRunId before storing watchdog decisions", async () => {

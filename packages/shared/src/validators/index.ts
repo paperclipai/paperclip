@@ -1,13 +1,16 @@
 export {
+  instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
+  type PatchInstanceSettings,
   type IssueGraphLivenessAutoRecoveryRequest,
 } from "./instance.js";
 
@@ -62,6 +65,22 @@ export {
   updateResourceMembershipSchema,
   type UpdateResourceMembership,
 } from "./resource-memberships.js";
+
+export {
+  externalObjectStatusCategorySchema,
+  externalObjectStatusToneSchema,
+  externalObjectLivenessStateSchema,
+  externalObjectMentionSourceKindSchema,
+  externalObjectMentionConfidenceSchema,
+  externalObjectProviderKeySchema,
+  externalObjectTypeSchema,
+  externalObjectCanonicalIdentitySchema,
+  externalObjectMentionSourceSchema,
+  type ExternalObjectCanonicalIdentityInput,
+  type ExternalObjectMentionSourceInput,
+  type ExternalObjectProviderKeyInput,
+  type ExternalObjectTypeInput,
+} from "./external-object.js";
 export {
   companySkillSourceTypeSchema,
   companySkillTrustLevelSchema,
@@ -301,6 +320,7 @@ export {
   issueDocumentKeySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
+  upsertIssueWatchdogSchema,
   type CreateIssue,
   type CreateChildIssue,
   type CreateAcceptedPlanDecomposition,
@@ -321,6 +341,7 @@ export {
   type IssueDocumentFormat,
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
+  type UpsertIssueWatchdog,
 } from "./issue.js";
 
 export {

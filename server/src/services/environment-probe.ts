@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
 import * as k8s from "@kubernetes/client-node";
 import {
+  parseEnvironmentDriverConfig,
   resolveEnvironmentDriverConfigForRuntime,
   type ParsedEnvironmentConfig,
 } from "./environment-config.js";
@@ -16,13 +17,22 @@ import { secretService } from "./secrets.js";
 export async function probeEnvironment(
   db: Db,
   environment: Environment,
-  options: { pluginWorkerManager?: PluginWorkerManager; resolvedConfig?: ParsedEnvironmentConfig } = {},
+  options: {
+    companyId?: string | null;
+    pluginWorkerManager?: PluginWorkerManager;
+    resolvedConfig?: ParsedEnvironmentConfig;
+  } = {},
 ): Promise<EnvironmentProbeResult> {
+  const resolvedCompanyId = options.companyId ?? null;
   if (environment.driver === "k8s") {
-    return await probeK8sEnvironment(db, environment);
+    return await probeK8sEnvironment(db, environment, resolvedCompanyId);
   }
 
-  const parsed = options.resolvedConfig ?? await resolveEnvironmentDriverConfigForRuntime(db, environment.companyId, environment);
+  const parsed = options.resolvedConfig ?? (
+    resolvedCompanyId
+      ? await resolveEnvironmentDriverConfigForRuntime(db, resolvedCompanyId, environment)
+      : parseEnvironmentDriverConfig(environment)
+  );
 
   if (parsed.driver === "local") {
     return {
@@ -51,7 +61,7 @@ export async function probeEnvironment(
       return await probePluginSandboxProviderDriver({
         db,
         workerManager: options.pluginWorkerManager,
-        companyId: environment.companyId,
+        companyId: resolvedCompanyId ?? "instance",
         environmentId: environment.id,
         provider: parsed.config.provider,
         config: parsed.config as unknown as Record<string, unknown>,
@@ -75,7 +85,7 @@ export async function probeEnvironment(
     return await probePluginEnvironmentDriver({
       db,
       workerManager: options.pluginWorkerManager,
-      companyId: environment.companyId,
+      companyId: resolvedCompanyId ?? "instance",
       environmentId: environment.id,
       config: parsed.config,
     });
@@ -136,6 +146,7 @@ const K8S_PROBE_TIMEOUT_MS = 10_000;
 async function probeK8sEnvironment(
   db: Db,
   environment: Environment,
+  companyId: string | null,
 ): Promise<EnvironmentProbeResult> {
   const config = parseObject(environment.config);
   const secretRef =
@@ -150,9 +161,23 @@ async function probeK8sEnvironment(
 
   let kubeconfigYaml: string | null = null;
   if (secretRef) {
+    if (!companyId) {
+      return {
+        ok: false,
+        driver: "k8s",
+        summary: `k8s probe failed: companyId is required to resolve kubeconfig secret '${secretRef}'.`,
+        details: {
+          error: "companyId is required for kubeconfig secret resolution",
+          stage: "secret-resolution",
+          secretRef,
+          namespace,
+          authMode,
+        },
+      };
+    }
     try {
       kubeconfigYaml = await secretService(db).resolveSecretValue(
-        environment.companyId,
+        companyId,
         secretRef,
         "latest",
       );

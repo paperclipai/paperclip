@@ -17,6 +17,7 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
+import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell";
 import { SecondarySidebar } from "./SecondarySidebar";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
@@ -36,6 +37,7 @@ import {
 } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { scheduleMainContentFocus } from "../lib/main-content-focus";
+import { pinDocumentScrollToZero } from "../lib/pin-document-scroll";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
@@ -424,11 +426,22 @@ export function Layout() {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
 
-    document.body.style.overflow = isMobile ? "visible" : "hidden";
+    document.body.style.overflow = isMobile ? "visible" : "clip";
 
     return () => {
       document.body.style.overflow = previousOverflow;
     };
+  }, [isMobile]);
+
+  // `scrollIntoView` walks every ancestor scroll container. On a long thread
+  // the post-submit `scrollIntoView` on the new comment reaches `<html>` and
+  // animates `documentElement.scrollTop` via the browser's internal scroll
+  // algorithm, which bypasses the CSS `overflow` on the root element and
+  // visually shifts the entire shell (sidebar included) off-screen. Pin
+  // both roots to scrollTop=0 on every scroll tick.
+  useEffect(() => {
+    if (isMobile) return;
+    return pinDocumentScrollToZero();
   }, [isMobile]);
 
   useEffect(() => {
@@ -456,7 +469,11 @@ export function Layout() {
       <div
       className={cn(
         "bg-background text-foreground pt-[env(safe-area-inset-top)]",
-        isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-hidden",
+        // overflow-x-clip on mobile keeps a stray wide descendant from making the
+        // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
+        // computed as visible, so native body scroll + the sticky breadcrumb keep
+        // working.
+        isMobile ? "min-h-dvh overflow-x-clip" : "flex h-dvh flex-col overflow-clip",
       )}
       >
       <a
@@ -467,7 +484,7 @@ export function Layout() {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
-      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
+      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button
             type="button"
@@ -554,7 +571,9 @@ export function Layout() {
                   requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
                 />
               ) : (
-                <Outlet />
+                <RouteErrorBoundary>
+                  <Outlet />
+                </RouteErrorBoundary>
               )}
             </main>
             <PropertiesPanel />

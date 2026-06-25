@@ -43,7 +43,7 @@
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
     "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh",
     "smoke:terminal-bench-loop-skill": "node scripts/smoke/terminal-bench-loop-skill-smoke.mjs",
-    "test:release-registry": "node --test scripts/verify-release-registry-state.test.mjs scripts/release-package-map.test.mjs scripts/check-release-package-bootstrap.test.mjs scripts/check-no-git-push.test.mjs scripts/release-lib.test.mjs scripts/publish-penstock-scope.test.js",
+    "test:release-registry": "node --test scripts/verify-release-registry-state.test.mjs scripts/release-package-map.test.mjs scripts/check-release-package-bootstrap.test.mjs scripts/check-no-git-push.test.mjs scripts/release-lib.test.mjs scripts/publish-penstock-scope.test.js scripts/link-plugin-dev-sdk.test.js",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
     "test:e2e:multiuser-authenticated": "npx playwright test --config tests/e2e/playwright-multiuser-authenticated.config.ts",
@@ -52,12 +52,13 @@
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
     "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs",
-    "paperclip-seed-bank": "scripts/seed-bank"
+    "paperclip-seed-bank": "scripts/seed-bank",
+    "postinstall": "node scripts/link-plugin-dev-sdk.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "cross-env": "^10.1.0",
-    "esbuild": "^0.28.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.7.3",
     "vitest": "^4.1.8"
   },
@@ -89,7 +90,9 @@
       "@anthropic-ai/sdk": ">=0.91.1",
       "brace-expansion@5": "^5.0.6",
       "@tootallnate/once": "^2.0.1",
-      "form-data": ">=4.0.6"
+      "form-data": ">=4.0.6",
+      "react": "^19.2.7",
+      "react-dom": "^19.2.7"
     }
   }
 }

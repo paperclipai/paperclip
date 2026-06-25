@@ -22,103 +22,6 @@ const RECONNECT_SUPPRESS_MS = 2000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
-// Coalesce LiveEvent-driven invalidations within this window. Bumped from
-// 250 ms after a live measurement on /BLO/inbox/mine showed events arriving
-// at a median 286 ms gap — ~36 ms past the old window — so 0/81 consecutive
-// invalidations were being collapsed and the bare-key inbox query stampeded
-// to 82 fetches in 83 s with median request duration 35 s (pg pool fully
-// saturated). At 1000 ms the same workload collapses ~70/82 events.
-const INVALIDATION_COALESCE_MS = 1000;
-
-type RefetchType = "active" | "inactive" | "none" | "all";
-
-interface InvalidationCoalescer {
-  /** Invalidate by exact or prefix queryKey. Coalesces with same key+options. */
-  byKey(opts: { queryKey: readonly unknown[]; exact?: boolean; refetchType?: RefetchType }): void;
-  /**
-   * Invalidate via a predicate. Coalesces by `predicateKey` (a stable string
-   * identifier supplied by the caller, since predicate function references
-   * differ across event handler invocations).
-   */
-  byPredicate(predicateKey: string, predicate: (q: { queryKey: readonly unknown[] }) => boolean, refetchType?: RefetchType): void;
-  /** Drop pending tasks (e.g. on unmount). */
-  cancel(): void;
-}
-
-function createInvalidationCoalescer(queryClient: QueryClient, debounceMs = INVALIDATION_COALESCE_MS): InvalidationCoalescer {
-  type ExactTask = { queryKey: readonly unknown[]; exact?: boolean; refetchType?: RefetchType };
-  type PredicateTask = { predicate: (q: { queryKey: readonly unknown[] }) => boolean; refetchType?: RefetchType };
-  const exact = new Map<string, ExactTask>();
-  const predicate = new Map<string, PredicateTask>();
-  let timer: ReturnType<typeof setTimeout> | null = null;
-
-  // refetchType "inactive" / "none" never starts a network request, so the
-  // in-flight check is only meaningful for the "active" path (the default).
-  function isActive(rt?: RefetchType) {
-    return rt === undefined || rt === "active";
-  }
-
-  function flush() {
-    timer = null;
-    const exactEntries = Array.from(exact.entries());
-    const predicateEntries = Array.from(predicate.entries());
-    exact.clear();
-    predicate.clear();
-    let deferred = false;
-    for (const [k, t] of exactEntries) {
-      if (
-        isActive(t.refetchType) &&
-        queryClient.isFetching({ queryKey: t.queryKey as unknown[], exact: t.exact }) > 0
-      ) {
-        // Skip this cycle — a fetch is already in flight for this key. Re-queue
-        // the task so the next event (or this same task on the next tick) lands
-        // *after* the in-flight fetch completes, instead of stacking another
-        // refetch on top and saturating the pool.
-        exact.set(k, t);
-        deferred = true;
-        continue;
-      }
-      queryClient.invalidateQueries({ queryKey: t.queryKey as unknown[], exact: t.exact, refetchType: t.refetchType });
-    }
-    for (const [k, t] of predicateEntries) {
-      if (
-        isActive(t.refetchType) &&
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        queryClient.isFetching({ predicate: t.predicate as any }) > 0
-      ) {
-        predicate.set(k, t);
-        deferred = true;
-        continue;
-      }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      queryClient.invalidateQueries({ predicate: t.predicate as any, refetchType: t.refetchType });
-    }
-    if (deferred) schedule();
-  }
-  function schedule() {
-    if (timer === null) timer = setTimeout(flush, debounceMs);
-  }
-  return {
-    byKey(opts) {
-      const key = `${JSON.stringify(opts.queryKey)}|${opts.exact ? "exact" : "prefix"}|${opts.refetchType ?? "active"}`;
-      exact.set(key, { queryKey: opts.queryKey, exact: opts.exact, refetchType: opts.refetchType });
-      schedule();
-    },
-    byPredicate(predicateKey, predicateFn, refetchType) {
-      const key = `${predicateKey}|${refetchType ?? "active"}`;
-      predicate.set(key, { predicate: predicateFn, refetchType });
-      schedule();
-    },
-    cancel() {
-      exact.clear();
-      predicate.clear();
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    },
-  };
-}
 
 type LiveUpdatesSocketLike = {
   readyState: number;
@@ -181,7 +84,6 @@ function resolveActorLabel(
     return resolveAgentName(queryClient, companyId, actorId) ?? `Agent ${shortId(actorId)}`;
   }
   if (actorType === "system") return "System";
-  if (actorId === "linear-webhook") return "Linear";
   if (actorType === "user" && actorId) {
     return resolveUserName(queryClient, companyId, actorId) ?? "Board";
   }
@@ -513,6 +415,20 @@ const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
   "issue.document_restored",
   "issue.document_deleted",
 ]);
+const ISSUE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
+  "issue.document_annotation_thread_created",
+  "issue.document_annotation_comment_added",
+  "issue.document_annotation_thread_resolved",
+  "issue.document_annotation_thread_reopened",
+  "issue.document_annotation_remapped",
+]);
+const ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
+  "routine.document_annotation_thread_created",
+  "routine.document_annotation_comment_added",
+  "routine.document_annotation_thread_resolved",
+  "routine.document_annotation_thread_reopened",
+  "routine.document_annotation_remapped",
+]);
 const AGENT_TOAST_STATUSES = new Set(["error"]);
 const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
 
@@ -716,43 +632,34 @@ function buildRunStatusToast(
 }
 
 function invalidateHeartbeatQueries(
-  coalescer: InvalidationCoalescer,
+  queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
   payload: Record<string, unknown>,
 ) {
-  coalescer.byKey({ queryKey: queryKeys.liveRuns(companyId) });
-  coalescer.byKey({ queryKey: queryKeys.heartbeats(companyId) });
-  coalescer.byKey({ queryKey: queryKeys.agents.list(companyId) });
-  // Summary queries: many heartbeat events fire per second when several agents
-  // are active. Mark stale only; rely on each query's own refetchInterval (15s
-  // for sidebarBadges) or window-focus refetch to pick up the fresh data.
-  // Without this, every event would force an immediate refetch and the same
-  // companyId's /sidebar-badges, /dashboard, /costs URLs would be hammered
-  // tens of times per second.
-  coalescer.byKey({ queryKey: queryKeys.dashboard(companyId), refetchType: "none" });
-  coalescer.byKey({ queryKey: queryKeys.costs(companyId), refetchType: "none" });
-  coalescer.byKey({ queryKey: queryKeys.sidebarBadges(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
 
   const agentId = readString(payload.agentId);
   if (agentId) {
-    coalescer.byKey({ queryKey: queryKeys.agents.detail(agentId) });
-    coalescer.byKey({ queryKey: queryKeys.heartbeats(companyId, agentId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
   }
 }
 
 function invalidateActivityQueries(
   queryClient: ReturnType<typeof useQueryClient>,
-  coalescer: InvalidationCoalescer,
   companyId: string,
   payload: Record<string, unknown>,
   currentActor: { userId: string | null; agentId: string | null },
   options?: { pathname?: string; isForegrounded?: boolean },
 ) {
-  coalescer.byKey({ queryKey: queryKeys.activity(companyId) });
-  // Same rationale as in invalidateHeartbeatQueries: dashboard and sidebar
-  // badges are summary surfaces that don't need a refetch per activity event.
-  coalescer.byKey({ queryKey: queryKeys.dashboard(companyId), refetchType: "none" });
-  coalescer.byKey({ queryKey: queryKeys.sidebarBadges(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
 
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
@@ -760,6 +667,9 @@ function invalidateActivityQueries(
   const actorType = readString(payload.actorType);
   const actorId = readString(payload.actorId);
   const details = readRecord(payload.details);
+  const ownActorActivity =
+    (actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
+    (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId);
 
   if (action?.startsWith("resource_membership.")) {
     const targetUserId = readString(details?.userId);
@@ -769,40 +679,10 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
-    // Earlier this fired `invalidateQueries({ queryKey: queryKeys.issues.list(companyId) })`
-    // which prefix-matches every `["issues", companyId, …]` key — meaning the
-    // Inbox queries (mine-by-me / touched-by-me / unread-touched-by-me), the
-    // bare list key shared by Dashboard / MyIssues / CommandPalette, AND the
-    // suffixed Issues / Routines / AgentDetail keys — all triggered an immediate
-    // refetch on every issue-activity event, regardless of the explicit
-    // `refetchType: "none"` calls below (those run after the default-active
-    // invalidation has already kicked off the refetch). On a busy dashboard
-    // load this produced 8× the unbounded /api/companies/<id>/issues fetch
-    // (1.28 MB each) and 25× the inbox /issues fetch (273 KB each), ~26 MB
-    // duplicate downloads in seconds and a stalled UI.
-    //
-    // Now: use a predicate that targets the suffixed keys only — the Issues
-    // and Routines pages still refresh — and explicitly mark the bare /
-    // inbox keys stale via `refetchType: "none"`. Those views all rely on
-    // staleTime + tab-focus / next-mount to refresh, so they stay correct
-    // without a synchronous refetch storm.
-    coalescer.byPredicate(
-      `issues-suffixed-active:${companyId}`,
-      (query) => {
-        const key = query.queryKey;
-        if (key[0] !== "issues" || key[1] !== companyId) return false;
-        if (key.length < 3) return false; // bare list key — handled below with refetchType: "none"
-        const variant = key[2];
-        if (variant === "mine-by-me" || variant === "touched-by-me" || variant === "unread-touched-by-me") {
-          return false; // inbox-badge keys — handled below with refetchType: "none"
-        }
-        return true;
-      },
-    );
-    coalescer.byKey({ queryKey: queryKeys.issues.list(companyId), exact: true, refetchType: "none" });
-    coalescer.byKey({ queryKey: queryKeys.issues.listMineByMe(companyId), refetchType: "none" });
-    coalescer.byKey({ queryKey: queryKeys.issues.listTouchedByMe(companyId), refetchType: "none" });
-    coalescer.byKey({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
     if (entityId) {
       const selfCommentActivity =
         ((action === "issue.comment_added") ||
@@ -827,27 +707,40 @@ function invalidateActivityQueries(
         );
       const issueRefs = resolveIssueQueryRefs(queryClient, companyId, entityId, details);
       for (const ref of issueRefs) {
-        const refetchType = (selfCommentActivity || visibleIssueAgentActivity || visibleIssueCommentActivity)
-          ? "inactive" as const
-          : undefined;
-        coalescer.byKey({ queryKey: queryKeys.issues.detail(ref), refetchType });
-        coalescer.byKey({ queryKey: queryKeys.issues.activity(ref), refetchType });
+        const invalidationOptions =
+          (selfCommentActivity || visibleIssueAgentActivity || visibleIssueCommentActivity)
+            ? { refetchType: "inactive" as const }
+            : undefined;
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
         if (action === "issue.comment_added") {
-          coalescer.byKey({ queryKey: queryKeys.issues.comments(ref), refetchType });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
         }
         if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
           const documentKey = readString(details?.key);
-          coalescer.byKey({ queryKey: queryKeys.issues.documents(ref), refetchType });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref), ...invalidationOptions });
           if (documentKey) {
-            coalescer.byKey({ queryKey: queryKeys.issues.document(ref, documentKey), refetchType });
-            coalescer.byKey({ queryKey: queryKeys.issues.documentRevisions(ref, documentKey), refetchType });
+            queryClient.invalidateQueries({ queryKey: queryKeys.issues.document(ref, documentKey), ...invalidationOptions });
+            queryClient.invalidateQueries({ queryKey: queryKeys.issues.documentRevisions(ref, documentKey), ...invalidationOptions });
           } else {
-            coalescer.byKey({ queryKey: ["issues", "document", ref], refetchType });
-            coalescer.byKey({ queryKey: ["issues", "document-revisions", ref], refetchType });
+            queryClient.invalidateQueries({ queryKey: ["issues", "document", ref], ...invalidationOptions });
+            queryClient.invalidateQueries({ queryKey: ["issues", "document-revisions", ref], ...invalidationOptions });
           }
         }
+        if (
+          action &&
+          (ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action) || ISSUE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action))
+        ) {
+          const documentKey = readString(details?.key) ?? readString(details?.documentKey);
+          queryClient.invalidateQueries({
+            queryKey: documentKey
+              ? ["issues", "document-annotations", ref, documentKey]
+              : ["issues", "document-annotations", ref],
+            ...invalidationOptions,
+          });
+        }
         if (action?.startsWith("issue.thread_interaction_")) {
-          coalescer.byKey({ queryKey: queryKeys.issues.interactions(ref), refetchType });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });
         }
       }
     }
@@ -855,53 +748,61 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "agent") {
-    coalescer.byKey({ queryKey: queryKeys.agents.list(companyId) });
-    coalescer.byKey({ queryKey: queryKeys.org(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.org(companyId) });
     if (entityId) {
-      coalescer.byKey({ queryKey: queryKeys.agents.detail(entityId) });
-      coalescer.byKey({ queryKey: queryKeys.heartbeats(companyId, entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, entityId) });
     }
     return;
   }
 
   if (entityType === "project") {
-    coalescer.byKey({ queryKey: queryKeys.projects.list(companyId) });
-    if (entityId) coalescer.byKey({ queryKey: queryKeys.projects.detail(entityId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(companyId) });
+    if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(entityId) });
     return;
   }
 
   if (entityType === "goal") {
-    coalescer.byKey({ queryKey: queryKeys.goals.list(companyId) });
-    if (entityId) coalescer.byKey({ queryKey: queryKeys.goals.detail(entityId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(companyId) });
+    if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.goals.detail(entityId) });
     return;
   }
 
   if (entityType === "approval") {
-    coalescer.byKey({ queryKey: queryKeys.approvals.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
     return;
   }
 
   if (entityType === "join_request") {
-    coalescer.byKey({ queryKey: queryKeys.access.joinRequests(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
     return;
   }
 
   if (entityType === "cost_event") {
-    coalescer.byKey({ queryKey: queryKeys.costs(companyId) });
-    coalescer.byKey({ queryKey: queryKeys.usageByProvider(companyId) });
-    coalescer.byKey({ queryKey: queryKeys.usageWindowSpend(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.usageByProvider(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.usageWindowSpend(companyId) });
     // usageQuotaWindows is intentionally excluded: quota windows come from external provider
     // apis on a 5-minute poll and do not change in response to cost events logged by agents
     return;
   }
 
   if (entityType === "routine" || entityType === "routine_trigger" || entityType === "routine_run") {
-    coalescer.byKey({ queryKey: ["routines"] });
+    queryClient.invalidateQueries({ queryKey: ["routines"] });
+    if (entityType === "routine" && action && ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action) && entityId) {
+      const documentKey = readString(details?.key) ?? readString(details?.documentKey) ?? "description";
+      const routineInvalidationOptions = ownActorActivity ? { refetchType: "inactive" as const } : undefined;
+      queryClient.invalidateQueries({
+        queryKey: ["routines", "document-annotations", entityId, documentKey],
+        ...routineInvalidationOptions,
+      });
+    }
     return;
   }
 
   if (entityType === "company") {
-    coalescer.byKey({ queryKey: queryKeys.companies.all });
+    queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
   }
 }
 
@@ -942,7 +843,6 @@ function gatedPushToast(
 
 function handleLiveEvent(
   queryClient: QueryClient,
-  coalescer: InvalidationCoalescer,
   expectedCompanyId: string,
   pathname: string,
   event: LiveEvent,
@@ -959,7 +859,7 @@ function handleLiveEvent(
   }
 
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
-    invalidateHeartbeatQueries(coalescer, expectedCompanyId, payload);
+    invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
@@ -979,7 +879,7 @@ function handleLiveEvent(
 
   if (event.type === "agent.status") {
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(expectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(expectedCompanyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.org(expectedCompanyId) });
     const agentId = readString(payload.agentId);
     if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
@@ -994,7 +894,7 @@ function handleLiveEvent(
   }
 
   if (event.type === "activity.logged") {
-    invalidateActivityQueries(queryClient, coalescer, expectedCompanyId, payload, currentActor, { pathname });
+    invalidateActivityQueries(queryClient, expectedCompanyId, payload, currentActor, { pathname });
     if (shouldDeferVisibleIssueCommentActivity(queryClient, pathname, payload)) {
       void hydrateVisibleIssueComment(queryClient, pathname, payload);
     }
@@ -1050,25 +950,6 @@ function closeSocketQuietly(target: LiveUpdatesSocketLike | null, reason: string
   }
 }
 
-// Real coalescer factory exposed for unit tests so the in-flight defer +
-// debounce semantics can be exercised without a full React tree.
-export const __createInvalidationCoalescerForTests = createInvalidationCoalescer;
-
-// Synchronous passthrough coalescer for unit tests — delegates straight to
-// queryClient.invalidateQueries so tests can assert exact options without
-// dealing with the debounce. Production paths use createInvalidationCoalescer.
-export function __makePassthroughCoalescerForTests(
-  queryClient: { invalidateQueries: (opts: unknown) => unknown },
-): InvalidationCoalescer {
-  return {
-    byKey: (opts) => { queryClient.invalidateQueries(opts); },
-    byPredicate: (_key, predicate, refetchType) => {
-      queryClient.invalidateQueries({ predicate, refetchType });
-    },
-    cancel: () => {},
-  };
-}
-
 export const __liveUpdatesTestUtils = {
   buildAgentStatusToast,
   buildRunStatusToast,
@@ -1091,9 +972,6 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
   const pathnameRef = useRef(location.pathname);
-  const coalescerRef = useRef<InvalidationCoalescer | null>(null);
-  if (coalescerRef.current === null) coalescerRef.current = createInvalidationCoalescer(queryClient);
-  useEffect(() => () => coalescerRef.current?.cancel(), []);
   const { data: session, status: sessionStatus } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -1169,7 +1047,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, coalescerRef.current!, liveCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
+          handleLiveEvent(queryClient, liveCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
             userId: currentActorRef.current.userId,
             agentId: currentActorRef.current.agentId,
           });

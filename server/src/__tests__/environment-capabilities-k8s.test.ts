@@ -41,12 +41,16 @@ const mockValidatePluginEnvironmentDriverConfig = vi.hoisted(() => vi.fn());
 const mockValidatePluginSandboxProviderConfig = vi.hoisted(() => vi.fn());
 const mockListReadyPluginEnvironmentDrivers = vi.hoisted(() => vi.fn());
 const mockExecutionWorkspaceService = vi.hoisted(() => ({}));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  listCompanyIds: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   issueService: () => mockIssueService,
   environmentService: () => mockEnvironmentService,
+  instanceSettingsService: () => mockInstanceSettingsService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
 }));

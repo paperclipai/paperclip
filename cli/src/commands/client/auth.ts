@@ -16,6 +16,7 @@ import {
 
 interface AuthLoginOptions extends BaseClientOptions {
   instanceAdmin?: boolean;
+  browser?: boolean;
 }
 
 interface AuthLogoutOptions extends BaseClientOptions {}
@@ -32,6 +33,7 @@ export function registerClientAuthCommands(auth: Command): void {
       .command("login")
       .description("Authenticate the CLI for board-user access")
       .option("--instance-admin", "Request instance-admin approval instead of plain board access", false)
+      .option("--no-browser", "Don't try to open a browser; just print the approval URL")
       .action(async (opts: AuthLoginOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
@@ -40,6 +42,7 @@ export function registerClientAuthCommands(auth: Command): void {
             requestedAccess: opts.instanceAdmin ? "instance_admin_required" : "board",
             requestedCompanyId: ctx.companyId ?? null,
             command: "paperclipai auth login",
+            openBrowser: opts.browser,
           });
           printOutput(
             {

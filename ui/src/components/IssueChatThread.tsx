@@ -25,6 +25,7 @@ import {
   type ChangeEvent,
   type DragEvent as ReactDragEvent,
   type ErrorInfo,
+  type KeyboardEvent as ReactKeyboardEvent,
   type Ref,
   type ReactNode,
 } from "react";
@@ -45,9 +46,12 @@ import type {
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
+import { useOptionalToastActions } from "../context/ToastContext";
+import { copyTextToClipboard } from "../lib/clipboard";
 import {
   buildIssueChatMessages,
   formatDurationWords,
+  isCoTSegmentActive,
   stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
@@ -98,7 +102,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
@@ -117,6 +121,7 @@ import {
   computeComposerHandoffPreview,
   extractAgentMentionIds,
   findPlainAgentNameCandidate,
+  type ComposerHandoffPreview,
   type HandoffAgentMention,
 } from "../lib/interrupt-handoff";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
@@ -157,6 +162,7 @@ import {
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { nextWorkMode, titleForPendingWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
@@ -212,6 +218,7 @@ interface IssueChatMessageContext {
   onUploadImage?: (file: File) => Promise<string>;
   issueStatus?: string;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -220,6 +227,8 @@ const IssueChatCtx = createContext<IssueChatMessageContext>({
   issueStatus: undefined,
   successfulRunHandoff: null,
 });
+
+const AGENT_COMMENT_BUBBLE_WIDTH_CLASS = "max-w-[calc(100%-0.5rem)] sm:max-w-[85%]";
 
 export type IssueChatRunFinalizationAction = {
   id: "cancel" | "done";
@@ -310,6 +319,10 @@ function useStableEvent<T extends (...args: never[]) => unknown>(callback: T | u
 interface CommentReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+}
+
+export function shouldRenderComposerHandoffPreview(body: string, preview: ComposerHandoffPreview): boolean {
+  return Boolean(body.trim()) && preview.kind !== "none";
 }
 
 export interface IssueChatComposerHandle {
@@ -439,6 +452,7 @@ interface IssueChatThreadProps {
    * comment is in the loaded set before we scroll to it.
    */
   onRefreshLatestComments?: () => Promise<unknown> | void;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -446,6 +460,7 @@ type IssueChatErrorBoundaryProps = {
   messages: readonly ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
+  externalReferences?: MarkdownExternalReferenceMap;
   children: ReactNode;
 };
 
@@ -480,6 +495,7 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
           messages={this.props.messages}
           emptyMessage={this.props.emptyMessage}
           variant={this.props.variant}
+          externalReferences={this.props.externalReferences}
         />
       );
     }
@@ -544,10 +560,12 @@ function IssueChatFallbackThread({
   messages,
   emptyMessage,
   variant,
+  externalReferences,
 }: {
   messages: readonly ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
@@ -588,7 +606,9 @@ function IssueChatFallbackThread({
                 </div>
                 <div className="space-y-2">
                   {lines.length > 0 ? lines.map((line, index) => (
-                    <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
+                    <MarkdownBody key={`${message.id}:fallback:${index}`} externalReferences={externalReferences}>
+                      {line}
+                    </MarkdownBody>
                   )) : (
                     <p className="text-sm text-muted-foreground">No message content.</p>
                   )}
@@ -694,7 +714,7 @@ function commentDateLabel(date: Date | string | undefined): string {
 }
 
 const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAccent }: { text: string; recessed?: boolean; onAccent?: boolean }) {
-  const { onImageClick } = useContext(IssueChatCtx);
+  const { onImageClick, externalReferences } = useContext(IssueChatCtx);
   if (isSuccessfulRunHandoffComment(text)) {
     return <SuccessfulRunHandoffCommentCallout text={text} recessed={recessed} onImageClick={onImageClick} />;
   }
@@ -706,6 +726,7 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAc
       style={recessed ? { opacity: 0.55 } : undefined}
       softBreaks
       onImageClick={onImageClick}
+      externalReferences={externalReferences}
     >
       {text}
     </WorkspaceFileMarkdownBody>
@@ -850,13 +871,16 @@ function IssueChatChainOfThought({
     (p): p is ToolCallMessagePart => p.type === "tool-call",
   );
 
-  const isActive = isMessageRunning;
-  const [expanded, setExpanded] = useState(isActive);
-
   const rawSegments = Array.isArray(custom.chainOfThoughtSegments)
     ? (custom.chainOfThoughtSegments as SegmentTiming[])
     : [];
   const segmentTiming = myIndex >= 0 ? rawSegments[myIndex] ?? null : null;
+  const isActive = isCoTSegmentActive({
+    isMessageRunning,
+    segmentIndex: myIndex,
+    segmentCount: rawSegments.length,
+  });
+  const [expanded, setExpanded] = useState(isActive);
   const liveElapsed = useLiveElapsed(segmentTiming?.startMs, isActive);
 
   useEffect(() => {
@@ -1047,6 +1071,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
 
 function CopyablePreBlock({ children, className }: { children: string; className?: string }) {
   const [copied, setCopied] = useState(false);
+  const toastActions = useOptionalToastActions();
   return (
     <div className="group/pre relative">
       <pre className={className}>{children}</pre>
@@ -1059,9 +1084,15 @@ function CopyablePreBlock({ children, className }: { children: string; className
         title="Copy"
         aria-label="Copy"
         onClick={() => {
-          void navigator.clipboard.writeText(children).then(() => {
+          void copyTextToClipboard(children).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
+          }).catch((error) => {
+            toastActions?.pushToast({
+              title: "Copy failed",
+              body: error instanceof Error ? error.message : "Unable to copy text",
+              tone: "error",
+            });
           });
         }}
       >
@@ -1310,6 +1341,7 @@ function IssueChatUserMessage({
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const toastActions = useOptionalToastActions();
   const {
     isCurrentUser,
     authorName: resolvedAuthorName,
@@ -1436,9 +1468,15 @@ function IssueChatUserMessage({
                   .filter((p): p is { type: "text"; text: string } => p.type === "text")
                   .map((p) => p.text)
                   .join("\n\n");
-                void navigator.clipboard.writeText(text).then(() => {
+                void copyTextToClipboard(text).then(() => {
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
+                }).catch((error) => {
+                  toastActions?.pushToast({
+                    title: "Copy failed",
+                    body: error instanceof Error ? error.message : "Unable to copy message",
+                    tone: "error",
+                  });
                 });
               }}
             >
@@ -1551,6 +1589,7 @@ function IssueChatAssistantMessage({
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
   const [copied, setCopied] = useState(false);
+  const toastActions = useOptionalToastActions();
   const copyText = deleted ? "" : getThreadMessageCopyText(message);
 
   // Derive fold state synchronously during render (not in useEffect) so the
@@ -1609,9 +1648,15 @@ function IssueChatAssistantMessage({
         title="Copy message"
         aria-label="Copy message"
         onClick={() => {
-          void navigator.clipboard.writeText(copyText).then(() => {
+          void copyTextToClipboard(copyText).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
+          }).catch((error) => {
+            toastActions?.pushToast({
+              title: "Copy failed",
+              body: error instanceof Error ? error.message : "Unable to copy message",
+              tone: "error",
+            });
           });
         }}
       >
@@ -1653,7 +1698,13 @@ function IssueChatAssistantMessage({
         <DropdownMenuContent align="end">
           <DropdownMenuItem
             onClick={() => {
-              void navigator.clipboard.writeText(copyText);
+              void copyTextToClipboard(copyText).catch((error) => {
+                toastActions?.pushToast({
+                  title: "Copy failed",
+                  body: error instanceof Error ? error.message : "Unable to copy message",
+                  tone: "error",
+                });
+              });
             }}
           >
             <Copy className="mr-2 h-3.5 w-3.5" />
@@ -1720,7 +1771,8 @@ function IssueChatAssistantMessage({
           {/* Canonical conference-room agent bubble (BoardChat.tsx:712). */}
           <div
             className={cn(
-              "min-w-0 max-w-[85%] break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible [border-radius:14px_14px_14px_4px]",
+              "min-w-0 break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible [border-radius:14px_14px_14px_4px]",
+              AGENT_COMMENT_BUBBLE_WIDTH_CLASS,
               deleted
                 ? "border border-border bg-muted/50 text-muted-foreground"
                 : "border border-border bg-card text-foreground",
@@ -2074,6 +2126,7 @@ function ExpiredRequestConfirmationActivity({
     onRejectInteraction,
     onCancelInteraction,
     onUploadImage,
+    externalReferences,
   } = useContext(IssueChatCtx);
   const [expanded, setExpanded] = useState(false);
   const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
@@ -2154,6 +2207,7 @@ function ExpiredRequestConfirmationActivity({
             onRejectInteraction={onRejectInteraction}
             onCancelInteraction={onCancelInteraction}
             onUploadImage={onUploadImage}
+            externalReferences={externalReferences}
           />
         </div>
       ) : null}
@@ -2411,6 +2465,7 @@ function SystemNoticeCommentRow({
   anchorId?: string;
 }) {
   const { onImageClick, agentMap, issueStatus, successfulRunHandoff } = useContext(IssueChatCtx);
+  const toastActions = useOptionalToastActions();
   const custom = message.metadata.custom as Record<string, unknown>;
   const presentation = isIssueCommentPresentation(custom.presentation) ? custom.presentation : null;
   const commentMetadata = isIssueCommentMetadata(custom.commentMetadata) ? custom.commentMetadata : null;
@@ -2460,18 +2515,30 @@ function SystemNoticeCommentRow({
   });
 
   const handleCopy = () => {
-    void navigator.clipboard.writeText(bodyText).then(() => {
+    void copyTextToClipboard(bodyText).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }).catch((error) => {
+      toastActions?.pushToast({
+        title: "Copy failed",
+        body: error instanceof Error ? error.message : "Unable to copy system notice",
+        tone: "error",
+      });
     });
   };
 
   const handleCopyLink = () => {
     if (!anchorId || typeof window === "undefined") return;
     const url = `${window.location.origin}${window.location.pathname}#${anchorId}`;
-    void navigator.clipboard.writeText(url).then(() => {
+    void copyTextToClipboard(url).then(() => {
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2000);
+    }).catch((error) => {
+      toastActions?.pushToast({
+        title: "Copy failed",
+        body: error instanceof Error ? error.message : "Unable to copy system notice link",
+        tone: "error",
+      });
     });
   };
 
@@ -2568,6 +2635,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onSubmitInteractionAnswers,
     onCancelInteraction,
     onUploadImage,
+    externalReferences,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -2625,6 +2693,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
             onUploadImage={onUploadImage}
+            externalReferences={externalReferences}
           />
         </div>
       </div>
@@ -2876,6 +2945,18 @@ type SimpleVirtualItem = {
   size: number;
 };
 
+export function getVirtualizedMeasurementScrollAdjustment(args: {
+  itemStart: number;
+  previousSize: number;
+  nextSize: number;
+  viewportStart: number;
+}) {
+  const { itemStart, previousSize, nextSize, viewportStart } = args;
+  const previousEnd = itemStart + previousSize;
+  if (previousEnd > viewportStart) return 0;
+  return nextSize - previousSize;
+}
+
 function useIssueThreadVirtualizer({
   count,
   estimateSize,
@@ -2990,7 +3071,20 @@ function useIssueThreadVirtualizer({
       const key = getItemKey(index);
       const previousSize = measuredSizeByKeyRef.current.get(key) ?? estimatedSize;
       if (Math.abs(previousSize - measuredSize) < 1) return;
+      const scrollAdjustment = getVirtualizedMeasurementScrollAdjustment({
+        itemStart: itemStarts[index] ?? scrollMargin,
+        previousSize,
+        nextSize: measuredSize,
+        viewportStart: Math.max(scrollMargin, scrollOffset()),
+      });
       measuredSizeByKeyRef.current.set(key, measuredSize);
+      if (Math.abs(scrollAdjustment) >= 1) {
+        if (mode.kind === "window") {
+          window.scrollBy({ top: scrollAdjustment, behavior: "auto" });
+        } else {
+          mode.element.scrollBy({ top: scrollAdjustment, behavior: "auto" });
+        }
+      }
       rerender((value) => value + 1);
     },
   };
@@ -3676,7 +3770,21 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     );
   }
 
-  const isPlanning = pendingWorkMode === "planning";
+  const workModeOptions = workModeMetaList(true);
+  const pendingWorkModeMeta = workModeMetaFor(pendingWorkMode, true);
+  const PendingWorkModeIcon = pendingWorkModeMeta.icon;
+
+  function handleComposerKeyDown(evt: ReactKeyboardEvent<HTMLDivElement>) {
+    // Match the period via both `code` and `key`: iOS Safari with a hardware
+    // keyboard often leaves `code` empty for cmd-period, so relying on it alone
+    // lets the event fall through and triggers Safari's default cancel/dismiss
+    // (which closes the view). Catching `key === "."` keeps the shortcut working
+    // on iOS while preserving desktop behavior.
+    const isPeriod = evt.code === "Period" || evt.key === ".";
+    if (!(evt.metaKey || evt.ctrlKey) || !isPeriod) return;
+    evt.preventDefault();
+    setPendingWorkMode((current) => nextWorkMode(current, true));
+  }
 
   return (
     <div
@@ -3685,9 +3793,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       data-pending-work-mode={pendingWorkMode}
       className={cn(
         "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
-        isPlanning && "border-amber-500/60 bg-amber-50/60 supports-[backdrop-filter]:bg-amber-50/40 dark:border-amber-500/50 dark:bg-amber-500/[0.07] dark:supports-[backdrop-filter]:bg-amber-500/[0.07]",
+        pendingWorkModeMeta.classes.container,
         isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
       )}
+      onKeyDownCapture={handleComposerKeyDown}
       onDragEnterCapture={handleFileDragEnter}
       onDragOverCapture={handleFileDragOver}
       onDragLeaveCapture={handleFileDragLeave}
@@ -3787,8 +3896,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         </div>
       ) : null}
 
-      {body.trim() ? (
-        <ComposerHandoffPreviewRow preview={handoffPreview} resolvers={handoffResolvers} />
+      {shouldRenderComposerHandoffPreview(body, handoffPreview) ? (
+        <div className="my-2">
+          <ComposerHandoffPreviewRow preview={handoffPreview} resolvers={handoffResolvers} />
+        </div>
       ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-3">
@@ -3823,24 +3934,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   data-pending-work-mode={pendingWorkMode}
                   aria-haspopup="menu"
                   aria-expanded={workModeMenuOpen}
-                  title={
-                    isPlanning
-                      ? "Plan mode is on for this submission. Click to change."
-                      : "Agent mode for this submission. Click to switch to plan mode."
-                  }
+                  aria-pressed={pendingWorkMode !== "standard"}
+                  aria-keyshortcuts="Meta+Period Control+Period"
+                  title={titleForPendingWorkMode(pendingWorkMode, true)}
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors",
-                    isPlanning
-                      ? "border-amber-500/60 bg-amber-500/15 text-amber-800 hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
-                      : "border-border bg-muted/40 text-muted-foreground hover:bg-accent hover:text-foreground",
+                    pendingWorkModeMeta.classes.chip,
                   )}
                 >
-                  {isPlanning ? (
-                    <ClipboardList className="h-3.5 w-3.5" aria-hidden />
-                  ) : (
-                    <Hammer className="h-3.5 w-3.5" aria-hidden />
-                  )}
-                  <span>{isPlanning ? "Plan mode" : "Agent mode"}</span>
+                  <PendingWorkModeIcon className="h-3.5 w-3.5" aria-hidden />
+                  <span>{pendingWorkModeMeta.label}</span>
                   <ChevronDown className="h-3 w-3 opacity-60" aria-hidden />
                 </button>
               </PopoverTrigger>
@@ -3849,26 +3952,34 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                 align="start"
                 data-testid="issue-chat-composer-work-mode-menu"
               >
-                <button
-                  type="button"
-                  data-testid="issue-chat-composer-work-mode-menu-toggle"
-                  data-pending-work-mode={pendingWorkMode}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
-                    isPlanning ? "text-foreground" : "text-amber-700 dark:text-amber-300",
-                  )}
-                  onClick={() => {
-                    setPendingWorkMode((prev) => (prev === "planning" ? "standard" : "planning"));
-                    setWorkModeMenuOpen(false);
-                  }}
-                >
-                  {isPlanning ? (
-                    <Hammer className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                  ) : (
-                    <ClipboardList className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden />
-                  )}
-                  <span>{isPlanning ? "Switch to agent mode" : "Switch to plan mode"}</span>
-                </button>
+                {workModeOptions.map((option) => {
+                  const Icon = option.icon;
+                  const active = option.value === pendingWorkMode;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      data-testid={`issue-chat-composer-work-mode-menu-${option.value}`}
+                      data-pending-work-mode={pendingWorkMode}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                        active && "bg-accent",
+                        option.classes.menuItem,
+                      )}
+                      onClick={() => {
+                        setPendingWorkMode(option.value);
+                        setWorkModeMenuOpen(false);
+                      }}
+                    >
+                      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <span>{option.label}</span>
+                      {active ? <Check className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+                    </button>
+                  );
+                })}
+                <div className="mt-1 border-t px-2 py-1.5 text-[10px] text-muted-foreground">
+                  Cmd/Ctrl+. cycles modes
+                </div>
               </PopoverContent>
             </Popover>
           ) : null}
@@ -4031,6 +4142,7 @@ export function IssueChatThread({
   assigneeUserId = null,
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
+  externalReferences,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
@@ -4555,6 +4667,7 @@ export function IssueChatThread({
       onUploadImage: stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
+      externalReferences,
     }),
     [
       feedbackDataSharingPreference,
@@ -4580,6 +4693,7 @@ export function IssueChatThread({
       stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
+      externalReferences,
     ],
   );
 
@@ -4617,6 +4731,7 @@ export function IssueChatThread({
           messages={messages}
           emptyMessage={resolvedEmptyMessage}
           variant={variant}
+          externalReferences={externalReferences}
         >
           <div data-testid="thread-root">
             <div

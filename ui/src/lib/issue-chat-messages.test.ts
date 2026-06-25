@@ -3,6 +3,7 @@ import type { Agent } from "@paperclipai/shared";
 import {
   buildAssistantPartsFromTranscript,
   buildIssueChatMessages,
+  isCoTSegmentActive,
   stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
@@ -236,6 +237,24 @@ describe("buildAssistantPartsFromTranscript", () => {
       startMs: new Date("2026-04-06T12:00:00.000Z").getTime(),
       endMs: new Date("2026-04-06T12:00:02.000Z").getTime(),
     }]);
+  });
+
+  it("marks only the latest chain-of-thought segment active while a run is live", () => {
+    expect(isCoTSegmentActive({
+      isMessageRunning: true,
+      segmentIndex: 0,
+      segmentCount: 2,
+    })).toBe(false);
+    expect(isCoTSegmentActive({
+      isMessageRunning: true,
+      segmentIndex: 1,
+      segmentCount: 2,
+    })).toBe(true);
+    expect(isCoTSegmentActive({
+      isMessageRunning: false,
+      segmentIndex: 1,
+      segmentCount: 2,
+    })).toBe(false);
   });
 
   it("keeps run errors while suppressing init and system transcript noise", () => {

@@ -1,4 +1,4 @@
-import { isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { isValidElement, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, Github, WrapText } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
@@ -15,6 +15,36 @@ import { parseWorkspaceFileHref, remarkWorkspaceFileRefs, WORKSPACE_FILE_HREF_PR
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
 import { WorkspaceFileLink } from "./WorkspaceFileLink";
+import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
+import {
+  externalObjectCategoryLabel,
+  externalObjectLivenessLabel,
+  externalObjectProviderLabel,
+} from "../lib/external-objects";
+import { normalizeExternalObjectHref } from "../lib/external-object-href";
+import type {
+  ExternalObjectLivenessState,
+  ExternalObjectStatusCategory,
+} from "@paperclipai/shared";
+
+/**
+ * Host-resolved external-object metadata for inline markdown decoration.
+ * The renderer only consumes the host normalized fields here — plugin React
+ * is never mounted inline (Phase 1B security review).
+ */
+export interface MarkdownExternalReference {
+  providerKey: string | null;
+  objectType: string | null;
+  displayKey?: string | null;
+  iconKey?: string | null;
+  statusCategory: ExternalObjectStatusCategory;
+  liveness: ExternalObjectLivenessState;
+  statusLabel?: string | null;
+  statusIconKey?: string | null;
+  displayTitle?: string | null;
+}
+
+export type MarkdownExternalReferenceMap = Record<string, MarkdownExternalReference>;
 
 interface MarkdownBodyProps {
   children: string;
@@ -28,6 +58,12 @@ interface MarkdownBodyProps {
   wikiLinkRoot?: string;
   /** Optional href resolver for wikilinks. Return null to leave a token as plain text. */
   resolveWikiLinkHref?: (target: string, label: string) => string | null | undefined;
+  /**
+   * Optional map of `normalizeExternalObjectHref(href)` → host-resolved metadata.
+   * Hrefs in the markdown that resolve to one of these keys get the inline
+   * status icon prefix used by §2 of the UX spec.
+   */
+  externalReferences?: MarkdownExternalReferenceMap;
   /** Optional resolver for relative image paths (e.g. within export packages) */
   resolveImageSrc?: (src: string) => string | null;
   /** Called when a user clicks an inline image */
@@ -38,37 +74,6 @@ interface MarkdownBodyProps {
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
 
-// Linear and Paperclip share the `BLO-N` identifier scheme for different
-// issues, so a bare `BLO-1234` is ambiguous. We resolve it against Paperclip
-// (the query below): a hit renders an in-app Paperclip link with a rich
-// tooltip; a confirmed miss is treated as a Linear reference and rendered as a
-// fully-qualified external linear.app link instead of dead-ending on
-// Paperclip's own `/issues/BLO-1234`. The workspace slug is needed for the
-// linear.app URL to resolve (slug-less `linear.app/issue/…` returns the
-// marketing site); defaults to "blockcast", overridable per deployment.
-const LINEAR_WORKSPACE_SLUG =
-  (import.meta.env.VITE_LINEAR_WORKSPACE_SLUG as string | undefined)?.trim() || "blockcast";
-
-export function buildLinearIssueUrl(identifier: string): string {
-  return `https://linear.app/${LINEAR_WORKSPACE_SLUG}/issue/${encodeURIComponent(identifier)}`;
-}
-
-export function buildIssueTooltip(
-  identifier: string,
-  title: string | null | undefined,
-  status: string | null | undefined,
-  description: string | null | undefined,
-): string {
-  const head = title && title !== identifier ? `${identifier}: ${title}` : identifier;
-  const lines: string[] = [head];
-  if (status) lines.push(`Status: ${status}`);
-  if (description) {
-    const trimmed = description.trim().replace(/\s+/g, " ");
-    if (trimmed) lines.push(trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed);
-  }
-  return lines.join("\n");
-}
-
 function MarkdownIssueLink({
   issuePathId,
   children,
@@ -76,37 +81,15 @@ function MarkdownIssueLink({
   issuePathId: string;
   children: ReactNode;
 }) {
-  // retry:false so a 404 (identifier isn't a Paperclip issue) settles to
-  // isError quickly instead of retrying, letting us fall back to Linear.
-  const { data, isError } = useQuery({
+  const { data } = useQuery({
     queryKey: queryKeys.issues.detail(issuePathId),
     queryFn: () => issuesApi.get(issuePathId),
     staleTime: 60_000,
-    retry: false,
   });
 
   const identifier = data?.identifier ?? issuePathId;
-
-  // Confirmed not a Paperclip issue → render a fully-qualified Linear link.
-  if (isError && !data) {
-    return (
-      <a
-        href={buildLinearIssueUrl(identifier)}
-        target="_blank"
-        rel="noopener noreferrer"
-        data-mention-kind="issue-linear"
-        className="paperclip-markdown-issue-ref"
-        title={`Linear issue ${identifier}`}
-        aria-label={`Linear issue ${identifier}`}
-      >
-        {children}
-      </a>
-    );
-  }
-
   const title = data?.title ?? identifier;
   const status = data?.status;
-  const tooltip = buildIssueTooltip(identifier, data?.title, status, data?.description);
   const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
 
   return (
@@ -114,7 +97,7 @@ function MarkdownIssueLink({
       to={`/issues/${identifier}`}
       data-mention-kind="issue"
       className="paperclip-markdown-issue-ref"
-      title={tooltip}
+      title={title}
       aria-label={issueLabel}
     >
       {status ? (
@@ -122,6 +105,51 @@ function MarkdownIssueLink({
       ) : null}
       {children}
     </Link>
+  );
+}
+
+function MarkdownExternalLink({
+  href,
+  reference,
+  children,
+}: {
+  href: string;
+  reference: MarkdownExternalReference;
+  children: ReactNode;
+}) {
+  const provider = externalObjectProviderLabel(reference.providerKey);
+  const displayKey = reference.displayKey?.trim() || provider;
+  const statusLabel = reference.statusLabel ?? externalObjectCategoryLabel(reference.statusCategory);
+  const livenessLabel = externalObjectLivenessLabel(reference.liveness);
+  const livenessSuffix = reference.liveness === "fresh" || reference.liveness === "unknown"
+    ? ""
+    : ` (${livenessLabel})`;
+  const titleParts = [
+    reference.displayTitle ?? `${displayKey} ${statusLabel}`,
+    `${displayKey} — ${statusLabel}${livenessSuffix}`,
+  ];
+  const title = titleParts.filter(Boolean).join(" · ");
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      data-external-link="resolved"
+      data-external-status={reference.statusCategory}
+      data-external-liveness={reference.liveness}
+      title={title}
+      aria-label={`${displayKey} ${statusLabel}${livenessSuffix}: ${reference.displayTitle ?? href}`}
+      className="paperclip-markdown-external-ref"
+    >
+      <ExternalObjectStatusIcon
+        category={reference.statusCategory}
+        liveness={reference.liveness}
+        statusIconKey={reference.statusIconKey}
+        label={`${displayKey}: ${statusLabel}`}
+        inline
+      />
+      {children}
+    </a>
   );
 }
 
@@ -616,7 +644,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({
+function MarkdownBodyImpl({
   children,
   className,
   style,
@@ -625,6 +653,7 @@ export function MarkdownBody({
   enableWikiLinks = false,
   wikiLinkRoot,
   resolveWikiLinkHref,
+  externalReferences,
   resolveImageSrc,
   onImageClick,
   linkWorkspaceFileRefs = false,
@@ -634,23 +663,46 @@ export function MarkdownBody({
   // may lack a CompanyProvider. A null context (or no companies yet) leaves
   // knownPrefixes undefined, which keeps issue auto-linking permissive.
   const company = useOptionalCompany();
-  const knownPrefixes = company?.companies.length
-    ? company.companies.map((c) => c.issuePrefix)
-    : undefined;
-  const remarkPlugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
-  if (enableWikiLinks) {
-    remarkPlugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
-  }
-  if (linkWorkspaceFileRefs) {
-    remarkPlugins.push(remarkWorkspaceFileRefs);
-  }
-  if (linkIssueReferences) {
-    remarkPlugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
-  }
-  if (softBreaks) {
-    remarkPlugins.push(remarkSoftBreaks);
-  }
-  const components: Components = {
+  const companies = company?.companies;
+  // Stable identity so it can feed the memoized remark plugins without
+  // re-creating them (and forcing a full markdown re-parse) every render.
+  const knownPrefixes = useMemo(
+    () => (companies?.length ? companies.map((c) => c.issuePrefix) : undefined),
+    [companies],
+  );
+  const externalReferenceLookup = useMemo<MarkdownExternalReferenceMap | null>(() => {
+    if (!externalReferences) return null;
+    const lookup: MarkdownExternalReferenceMap = {};
+    for (const [key, value] of Object.entries(externalReferences)) {
+      const normalized = normalizeExternalObjectHref(key) ?? key;
+      lookup[normalized] = value;
+    }
+    return lookup;
+  }, [externalReferences]);
+  // react-markdown treats the values of `components` as component *types* and
+  // the `remarkPlugins` array by identity. Rebuilding either on every render
+  // forces react-markdown to unmount/remount the rendered tree, which discards
+  // scroll position and text selection and causes visible flashing when a
+  // parent re-renders frequently (see PAP-10767). Memoize both so re-renders
+  // that don't change the inputs are cheap and non-destructive.
+  const remarkPlugins = useMemo<NonNullable<Options["remarkPlugins"]>>(() => {
+    const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
+    if (enableWikiLinks) {
+      plugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
+    }
+    if (linkWorkspaceFileRefs) {
+      plugins.push(remarkWorkspaceFileRefs);
+    }
+    if (linkIssueReferences) {
+      plugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
+    }
+    if (softBreaks) {
+      plugins.push(remarkSoftBreaks);
+    }
+    return plugins;
+  }, [enableWikiLinks, wikiLinkRoot, resolveWikiLinkHref, linkWorkspaceFileRefs, linkIssueReferences, knownPrefixes, softBreaks]);
+  const components = useMemo<Components>(() => {
+    const map: Components = {
     p: ({ node: _node, style: paragraphStyle, children: paragraphChildren, ...paragraphProps }) => (
       <p {...paragraphProps} style={mergeWrapStyle(paragraphStyle as React.CSSProperties | undefined)}>
         {paragraphChildren}
@@ -759,6 +811,17 @@ export function MarkdownBody({
           </a>
         );
       }
+      const externalReference = href && externalReferenceLookup
+        ? externalReferenceLookup[normalizeExternalObjectHref(href) ?? ""] ?? null
+        : null;
+      if (externalReference && href) {
+        return (
+          <MarkdownExternalLink href={href} reference={externalReference}>
+            {linkChildren}
+          </MarkdownExternalLink>
+        );
+      }
+
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
       const leadingIcon = isGitHubLink ? (
@@ -779,22 +842,24 @@ export function MarkdownBody({
         </a>
       );
     },
-  };
-  if (resolveImageSrc || onImageClick) {
-    components.img = ({ node: _node, src, alt, ...imgProps }) => {
-      const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
-      const finalSrc = resolved ?? src;
-      return (
-        <img
-          {...imgProps}
-          src={finalSrc}
-          alt={alt ?? ""}
-          onClick={onImageClick && finalSrc ? (e) => { e.preventDefault(); onImageClick(finalSrc); } : undefined}
-          style={onImageClick ? { cursor: "pointer", ...(imgProps.style as React.CSSProperties | undefined) } : imgProps.style as React.CSSProperties | undefined}
-        />
-      );
     };
-  }
+    if (resolveImageSrc || onImageClick) {
+      map.img = ({ node: _node, src, alt, ...imgProps }) => {
+        const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
+        const finalSrc = resolved ?? src;
+        return (
+          <img
+            {...imgProps}
+            src={finalSrc}
+            alt={alt ?? ""}
+            onClick={onImageClick && finalSrc ? (e) => { e.preventDefault(); onImageClick(finalSrc); } : undefined}
+            style={onImageClick ? { cursor: "pointer", ...(imgProps.style as React.CSSProperties | undefined) } : imgProps.style as React.CSSProperties | undefined}
+          />
+        );
+      };
+    }
+    return map;
+  }, [theme, linkIssueReferences, externalReferenceLookup, resolveImageSrc, onImageClick]);
 
   return (
     <div
@@ -815,3 +880,5 @@ export function MarkdownBody({
     </div>
   );
 }
+
+export const MarkdownBody = memo(MarkdownBodyImpl);
