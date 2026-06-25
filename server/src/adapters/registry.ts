@@ -82,25 +82,6 @@ import {
   modelProfiles as geminiModelProfiles,
 } from "@paperclipai/adapter-gemini-local";
 import {
-  execute as grokExecute,
-  listGrokSkills,
-  syncGrokSkills,
-  testEnvironment as grokTestEnvironment,
-  sessionCodec as grokSessionCodec,
-} from "@paperclipai/adapter-grok-local/server";
-import {
-  agentConfigurationDoc as grokAgentConfigurationDoc,
-  models as grokModels,
-} from "@paperclipai/adapter-grok-local";
-import {
-  execute as minimaxExecute,
-  testEnvironment as minimaxTestEnvironment,
-} from "@paperclipai/adapter-minimax-local/server";
-import {
-  agentConfigurationDoc as minimaxAgentConfigurationDoc,
-  models as minimaxModels,
-} from "@paperclipai/adapter-minimax-local";
-import {
   execute as minimaxExecute,
   testEnvironment as minimaxTestEnvironment,
 } from "@paperclipai/adapter-minimax-local/server";
