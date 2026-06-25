@@ -270,6 +270,62 @@ describe("cost routes", () => {
     });
   });
 
+  it("accepts estimated market value separately from actual billed spend", async () => {
+    const event = {
+      id: "cost-event-1",
+      companyId: "company-1",
+      agentId: "11111111-1111-4111-8111-111111111111",
+      issueId: null,
+      projectId: null,
+      goalId: null,
+      heartbeatRunId: null,
+      billingCode: null,
+      provider: "anthropic",
+      biller: "anthropic",
+      billingType: "subscription_included",
+      model: "claude-sonnet-4-6-20260601",
+      inputTokens: 100000,
+      cachedInputTokens: 50000,
+      outputTokens: 1000,
+      costCents: 0,
+      estimatedMarketValueCents: 33,
+      occurredAt: new Date("2026-06-23T00:00:00.000Z"),
+      createdAt: new Date("2026-06-23T00:00:00.000Z"),
+    };
+    mockCostService.createEvent.mockResolvedValueOnce(event);
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/cost-events")
+      .send({
+        agentId: event.agentId,
+        provider: event.provider,
+        biller: event.biller,
+        billingType: event.billingType,
+        model: event.model,
+        inputTokens: event.inputTokens,
+        cachedInputTokens: event.cachedInputTokens,
+        outputTokens: event.outputTokens,
+        costCents: event.costCents,
+        estimatedMarketValueCents: event.estimatedMarketValueCents,
+        occurredAt: event.occurredAt.toISOString(),
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockCostService.createEvent).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        costCents: 0,
+        estimatedMarketValueCents: 33,
+        billingType: "subscription_included",
+      }),
+    );
+    expect(res.body).toMatchObject({
+      costCents: 0,
+      estimatedMarketValueCents: 33,
+    });
+  });
+
   it("returns 400 for invalid finance event list limits", async () => {
     const { parseCostLimit } = await loadCostParsers();
     expect(() => parseCostLimit({ limit: "0" })).toThrow(/invalid 'limit'/i);

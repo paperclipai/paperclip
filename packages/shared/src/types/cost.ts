@@ -16,7 +16,10 @@ export interface CostEvent {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  /** actual billed spend; zero for subscription-included usage */
   costCents: number;
+  /** market-value estimate for subscription-billed runs; null for API-metered events */
+  estimatedMarketValueCents: number | null;
   occurredAt: Date;
   createdAt: Date;
 }

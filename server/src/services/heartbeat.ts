@@ -183,6 +183,7 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import { estimateTokenMarketValueCents } from "@paperclipai/adapter-utils/billing";
 import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
@@ -8154,6 +8155,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
+    const model = result.model ?? "unknown";
+    const estimatedMarketValueCents = hasTokenUsage
+      ? estimateTokenMarketValueCents({
+          provider,
+          model,
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+        })
+      : null;
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
 
     await db
@@ -8182,11 +8193,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         provider,
         biller,
         billingType,
-        model: result.model ?? "unknown",
+        model,
         inputTokens,
         cachedInputTokens,
         outputTokens,
         costCents: additionalCostCents,
+        estimatedMarketValueCents,
         occurredAt: new Date(),
       });
     }
