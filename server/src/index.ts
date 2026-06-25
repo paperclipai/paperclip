@@ -36,6 +36,7 @@ import {
   clickupBridgeService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  workflowScheduleService,
   workflowService,
 } from "./services/index.js";
 import { registerAwaitingHumanBridgeAdapter } from "./services/awaiting-human-bridge-registry.js";
@@ -673,6 +674,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
+    const workflowSchedules = workflowScheduleService(db as any);
     const workflows = workflowService(db as any);
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
@@ -736,6 +738,17 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
+        });
+
+      void workflowSchedules
+        .tickScheduledRuns(new Date())
+        .then((result) => {
+          if (result.triggered > 0) {
+            logger.info({ ...result }, "workflow scheduler tick enqueued runs");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "workflow scheduler tick failed");
         });
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure

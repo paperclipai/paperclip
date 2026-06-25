@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createWorkflowScheduleSchema,
   updateWorkflowSchema,
   workflowPromptTemplateSchema,
   workflowRunnerConfigSchema,
@@ -69,5 +70,30 @@ describe("workflow prompt template schemas", () => {
         ],
       },
     });
+  });
+
+  it("accepts schedule templates and keeps the schedule body markdown-only", () => {
+    expect(
+      createWorkflowScheduleSchema.parse({
+        title: "Daily brief",
+        cronExpression: "0 9 * * *",
+        templateMarkdown: "Send the morning brief.",
+      }),
+    ).toEqual({
+      title: "Daily brief",
+      cronExpression: "0 9 * * *",
+      templateMarkdown: "Send the morning brief.",
+      status: "active",
+    });
+  });
+
+  it("rejects blank schedule templates", () => {
+    expect(() =>
+      createWorkflowScheduleSchema.parse({
+        title: "Daily brief",
+        cronExpression: "0 9 * * *",
+        templateMarkdown: "   ",
+      }),
+    ).toThrow("Schedule template body cannot be blank.");
   });
 });

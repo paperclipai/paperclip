@@ -2,17 +2,20 @@ import { type Request, type Response, Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   type CreateWorkflowHandoff,
+  type CreateWorkflowSchedule,
   type WorkflowPhaseEvent,
   createWorkflowHandoffSchema,
   createWorkflowSchema,
+  createWorkflowScheduleSchema,
   resolveWorkflowHandoffSchema,
   runWorkflowSchema,
   updateWorkflowSchema,
+  updateWorkflowScheduleSchema,
   workflowPhaseEventSchema,
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
-import { logActivity, workflowHandoffBridgeService, workflowService } from "../services/index.js";
+import { logActivity, workflowHandoffBridgeService, workflowScheduleService, workflowService } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 function readRuntimeToken(req: { body?: unknown; query?: unknown }) {
@@ -28,6 +31,7 @@ function readRuntimeToken(req: { body?: unknown; query?: unknown }) {
 export function workflowRoutes(db: Db) {
   const router = Router();
   const svc = workflowService(db);
+  const scheduleSvc = workflowScheduleService(db);
   const runtimePhaseEventRequestSchema = workflowPhaseEventSchema.extend({
     token: z.string().trim().min(1),
   });
@@ -117,6 +121,101 @@ export function workflowRoutes(db: Db) {
       details: { workflowId: existing.id },
     });
     res.status(201).json(run);
+  });
+
+  router.get("/workflows/:id/schedules", async (req, res) => {
+    assertBoard(req);
+    const workflow = await svc.get(req.params.id as string);
+    if (!workflow) {
+      res.status(404).json({ error: "Workflow not found" });
+      return;
+    }
+    assertCompanyAccess(req, workflow.companyId);
+    res.json(await scheduleSvc.listForWorkflow(workflow.id));
+  });
+
+  router.post("/workflows/:id/schedules", validate(createWorkflowScheduleSchema), async (req, res) => {
+    assertBoard(req);
+    const workflow = await svc.get(req.params.id as string);
+    if (!workflow) {
+      res.status(404).json({ error: "Workflow not found" });
+      return;
+    }
+    assertCompanyAccess(req, workflow.companyId);
+    const created = await scheduleSvc.create(workflow.id, req.body as CreateWorkflowSchedule, {
+      userId: req.actor.userId ?? "board",
+    });
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: workflow.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "workflow.schedule_created",
+      entityType: "workflow_schedule",
+      entityId: created.id,
+      details: { workflowId: workflow.id, title: created.title },
+    });
+    res.status(201).json(created);
+  });
+
+  router.patch("/workflow-schedules/:id", validate(updateWorkflowScheduleSchema), async (req, res) => {
+    assertBoard(req);
+    const schedule = await scheduleSvc.get(req.params.id as string);
+    if (!schedule) {
+      res.status(404).json({ error: "Workflow schedule not found" });
+      return;
+    }
+    const workflow = await svc.get(schedule.workflowId);
+    if (!workflow) {
+      res.status(404).json({ error: "Workflow not found" });
+      return;
+    }
+    assertCompanyAccess(req, workflow.companyId);
+    const updated = await scheduleSvc.update(schedule.id, req.body, {
+      userId: req.actor.userId ?? "board",
+    });
+    if (!updated) {
+      res.status(404).json({ error: "Workflow schedule not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: workflow.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "workflow.schedule_updated",
+      entityType: "workflow_schedule",
+      entityId: schedule.id,
+      details: { workflowId: workflow.id, title: updated.title },
+    });
+    res.json(updated);
+  });
+
+  router.delete("/workflow-schedules/:id", async (req, res) => {
+    assertBoard(req);
+    const schedule = await scheduleSvc.get(req.params.id as string);
+    if (!schedule) {
+      res.status(404).json({ error: "Workflow schedule not found" });
+      return;
+    }
+    const workflow = await svc.get(schedule.workflowId);
+    if (!workflow) {
+      res.status(404).json({ error: "Workflow not found" });
+      return;
+    }
+    assertCompanyAccess(req, workflow.companyId);
+    await scheduleSvc.delete(schedule.id);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: workflow.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "workflow.schedule_deleted",
+      entityType: "workflow_schedule",
+      entityId: schedule.id,
+      details: { workflowId: workflow.id, title: schedule.title },
+    });
+    res.status(204).end();
   });
 
   router.get("/workflow-runs/:id", async (req, res) => {

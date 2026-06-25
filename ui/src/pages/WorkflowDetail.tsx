@@ -44,6 +44,7 @@ import {
   type WorkflowPromptTemplateDraft,
   createWorkflowPromptTemplateDraft,
 } from "../components/WorkflowPromptTemplatesEditor";
+import { WorkflowSchedulesEditor } from "../components/WorkflowSchedulesEditor";
 import { WorkflowRunPromptSuggestions } from "../components/WorkflowRunPromptSuggestions";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
@@ -64,6 +65,7 @@ import {
   hasIncompleteWorkflowPromptTemplates,
   readWorkflowPromptTemplates,
 } from "../config/workflow-run-prompts";
+import type { WorkflowScheduleMutationInput } from "../api/workflows";
 
 type WorkflowEditDraft = {
   title: string;
@@ -1008,6 +1010,12 @@ export function WorkflowDetail() {
     enabled: !!workflowId,
     refetchInterval: 5000,
   });
+  const schedulesQuery = useQuery({
+    queryKey: queryKeys.workflows.schedules(workflowId ?? ""),
+    queryFn: () => workflowsApi.listSchedules(workflowId!),
+    enabled: !!workflowId,
+    refetchInterval: 5000,
+  });
 
   const latestRunId = workflowQuery.data?.latestRun?.id ?? null;
   const activeRunId = selectedRunId ?? latestRunId;
@@ -1078,6 +1086,9 @@ export function WorkflowDetail() {
         queryKey: queryKeys.workflows.activity(selectedCompanyId, workflowId),
       }),
       queryClient.invalidateQueries({
+        queryKey: queryKeys.workflows.schedules(workflowId),
+      }),
+      queryClient.invalidateQueries({
         queryKey: queryKeys.deliverables.list(selectedCompanyId),
       }),
     ]);
@@ -1143,6 +1154,74 @@ export function WorkflowDetail() {
     },
   });
 
+  const createScheduleMutation = useMutation({
+    mutationFn: (input: WorkflowScheduleMutationInput) =>
+      workflowsApi.createSchedule(workflowId!, input),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.workflows.schedules(workflowId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.workflows.detail(workflowId!),
+        }),
+      ]);
+      pushToast({ title: "Workflow schedule created" });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to create schedule",
+        body: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    },
+  });
+
+  const updateScheduleMutation = useMutation({
+    mutationFn: ({ scheduleId, input }: { scheduleId: string; input: Partial<WorkflowScheduleMutationInput> }) =>
+      workflowsApi.updateSchedule(scheduleId, input),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.workflows.schedules(workflowId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.workflows.detail(workflowId!),
+        }),
+      ]);
+      pushToast({ title: "Workflow schedule updated" });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to update schedule",
+        body: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    },
+  });
+
+  const deleteScheduleMutation = useMutation({
+    mutationFn: (scheduleId: string) => workflowsApi.deleteSchedule(scheduleId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.workflows.schedules(workflowId!),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.workflows.detail(workflowId!),
+        }),
+      ]);
+      pushToast({ title: "Workflow schedule deleted" });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to delete schedule",
+        body: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    },
+  });
+
   const cancelRunMutation = useMutation({
     mutationFn: async (runId: string) => workflowsApi.cancelRun(runId),
     onSuccess: async () => {
@@ -1198,6 +1277,7 @@ export function WorkflowDetail() {
   }
 
   const workflow = workflowQuery.data;
+  const workflowSchedules = schedulesQuery.data ?? [];
   const runDetail = runQuery.data ?? null;
   const workflowPromptTemplates = readWorkflowPromptTemplates(
     workflow.runnerConfig,
@@ -1484,6 +1564,23 @@ export function WorkflowDetail() {
                 </div>
               </CardContent>
             </Card>
+
+            <WorkflowSchedulesEditor
+              schedules={workflowSchedules}
+              onCreate={(input) =>
+                createScheduleMutation.mutateAsync(input).then(() => undefined)
+              }
+              onUpdate={(scheduleId, input) =>
+                updateScheduleMutation.mutateAsync({ scheduleId, input }).then(() => undefined)
+              }
+              onDelete={(scheduleId) => deleteScheduleMutation.mutate(scheduleId)}
+              pendingScheduleId={
+                updateScheduleMutation.variables?.scheduleId ??
+                deleteScheduleMutation.variables ??
+                null
+              }
+              createPending={createScheduleMutation.isPending}
+            />
 
             <Card className={workflowPanelClassName}>
               <CardHeader>

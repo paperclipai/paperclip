@@ -19,10 +19,14 @@ let queryClient: QueryClient | null = null;
 vi.mock("@/api/workflows", () => ({
   workflowsApi: {
     get: (id: string) => getWorkflowMock(id),
+    listSchedules: vi.fn(() => Promise.resolve([])),
     getRun: (id: string) => getRunMock(id),
     activity: (...args: unknown[]) => activityMock(...args),
     update: vi.fn(),
     run: vi.fn(),
+    createSchedule: vi.fn(),
+    updateSchedule: vi.fn(),
+    deleteSchedule: vi.fn(),
     approveHandoff: vi.fn(),
     rejectHandoff: vi.fn(),
     respondHandoff: vi.fn(),

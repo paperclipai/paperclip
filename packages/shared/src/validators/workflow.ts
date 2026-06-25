@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { DELIVERABLE_AUDIENCES } from "../constants.js";
+import { DELIVERABLE_AUDIENCES, WORKFLOW_STATUSES } from "../constants.js";
 
 export const workflowRunnerTypeSchema = z.literal("google_adk");
 export const workflowStatusSchema = z.enum(["active", "paused", "archived"]);
+export const workflowScheduleStatusSchema = z.enum(WORKFLOW_STATUSES);
 export const workflowRunStatusSchema = z.enum([
   "queued",
   "running",
@@ -127,3 +128,16 @@ export const createWorkflowDeliverableSchema = z.object({
   originalFilename: z.string().trim().max(255).nullable().optional(),
 });
 export type CreateWorkflowDeliverable = z.infer<typeof createWorkflowDeliverableSchema>;
+
+export const createWorkflowScheduleSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  cronExpression: z.string().trim().min(1).max(200),
+  templateMarkdown: z.string().min(1).max(100_000).refine((value) => value.trim().length > 0, {
+    message: "Schedule template body cannot be blank.",
+  }),
+  status: workflowScheduleStatusSchema.optional().default("active"),
+});
+export type CreateWorkflowSchedule = z.infer<typeof createWorkflowScheduleSchema>;
+
+export const updateWorkflowScheduleSchema = createWorkflowScheduleSchema.partial();
+export type UpdateWorkflowSchedule = z.infer<typeof updateWorkflowScheduleSchema>;

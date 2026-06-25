@@ -112,6 +112,23 @@ export interface WorkflowDeliverableSummary {
   createdAt: string;
 }
 
+export interface WorkflowSchedule {
+  id: string;
+  companyId: string;
+  workflowId: string;
+  title: string;
+  status: string;
+  cronExpression: string;
+  timezone: string;
+  templateMarkdown: string;
+  lastFiredAt: Date | null;
+  nextRunAt: Date | null;
+  createdByUserId: string | null;
+  updatedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface WorkflowRunDetail extends WorkflowRun {
   workflow: Pick<Workflow, "id" | "title" | "status" | "runnerType">;
   phases: WorkflowPhase[];
@@ -129,4 +146,5 @@ export interface WorkflowDetail extends Workflow {
   latestRun: WorkflowRun | null;
   runs: WorkflowRun[];
   latestDeliverable: WorkflowDeliverableSummary | null;
+  schedules?: WorkflowSchedule[];
 }

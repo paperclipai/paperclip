@@ -6,6 +6,7 @@ import type {
   WorkflowListItem,
   WorkflowRun,
   WorkflowRunDetail,
+  WorkflowSchedule,
 } from "@paperclipai/shared";
 import { activityApi } from "./activity";
 import { api } from "./client";
@@ -21,6 +22,13 @@ export interface ResolveWorkflowHandoffInput {
   responseMarkdown?: string | null;
 }
 
+export interface WorkflowScheduleMutationInput {
+  title: string;
+  cronExpression: string;
+  templateMarkdown: string;
+  status?: string;
+}
+
 export const workflowsApi = {
   list: (companyId: string) => api.get<WorkflowListItem[]>(`/companies/${companyId}/workflows`),
   create: (companyId: string, data: WorkflowMutationInput) =>
@@ -30,6 +38,13 @@ export const workflowsApi = {
     api.patch<Workflow>(`/workflows/${id}`, data),
   run: (id: string, data: { inputMarkdown: string }) =>
     api.post<WorkflowRun>(`/workflows/${id}/run`, data),
+  listSchedules: (workflowId: string) => api.get<WorkflowSchedule[]>(`/workflows/${workflowId}/schedules`),
+  createSchedule: (workflowId: string, data: WorkflowScheduleMutationInput) =>
+    api.post<WorkflowSchedule>(`/workflows/${workflowId}/schedules`, data),
+  updateSchedule: (scheduleId: string, data: Partial<WorkflowScheduleMutationInput>) =>
+    api.patch<WorkflowSchedule>(`/workflow-schedules/${scheduleId}`, data),
+  deleteSchedule: (scheduleId: string) =>
+    api.delete<void>(`/workflow-schedules/${scheduleId}`),
   getRun: (id: string) => api.get<WorkflowRunDetail>(`/workflow-runs/${id}`),
   cancelRun: (id: string) => api.post<WorkflowRun>(`/workflow-runs/${id}/cancel`, {}),
   approveHandoff: (id: string, data?: ResolveWorkflowHandoffInput) =>
