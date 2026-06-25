@@ -388,7 +388,7 @@ export function IssueRecoveryActionCard({
       data-recovery-state={cardState}
       data-recovery-kind={action.kind}
       className={cn(
-        "relative w-full overflow-hidden rounded-lg border text-sm shadow-[0_1px_0_rgba(15,23,42,0.02)]",
+        "relative w-full overflow-hidden rounded-lg border text-sm",
         tone.containerClass,
         className,
       )}

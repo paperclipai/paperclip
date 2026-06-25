@@ -44,7 +44,7 @@ export function AccountingModelCard() {
           return (
             <div
               key={surface.title}
-              className={`rounded-2xl border border-border/70 bg-gradient-to-br ${surface.tone} p-4 shadow-sm`}
+              className={`rounded-2xl border border-border/70 bg-gradient-to-br ${surface.tone} p-4`}
             >
               <div className="mb-3 flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full border border-border/70 bg-background/80">

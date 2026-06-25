@@ -16,7 +16,7 @@ const inputClass = "font-mono";
 
 // shadcn Select trigger sized to line up with the mono inputs above.
 const selectTriggerClass =
-  "h-[34px] min-h-[34px] rounded-md border-border bg-transparent px-2.5 text-sm font-mono shadow-none";
+  "h-[34px] min-h-[34px] rounded-md border-border bg-transparent px-2.5 text-sm font-mono";
 
 /** Radix Select forbids empty-string item values; use a sentinel for "unset". */
 const SECRET_UNSET = "__unset__";

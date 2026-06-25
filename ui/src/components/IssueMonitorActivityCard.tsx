@@ -58,7 +58,7 @@ export function IssueMonitorActivityCard({
             type="button"
             variant="outline"
             size="sm"
-            className="shrink-0 shadow-none"
+            className="shrink-0"
             onClick={onCheckNow}
             disabled={checkingNow}
           >

@@ -3498,7 +3498,6 @@ export function IssueDetail() {
         onClick={() => fileInputRef.current?.click()}
         disabled={uploadAttachment.isPending || importMarkdownDocument.isPending}
         className={cn(
-          "shadow-none",
           attachmentDragActive && "border-primary bg-primary/5",
         )}
       >
@@ -4028,7 +4027,7 @@ export function IssueDetail() {
         </div>
       ) : (
         <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
-          <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shrink-0 shadow-none">
+          <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
             New Sub-task
           </Button>

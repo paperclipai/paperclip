@@ -56,7 +56,7 @@ export function ProjectWorkspaceSummaryCard({
   const actionKey = `${summary.key}:${hasRunningServices ? "stop" : "start"}`;
 
   return (
-    <Card className="gap-4 rounded-lg bg-background py-4 sm:py-5">
+    <Card className="gap-4 bg-background py-4 sm:py-5">
       <CardHeader className="flex flex-col gap-3 px-4 sm:px-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">

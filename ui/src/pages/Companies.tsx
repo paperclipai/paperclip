@@ -130,7 +130,7 @@ export function Companies() {
                   setSelectedCompanyId(company.id);
                 }
               }}
-              className={`group gap-0 rounded-lg p-5 py-0 text-left shadow-none transition-colors cursor-pointer ${
+              className={`group gap-0 p-5 py-0 text-left transition-colors cursor-pointer ${
                 selected
                   ? "border-primary ring-1 ring-primary"
                   : "border-border hover:border-muted-foreground/30"

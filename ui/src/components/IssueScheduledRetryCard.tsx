@@ -127,7 +127,7 @@ export function IssueScheduledRetryCard({
             type="button"
             variant="outline"
             size="sm"
-            className="shrink-0 shadow-none"
+            className="shrink-0"
             onClick={() => retryNow.mutate()}
             disabled={retryNow.isPending || isSuccessTransient}
             data-testid="issue-scheduled-retry-card-retry-now"

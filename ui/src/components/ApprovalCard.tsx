@@ -53,7 +53,7 @@ export function ApprovalCard({
   const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen);
 
   return (
-    <Card className="gap-0 rounded-xl border-border/70 py-4">
+    <Card className="gap-0 border-border/70 py-4">
       <CardHeader className="grid-cols-[1fr_auto] grid-rows-1 items-start gap-4 px-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-3">

@@ -74,7 +74,7 @@ function SuccessfulRunRetryNowControl({
           type="button"
           variant="outline"
           size="sm"
-          className="shrink-0 border-amber-300/80 bg-background/80 text-amber-950 shadow-none hover:bg-amber-100 dark:border-amber-500/50 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
+          className="shrink-0 border-amber-300/80 bg-background/80 text-amber-950 hover:bg-amber-100 dark:border-amber-500/50 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
           onClick={() => retryNow.mutate()}
           disabled={retryNow.isPending || success}
           data-testid="issue-next-step-retry-now"
@@ -208,7 +208,7 @@ export function IssueBlockedNotice({
     <div
       data-blocker-attention-state={blockerAttention?.state}
       data-successful-run-handoff={showSuccessfulRunHandoff ? "required" : undefined}
-      className="mb-3 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-950 shadow-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
+      className="mb-3 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
     >
       <div className="flex items-start gap-2">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />

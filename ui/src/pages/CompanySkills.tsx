@@ -805,7 +805,7 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
       type="button"
       onClick={() => onOpen(card)}
       className={cn(
-        "group flex h-full min-h-[11.5rem] flex-col rounded-md border border-border p-4 text-left transition-colors hover:border-primary hover:bg-accent/30 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "group flex h-full min-h-[11.5rem] flex-col rounded-md border border-border p-4 text-left transition-colors hover:border-primary hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         card.required && "bg-muted/30",
       )}
     >
@@ -2795,7 +2795,7 @@ export function SkillDetailPage({
               <Textarea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
-                className="min-h-[520px] rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none focus-visible:ring-0"
+                className="min-h-[520px] rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm focus-visible:ring-0"
               />
             )
           ) : file.markdown && viewMode === "preview" ? (
@@ -3261,7 +3261,7 @@ export function SkillDetailPage({
       {/* Floating save bar: stays visible while a file edit is dirty so the
           unsaved state is obvious (PAP-10907 J). */}
       {isDirty ? (
-        <div className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-full border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur">
+        <div className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-full border border-border bg-background/95 px-4 py-2 backdrop-blur">
           <span className="text-sm text-muted-foreground">Unsaved changes</span>
           <Button
             variant="ghost"
@@ -3628,7 +3628,7 @@ function SkillPane({
             <Textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              className="min-h-[520px] rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none focus-visible:ring-0"
+              className="min-h-[520px] rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm focus-visible:ring-0"
             />
           )
         ) : file.markdown && viewMode === "preview" ? (
@@ -4548,7 +4548,7 @@ export function CompanySkills() {
                 value={source}
                 onChange={(event) => setSource(event.target.value)}
                 placeholder="Paste path, GitHub URL, or skills.sh command"
-                className="h-9 rounded-none border-0 px-0 shadow-none focus-visible:ring-0"
+                className="h-9 rounded-none border-0 px-0 focus-visible:ring-0"
               />
               <Button size="sm" onClick={handleAddSkillSource} disabled={importSkill.isPending}>
                 {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Import"}

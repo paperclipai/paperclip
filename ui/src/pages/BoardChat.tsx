@@ -941,7 +941,7 @@ export function BoardChat() {
               type="button"
               onClick={() => scrollToLatest("smooth")}
               aria-label="Jump to latest messages"
-              className="absolute bottom-24 left-1/2 z-20 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-border bg-card text-foreground shadow-md transition-colors duration-150 hover:bg-accent hover:border-muted-foreground/30"
+              className="absolute bottom-24 left-1/2 z-20 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-border bg-card text-foreground transition-colors duration-150 hover:bg-accent hover:border-muted-foreground/30"
             >
               <ArrowDown className="h-4 w-4" />
             </button>
@@ -1004,7 +1004,7 @@ export function BoardChat() {
               type="button"
               size="icon"
               variant="secondary"
-              className="fixed bottom-20 right-4 z-20 h-10 w-10 rounded-full shadow-lg"
+              className="fixed bottom-20 right-4 z-20 h-10 w-10 rounded-full"
               aria-label="Open agent feed"
             >
               <Activity className="h-4 w-4" />

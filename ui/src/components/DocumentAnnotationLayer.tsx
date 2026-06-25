@@ -416,7 +416,7 @@ export function DocumentAnnotationLayer({
                       : isStale
                         ? "bg-yellow-200 outline outline-2 outline-dashed outline-offset-0 outline-yellow-700/65 dark:bg-yellow-600 dark:outline-yellow-200/70"
                         : isFocused
-                          ? "bg-yellow-300 outline outline-2 outline-offset-0 outline-yellow-700/85 shadow-[0_0_0_1px_var(--color-background)] dark:bg-yellow-500 dark:outline-yellow-200/85"
+                          ? "bg-yellow-300 outline outline-2 outline-offset-0 outline-yellow-700/85 dark:bg-yellow-500 dark:outline-yellow-200/85"
                           : "bg-yellow-200 dark:bg-yellow-600",
                   )}
                   style={{
@@ -470,7 +470,7 @@ export function DocumentAnnotationLayer({
                 key={`tail-${rect.threadId}-${index}`}
                 aria-hidden="true"
                 data-thread-id={rect.threadId}
-                className="paperclip-doc-annotation-tail pointer-events-none absolute inline-flex items-center justify-center rounded-sm bg-amber-500/95 text-amber-50 shadow-sm dark:bg-amber-500/90 dark:text-amber-50"
+                className="paperclip-doc-annotation-tail pointer-events-none absolute inline-flex items-center justify-center rounded-sm bg-amber-500/95 text-amber-50 dark:bg-amber-500/90 dark:text-amber-50"
                 style={{
                   top: rect.top + Math.max(0, rect.height / 2 - 8),
                   left: rect.left + rect.width + 2,
@@ -488,7 +488,7 @@ export function DocumentAnnotationLayer({
               data-testid="document-annotation-selection-toolbar"
               role="toolbar"
               aria-label="Selection actions"
-              className="paperclip-doc-annotation-selection-toolbar pointer-events-auto absolute z-10 flex items-center gap-1 rounded-md border border-border bg-popover px-1 py-1 shadow-md"
+              className="paperclip-doc-annotation-selection-toolbar pointer-events-auto absolute z-10 flex items-center gap-1 rounded-md border border-border bg-popover px-1 py-1"
               style={{ top: toolbarPosition.top, left: toolbarPosition.left }}
               onMouseDown={(event) => event.preventDefault()}
             >

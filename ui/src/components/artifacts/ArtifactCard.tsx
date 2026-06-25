@@ -193,7 +193,7 @@ function SecondaryAction({
 
 export function ArtifactCard({ artifact }: ArtifactCardProps) {
   return (
-    <Card asChild className="group gap-0 overflow-hidden rounded-[8px] border-border py-0 shadow-none transition-colors hover:border-foreground/20">
+    <Card asChild className="group gap-0 overflow-hidden border-border py-0 transition-colors hover:border-foreground/20">
       <Link
         to={artifact.href}
         disableIssueQuicklook

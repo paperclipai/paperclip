@@ -30,12 +30,12 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
           <div
             aria-hidden="true"
             data-testid="artifact-stack-layer"
-            className="pointer-events-none absolute inset-0 translate-x-[8px] translate-y-[8px] rounded-[8px] border border-border bg-muted/40 shadow-sm"
+            className="pointer-events-none absolute inset-0 translate-x-[8px] translate-y-[8px] rounded-xl border border-border bg-muted/40"
           />
           <div
             aria-hidden="true"
             data-testid="artifact-stack-layer"
-            className="pointer-events-none absolute inset-0 translate-x-[4px] translate-y-[4px] rounded-[8px] border border-border bg-muted/70 shadow-sm"
+            className="pointer-events-none absolute inset-0 translate-x-[4px] translate-y-[4px] rounded-xl border border-border bg-muted/70"
           />
         </>
       ) : null}
@@ -47,7 +47,7 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
         data-group-id={group.id}
         data-count={group.count}
         data-stacked={stacked ? "true" : "false"}
-        className="group relative flex flex-col overflow-hidden rounded-[8px] border border-border bg-card transition-colors hover:border-foreground/20"
+        className="group relative flex flex-col overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-foreground/20"
       >
         <div className="relative">
           {preview ? (
@@ -59,7 +59,7 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
           )}
           <Badge
             variant="secondary"
-            className="absolute right-2 top-2 bg-background/85 text-[11px] text-foreground/90 shadow-sm backdrop-blur"
+            className="absolute right-2 top-2 bg-background/85 text-[11px] text-foreground/90 backdrop-blur"
           >
             <Layers className="h-3 w-3" aria-hidden="true" />
             {group.count}

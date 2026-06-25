@@ -233,7 +233,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         "relative rounded-xl border px-3 pt-2.5 pb-2 transition-colors duration-150 focus-within:border-muted-foreground/40",
         // Surface: opaque card vs the task glass recipe (IssueChatThread.tsx shell).
         surface === "translucent"
-          ? "border-border/70 bg-background/95 shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]"
+          ? "border-border/70 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85"
           : "border-border bg-card",
         // No blue focus ring — neutral border darkening only.
         isAsk &&
@@ -276,7 +276,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           // Strip the primitive's box chrome (border, padding, ring, min-height,
           // intrinsic field-sizing, dark input tint) so the composer's own shell
           // owns the surface and the JS auto-grow stays authoritative.
-          "block min-h-[22px] w-full resize-none rounded-none border-0 bg-transparent p-0 text-sm leading-6 text-foreground shadow-none outline-none [field-sizing:fixed] placeholder:text-muted-foreground focus-visible:border-0 focus-visible:ring-0 disabled:opacity-100 dark:bg-transparent md:text-sm",
+          "block min-h-[22px] w-full resize-none rounded-none border-0 bg-transparent p-0 text-sm leading-6 text-foreground outline-none [field-sizing:fixed] placeholder:text-muted-foreground focus-visible:border-0 focus-visible:ring-0 disabled:opacity-100 dark:bg-transparent md:text-sm",
           singleLine
             ? "max-h-[22px] overflow-x-auto whitespace-nowrap"
             : "max-h-[200px] overflow-y-auto",

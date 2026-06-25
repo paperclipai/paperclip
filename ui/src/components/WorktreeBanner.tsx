@@ -22,7 +22,7 @@ export function WorktreeBanner() {
         backgroundColor: branding.color,
         color: branding.textColor,
         borderColor: `${branding.textColor}22`,
-        boxShadow: `inset 0 -1px 0 ${branding.textColor}18`,
+        borderBottomColor: `${branding.textColor}18`,
         backgroundImage: `linear-gradient(90deg, ${branding.textColor}14, transparent 28%, transparent 72%, ${branding.textColor}12), repeating-linear-gradient(135deg, transparent 0 10px, ${branding.textColor}08 10px 20px)`,
       }}
     >
