@@ -780,6 +780,21 @@ export async function startServer(): Promise<StartedServer> {
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
     // into a dead "running" row during startup recovery.
     await (async () => {
+      // Provider rate-limit startup catch-up: release blocks whose window
+      // elapsed while the process was down, then recover legacy blocks.
+      try {
+        const released = await heartbeat.releaseDueProviderRateLimitBlocks(new Date());
+        if (released.released > 0 || released.wakeupsQueued > 0) {
+          logger.warn({ ...released }, "startup provider rate-limit catch-up released blocks");
+        }
+        const recovered = await heartbeat.recoverLegacyProviderRateLimitBlocks(new Date());
+        if (recovered.recoveredIssues > 0 || recovered.wakeupsQueued > 0) {
+          logger.warn({ ...recovered }, "startup provider rate-limit legacy recovery queued wakeups");
+        }
+      } catch (err) {
+        logger.error({ err }, "startup provider rate-limit catch-up failed");
+      }
+
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           const result = await heartbeat.reapOrphanedRuns();

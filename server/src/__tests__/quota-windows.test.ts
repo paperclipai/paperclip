@@ -605,6 +605,7 @@ describe("fetchClaudeQuota", () => {
     const windows = await fetchClaudeQuota("token");
     expect(windows).toEqual([
       {
+        windowId: "extra_usage",
         label: "Extra usage",
         usedPercent: null,
         resetsAt: null,
@@ -761,6 +762,7 @@ describe("mapCodexRpcQuota", () => {
     expect(snapshot.planType).toBe("pro");
     expect(snapshot.windows).toEqual([
       {
+        windowId: "five_hour",
         label: "5h limit",
         usedPercent: 1,
         resetsAt: "2025-11-18T21:06:40.000Z",
@@ -768,6 +770,7 @@ describe("mapCodexRpcQuota", () => {
         detail: null,
       },
       {
+        windowId: "weekly",
         label: "Weekly limit",
         usedPercent: 27,
         resetsAt: null,
@@ -775,6 +778,7 @@ describe("mapCodexRpcQuota", () => {
         detail: null,
       },
       {
+        windowId: "codex_bengalfox:five_hour",
         label: "GPT-5.3-Codex-Spark · 5h limit",
         usedPercent: 8,
         resetsAt: null,
@@ -782,6 +786,7 @@ describe("mapCodexRpcQuota", () => {
         detail: null,
       },
       {
+        windowId: "codex_bengalfox:weekly",
         label: "GPT-5.3-Codex-Spark · Weekly limit",
         usedPercent: 20,
         resetsAt: null,
@@ -804,6 +809,7 @@ describe("mapCodexRpcQuota", () => {
 
     expect(snapshot.windows).toEqual([
       {
+        windowId: "credits",
         label: "Credits",
         usedPercent: null,
         resetsAt: null,

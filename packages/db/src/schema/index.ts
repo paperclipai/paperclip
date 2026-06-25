@@ -59,6 +59,7 @@ export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
 export { issueDocuments } from "./issue_documents.js";
+export { providerRateLimitBlocks, providerRateLimitBlockMembers } from "./provider_rate_limit_blocks.js";
 export { routineDocuments } from "./routine_documents.js";
 export { documentAnnotationThreads } from "./document_annotation_threads.js";
 export { documentAnnotationComments } from "./document_annotation_comments.js";
