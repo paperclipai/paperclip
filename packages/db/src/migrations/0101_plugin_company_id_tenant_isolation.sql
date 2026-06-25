@@ -1,4 +1,5 @@
-DROP INDEX "plugin_entities_external_idx";--> statement-breakpoint
+ALTER TABLE "plugin_entities" DROP CONSTRAINT IF EXISTS "plugin_entities_external_idx";--> statement-breakpoint
+DROP INDEX IF EXISTS "plugin_entities_external_idx";--> statement-breakpoint
 ALTER TABLE "plugin_entities" ADD COLUMN "company_id" uuid;--> statement-breakpoint
 ALTER TABLE "plugin_job_runs" ADD COLUMN "company_id" uuid;--> statement-breakpoint
 ALTER TABLE "plugin_logs" ADD COLUMN "company_id" uuid;--> statement-breakpoint
