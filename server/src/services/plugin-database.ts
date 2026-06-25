@@ -126,6 +126,7 @@ function extractQualifiedRefs(statement: string): SqlRef[] {
   const patterns = [
     /\b(from|join|references|into|update)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
     /\b(alter\s+table|create\s+table|create\s+view|drop\s+table|truncate\s+table)\s+(?:if\s+(?:not\s+)?exists\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+    /\b(create\s+(?:unique\s+)?index)\s+(?:concurrently\s+)?(?:if\s+not\s+exists\s+)?(?:"?[A-Za-z_][A-Za-z0-9_]*"?\.)?"?[A-Za-z_][A-Za-z0-9_]*"?\s+on\s+(?:only\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
   ];
 
   for (const pattern of patterns) {
@@ -183,13 +184,21 @@ export function validatePluginMigrationStatement(
   }
 
   const ddlAllowed = /^(create|alter|comment)\b/.test(normalized);
-  if (!ddlAllowed) {
-    throw new Error("Plugin migrations may contain DDL statements only");
+  const migrationDmlAllowed = /^(insert\s+into|update|with)\b/.test(normalized);
+  if (!ddlAllowed && !migrationDmlAllowed) {
+    throw new Error("Plugin migrations may contain DDL or plugin-namespace data backfills only");
   }
 
   const refs = extractQualifiedRefs(statement);
   if (refs.length === 0 && !normalized.startsWith("comment ")) {
     throw new Error("Plugin migration objects must use fully qualified schema names");
+  }
+
+  if (migrationDmlAllowed) {
+    const target = refs.find((ref) => ref.keyword === "into" || ref.keyword === "update");
+    if (!target || target.schema !== namespace) {
+      throw new Error(`Plugin migration DML target must be inside plugin namespace "${namespace}"`);
+    }
   }
 
   const allowedCoreReadTables = new Set(coreReadTables);

@@ -30,6 +30,7 @@ import { pluginLoader } from "../services/plugin-loader.js";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const multiMigrationPluginKey = "paperclip.dbfixture";
+const llmWikiPluginKey = "paperclipai.plugin-llm-wiki";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -82,6 +83,44 @@ describe("plugin database SQL validation", () => {
       validatePluginMigrationStatement("DO $$ BEGIN END $$;", "plugin_test")
     ).toThrow(/disallowed/i);
   });
+
+  it("allows create indexes and plugin-namespace migration backfills", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE INDEX IF NOT EXISTS rows_label_idx ON plugin_test.rows (label)",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginMigrationStatement(
+        "UPDATE plugin_test.rows r SET label = s.label FROM plugin_test.sources s WHERE s.id = r.source_id",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginMigrationStatement(
+        "WITH source_rows AS (SELECT id FROM plugin_test.sources) INSERT INTO plugin_test.rows (id) SELECT id FROM source_rows",
+        "plugin_test",
+      )
+    ).not.toThrow();
+  });
+
+  it("rejects migration backfills outside the plugin namespace", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "UPDATE public.issues SET title = 'bad'",
+        "plugin_test",
+        ["issues"],
+      )
+    ).toThrow(/namespace|public/i);
+    expect(() =>
+      validatePluginMigrationStatement(
+        "WITH source_rows AS (SELECT id FROM public.issues) SELECT id FROM source_rows",
+        "plugin_test",
+        ["issues"],
+      )
+    ).toThrow(/target/i);
+  });
 });
 
 describeEmbeddedPostgres("plugin database namespaces", () => {
@@ -95,8 +134,10 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
   }, 20_000);
 
   afterEach(async () => {
-    for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.refresh", multiMigrationPluginKey]) {
-      const namespace = derivePluginDatabaseNamespace(pluginKey);
+    for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.refresh", multiMigrationPluginKey, llmWikiPluginKey]) {
+      const namespace = pluginKey === llmWikiPluginKey
+        ? derivePluginDatabaseNamespace(pluginKey, "llm_wiki")
+        : derivePluginDatabaseNamespace(pluginKey);
       await db.execute(sql.raw(`DROP SCHEMA IF EXISTS "${namespace}" CASCADE`));
     }
     await db.delete(pluginMigrations);
@@ -208,6 +249,42 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       .from(pluginMigrations)
       .where(and(eq(pluginMigrations.pluginId, pluginId), eq(pluginMigrations.status, "applied")));
     expect(migrations).toHaveLength(2);
+  });
+
+  it("applies shipped LLM Wiki migrations through the production validator", async () => {
+    const pluginManifest: PaperclipPluginManifestV1 = {
+      ...manifest(llmWikiPluginKey),
+      version: "1.0.0",
+      database: {
+        namespaceSlug: "llm_wiki",
+        migrationsDir: "migrations",
+        coreReadTables: ["companies", "issues", "projects", "agents"],
+      },
+    };
+    const pluginId = await installPluginRecord(pluginManifest);
+    const packageRoot = path.resolve(process.cwd(), "packages/plugins/plugin-llm-wiki");
+
+    await pluginDatabaseService(db).applyMigrations(pluginId, pluginManifest, packageRoot);
+
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id, pluginManifest.database!.namespaceSlug);
+    const tables = Array.from(
+      await db.execute(
+        sql<{ table_name: string }>`
+          SELECT table_name
+          FROM information_schema.tables
+          WHERE table_schema = ${namespace}
+          ORDER BY table_name
+        `,
+      ) as Iterable<{ table_name: string }>,
+    ).map((row) => row.table_name);
+    const migrations = await db
+      .select()
+      .from(pluginMigrations)
+      .where(and(eq(pluginMigrations.pluginId, pluginId), eq(pluginMigrations.status, "applied")));
+
+    expect(migrations).toHaveLength(3);
+    expect(tables).toContain("wiki_spaces");
+    expect(tables).toContain("paperclip_distillation_runs");
   });
 
   it("applies migrations once and allows whitelisted core joins at runtime", async () => {
