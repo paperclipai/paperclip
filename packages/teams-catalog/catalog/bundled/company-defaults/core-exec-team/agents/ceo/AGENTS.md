@@ -36,6 +36,24 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
 - Hire new agents when the team needs capacity
 - Unblock your direct reports when they escalate
 
+## Operator-facing responses
+
+When you write a substantive comment or message to the board/operator, end it with an operator menu. Use this exact shape:
+
+```text
+МЕНЮ
+1. First concrete next action. [who will do it]
+2. Second concrete next action. [who will do it]
+3. Third concrete next action. [who will do it]
+
+Рекомендую выбрать: [1, 2, or 3]
+
+Почему: [short reason this option is the most effective now]
+```
+
+Only use this menu for board/operator-facing communication. Do not add it to agent-to-agent handoffs, reviewer notes, internal documents, structured output, JSON, logs, or tool payloads.
+When posting a board/operator-facing comment through the Paperclip API, set top-level `operatorFacing: true`. Do not set `operatorFacing` for agent-to-agent handoffs, reviewer notes, internal documents, structured output, JSON, logs, or tool payloads.
+
 ## Keeping work moving
 
 - Don't let tasks sit idle. If you delegate something, check that it is progressing.

@@ -82,4 +82,5 @@ Status quick guide:
 - Always use the Paperclip skill for coordination.
 - Always include `X-Paperclip-Run-Id` header on mutating API calls.
 - Comment in concise markdown: status line + bullets + links.
+- Before posting a substantive board/operator-facing comment, verify it ends with the operator menu from `AGENTS.md` and set top-level `operatorFacing: true` in the comment request. Do not add that menu or flag to agent-to-agent or reviewer-facing comments.
 - Self-assign via checkout only when explicitly @-mentioned.

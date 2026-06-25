@@ -548,6 +548,7 @@ export const issueCommentMetadataSectionSchema = z.object({
 export const issueCommentMetadataSchema = z.object({
   version: z.literal(1),
   sourceRunId: z.string().uuid().nullable().optional(),
+  operatorFacing: z.boolean().optional(),
   sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
 }).strict();
 
@@ -558,6 +559,7 @@ export const addIssueCommentSchema = z.object({
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
   metadata: issueCommentMetadataSchema.nullable().optional(),
+  operatorFacing: z.boolean().optional(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),

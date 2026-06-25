@@ -678,6 +678,7 @@ describe.sequential("agent skill routes", () => {
 
     expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
     const createdAgentId = expectResponseId(res.body.id);
+    const materializeCall = mockAgentInstructionsService.materializeManagedBundle.mock.calls.at(-1);
     expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
       expect.objectContaining({
         id: createdAgentId,
@@ -692,6 +693,13 @@ describe.sequential("agent skill routes", () => {
       }),
       { entryFile: "AGENTS.md", replaceExisting: false },
     );
+    const materializedBundle = materializeCall?.[1] as Record<string, string>;
+    expect(materializedBundle["AGENTS.md"]).toContain("Operator-facing responses");
+    expect(materializedBundle["AGENTS.md"]).toContain("МЕНЮ");
+    expect(materializedBundle["AGENTS.md"]).toContain("operatorFacing: true");
+    expect(materializedBundle["AGENTS.md"]).toContain("Do not add it to agent-to-agent handoffs");
+    expect(materializedBundle["HEARTBEAT.md"]).toContain("operator menu");
+    expect(materializedBundle["HEARTBEAT.md"]).toContain("operatorFacing: true");
   });
 
   it("materializes the bundled default instruction set for non-CEO agents with no prompt template", async () => {

@@ -771,6 +771,53 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects operator-facing comments without the required operator menu", async () => {
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({
+        body: "Готово, можно продолжать.",
+        operatorFacing: true,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe("operatorFacing comments must include the required operator menu");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("persists operator-facing comments with the required operator menu marker", async () => {
+    const body = [
+      "Готово, можно продолжать.",
+      "",
+      "МЕНЮ",
+      "1. Передать задачу в проверку. [CEO]",
+      "2. Вернуть на доработку CTO. [operator]",
+      "3. Закрыть задачу без дополнительных действий. [operator]",
+      "",
+      "Рекомендую выбрать: 1",
+      "",
+      "Почему: это быстрее всего подтверждает результат и сохраняет контроль качества.",
+    ].join("\n");
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({
+        body,
+        operatorFacing: true,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      body,
+      expect.any(Object),
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          operatorFacing: true,
+        }),
+      }),
+    );
+  });
+
   it("rejects non-mentioned peer agents from posting comments", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:read",

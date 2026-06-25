@@ -60,6 +60,7 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type IssueCommentMetadata,
   type IssueRelationIssueSummary,
   type IssueWatchdogDiscoveryKind,
   type SourceTrustMetadata,
@@ -2557,6 +2558,64 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  function validateOperatorFacingCommentBody(body: string) {
+    const missing: string[] = [];
+
+    if (!/(^|\n)\s*МЕНЮ\s*(\n|$)/.test(body)) {
+      missing.push("МЕНЮ");
+    }
+    for (const index of [1, 2, 3]) {
+      const itemPattern = new RegExp(`(^|\\n)\\s*${index}\\.\\s+.+\\[[^\\]\\n]+\\]\\s*(\\n|$)`);
+      if (!itemPattern.test(body)) {
+        missing.push(`${index}. action [owner]`);
+      }
+    }
+    if (!/(^|\n)\s*Рекомендую выбрать:\s*[1-3]\s*(\n|$)/.test(body)) {
+      missing.push("Рекомендую выбрать: 1-3");
+    }
+    if (!/(^|\n)\s*Почему:\s*\S.*\s*$/.test(body)) {
+      missing.push("Почему");
+    }
+
+    return missing;
+  }
+
+  function assertOperatorFacingCommentBodyAllowed(
+    res: Response,
+    input: { body: string; operatorFacing: boolean },
+  ) {
+    if (!input.operatorFacing) return true;
+    const missing = validateOperatorFacingCommentBody(input.body);
+    if (missing.length === 0) return true;
+    res.status(422).json({
+      error: "operatorFacing comments must include the required operator menu",
+      details: {
+        missing,
+      },
+    });
+    return false;
+  }
+
+  function withOperatorFacingMetadata(
+    metadata: IssueCommentMetadata | null | undefined,
+    operatorFacing: boolean,
+  ): IssueCommentMetadata | null {
+    if (!operatorFacing) return metadata ?? null;
+    if (metadata) return { ...metadata, operatorFacing: true };
+    return {
+      version: 1,
+      operatorFacing: true,
+      sections: [
+        {
+          title: "Audience",
+          rows: [
+            { type: "key_value", label: "Audience", value: "operator" },
+          ],
+        },
+      ],
+    };
   }
 
   async function assertExplicitResumeIntentAllowed(
@@ -7485,6 +7544,12 @@ export function issueRoutes(
       presentation: req.body.presentation,
       metadata: req.body.metadata,
     })) return;
+    const operatorFacing = req.body.operatorFacing === true || req.body.metadata?.operatorFacing === true;
+    if (!assertOperatorFacingCommentBodyAllowed(res, {
+      body: req.body.body,
+      operatorFacing,
+    })) return;
+    const commentMetadata = withOperatorFacingMetadata(req.body.metadata ?? null, operatorFacing);
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
@@ -7703,7 +7768,7 @@ export function issueRoutes(
       const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: req.body.presentation ?? null,
-        metadata: req.body.metadata ?? null,
+        metadata: commentMetadata,
         sourceTrust,
       };
       let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
@@ -7787,7 +7852,7 @@ export function issueRoutes(
       }, {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: req.body.presentation ?? null,
-        metadata: req.body.metadata ?? null,
+        metadata: commentMetadata,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
       });
     }

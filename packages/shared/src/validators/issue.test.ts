@@ -4,6 +4,7 @@ import {
   addIssueCommentSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
+  issueCommentMetadataSchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
   suggestedTaskDraftSchema,
@@ -143,6 +144,7 @@ describe("issue validators", () => {
     const parsed = addIssueCommentSchema.parse({
       body: "Paperclip needs a disposition before this issue can continue.",
       authorType: "system",
+      operatorFacing: true,
       presentation: {
         kind: "system_notice",
         tone: "warning",
@@ -151,6 +153,7 @@ describe("issue validators", () => {
       metadata: {
         version: 1,
         sourceRunId: "11111111-1111-4111-8111-111111111111",
+        operatorFacing: true,
         sections: [
           {
             title: "Evidence",
@@ -165,8 +168,27 @@ describe("issue validators", () => {
     });
 
     expect(parsed.presentation?.detailsDefaultOpen).toBe(false);
+    expect(parsed.operatorFacing).toBe(true);
     expect(parsed.metadata?.sourceRunId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(parsed.metadata?.operatorFacing).toBe(true);
     expect(parsed.metadata?.sections[0]?.rows).toHaveLength(3);
+  });
+
+  it("accepts operator-facing issue comment metadata", () => {
+    const parsed = issueCommentMetadataSchema.parse({
+      version: 1,
+      operatorFacing: true,
+      sections: [
+        {
+          title: "Audience",
+          rows: [
+            { type: "key_value", label: "Audience", value: "operator" },
+          ],
+        },
+      ],
+    });
+
+    expect(parsed.operatorFacing).toBe(true);
   });
 
   it("rejects arbitrary issue comment metadata", () => {
