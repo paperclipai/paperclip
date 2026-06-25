@@ -70,6 +70,14 @@ export function crossCompanyAgentGrantService(db: Db) {
       throw badRequest("Only configured source companies can hold cross-company agent grants");
     }
 
+    // Usage metering (recordUse) only runs on the delegate path, so a maxUses on
+    // a read grant would never enforce. Reject it at the service layer too (the
+    // validator already does) so the admin contract stays truthful regardless of
+    // caller. Read-grant lifetime is controlled by expiresAt only.
+    if (input.capability === "read" && input.maxUses != null) {
+      throw badRequest("maxUses is not supported for read grants; only delegate grants are usage-metered");
+    }
+
     const [sourceCompany, targetCompany, principalAgent] = await Promise.all([
       db
         .select({ id: companies.id })

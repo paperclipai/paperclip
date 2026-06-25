@@ -173,6 +173,15 @@ export const createCrossCompanyAgentGrantSchema = z.object({
 }).refine((value) => value.sourceCompanyId !== value.targetCompanyId, {
   message: "sourceCompanyId and targetCompanyId must differ",
   path: ["targetCompanyId"],
+}).refine((value) => value.capability !== "read" || value.maxUses == null, {
+  // Usage is only metered on the delegate path (recordUse), so a maxUses on a
+  // read grant would silently never decrement and never enforce. Reject it so
+  // the admin contract is truthful: read grants get expiresAt only.
+  message: "maxUses is not supported for read grants; only delegate grants are usage-metered",
+  path: ["maxUses"],
+}).refine((value) => value.expiresAt == null || value.expiresAt.getTime() > Date.now(), {
+  message: "expiresAt must be in the future",
+  path: ["expiresAt"],
 });
 
 export type CreateCrossCompanyAgentGrant = z.infer<typeof createCrossCompanyAgentGrantSchema>;

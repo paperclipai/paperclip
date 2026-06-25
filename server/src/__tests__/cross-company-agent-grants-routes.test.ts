@@ -37,7 +37,9 @@ async function createApp(db: Db, actor: Express.Request["actor"]) {
     allowedHostnames: [],
   }));
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    res.status(err.status ?? 500).json({ error: err.message ?? "Internal server error" });
+    // Mirror production: zod validation failures are 400 (see error-handler.ts).
+    const status = err?.name === "ZodError" ? 400 : (err.status ?? 500);
+    res.status(status).json({ error: err.message ?? "Internal server error" });
   });
   return app;
 }
@@ -264,5 +266,51 @@ describeEmbeddedPostgres("cross-company agent grant admin routes", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Instance admin");
+  }, 15_000);
+
+  it("rejects maxUses on a read grant (only delegate grants are usage-metered)", async () => {
+    const sourceCompany = await seedCompany(db, TEST_SOURCE_COMPANY_ID, "ReadMaxUsesSource");
+    const targetCompany = await seedCompany(db, undefined, "ReadMaxUsesTarget");
+    const sourceAgent = await seedAgent(db, sourceCompany.id, "ReadMaxUses");
+    const app = await createApp(db, {
+      type: "board",
+      userId: "admin-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .post("/api/admin/cross-company-agent-grants")
+      .send({
+        sourceCompanyId: sourceCompany.id,
+        principalId: sourceAgent.id,
+        targetCompanyId: targetCompany.id,
+        capability: "read",
+        maxUses: 5,
+      });
+    expect(res.status).toBe(400);
+  }, 15_000);
+
+  it("rejects an expiresAt in the past", async () => {
+    const sourceCompany = await seedCompany(db, TEST_SOURCE_COMPANY_ID, "PastExpirySource");
+    const targetCompany = await seedCompany(db, undefined, "PastExpiryTarget");
+    const sourceAgent = await seedAgent(db, sourceCompany.id, "PastExpiry");
+    const app = await createApp(db, {
+      type: "board",
+      userId: "admin-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .post("/api/admin/cross-company-agent-grants")
+      .send({
+        sourceCompanyId: sourceCompany.id,
+        principalId: sourceAgent.id,
+        targetCompanyId: targetCompany.id,
+        capability: "delegate",
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+    expect(res.status).toBe(400);
   }, 15_000);
 });

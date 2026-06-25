@@ -22,7 +22,7 @@ import {
   logActivity,
   managementService,
 } from "../services/index.js";
-import { assertBoardOrAgent, getActorInfo } from "./authz.js";
+import { assertAuthenticated, assertBoardOrAgent, getActorInfo } from "./authz.js";
 
 export function managementRoutes(db: Db) {
   const router = Router();
@@ -223,16 +223,22 @@ export function managementRoutes(db: Db) {
     res.json(await management.listCompanyRuns(companyId, query));
   });
 
-  // Audited cross-organization delegation. A source-company agent holding an
-  // active "delegate" cross-company grant can create a single bounded issue in
-  // the target company and assign it to that company's CEO (default) or a
-  // specified active agent there. Same-company callers (and instance admins) may
-  // also use it, but are authorized through the SAME scoped assignment checks as
-  // normal issue creation (see issue:delegate in authorization.ts) — this is not
-  // a bypass. It never edits existing target-company issues, instructions, or
-  // config — it only files new work with a clear owner and a two-company audit.
+  // Audited cross-organization delegation. AGENT-ONLY: this is for source-company
+  // agents/routines (e.g. TWX CEO/ops) that hold an active "delegate" cross-company
+  // grant; same-company agents may also use it but are authorized through the SAME
+  // scoped assignment checks as normal issue creation (see issue:delegate in
+  // authorization.ts) — not a bypass. Board/instance-admin callers are intentionally
+  // not supported here (issue:delegate has no board authorization path); admins use
+  // the normal issue APIs. It creates a single bounded issue in the target company
+  // and assigns it to that company's CEO (default) or a specified active agent there.
+  // It never edits existing target-company issues, instructions, or config — only
+  // files new work with a clear owner and a two-company audit.
   router.post("/management/companies/:companyId/delegated-issues", async (req, res) => {
-    assertBoardOrAgent(req);
+    assertAuthenticated(req);
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Issue delegation is available to agents only" });
+      return;
+    }
     const companyId = req.params.companyId as string;
     const body = managementDelegatedIssueCreateSchema.parse(req.body);
 
@@ -322,8 +328,12 @@ export function managementRoutes(db: Db) {
         status: "todo",
         assigneeAgentId,
         projectId: body.projectId ?? null,
-        originKind: CROSS_COMPANY_DELEGATION_ORIGIN_KIND,
-        originId: sourceCompanyId,
+        // Only cross-company delegations carry the cross-company provenance so
+        // same-company delegated issues are not conflated with true cross-org
+        // ones in origin-based reporting/audit. Same-company use is still
+        // captured by the issue.delegated activity-log entry below.
+        originKind: isCrossCompany ? CROSS_COMPANY_DELEGATION_ORIGIN_KIND : undefined,
+        originId: isCrossCompany ? sourceCompanyId : undefined,
         originRunId: actor.runId,
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,

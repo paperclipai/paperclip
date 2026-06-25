@@ -1069,6 +1069,39 @@ describeEmbeddedPostgres("management routes", () => {
       expect.objectContaining({ companyId: company.id, action: "issue.delegated" }),
     ]);
     expect(auditRows.some((r) => r.action === "cross_company_issue.delegated")).toBe(false);
+
+    // Same-company delegations must NOT carry the cross-company provenance, so
+    // they are not conflated with true cross-org delegations in origin reporting.
+    const storedIssue = await db
+      .select({ originKind: issues.originKind, originId: issues.originId })
+      .from(issues)
+      .where(eq(issues.id, res.body.issue.id))
+      .then((rows) => rows[0]!);
+    expect(storedIssue.originKind).not.toBe("cross_company_delegation");
+    expect(storedIssue.originId).toBeNull();
+  }, 30_000);
+
+  it("rejects board/instance-admin callers — delegation is agent-only", async () => {
+    const company = await seedCompany(db, undefined, "BoardDelegDenied");
+    await seedAgent(db, company.id, "BoardDelegCeo", "idle", "ceo");
+
+    const app = await createApp(db, {
+      type: "board",
+      userId: "instance-admin",
+      source: "session",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .post(`/api/management/companies/${company.id}/delegated-issues`)
+      .send({ title: "Board delegation attempt" });
+    expect(res.status).toBe(403);
+
+    const issueCount = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.companyId, company.id));
+    expect(issueCount).toHaveLength(0);
   }, 30_000);
 
   it("denies a low-trust same-company agent from delegating outside its boundary (no assignment bypass)", async () => {
