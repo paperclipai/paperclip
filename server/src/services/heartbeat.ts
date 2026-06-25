@@ -10103,7 +10103,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
 
           if (!jobStatus) {
-            if (!confirmedMissingExternalJob && !isSilent) continue;
+            // A named Job can legitimately disappear in the final moments of an
+            // external-lifecycle run: TTL/controller cleanup may win the race
+            // while the adapter is still parsing final output and running
+            // postRun hooks. Fresh output means the owning adapter still has a
+            // chance to persist the terminal result, so apply the same silence
+            // floor even when the exact-name lookup confirms the Job is gone.
+            if (!isSilent) continue;
             const finalized = await finalizeExternalLifecycleTerminalRun({
               run,
               adapterType,

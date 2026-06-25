@@ -54,12 +54,35 @@ RUN apt-get update \
 # Languages
 # ---------------------------------------------------------------------------
 
-# Go (matches devbox 05-languages.sh)
-ARG GO_VERSION=1.24.4
+# Go — pinned to 1.25.6 to match what CI workflows use (e.g.
+# ciab-data-plane-uat.yml, multicast's `setup-go` / GO_VERSION) and what
+# multicast's toolchain requires. Keeping the image behind that version made
+# agents self-install go1.25.6 into /paperclip/bin (PVC home) on every run and
+# shadow the image binary — wasteful and lost on workspace reset. Baking the
+# right version here stops the self-install.
+ARG GO_VERSION=1.25.6
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
   | tar -C /usr/local -xzf - \
   && ln -s /usr/local/go/bin/go /usr/local/bin/go \
   && ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+# TinyGo (WASM / embedded Go) — required by repos that compile Go to WASM or
+# microcontroller targets (e.g. multicast's WASM-safe FEC path). Agents
+# previously self-installed tinygo into /paperclip/bin (PVC home), a fragile
+# per-agent workaround lost on PVC reset; bake it into the image instead.
+# Installed AFTER Go because tinygo shells out to the `go` toolchain. The
+# official .deb bundles its own LLVM and declares its runtime deps; the
+# `tinygo version` self-check fails the build on a bad version/URL rather than
+# shipping a silent toolchain gap (same discipline as the `java -version` and
+# `opencode --version` self-checks elsewhere).
+ARG TINYGO_VERSION=0.41.1
+RUN curl -fsSL "https://github.com/tinygo-org/tinygo/releases/download/v${TINYGO_VERSION}/tinygo_${TINYGO_VERSION}_amd64.deb" \
+       -o /tmp/tinygo.deb \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends /tmp/tinygo.deb \
+  && rm -f /tmp/tinygo.deb \
+  && rm -rf /var/lib/apt/lists/* \
+  && tinygo version
 
 # Rust (system-wide, matches devbox)
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
