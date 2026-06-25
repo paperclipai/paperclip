@@ -85,6 +85,31 @@ Skip the `Risk and rollback` section only for clearly trivial PRs (typos, docs).
 - Linked issue moves to `in_review` or `done` per project convention.
 - Delete the branch after merge unless it is a long-lived integration branch.
 
+## Merging (which credential to use)
+
+Your default GitHub auth is the rotated App-installation token (identity
+`app/allyblockcast` — the same bot that authors your PRs). It works for commits,
+PR creation, comments, and reads. But it **cannot self-approve your own PR**, and
+on some repos the final merge needs a non-author maintainer identity.
+
+If a **merge token** is mounted at `/paperclip/.secrets/github-merge-token/token`,
+use it for the final merge step only:
+
+```sh
+GH_TOKEN="$(cat /paperclip/.secrets/github-merge-token/token)" \
+  gh pr merge <number> --repo <org>/<repo> --squash
+```
+
+Rules:
+- Use the merge token **only** for `gh pr merge` (and, if needed, arming
+  auto-merge). Keep using the default token for everything else, so commits and
+  PRs stay attributed to `app/allyblockcast` and the Paperclip↔GitHub integration
+  keeps working.
+- If the file does not exist, the merge lane is not provisioned for this repo —
+  do not improvise a token. Hand the merge to a maintainer and note it on the issue.
+- Only merge when the merge checklist above is satisfied (checks green, comments
+  resolved).
+
 ## Anti-patterns
 
 - PR description that says "see commits". Reviewers should not need to read the log.

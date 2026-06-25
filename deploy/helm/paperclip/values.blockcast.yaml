@@ -367,12 +367,28 @@ extraVolumes:
     secret:
       secretName: paperclip-github-mcp-token
       defaultMode: 0444
+  # Non-author maintainer credential for the multicast PR merge lane (BLO-11994).
+  # The default github-token above is the rotated GitHub App installation token
+  # (identity app/allyblockcast = the PR author), which cannot self-approve and
+  # has hit transient 401s. This separate secret holds a maintainer token
+  # (@allyblockcast, granted `maintain` on Blockcast/multicast) used ONLY for the
+  # final `gh pr merge` step — see the github-pr-workflow skill. optional:true so
+  # the pod still starts if the secret is absent. The adapter auto-propagates this
+  # main-container secret volume into agent Job pods (selfPod.secretVolumes).
+  - name: github-merge-token
+    secret:
+      secretName: paperclip-github-merge-token
+      defaultMode: 0444
+      optional: true
 extraVolumeMounts:
   - name: gbrain-oauth-secrets
     mountPath: /etc/paperclip-plugin-gbrain
     readOnly: true
   - name: github-mcp-token
     mountPath: /paperclip/.secrets/github-token
+    readOnly: true
+  - name: github-merge-token
+    mountPath: /paperclip/.secrets/github-merge-token
     readOnly: true
 
 networkPolicy:
