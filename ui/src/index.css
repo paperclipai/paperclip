@@ -38,13 +38,13 @@
   --color-sidebar-ring: var(--sidebar-ring);
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
-  --radius-lg: 0px;
-  --radius-xl: 0px;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
 }
 
 :root {
   color-scheme: light;
-  --radius: 0;
+  --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
