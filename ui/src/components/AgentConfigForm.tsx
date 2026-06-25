@@ -577,43 +577,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     };
   }
 
-  function buildEnvironmentTestFailureResult(
-    label: string,
-    model: string | null,
-    error: unknown,
-  ): AdapterEnvironmentTestResult {
-    const modelLabel = model ? ` (${model})` : "";
-    const message = error instanceof Error ? error.message : "Environment test failed";
-    return {
-      adapterType,
-      status: "fail",
-      testedAt: new Date().toISOString(),
-      checks: [
-        {
-          code: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_test_failed`,
-          level: "error",
-          message: `${label} test${modelLabel} failed`,
-          detail: message,
-        },
-      ],
-    };
-  }
-
   async function runEnvironmentTestCase(
     label: string,
     model: string | null,
     adapterConfig: Record<string, unknown>,
     environmentId: string | null,
   ): Promise<AdapterEnvironmentTestResult> {
-    try {
-      const result = await agentsApi.testEnvironment(selectedCompanyId!, adapterType, {
-        adapterConfig,
-        environmentId,
-      });
-      return prefixEnvironmentTestChecks(result, label, model);
-    } catch (error) {
-      return buildEnvironmentTestFailureResult(label, model, error);
-    }
+    const result = await agentsApi.testEnvironment(selectedCompanyId!, adapterType, {
+      adapterConfig,
+      environmentId,
+    });
+    return prefixEnvironmentTestChecks(result, label, model);
   }
 
   function mergeEnvironmentTestResults(

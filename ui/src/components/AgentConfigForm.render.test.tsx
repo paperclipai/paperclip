@@ -317,4 +317,38 @@ describe("AgentConfigForm environment selector", () => {
       adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
     });
   });
+
+  it("surfaces request failures instead of converting them into model test checks", async () => {
+    mockAgentsApi.testEnvironment.mockRejectedValueOnce(new Error("Network unavailable"));
+
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: { model: "gpt-5.4-mini" },
+          },
+        },
+      },
+    }, {
+      showAdapterTestEnvironmentButton: true,
+    });
+    roots.push(result.root);
+
+    const testButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test",
+    );
+    expect(testButton).toBeTruthy();
+
+    await act(async () => {
+      testButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(result.container.textContent).toContain("Network unavailable");
+  });
 });
