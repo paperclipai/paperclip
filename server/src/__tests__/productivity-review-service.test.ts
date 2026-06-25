@@ -119,6 +119,9 @@ describeEmbeddedPostgres("productivity review service", () => {
     issueId: string;
     count: number;
     now: Date;
+    status?: string;
+    errorCode?: string | null;
+    scheduledRetryReason?: string | null;
     withRunComments?: boolean;
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
@@ -129,11 +132,13 @@ describeEmbeddedPostgres("productivity review service", () => {
         id: runId,
         companyId: input.companyId,
         agentId: input.agentId,
-        status: "succeeded",
+        status: input.status ?? "succeeded",
         invocationSource: "assignment",
         triggerDetail: "system",
         startedAt: createdAt,
         finishedAt: new Date(createdAt.getTime() + 30_000),
+        errorCode: input.errorCode ?? null,
+        scheduledRetryReason: input.scheduledRetryReason ?? null,
         contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
         livenessState: "advanced",
         nextAction: "Continue processing the next batch.",
@@ -562,5 +567,155 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(result.failed).toBe(0);
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("does not create a productivity review when churn is only claude transient upstream failures", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 12,
+      now,
+      status: "failed",
+      errorCode: "claude_transient_upstream",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not create a productivity review when churn is only codex transient upstream failures", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 12,
+      now,
+      status: "failed",
+      errorCode: "codex_transient_upstream",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not count scheduled_retry heartbeat rows toward productivity churn", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 12,
+      now,
+      status: "scheduled_retry",
+      scheduledRetryReason: "process_lost_retry",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still creates a productivity review for non-transient failures such as adapter_failed", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 12,
+      now,
+      status: "failed",
+      errorCode: "adapter_failed",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
+  });
+
+  it("creates a run-count high-churn review when only the latest real run carries a comment", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const runs = await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 12,
+      now,
+    });
+    await db.insert(issueComments).values({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      authorAgentId: seeded.coderId,
+      createdByRunId: runs[0]!.id as string,
+      body: "Latest progress update",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `high_churn`");
+  });
+
+  it("counts failed runs with a null errorCode toward run-count high-churn when only the latest run carries a comment", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const runs = await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 12,
+      now,
+      status: "failed",
+      errorCode: null,
+    });
+    await db.insert(issueComments).values({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      authorAgentId: seeded.coderId,
+      createdByRunId: runs[0]!.id as string,
+      body: "Latest progress update",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `high_churn`");
   });
 });

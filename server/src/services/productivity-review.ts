@@ -33,6 +33,10 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const PRODUCTIVITY_TRANSIENT_ERROR_CODES = [
+  "claude_transient_upstream",
+  "codex_transient_upstream",
+] as const;
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
@@ -102,6 +106,26 @@ function issueRunScopeSql(issueId: string) {
     or ${heartbeatRuns.contextSnapshot}->>'taskId' = ${issueId}
     or ${heartbeatRuns.contextSnapshot}->>'taskKey' = ${issueId}
   )`;
+}
+
+function productivityChurnCountedRunSql() {
+  return sql`(
+    ${heartbeatRuns.status} <> 'scheduled_retry'
+    and not (
+      ${heartbeatRuns.status} = 'failed'
+      and ${heartbeatRuns.errorCode} is not null
+      and ${inArray(heartbeatRuns.errorCode, [...PRODUCTIVITY_TRANSIENT_ERROR_CODES])}
+    )
+  )`;
+}
+
+function isProductivityChurnExcludedRun(run: { status: string; errorCode: string | null }) {
+  if (run.status === "scheduled_retry") return true;
+  return (
+    run.status === "failed" &&
+    run.errorCode != null &&
+    (PRODUCTIVITY_TRANSIENT_ERROR_CODES as readonly string[]).includes(run.errorCode)
+  );
 }
 
 function msToHuman(ms: number | null) {
@@ -355,6 +379,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
           issueRunScopeSql(issueId),
+          productivityChurnCountedRunSql(),
           sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
         ),
       )
@@ -420,8 +445,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       }
     }
 
-    const terminalRuns = latestRuns.filter((run) =>
-      TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number]),
+    const terminalRuns = latestRuns.filter(
+      (run) =>
+        TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number]) &&
+        !isProductivityChurnExcludedRun(run),
     );
     let noCommentStreak = 0;
     for (const run of terminalRuns) {
