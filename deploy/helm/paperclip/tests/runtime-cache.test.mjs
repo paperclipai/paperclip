@@ -166,15 +166,15 @@ test("runtimeCache can be disabled for API tier rollback", () => {
   assert.doesNotMatch(rendered, /XDG_CACHE_HOME/);
 });
 
-test("Blockcast values route Anthropic agent traffic through Penstock proxy", () => {
+test("Blockcast values route Anthropic agent traffic through Penstock gateway", () => {
   const renderedStatefulSet = renderStatefulSet();
   const renderedApiDeployment = renderApiDeployment();
 
   for (const rendered of [renderedStatefulSet, renderedApiDeployment]) {
     assert.match(
       rendered,
-      /- name: ANTHROPIC_BASE_URL\n\s+value: "?http:\/\/penstock-proxy\.penstock\.svc\.cluster\.local\/anthropic"?/,
-      "agent Anthropic traffic should use the in-cluster Penstock proxy",
+      /- name: ANTHROPIC_BASE_URL\n\s+value: "?https:\/\/api\.penstock\.run\/anthropic"?/,
+      "agent Anthropic traffic should use the Penstock gateway",
     );
     assertPenstockProxySecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
     assertPenstockProxySecretEnv(rendered, "ANTHROPIC_API_KEY");
