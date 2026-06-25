@@ -2044,6 +2044,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (issue.assigneeAgentId) {
       const assignee = await getAgent(issue.assigneeAgentId);
       if (assignee?.reportsTo) candidateIds.push(assignee.reportsTo);
+      candidateIds.push(issue.assigneeAgentId);
     }
     if (issue.createdByAgentId) {
       const creator = await getAgent(issue.createdByAgentId);
@@ -2057,7 +2058,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(and(eq(agents.companyId, issue.companyId), inArray(agents.role, ["cto", "ceo"])))
       .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt));
     candidateIds.push(...roleCandidates.map((agent) => agent.id));
-    if (issue.assigneeAgentId) candidateIds.push(issue.assigneeAgentId);
 
     const seen = new Set<string>();
     for (const agentId of candidateIds) {
@@ -2137,7 +2137,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       "",
       "## Ownership",
       "",
-      "- Selected owner: the first invokable manager/creator/executive candidate with budget available.",
+      "- Selected owner: the first invokable manager/original-assignee/creator/executive candidate with budget available.",
       "",
       "## Required Action",
       "",
