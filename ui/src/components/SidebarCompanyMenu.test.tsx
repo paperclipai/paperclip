@@ -268,14 +268,19 @@ describe("SidebarCompanyMenu", () => {
     expect(document.body.textContent).toContain("Done");
     expect(document.body.textContent).not.toContain("PAP");
     expect(document.body.textContent).not.toContain("ANA");
-    expect(document.body.querySelector('button[aria-label="Reorder Strata"]')).toBeTruthy();
+    expect(document.body.textContent).toContain("Drag the handle to reorder.");
+    const grip = document.body.querySelector('button[aria-label="Reorder Strata"]');
+    expect(grip).toBeTruthy();
+    expect(grip?.className).toContain("size-8");
+    expect(grip?.className).toContain("cursor-grab");
 
-    const strataItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+    const strataRow = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
       .find((element) => element.textContent?.includes("Strata"));
-    expect(strataItem).toBeTruthy();
+    expect(strataRow).toBeTruthy();
+    expect(strataRow?.className ?? "").not.toContain("cursor-grab");
 
     await act(async () => {
-      strataItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      strataRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
