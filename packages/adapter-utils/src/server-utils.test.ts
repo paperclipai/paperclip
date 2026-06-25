@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  buildPaperclipEnv,
   buildPersistentSkillSnapshot,
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
@@ -64,6 +65,87 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.SAFE_VALUE).toBe("visible");
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** PAPERCLIP_API_KEY='***REDACTED***' custom-acp --paperclip-api-key=***REDACTED*** --token ***REDACTED***",
+    );
+  });
+});
+
+describe("buildPaperclipEnv", () => {
+  const originalEnv = process.env;
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  // Build a hermetic env so host-specific callback/listen vars inherited from the
+  // real process (e.g. a public PAPERCLIP_RUNTIME_API_URL on the dev box) cannot
+  // leak into these assertions.
+  function withEnv(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...originalEnv };
+    for (const key of [
+      "HOST",
+      "PORT",
+      "PAPERCLIP_LISTEN_HOST",
+      "PAPERCLIP_LISTEN_PORT",
+      "PAPERCLIP_AGENT_API_URL",
+      "PAPERCLIP_RUNTIME_API_URL",
+      "PAPERCLIP_API_URL",
+    ]) {
+      delete env[key];
+    }
+    return { ...env, ...overrides };
+  }
+
+  it("uses the same-host runtime API for agent callbacks even when a public URL is configured", () => {
+    process.env = withEnv({
+      HOST: "127.0.0.1",
+      PORT: "3110",
+      PAPERCLIP_API_URL: "http://board.fincli.ai:3110/api",
+    });
+
+    expect(buildPaperclipEnv({ id: "agent-1", companyId: "company-1" })).toMatchObject({
+      PAPERCLIP_AGENT_ID: "agent-1",
+      PAPERCLIP_COMPANY_ID: "company-1",
+      PAPERCLIP_API_URL: "http://127.0.0.1:3110",
+      PAPERCLIP_PUBLIC_API_URL: "http://board.fincli.ai:3110/api",
+    });
+  });
+
+  it("treats a non-loopback PAPERCLIP_RUNTIME_API_URL as public and keeps the same-host callback", () => {
+    process.env = withEnv({
+      PORT: "3110",
+      PAPERCLIP_LISTEN_PORT: "3110",
+      PAPERCLIP_RUNTIME_API_URL: "http://board.fincli.ai:3110",
+    });
+
+    expect(buildPaperclipEnv({ id: "agent-1", companyId: "company-1" })).toMatchObject({
+      PAPERCLIP_API_URL: "http://localhost:3110",
+      PAPERCLIP_PUBLIC_API_URL: "http://board.fincli.ai:3110",
+    });
+  });
+
+  it("ignores a non-loopback PAPERCLIP_AGENT_API_URL override and falls back to the same host", () => {
+    process.env = withEnv({
+      HOST: "127.0.0.1",
+      PORT: "3110",
+      PAPERCLIP_AGENT_API_URL: "http://board.fincli.ai:3110",
+    });
+
+    expect(buildPaperclipEnv({ id: "agent-1", companyId: "company-1" })).toMatchObject({
+      PAPERCLIP_API_URL: "http://127.0.0.1:3110",
+      PAPERCLIP_PUBLIC_API_URL: "http://board.fincli.ai:3110",
+    });
+  });
+
+  it("allows an explicit local agent API override", () => {
+    process.env = withEnv({
+      HOST: "0.0.0.0",
+      PORT: "3110",
+      PAPERCLIP_API_URL: "https://board.fincli.ai",
+      PAPERCLIP_AGENT_API_URL: "http://127.0.0.1:3110/api",
+    });
+
+    expect(buildPaperclipEnv({ id: "agent-1", companyId: "company-1" }).PAPERCLIP_API_URL).toBe(
+      "http://127.0.0.1:3110/api",
     );
   });
 });

@@ -1148,11 +1148,34 @@ export function buildInvocationEnvForLogs(
 }
 
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+  const stripHostBrackets = (host: string): string => host.replace(/^\[/, "").replace(/\]$/, "");
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
     if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]")) return `[${host}]`;
     return host;
+  };
+  const isLoopbackHostname = (hostname: string): boolean => {
+    const host = stripHostBrackets(hostname.trim().toLowerCase());
+    if (!host) return false;
+    if (host === "localhost" || host === "::1" || host === "0.0.0.0" || host === "::") return true;
+    if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+    return host.endsWith(".localhost");
+  };
+  // A configured callback override is only safe to use as the control-plane
+  // endpoint when it points at the same host the worker runs on. Public/tunnel
+  // hostnames (e.g. a Cloudflare-fronted board URL) can resolve to an address
+  // the worker cannot reach, so anything that is not loopback or the configured
+  // listen host is treated as a public URL instead.
+  const isSameHostCallbackUrl = (rawUrl: string, listenHost: string): boolean => {
+    let hostname: string;
+    try {
+      hostname = new URL(rawUrl).hostname;
+    } catch {
+      return false;
+    }
+    if (isLoopbackHostname(hostname)) return true;
+    return stripHostBrackets(hostname.toLowerCase()) === stripHostBrackets(listenHost.toLowerCase());
   };
   const vars: Record<string, string> = {
     PAPERCLIP_AGENT_ID: agent.id,
@@ -1162,11 +1185,36 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl =
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
-    process.env.PAPERCLIP_API_URL ??
-    `http://${runtimeHost}:${runtimePort}`;
-  vars.PAPERCLIP_API_URL = apiUrl;
+  const sameHostApiUrl = `http://${runtimeHost}:${runtimePort}`;
+
+  // Agents run from the same host or through an adapter bridge. Give local
+  // worker processes the same-host API by default; public/tunnel URLs can be
+  // slow, firewalled, or unresolved inside non-root run-as users. Only honor an
+  // explicit PAPERCLIP_AGENT_API_URL / PAPERCLIP_RUNTIME_API_URL override for the
+  // callback when it resolves to a loopback/same-host address; otherwise route it
+  // to PAPERCLIP_PUBLIC_API_URL for comments/UI links and keep the reachable
+  // same-host URL as the control-plane callback endpoint.
+  let localRuntimeApiUrl: string | null = null;
+  const publicCandidates: string[] = [];
+  for (const candidate of [
+    process.env.PAPERCLIP_AGENT_API_URL,
+    process.env.PAPERCLIP_RUNTIME_API_URL,
+  ]) {
+    const trimmed = candidate?.trim();
+    if (!trimmed) continue;
+    if (localRuntimeApiUrl === null && isSameHostCallbackUrl(trimmed, runtimeHost)) {
+      localRuntimeApiUrl = trimmed;
+    } else {
+      publicCandidates.push(trimmed);
+    }
+  }
+
+  vars.PAPERCLIP_API_URL = localRuntimeApiUrl ?? sameHostApiUrl;
+
+  const publicApiUrl = process.env.PAPERCLIP_API_URL?.trim() || publicCandidates[0];
+  if (publicApiUrl) {
+    vars.PAPERCLIP_PUBLIC_API_URL = publicApiUrl;
+  }
   return vars;
 }
 
