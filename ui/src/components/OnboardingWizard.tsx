@@ -404,7 +404,10 @@ export function OnboardingWizard() {
   }
 
   async function handleLaunchToDashboard() {
-    if (!createdCompanyId || !createdAgentId) return;
+    if (!createdCompanyId || !createdAgentId) {
+      setError("Onboarding state is incomplete. Please restart onboarding and try again.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
