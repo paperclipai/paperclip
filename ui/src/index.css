@@ -129,6 +129,28 @@
   --agent-9b: #1f4ed4;
   --agent-10a: #f2d95f;
   --agent-10b: #4fbcba;
+
+  /* Semantic data-series tones for dashboard charts. Meaning-bearing —
+     they encode run outcome, task priority, and task status, so they are
+     theme-constant (identical in light/dark) like the agent capsule stops.
+     Consumed by ActivityCharts via each chart's chartConfig color. */
+  --data-run-succeeded: #10b981;
+  --data-run-failed: #ef4444;
+  --data-run-other: #6b7280;
+  --data-priority-critical: #ef4444;
+  --data-priority-high: #f97316;
+  --data-priority-medium: #eab308;
+  --data-priority-low: #6b7280;
+  --data-status-todo: #3b82f6;
+  --data-status-in-progress: #8b5cf6;
+  --data-status-in-review: #a855f7;
+  --data-status-done: #10b981;
+  --data-status-blocked: #ef4444;
+  --data-status-cancelled: #6b7280;
+  --data-status-backlog: #64748b;
+  --data-rate-high: #10b981;
+  --data-rate-mid: #eab308;
+  --data-rate-low: #ef4444;
 }
 
 .dark {
@@ -190,6 +212,26 @@
   --paperclip-doc-annotation-highlight-focused: #ca8a04;
   --paperclip-doc-annotation-highlight-stale: #854d0e;
   --paperclip-doc-annotation-highlight-resolved: #713f12;
+
+  /* Data-series tones are theme-constant — repeated so the token resolves
+     under .dark too (the values intentionally match :root). */
+  --data-run-succeeded: #10b981;
+  --data-run-failed: #ef4444;
+  --data-run-other: #6b7280;
+  --data-priority-critical: #ef4444;
+  --data-priority-high: #f97316;
+  --data-priority-medium: #eab308;
+  --data-priority-low: #6b7280;
+  --data-status-todo: #3b82f6;
+  --data-status-in-progress: #8b5cf6;
+  --data-status-in-review: #a855f7;
+  --data-status-done: #10b981;
+  --data-status-blocked: #ef4444;
+  --data-status-cancelled: #6b7280;
+  --data-status-backlog: #64748b;
+  --data-rate-high: #10b981;
+  --data-rate-mid: #eab308;
+  --data-rate-low: #ef4444;
 }
 
 ::highlight(paperclip-doc-annotation-open) {

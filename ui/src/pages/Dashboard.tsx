@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import type { LucideIcon } from "lucide-react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -12,7 +14,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { MetricCard } from "../components/MetricCard";
+import { Card, CardDescription, CardFooter, CardHeader, CardTitle } from "../components/ui/card";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
 
@@ -32,6 +34,48 @@ const DASHBOARD_ACTIVITY_LIMIT = 10;
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+/**
+ * Dashboard KPI card — adopts shadcn's dashboard-01 "section card" layout
+ * language: a bordered Card with a subtle gradient top, the metric label as a
+ * CardDescription, the value as a large CardTitle, an icon in the top-right,
+ * and the sub-text in the footer. The whole card is the link target.
+ */
+function KpiCard({
+  icon: Icon,
+  value,
+  label,
+  description,
+  to,
+}: {
+  icon: LucideIcon;
+  value: string | number;
+  label: string;
+  description?: ReactNode;
+  to: string;
+}) {
+  return (
+    <Card
+      asChild
+      className="@container/card gap-0 py-0 bg-gradient-to-t from-primary/5 to-card transition-colors hover:from-primary/10"
+    >
+      <Link to={to} className="no-underline text-inherit">
+        <CardHeader className="relative px-4 pt-4 sm:px-5 sm:pt-5">
+          <CardDescription className="text-xs sm:text-sm font-medium">{label}</CardDescription>
+          <CardTitle className="@[180px]/card:text-3xl text-2xl font-semibold tracking-tight tabular-nums">
+            {value}
+          </CardTitle>
+          <Icon className="absolute right-4 top-4 sm:right-5 sm:top-5 h-4 w-4 text-muted-foreground/50" />
+        </CardHeader>
+        {description && (
+          <CardFooter className="hidden sm:flex px-5 pb-5 pt-2 text-xs text-muted-foreground/70">
+            {description}
+          </CardFooter>
+        )}
+      </Link>
+    </Card>
+  );
 }
 
 export function Dashboard() {
@@ -194,7 +238,7 @@ export function Dashboard() {
   const hasNoAgents = agents !== undefined && agents.length === 0;
 
   return (
-    <div className="space-y-6">
+    <div className="@container/main flex flex-col gap-4 md:gap-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {hasNoAgents && (
@@ -217,7 +261,7 @@ export function Dashboard() {
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
 
       {data && (
-        <>
+        <div className="flex flex-col gap-4 md:gap-6">
           {data.budgets.activeIncidents > 0 ? (
             <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-[linear-gradient(180deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02))] px-4 py-3">
               <div className="flex items-start gap-2.5">
@@ -237,8 +281,8 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
-            <MetricCard
+          <div className="grid grid-cols-2 @xl/main:grid-cols-2 @5xl/main:grid-cols-4 gap-4">
+            <KpiCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
               label="Agents Enabled"
@@ -251,7 +295,7 @@ export function Dashboard() {
                 </span>
               }
             />
-            <MetricCard
+            <KpiCard
               icon={CircleDot}
               value={data.tasks.inProgress}
               label="Tasks In Progress"
@@ -263,7 +307,7 @@ export function Dashboard() {
                 </span>
               }
             />
-            <MetricCard
+            <KpiCard
               icon={DollarSign}
               value={formatCents(data.costs.monthSpendCents)}
               label="Month Spend"
@@ -276,7 +320,7 @@ export function Dashboard() {
                 </span>
               }
             />
-            <MetricCard
+            <KpiCard
               icon={ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
               label="Pending Approvals"
@@ -291,7 +335,7 @@ export function Dashboard() {
             />
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 @xl/main:grid-cols-2 @5xl/main:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart activity={data.runActivity} />
             </ChartCard>
@@ -310,17 +354,19 @@ export function Dashboard() {
             slotTypes={["dashboardWidget"]}
             context={{ companyId: selectedCompanyId }}
             className="grid gap-4 md:grid-cols-2"
-            itemClassName="rounded-lg border bg-card p-4 shadow-sm"
+            itemClassName="rounded-lg border bg-card p-4"
           />
 
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className="grid @5xl/main:grid-cols-2 gap-4">
             {/* Recent Activity */}
             {recentActivity.length > 0 && (
-              <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
-                </h3>
-                <div className="border border-border divide-y divide-border overflow-hidden">
+              <Card className="min-w-0 gap-0 py-0 overflow-hidden">
+                <CardHeader className="px-4 py-3 border-b">
+                  <CardTitle className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                    Recent Activity
+                  </CardTitle>
+                </CardHeader>
+                <div className="divide-y divide-border">
                   {recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
@@ -333,20 +379,22 @@ export function Dashboard() {
                     />
                   ))}
                 </div>
-              </div>
+              </Card>
             )}
 
             {/* Recent Tasks */}
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Recent Tasks
-              </h3>
+            <Card className="min-w-0 gap-0 py-0 overflow-hidden">
+              <CardHeader className="px-4 py-3 border-b">
+                <CardTitle className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                  Recent Tasks
+                </CardTitle>
+              </CardHeader>
               {recentIssues.length === 0 ? (
-                <div className="border border-border p-4">
+                <div className="p-4">
                   <p className="text-sm text-muted-foreground">No tasks yet.</p>
                 </div>
               ) : (
-                <div className="border border-border divide-y divide-border overflow-hidden">
+                <div className="divide-y divide-border">
                   {recentIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
@@ -386,10 +434,10 @@ export function Dashboard() {
                   ))}
                 </div>
               )}
-            </div>
+            </Card>
           </div>
 
-        </>
+        </div>
       )}
     </div>
   );

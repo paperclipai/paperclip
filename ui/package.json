@@ -65,6 +65,7 @@
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4",
     "react-router-dom": "^7.16.0",
+    "recharts": "3.8.0",
     "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.4.1"

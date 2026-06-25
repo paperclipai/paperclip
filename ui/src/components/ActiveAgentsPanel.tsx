@@ -124,7 +124,7 @@ export function ActiveAgentsPanel({
           <p className="text-sm text-muted-foreground">{emptyMessage}</p>
         </div>
       ) : (
-        <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4", gridClassName)}>
+        <div className={cn("grid grid-cols-1 items-start gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4", gridClassName)}>
           {visibleRuns.map((run) => (
             <AgentRunCard
               key={run.id}
@@ -169,7 +169,10 @@ const AgentRunCard = memo(function AgentRunCard({
 }) {
   return (
     <div className={cn(
-      "flex h-[320px] flex-col overflow-hidden rounded-xl border",
+      // Cap height so a long/streaming transcript scrolls internally, but use
+      // max-height (not a fixed height) + items-start on the grid so finished
+      // cards collapse to their content instead of stretching into dead space.
+      "flex max-h-[320px] flex-col overflow-hidden rounded-xl border",
       isActive
         ? "border-cyan-500/25 bg-cyan-500/[0.04]"
         : "border-border bg-background/70",
