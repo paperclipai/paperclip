@@ -108,15 +108,19 @@ export async function handleFiring(
   const severity = alert.labels.severity ?? "unknown";
 
   if (existing && existing.paperclipIssueId) {
-    // Re-fire: already have an issue. Refresh body (drill-in URLs may carry
-    // a fresh time range) and re-open if a human closed it.
+    // Re-fire: refresh body (drill-in URLs may carry a fresh time range) and
+    // re-open if the plugin previously auto-cancelled it on resolve.
     const newDescription = buildIssueDescription(alert);
     try {
       const issue = await ctx.issues.get(
         existing.paperclipIssueId,
         existing.paperclipCompanyId,
       );
-      if (issue && issue.status === "done") {
+      if (
+        issue &&
+        (issue.status === "done" || issue.status === "cancelled") &&
+        existing.resolvedAt
+      ) {
         await ctx.issues.update(
           existing.paperclipIssueId,
           { status: "todo", description: newDescription },
@@ -126,7 +130,7 @@ export async function handleFiring(
           alertname,
           severity,
         });
-      } else if (issue) {
+      } else if (issue && issue.status !== "done" && issue.status !== "cancelled") {
         await ctx.issues.update(
           existing.paperclipIssueId,
           { description: newDescription },
@@ -264,7 +268,8 @@ export async function handleResolved(
     scopeKind: "instance" as const,
     stateKey: STATE_KEYS.alert(alert.fingerprint),
   };
-  const existing = (await ctx.state.get(stateRef)) as AlertStateRecord | null;
+  const stateRecord = (await ctx.state.get(stateRef)) as AlertStateRecord | null;
+  const existing = stateRecord ?? (await recoverStateFromIssue(ctx, config, alert));
   if (!existing) {
     ctx.logger.info(
       `Alertmanager: resolved for unknown fingerprint ${alert.fingerprint}, dropping`,
@@ -277,11 +282,17 @@ export async function handleResolved(
 
   try {
     if (config.autoCloseOnResolve) {
-      await ctx.issues.update(
+      const issue = await ctx.issues.get(
         existing.paperclipIssueId,
-        { status: "done" },
         existing.paperclipCompanyId,
       );
+      if (issue && issue.status !== "done" && issue.status !== "cancelled") {
+        await ctx.issues.update(
+          existing.paperclipIssueId,
+          { status: "cancelled" },
+          existing.paperclipCompanyId,
+        );
+      }
     } else {
       await ctx.issues.createComment(
         existing.paperclipIssueId,
@@ -313,6 +324,37 @@ export async function handleResolved(
     alertname,
     severity: existing.severity,
   });
+}
+
+async function recoverStateFromIssue(
+  ctx: PluginContext,
+  config: AlertmanagerPluginConfig,
+  alert: AlertmanagerAlert,
+): Promise<AlertStateRecord | null> {
+  const companyId = config.defaultCompanyId;
+  if (!companyId) return null;
+
+  const matches = await ctx.issues.list({
+    companyId,
+    originKind: ORIGIN_KIND,
+    originId: alert.fingerprint,
+    limit: 1,
+  });
+  const issue = matches[0];
+  if (!issue) return null;
+  if (issue.status === "done" || issue.status === "cancelled") return null;
+
+  return {
+    paperclipIssueId: issue.id,
+    paperclipCompanyId: companyId,
+    assigneeUserId: issue.assigneeUserId ?? null,
+    assigneeAgentId: issue.assigneeAgentId ?? null,
+    alertname: alert.labels.alertname ?? "UnnamedAlert",
+    severity: alert.labels.severity ?? "unknown",
+    firstSeenAt: alert.startsAt || new Date().toISOString(),
+    lastFiredAt: alert.startsAt || new Date().toISOString(),
+    resolvedAt: null,
+  };
 }
 
 /**

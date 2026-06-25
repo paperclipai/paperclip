@@ -19,10 +19,11 @@ See `docs/specs/2026-04-29-alertmanager-plugin-spec.md` for the full design.
   with a 200 (so AM doesn't retry-storm).
 - Deduplicates by `alert.fingerprint` per spec §5.3 — re-fires bump the
   state row and refresh the issue body, they don't create a second issue.
-- Re-opens issues that a human closed (status=done) when the same
-  fingerprint re-fires (§8.3 option A).
+- Re-opens issues the plugin auto-cancelled on resolve when the same
+  fingerprint re-fires (§8.3 option A), while preserving operator-cancelled
+  suppressions.
 - Resolves issues per `autoCloseOnResolve`: either close the issue (status
-  → done) or post an `Alert resolved at <ts>` comment.
+  → cancelled) or post an `Alert resolved at <ts>` comment.
 - Renders observability drill-in links (Grafana / Tempo / Pyroscope / Hubble
   / runbooks / Prometheus) from a fixed annotation-key allowlist, so a bad
   `PrometheusRule` can't smuggle hostile URLs into the issue body.
