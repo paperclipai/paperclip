@@ -65,6 +65,24 @@ const mockIssueReferenceService = vi.hoisted(() => ({
   syncDocument: vi.fn(async () => undefined),
   syncIssue: vi.fn(async () => undefined),
 }));
+const mockExternalObjectService = vi.hoisted(() => ({
+  getIssueSummaries: vi.fn(async () => ({ summaries: {} })),
+  getIssueSummary: vi.fn(async () => ({
+    authRequiredCount: 0,
+    byLiveness: {},
+    byStatusCategory: {},
+    highestSeverity: "muted",
+    objects: [],
+    staleCount: 0,
+    total: 0,
+    unreachableCount: 0,
+  })),
+  listForIssue: vi.fn(async () => []),
+  refreshIssueObjects: vi.fn(async () => []),
+  syncCommentSafely: vi.fn(async () => undefined),
+  syncDocumentSafely: vi.fn(async () => undefined),
+  syncIssueSafely: vi.fn(async () => undefined),
+}));
 
 function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -98,6 +116,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/issues.js", () => ({
     issueService: () => mockIssueService,
+  }));
+
+  vi.doMock("../services/external-objects.js", () => ({
+    externalObjectService: () => mockExternalObjectService,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -189,6 +211,7 @@ describe.sequential("issue comment cancel routes", () => {
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/external-objects.js");
     vi.doUnmock("../services/feedback.js");
     vi.doUnmock("../services/heartbeat.js");
     vi.doUnmock("../services/index.js");
@@ -248,6 +271,7 @@ describe.sequential("issue comment cancel routes", () => {
     });
     mockIssueReferenceService.deleteCommentSource.mockResolvedValue(undefined);
     mockIssueReferenceService.syncComment.mockResolvedValue(undefined);
+    mockExternalObjectService.syncCommentSafely.mockResolvedValue(undefined);
   });
 
   it("cancels a queued comment from its author and restores the deleted body", async () => {
@@ -370,6 +394,18 @@ describe.sequential("issue comment cancel routes", () => {
       "tx",
     );
     expect(mockIssueReferenceService.deleteCommentSource).toHaveBeenCalledWith("annotation-comment-1", "tx");
+    expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("comment-1", "tx");
+    expect(mockDocumentAnnotationService.cleanupForIssueCommentDeletion).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "comment-1",
+      expect.objectContaining({
+        actorType: "user",
+        userId: "local-board",
+      }),
+      "tx",
+    );
+    expect(mockIssueReferenceService.deleteCommentSource).toHaveBeenCalledWith("annotation-comment-1", "tx");
+    expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("annotation-comment-1", "tx");
     const deletedActivity = mockLogActivity.mock.calls.find((call) => call[1]?.action === "issue.comment_deleted")?.[1];
     expect(deletedActivity).toEqual(expect.objectContaining({
       action: "issue.comment_deleted",

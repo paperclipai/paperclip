@@ -84,7 +84,9 @@ publish_package_to_npm ${distTag} @paperclipai/example 1.2.3
   let status = 0;
   let output = "";
   try {
-    output = execFileSync("bash", ["-lc", script], {
+    // Use a non-login shell so profile scripts cannot reorder PATH ahead of the
+    // fake pnpm/npm shims this test installs.
+    output = execFileSync("bash", ["-c", script], {
       cwd: fixtureDir,
       encoding: "utf8",
       env: {

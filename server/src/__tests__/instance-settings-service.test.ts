@@ -8,6 +8,7 @@ describe("instance settings service", () => {
       enableIsolatedWorkspaces: true,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
+      enableTaskWatchdogs: true,
       enableCloudSync: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
@@ -16,10 +17,12 @@ describe("instance settings service", () => {
     })).toEqual({
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
-      enableStreamlinedLeftNavigation: false,
+      enableStreamlinedLeftNavigation: true,
       enableConferenceRoomChat: false,
+      enableExternalObjects: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
+      enableTaskWatchdogs: true,
       enableCloudSync: true,
       enableDoneExecutionGate: false,
       enableInReviewEvidenceGate: false,
@@ -45,10 +48,18 @@ describe("instance settings service", () => {
     const current = normalizeExperimentalSettings({});
     const enabled = normalizeExperimentalSettings({ ...current, enableConferenceRoomChat: true });
     expect(enabled.enableConferenceRoomChat).toBe(true);
-    expect(enabled.enableStreamlinedLeftNavigation).toBe(false);
+    expect(enabled.enableStreamlinedLeftNavigation).toBe(true);
 
     const disabled = normalizeExperimentalSettings({ ...enabled, enableConferenceRoomChat: false });
     expect(disabled).toEqual(current);
+  });
+
+  it("defaults enableTaskWatchdogs to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableTaskWatchdogs).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableTaskWatchdogs).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableExperimentalFileViewer: true }).enableTaskWatchdogs,
+    ).toBe(false);
   });
 
   it("rejects non-boolean enableConferenceRoomChat values back to the default", () => {

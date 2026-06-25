@@ -7,6 +7,7 @@ import { errorHandler } from "../middleware/index.js";
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
 }));
+const agentId = "22222222-2222-4222-8222-222222222222";
 
 // Use importOriginal to keep the real exports for constants
 // (ISSUE_LIST_DEFAULT_LIMIT, clampIssueListLimit, ...) and helper functions,
@@ -79,7 +80,7 @@ function createApp() {
   app.use((req, _res, next) => {
     (req as any).actor = {
       type: "agent",
-      agentId: "agent-1",
+      agentId,
       companyId: "company-1",
       source: "agent_key",
       runId: "run-1",
@@ -102,7 +103,7 @@ describe("issue list route routine-execution visibility", () => {
 
     const res = await request(app)
       .get("/api/companies/company-1/issues")
-      .query({ assigneeAgentId: "agent-1", status: "todo,in_progress,blocked" });
+      .query({ assigneeAgentId: agentId, status: "todo,in_progress,blocked" });
 
     expect(res.status).toBe(200);
     // The route accumulates filters as it adds query params; pin the
@@ -114,7 +115,7 @@ describe("issue list route routine-execution visibility", () => {
       "company-1",
       expect.objectContaining({
         status: "todo,in_progress,blocked",
-        assigneeAgentId: "agent-1",
+        assigneeAgentId: agentId,
         includeRoutineExecutions: true,
       }),
     );

@@ -1097,6 +1097,13 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   white-space: nowrap;
 }
 
+/* External object URL decorations follow the same pattern: the host renders
+   the icon prefix, the link text is left untouched (Postel's Law). */
+.paperclip-markdown-external-ref {
+  display: inline;
+  white-space: nowrap;
+}
+
 .dark .paperclip-markdown a {
   color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
 }
@@ -1204,6 +1211,25 @@ span.paperclip-project-mention-chip {
   position: relative;
   top: -1px;
   white-space: nowrap;
+}
+
+/* Touch target floor: WCAG 2.5.5 expects ≥24px on coarse pointers. The base
+   chip is 22px; bump it on touch viewports without disturbing inline metrics. */
+@media (pointer: coarse) {
+  a.paperclip-mention-chip,
+  a.paperclip-project-mention-chip,
+  span.paperclip-mention-chip,
+  span.paperclip-project-mention-chip {
+    min-height: 24px;
+  }
+}
+
+/* External object pills: variant marker the host renders for known-resolved
+   external URLs. Inline status icon is rendered by ExternalObjectStatusIcon. */
+a.paperclip-mention-chip[data-mention-kind="external-object"],
+span.paperclip-mention-chip[data-mention-kind="external-object"] {
+  /* Inherit base chip styling; status colour comes from inline classes so the
+     host can vary tone per category without defining a CSS variant per state. */
 }
 
 /* When the identifier inside a chip is backtick-wrapped in markdown, strip the

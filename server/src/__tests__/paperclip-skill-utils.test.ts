@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   listPaperclipSkillEntries,
@@ -10,6 +11,9 @@ import {
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const repoPath = (...segments: string[]) => path.join(repoRoot, ...segments);
 
 describe("paperclip skill utils", () => {
   const cleanupDirs = new Set<string>();
@@ -47,8 +51,8 @@ describe("paperclip skill utils", () => {
   });
 
   it("documents artifact uploads in the installed Paperclip skill", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
-    const referenceBody = await fs.readFile(path.resolve("skills/paperclip/references/artifacts.md"), "utf8");
+    const skillBody = await fs.readFile(repoPath("skills/paperclip/SKILL.md"), "utf8");
+    const referenceBody = await fs.readFile(repoPath("skills/paperclip/references/artifacts.md"), "utf8");
 
     expect(skillBody).toContain("Generated Artifacts and Work Products");
     expect(skillBody).toContain("references/artifacts.md");
@@ -59,13 +63,13 @@ describe("paperclip skill utils", () => {
     expect(referenceBody).toContain("/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments");
     expect(referenceBody).toContain("/api/issues/$PAPERCLIP_TASK_ID/work-products");
     await expect(
-      fs.access(path.resolve("skills/paperclip/scripts/paperclip-upload-artifact.sh")),
+      fs.access(repoPath("skills/paperclip/scripts/paperclip-upload-artifact.sh")),
     ).resolves.toBeUndefined();
-    await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
+    await expect(fs.access(repoPath("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
   });
 
   it("keeps the create-issue-interaction-ui guide as a maintainer-only skill", async () => {
-    const skillPath = path.resolve(".agents/skills/create-issue-interaction-ui/SKILL.md");
+    const skillPath = repoPath(".agents/skills/create-issue-interaction-ui/SKILL.md");
     const skillBody = await fs.readFile(skillPath, "utf8");
     const normalizedSkillBody = skillBody.replace(/\s+/g, " ");
 
@@ -76,7 +80,7 @@ describe("paperclip skill utils", () => {
     expect(skillBody).toContain("server/src/services/issue-thread-interactions.ts");
     expect(skillBody).toContain("ui/src/components/IssueThreadInteractionCard.tsx");
     expect(skillBody).toContain("packages/plugins/sdk/src/testing.ts");
-    await expect(fs.access(path.resolve("skills/create-issue-interaction-ui/SKILL.md"))).rejects.toThrow();
+    await expect(fs.access(repoPath("skills/create-issue-interaction-ui/SKILL.md"))).rejects.toThrow();
   });
 
   it("marks skills with required: false in SKILL.md frontmatter as optional", async () => {
@@ -86,12 +90,10 @@ describe("paperclip skill utils", () => {
     const moduleDir = path.join(root, "a", "b", "c", "d", "e");
     await fs.mkdir(moduleDir, { recursive: true });
 
-    // Required skill (no frontmatter flag)
     const requiredDir = path.join(root, "skills", "paperclip");
     await fs.mkdir(requiredDir, { recursive: true });
     await fs.writeFile(path.join(requiredDir, "SKILL.md"), "---\nname: paperclip\n---\n\n# Paperclip\n");
 
-    // Optional skill (required: false)
     const optionalDir = path.join(root, "skills", "paperclip-dev");
     await fs.mkdir(optionalDir, { recursive: true });
     await fs.writeFile(path.join(optionalDir, "SKILL.md"), "---\nname: paperclip-dev\nrequired: false\n---\n\n# Dev\n");

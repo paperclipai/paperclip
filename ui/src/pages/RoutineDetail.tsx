@@ -43,6 +43,7 @@ import {
   ROUTINE_SECTION_KEYS,
   SECTION_FIELD_KEYS,
   RoutineDetailContext,
+  createDefaultNewTrigger,
   type RoutineDetailContextValue,
   type RoutineEditDraft,
   type RoutineSectionKey,
@@ -154,12 +155,7 @@ export function RoutineDetail() {
   const [secretMessage, setSecretMessage] = useState<SecretMessage | null>(null);
   const [saveConflict, setSaveConflict] = useState(false);
   const [runVariablesOpen, setRunVariablesOpen] = useState(false);
-  const [newTrigger, setNewTrigger] = useState({
-    kind: "schedule",
-    cronExpression: "0 10 * * *",
-    signingMode: "bearer",
-    replayWindowSec: "300",
-  });
+  const [newTrigger, setNewTrigger] = useState(createDefaultNewTrigger);
   const [editDraft, setEditDraft] = useState<RoutineEditDraft>({
     title: "",
     description: "",
@@ -193,14 +189,14 @@ export function RoutineDetail() {
     queryKey: queryKeys.issues.liveRuns(activeIssueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(activeIssueId!),
     enabled: !!activeIssueId,
-    refetchInterval: 5000,
+    refetchInterval: 3000,
   });
   const hasLiveRun = (liveRuns ?? []).length > 0;
   const { data: routineRuns } = useQuery({
     queryKey: queryKeys.routines.runs(routineId!),
     queryFn: () => routinesApi.listRuns(routineId!),
     enabled: !!routineId,
-    refetchInterval: hasLiveRun ? 5000 : false,
+    refetchInterval: hasLiveRun ? 3000 : false,
   });
   const relatedActivityIds = useMemo(
     () => ({

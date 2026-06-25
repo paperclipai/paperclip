@@ -3,7 +3,7 @@ import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   companies,
   createDb,
@@ -25,6 +25,7 @@ import {
   validatePluginRuntimeExecute,
   validatePluginRuntimeQuery,
 } from "../services/plugin-database.js";
+import { buildPluginWorkerEnv, pluginLoader } from "../services/plugin-loader.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -141,6 +142,68 @@ describe("plugin database SQL validation", () => {
   });
 });
 
+describe("buildPluginWorkerEnv", () => {
+  const instanceInfo = {
+    deploymentMode: "authenticated",
+    deploymentExposure: "public",
+  };
+
+  it("passes only model provider keys through to environment driver plugins", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: ["environment.drivers.register"] },
+      instanceInfo,
+      processEnv: {
+        ANTHROPIC_API_KEY: "anthropic-token",
+        OPENAI_API_KEY: "openai-token",
+        GEMINI_API_KEY: " ",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      ANTHROPIC_API_KEY: "anthropic-token",
+      OPENAI_API_KEY: "openai-token",
+    });
+  });
+
+  it("passes in-cluster Kubernetes service-discovery vars to environment driver plugins", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: ["environment.drivers.register"] },
+      instanceInfo,
+      processEnv: {
+        KUBERNETES_SERVICE_HOST: "10.0.0.1",
+        KUBERNETES_SERVICE_PORT: "443",
+        KUBERNETES_SERVICE_PORT_HTTPS: " ",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      KUBERNETES_SERVICE_HOST: "10.0.0.1",
+      KUBERNETES_SERVICE_PORT: "443",
+    });
+  });
+
+  it("does not pass provider keys to non-environment plugins", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: ["ui.slots.register"] },
+      instanceInfo,
+      processEnv: {
+        OPENAI_API_KEY: "openai-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+    });
+  });
+});
+
 describeEmbeddedPostgres("plugin database namespaces", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -149,7 +212,7 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-db-");
     db = createDb(tempDb.connectionString);
-  });
+  }, 20_000);
 
   afterEach(async () => {
     for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.refresh", multiMigrationPluginKey, llmWikiPluginKey]) {
@@ -432,6 +495,150 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       .from(pluginMigrations)
       .where(eq(pluginMigrations.pluginId, pluginId));
     expect(migration?.status).toBe("failed");
+  });
+
+  it("rolls back plugin install when migration validation fails", async () => {
+    const pluginManifest = manifest("paperclip.escape");
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createInstallablePluginPackage(
+      pluginManifest,
+      "CREATE TABLE public.plugin_escape (id uuid PRIMARY KEY);",
+    );
+    const loader = pluginLoader(db, {
+      enableLocalFilesystem: false,
+      enableNpmDiscovery: false,
+    });
+
+    await expect(loader.installPlugin({ localPath: packageRoot }))
+      .rejects.toThrow(/public\.plugin_escape|public/i);
+
+    const installedPlugins = await db
+      .select()
+      .from(plugins)
+      .where(eq(plugins.pluginKey, pluginManifest.id));
+    const namespaces = await db
+      .select()
+      .from(pluginDatabaseNamespaces)
+      .where(eq(pluginDatabaseNamespaces.pluginKey, pluginManifest.id));
+    const migrations = await db
+      .select()
+      .from(pluginMigrations)
+      .where(eq(pluginMigrations.pluginKey, pluginManifest.id));
+    const schemaRows = Array.from(
+      await db.execute(
+        sql<{ schema_name: string }>`SELECT schema_name FROM information_schema.schemata WHERE schema_name = ${namespace}`,
+      ) as Iterable<{ schema_name: string }>,
+    );
+
+    expect(installedPlugins).toHaveLength(0);
+    expect(namespaces).toHaveLength(0);
+    expect(migrations).toHaveLength(0);
+    expect(schemaRows).toHaveLength(0);
+  });
+
+  it("refreshes persisted manifests from disk before activation", async () => {
+    const staleManifest = manifest("paperclip.refresh");
+    const refreshedManifest: PaperclipPluginManifestV1 = {
+      ...staleManifest,
+      capabilities: [...staleManifest.capabilities, "agent.tools.register"],
+      database: {
+        ...staleManifest.database!,
+        coreReadTables: ["companies"],
+      },
+      tools: [
+        {
+          name: "db-smoke",
+          displayName: "DB Smoke",
+          description: "Exercises plugin tool registration worker lookup.",
+          parametersSchema: { type: "object", properties: {} },
+        },
+      ],
+    };
+    const namespace = derivePluginDatabaseNamespace(refreshedManifest.id);
+    const packageRoot = await createInstallablePluginPackage(
+      refreshedManifest,
+      `
+      CREATE TABLE ${namespace}.company_refs (
+        id uuid PRIMARY KEY,
+        company_id uuid NOT NULL REFERENCES public.companies(id)
+      );
+      `,
+    );
+    const pluginId = await installPluginRecord(staleManifest);
+    await db
+      .update(plugins)
+      .set({
+        packagePath: packageRoot,
+        status: "ready",
+      })
+      .where(eq(plugins.id, pluginId));
+
+    const workerManager = {
+      getWorker: vi.fn().mockReturnValue(undefined),
+      startWorker: vi.fn().mockResolvedValue(undefined),
+      stopWorker: vi.fn().mockResolvedValue(undefined),
+      stopAll: vi.fn().mockResolvedValue(undefined),
+    };
+    const toolDispatcher = {
+      registerPluginTools: vi.fn(),
+    };
+    const loader = pluginLoader(db, {
+      enableLocalFilesystem: false,
+      enableNpmDiscovery: false,
+    }, {
+      workerManager,
+      eventBus: {
+        forPlugin: vi.fn(() => ({})),
+        subscriptionCount: vi.fn(() => 0),
+      },
+      jobScheduler: {
+        registerPlugin: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn(),
+      },
+      jobStore: {
+        syncJobDeclarations: vi.fn().mockResolvedValue(undefined),
+      },
+      toolDispatcher,
+      lifecycleManager: {
+        markError: vi.fn().mockResolvedValue(undefined),
+      },
+      buildHostHandlers: vi.fn(() => ({})),
+      instanceInfo: {
+        instanceId: "test-instance",
+        hostVersion: "1.0.0",
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+      },
+    } as never);
+
+    const result = await loader.loadSingle(pluginId);
+
+    expect(result.success).toBe(true);
+    expect(workerManager.startWorker).toHaveBeenCalledWith(
+      pluginId,
+      expect.objectContaining({
+        databaseNamespace: namespace,
+        env: expect.objectContaining({
+          PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+          PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+        }),
+        manifest: expect.objectContaining({
+          database: expect.objectContaining({ coreReadTables: ["companies"] }),
+        }),
+      }),
+    );
+    expect(toolDispatcher.registerPluginTools).toHaveBeenCalledWith(
+      refreshedManifest.id,
+      expect.objectContaining({
+        tools: refreshedManifest.tools,
+      }),
+      pluginId,
+    );
+    const [plugin] = await db
+      .select()
+      .from(plugins)
+      .where(eq(plugins.id, pluginId));
+    expect(plugin?.manifestJson.database?.coreReadTables).toEqual(["companies"]);
   });
 
   it("rejects checksum changes for already applied migrations", async () => {

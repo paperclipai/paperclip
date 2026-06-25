@@ -10,11 +10,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *
  * Boots a throwaway local_trusted instance (see playwright.config.ts webServer)
  * and captures screenshots of every surface integrated by NUX Phases 1–3:
- *   - Company setup
- *   - Team-lead hire step
- *   - Workspace link
- *   - Team review
- *   - Launch task
+ *   - Team name
+ *   - Mission definition
+ *   - Team-lead setup
+ *   - Model connection
+ *   - Setup review
  *   - Conference Room (BoardChat) shell + composer + activity feed
  *   - Artifacts page
  *
@@ -93,25 +93,31 @@ test.describe("NUX Phase 4 visual QA", () => {
     // ── Section A: onboarding wizard ──────────────────────────────────────
     await openWizard(page);
     await expect(
-      page.getByRole("heading", { name: "Set up your company" }),
+      page.getByRole("heading", { name: "Name your team" }),
     ).toBeVisible({ timeout: 15_000 });
     await page.getByPlaceholder("Acme Corp").fill("QA Robotics");
-    await page
-      .getByPlaceholder("What is this company trying to achieve?")
-      .fill("Build affordable home robots that handle household chores.");
     await page.screenshot({ path: shot("01-company-setup.png") });
 
     await page.getByRole("button", { name: /^Next/ }).click();
     await expect(
-      page.getByRole("heading", { name: "Create your first agent" }),
+      page.getByRole("heading", { name: "Define your mission" }),
+    ).toBeVisible({ timeout: 10_000 });
+    await page
+      .getByPlaceholder("What is your team trying to achieve?")
+      .fill("Build affordable home robots that handle household chores.");
+    await page.screenshot({ path: shot("02-define-mission.png") });
+
+    await page.getByRole("button", { name: /Confirm mission/ }).click();
+    await expect(
+      page.getByRole("heading", { name: "Create your team lead" }),
     ).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: shot("02-create-agent.png") });
+    await page.screenshot({ path: shot("03-create-lead.png") });
 
     await page.getByRole("button", { name: /^Next/ }).click();
     await expect(
-      page.getByRole("heading", { name: "Link a workspace" }),
+      page.getByRole("heading", { name: "Connect a model" }),
     ).toBeVisible({ timeout: 30_000 });
-    await page.screenshot({ path: shot("03-link-workspace.png") });
+    await page.screenshot({ path: shot("04-connect-model.png") });
 
     // The company just created anchors the route-scoped sections below.
     const companiesRes = await page.request.get(`${baseUrl}/api/companies`);
@@ -123,22 +129,11 @@ test.describe("NUX Phase 4 visual QA", () => {
     expect(qaCompany, "wizard should have created QA Robotics").toBeTruthy();
     const prefix: string = qaCompany.issuePrefix;
 
-    await page.getByRole("button", { name: "Skip" }).click();
+    await page.getByRole("button", { name: /Give it a heartbeat/ }).click();
     await expect(
-      page.getByRole("heading", { name: "Review your team" }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.screenshot({ path: shot("04-review-team.png") });
-
-    await page.getByRole("button", { name: /^Next/ }).click();
-    await expect(
-      page.getByRole("heading", { name: "Launch with a task" }),
-    ).toBeVisible({ timeout: 10_000 });
-    const taskTitleInput = page.getByPlaceholder(
-      "e.g. Review the codebase and create a roadmap",
-    );
-    await taskTitleInput.clear();
-    await taskTitleInput.fill("Create the first robotics launch plan");
-    await page.screenshot({ path: shot("05-launch-task.png") });
+      page.getByRole("heading", { name: "Review" }),
+    ).toBeVisible({ timeout: 30_000 });
+    await page.screenshot({ path: shot("05-review.png") });
 
     await page.getByRole("button", { name: "Close" }).click();
 
@@ -167,10 +162,10 @@ test.describe("NUX Phase 4 visual QA", () => {
 
     for (const f of [
       "01-company-setup.png",
-      "02-create-agent.png",
-      "03-link-workspace.png",
-      "04-review-team.png",
-      "05-launch-task.png",
+      "02-define-mission.png",
+      "03-create-lead.png",
+      "04-connect-model.png",
+      "05-review.png",
       "06-board-chat.png",
       "07-artifacts.png",
     ]) {

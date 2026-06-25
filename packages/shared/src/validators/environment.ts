@@ -5,6 +5,7 @@ import {
   ENVIRONMENT_LEASE_STATUSES,
   ENVIRONMENT_STATUSES,
 } from "../constants.js";
+import { envConfigSchema } from "./secret.js";
 
 export const environmentDriverSchema = z.enum(ENVIRONMENT_DRIVERS);
 export const environmentStatusSchema = z.enum(ENVIRONMENT_STATUSES);
@@ -98,6 +99,7 @@ const environmentFields = {
   driver: environmentDriverSchema,
   status: environmentStatusSchema.optional().default("active"),
   config: z.record(z.string(), z.unknown()).optional().default({}),
+  envVars: envConfigSchema.optional().default({}),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 };
 

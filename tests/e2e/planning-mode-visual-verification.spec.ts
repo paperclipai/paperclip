@@ -43,6 +43,13 @@ test("captures planning mode UI for desktop and mobile", async ({ page, baseURL 
       body: await real.text(),
     });
   });
+  // This spec captures the CLASSIC (flag-off) wizard + composer; pin the
+  // experimental flag off in case an earlier spec on this shared instance
+  // turned it on (the NUX specs do).
+  const flagRes = await page.request.patch("/api/instance/settings/experimental", {
+    data: { enableConferenceRoomChat: false },
+  });
+  expect(flagRes.ok()).toBe(true);
 
   await page.goto("/onboarding");
 

@@ -220,31 +220,24 @@ export function environmentRunOrchestrator(
   });
 
   /**
-   * Resolve the selected environment for a run. Ensures a local default
-   * exists and resolves the priority chain:
-   *   execution workspace config > issue settings > project policy > agent default > company default
+   * Resolve the selected environment for a run. The caller passes the concrete
+   * selected environment id plus the built-in local fallback id used to lazily
+   * ensure the local environment row exists.
    */
   async function resolveEnvironment(input: {
     companyId: string;
     selectedEnvironmentId: string;
-    defaultEnvironmentId: string;
+    localEnvironmentId: string;
   }): Promise<Environment> {
-    const environmentId =
-      input.selectedEnvironmentId || input.defaultEnvironmentId;
+    const environmentId = input.selectedEnvironmentId || input.localEnvironmentId;
 
     const environment =
-      environmentId === input.defaultEnvironmentId
+      environmentId === input.localEnvironmentId
         ? await environmentsSvc.ensureLocalEnvironment(input.companyId)
         : await environmentsSvc.getById(environmentId);
 
     if (!environment) {
       throw new EnvironmentRunError("environment_not_found", `Environment "${environmentId}" not found.`, {
-        environmentId,
-      });
-    }
-
-    if (environment.companyId !== input.companyId) {
-      throw new EnvironmentRunError("environment_not_found", `Environment "${environmentId}" does not belong to this company.`, {
         environmentId,
       });
     }
@@ -267,6 +260,7 @@ export function environmentRunOrchestrator(
     companyId: string;
     environment: Environment;
     issueId: string | null;
+    agentId: string;
     heartbeatRunId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     adapterType: string | null;
@@ -328,7 +322,7 @@ export function environmentRunOrchestrator(
   async function acquireForRun(input: {
     companyId: string;
     selectedEnvironmentId: string;
-    defaultEnvironmentId: string;
+    localEnvironmentId: string;
     adapterType: string;
     issueId: string | null;
     heartbeatRunId: string;
@@ -339,7 +333,7 @@ export function environmentRunOrchestrator(
     const environment = await resolveEnvironment({
       companyId: input.companyId,
       selectedEnvironmentId: input.selectedEnvironmentId,
-      defaultEnvironmentId: input.defaultEnvironmentId,
+      localEnvironmentId: input.localEnvironmentId,
     });
 
     // Step 2: Acquire lease
@@ -347,6 +341,7 @@ export function environmentRunOrchestrator(
       companyId: input.companyId,
       environment,
       issueId: input.issueId,
+      agentId: input.agentId,
       heartbeatRunId: input.heartbeatRunId,
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
       adapterType: input.adapterType ?? null,

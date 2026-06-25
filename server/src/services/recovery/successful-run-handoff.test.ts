@@ -53,6 +53,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
     isRoutineReceiverParent: false,
+    hasActiveRoutineContinuation: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
     ...overrides,
@@ -128,6 +129,29 @@ describe("successful run handoff decision", () => {
     expect(decide({ hasExplicitBlockerPath: true })).toEqual({
       kind: "skip",
       reason: "explicit blocker path owns the next action",
+    });
+  });
+
+  it("does not queue when the issue is the recurring parent of an active routine", () => {
+    expect(decide({ hasActiveRoutineContinuation: true })).toEqual({
+      kind: "skip",
+      reason: "active routine continuation owns the next action",
+    });
+    expect(decide({
+      hasActiveRoutineContinuation: true,
+      detectedProgressSummary: null,
+      livenessState: null,
+    })).toEqual({
+      kind: "skip",
+      reason: "active routine continuation owns the next action",
+    });
+    expect(decide({
+      hasActiveRoutineContinuation: true,
+      livenessState: "advanced",
+      detectedProgressSummary: "Run produced concrete action evidence: 1 issue comment(s)",
+    })).toEqual({
+      kind: "skip",
+      reason: "active routine continuation owns the next action",
     });
   });
 
@@ -209,6 +233,23 @@ describe("successful run handoff decision", () => {
     expect(decide({ isRoutineReceiverParent: true })).toEqual({
       kind: "skip",
       reason: "issue is a routine receiver parent",
+    });
+  });
+
+  it("does not queue for successful comment-driven wakes", () => {
+    expect(decide({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: "issue_commented",
+          commentId: "comment-1",
+          wakeCommentIds: ["comment-1"],
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "comment-driven wake already owns the next action",
     });
   });
 

@@ -25,6 +25,16 @@ vi.mock("@/components/AsciiArtAnimation", () => ({
   AsciiArtAnimation: () => null,
 }));
 
+// The auth page renders ThemeToggle, while the real ThemeProvider is mounted
+// above the router in the app shell.
+vi.mock("../context/ThemeContext", () => ({
+  useTheme: () => ({
+    theme: "dark",
+    setTheme: vi.fn(),
+    toggleTheme: vi.fn(),
+  }),
+}));
+
 // The router's navigate wrapper reads the active company prefix from context.
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({

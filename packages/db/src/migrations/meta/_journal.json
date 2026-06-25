@@ -778,6 +778,76 @@
       "when": 1781480000000,
       "tag": "0113_skill_install_count_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1781490000000,
+      "tag": "0117_plugin_company_id_tenant_isolation",
+      "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1781490100000,
+      "tag": "0118_managed_sandbox_dedup_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1781490200000,
+      "tag": "0119_agent_error_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1781733000000,
+      "tag": "0120_issue_watchdogs",
+      "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1781902000000,
+      "tag": "0121_instance_scoped_environments",
+      "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1781902100000,
+      "tag": "0122_external_object_references",
+      "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "7",
+      "when": 1782165200000,
+      "tag": "0123_external_object_display_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1781902200000,
+      "tag": "0124_workspace_operations_issue_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1781902300000,
+      "tag": "0125_routine_description_annotations",
+      "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1781902400000,
+      "tag": "0126_document_company_cascade",
+      "breakpoints": true
     }
   ]
 }

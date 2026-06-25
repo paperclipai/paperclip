@@ -1,6 +1,6 @@
 import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
-import { betterAuth } from "better-auth";
+import { betterAuth, type Auth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
@@ -25,12 +25,17 @@ export type BetterAuthSessionResult = {
   user: BetterAuthSessionUser | null;
 };
 
-// better-auth 1.6 made `Auth<O>` invariant in its options type param, so
-// `Auth<BetterAuthOptions>` (betterAuth's generic default) no longer accepts
-// the `Auth<typeof authConfig>` our factory actually returns. Derive the
-// instance type from the factory's own inferred output instead. (Type aliases
-// may forward-reference a function declared later in the module.)
-type BetterAuthInstance = ReturnType<typeof createBetterAuthInstance>;
+type BetterAuthGetSessionApi = {
+  getSession?: (input: { headers: Headers }) => Promise<unknown>;
+};
+
+type BetterAuthHandlerTarget = Extract<Parameters<typeof toNodeHandler>[0], { handler: Auth["handler"] }>;
+
+type BetterAuthSessionResolver = {
+  api?: BetterAuthGetSessionApi;
+};
+
+type BetterAuthInstance = BetterAuthHandlerTarget & BetterAuthSessionResolver;
 
 const AUTH_COOKIE_PREFIX_FALLBACK = "default";
 const AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE = /[^a-zA-Z0-9_-]+/g;
@@ -118,7 +123,7 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
-export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]) {
+export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
@@ -230,7 +235,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
   return betterAuth(authConfig);
 }
 
-export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandler {
+export function createBetterAuthHandler(auth: BetterAuthHandlerTarget): RequestHandler {
   const handler = toNodeHandler(auth);
   return (req, res, next) => {
     void Promise.resolve(handler(req, res)).catch(next);
@@ -238,10 +243,10 @@ export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandle
 }
 
 export async function resolveBetterAuthSessionFromHeaders(
-  auth: BetterAuthInstance,
+  auth: BetterAuthSessionResolver,
   headers: Headers,
 ): Promise<BetterAuthSessionResult | null> {
-  const api = (auth as unknown as { api?: { getSession?: (input: unknown) => Promise<unknown> } }).api;
+  const api = auth.api;
   if (!api?.getSession) return null;
 
   const sessionValue = await api.getSession({
@@ -269,7 +274,7 @@ export async function resolveBetterAuthSessionFromHeaders(
 }
 
 export async function resolveBetterAuthSession(
-  auth: BetterAuthInstance,
+  auth: BetterAuthSessionResolver,
   req: Request,
 ): Promise<BetterAuthSessionResult | null> {
   return resolveBetterAuthSessionFromHeaders(auth, headersFromExpressRequest(req));

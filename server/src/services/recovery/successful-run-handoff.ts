@@ -301,6 +301,14 @@ function isGithubPrReviewRun(run: HeartbeatRunRow) {
   return reviewKind === "pr_review";
 }
 
+function isCommentDrivenWake(run: HeartbeatRunRow) {
+  const context = readRecord(run.contextSnapshot);
+  const wakeReason = readString(context.wakeReason);
+  return wakeReason === "issue_commented" ||
+    wakeReason === "issue_comment_mentioned" ||
+    wakeReason === "issue_reopened_via_comment";
+}
+
 function isProductiveSuccessfulRun(input: {
   livenessState: RunLivenessState | null;
   detectedProgressSummary: string | null;
@@ -349,6 +357,7 @@ export function decideSuccessfulRunHandoff(input: {
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
   isRoutineReceiverParent: boolean;
+  hasActiveRoutineContinuation: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
 }): SuccessfulRunHandoffDecision {
@@ -360,6 +369,7 @@ export function decideSuccessfulRunHandoff(input: {
   if (isGithubPrReviewRun(run)) {
     return { kind: "skip", reason: "successful PR review run already may have emitted an external side effect" };
   }
+  if (isCommentDrivenWake(run)) return { kind: "skip", reason: "comment-driven wake already owns the next action" };
   if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") {
     return { kind: "skip", reason: "missing issue comment retry owns the next action" };
   }
@@ -377,6 +387,9 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.isRoutineReceiverParent) return { kind: "skip", reason: "issue is a routine receiver parent" };
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
+  }
+  if (input.hasActiveRoutineContinuation) {
+    return { kind: "skip", reason: "active routine continuation owns the next action" };
   }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };

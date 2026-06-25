@@ -27,7 +27,11 @@
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts"
   },
-  "files": ["dist", "manifests", "README.md"],
+  "files": [
+    "dist",
+    "manifests",
+    "README.md"
+  ],
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js"

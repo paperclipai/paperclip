@@ -14,7 +14,7 @@ import { ArrowRight, Check, ChevronDown, ChevronUp, Copy, Paperclip } from "luci
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { ApprovalCard } from "./ApprovalCard";
@@ -106,6 +106,7 @@ interface CommentThreadProps {
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
   composerDisabledReason?: string | null;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -326,6 +327,7 @@ function CommentCard({
   currentUserId,
   highlightCommentId,
   queued = false,
+  externalReferences,
 }: {
   comment: CommentWithRunMeta;
   agentMap?: Map<string, Agent>;
@@ -342,6 +344,7 @@ function CommentCard({
   currentUserId?: string | null;
   highlightCommentId?: string | null;
   queued?: boolean;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
@@ -416,7 +419,9 @@ function CommentCard({
       {isDeleted ? (
         <div className="text-sm italic text-muted-foreground">Comment deleted</div>
       ) : (
-        <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
+        <MarkdownBody className="text-sm" softBreaks externalReferences={externalReferences}>
+          {comment.body}
+        </MarkdownBody>
       )}
       {companyId && !isPending && !isDeleted ? (
         <div className="mt-2 space-y-2">
@@ -579,6 +584,7 @@ const TimelineList = memo(function TimelineList({
   onVote,
   votingTargetId,
   highlightCommentId,
+  externalReferences,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
@@ -601,6 +607,7 @@ const TimelineList = memo(function TimelineList({
   ) => Promise<void>;
   votingTargetId?: string | null;
   highlightCommentId?: string | null;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const COLLAPSE_THRESHOLD = 10;
   const VISIBLE_WHEN_COLLAPSED = 3;
@@ -741,6 +748,7 @@ const TimelineList = memo(function TimelineList({
             voting={votingTargetId === comment.id}
             currentUserId={currentUserId}
             highlightCommentId={highlightCommentId}
+            externalReferences={externalReferences}
           />
         );
       })}
@@ -789,6 +797,7 @@ export function CommentThread({
   onInterruptQueued,
   interruptingQueuedRunId = null,
   composerDisabledReason = null,
+  externalReferences,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -1007,17 +1016,8 @@ export function CommentThread({
         votingTargetId={votingTargetId}
         highlightCommentId={highlightCommentId}
         feedbackTermsUrl={feedbackTermsUrl}
+        externalReferences={externalReferences}
       />
-      {timeline.length > 0 ? (
-        <TimelineList
-          timeline={timeline}
-          agentMap={agentMap}
-          companyId={companyId}
-          projectId={projectId}
-          currentUserId={currentUserId}
-          highlightCommentId={highlightCommentId}
-        />
-      ) : null}
 
       {liveRunSlot}
 
@@ -1050,6 +1050,7 @@ export function CommentThread({
                 currentUserId={currentUserId}
                 highlightCommentId={highlightCommentId}
                 queued
+                externalReferences={externalReferences}
               />
             ))}
           </div>
