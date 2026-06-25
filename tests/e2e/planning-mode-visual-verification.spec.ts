@@ -1,7 +1,5 @@
 import { expect, test } from "@playwright/test";
 
-const SKIP_LLM = process.env.PAPERCLIP_E2E_SKIP_LLM !== "false";
-
 const AGENT_NAME = "Chief of staff";
 const TASK_TITLE = "Hire your first engineer and create a hiring plan";
 
@@ -58,43 +56,10 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await page
     .getByPlaceholder("What is your team trying to achieve?")
     .fill("Capture planning mode visual evidence for the graduated task UI.");
-  const baseUrl = page.url().split("/").slice(0, 3).join("/");
   await page.getByRole("button", { name: /Confirm mission/ }).click();
 
   await page.waitForSelector('input[placeholder="Chief of staff"]', { timeout: 30_000 });
   await expect(page.locator('input[placeholder="Chief of staff"]')).toHaveValue(AGENT_NAME);
-
-  if (SKIP_LLM) {
-    const companiesAfterAgentRes = await page.request.get(`${baseUrl}/api/companies`);
-    expect(companiesAfterAgentRes.ok()).toBe(true);
-    const companiesAfterAgent = await companiesAfterAgentRes.json();
-    const companyAfterAgent = companiesAfterAgent.find((c: { name: string }) => c.name === companyName);
-    expect(companyAfterAgent).toBeTruthy();
-
-    const agentsAfterCreateRes = await page.request.get(`${baseUrl}/api/companies/${companyAfterAgent.id}/agents`);
-    expect(agentsAfterCreateRes.ok()).toBe(true);
-    const agentsAfterCreate = await agentsAfterCreateRes.json();
-    const ceoAgentAfterCreate = agentsAfterCreate.find((a: { name: string }) => a.name === AGENT_NAME);
-    expect(ceoAgentAfterCreate).toBeTruthy();
-
-    const disableWakeRes = await page.request.patch(
-      `${baseUrl}/api/agents/${ceoAgentAfterCreate.id}?companyId=${encodeURIComponent(companyAfterAgent.id)}`,
-      {
-        data: {
-          runtimeConfig: {
-            heartbeat: {
-              enabled: false,
-              intervalSec: 300,
-              wakeOnDemand: false,
-              cooldownSec: 10,
-              maxConcurrentRuns: 5,
-            },
-          },
-        },
-      },
-    );
-    expect(disableWakeRes.ok()).toBe(true);
-  }
 
   await page.getByRole("button", { name: /^Next/ }).click();
   await page.getByRole("button", { name: /Give it a heartbeat/ }).click();
