@@ -77,6 +77,12 @@ export interface AdapterExecutionResult {
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
   /**
+   * Optional adapter-specific run-shape telemetry (turn/tool counts, resident
+   * window). Persisted flat into the run's usageJson. Adapter-neutral so any
+   * adapter may populate it; absent when an adapter does not emit it.
+   */
+  usageTelemetry?: Record<string, unknown> | null;
+  /**
    * Legacy single session id output. Prefer `sessionParams` + `sessionDisplayId`.
    */
   sessionId?: string | null;

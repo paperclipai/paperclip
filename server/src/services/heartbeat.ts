@@ -2135,6 +2135,97 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
   };
 }
 
+const RUN_USAGE_JSON_RESERVED_KEYS = new Set([
+  "inputTokens",
+  "cachedInputTokens",
+  "outputTokens",
+  "rawInputTokens",
+  "rawCachedInputTokens",
+  "rawOutputTokens",
+  "usageSource",
+  "persistedSessionId",
+  "runId",
+  "agentId",
+  "adapterType",
+  "issueId",
+  "sessionReused",
+  "taskSessionReused",
+  "freshSession",
+  "sessionRotated",
+  "sessionRotationReason",
+  "provider",
+  "biller",
+  "model",
+  "costUsd",
+  "billingType",
+]);
+
+function readUsageTelemetryForStorage(usageTelemetry: unknown): Record<string, unknown> {
+  const telemetry = parseObject(usageTelemetry);
+  const filtered: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(telemetry)) {
+    if (!RUN_USAGE_JSON_RESERVED_KEYS.has(key)) {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+}
+
+// Assemble the persisted run usageJson. Pure so the write contract is unit
+// testable without a DB harness. Returns null for tokenless, costless,
+// turnless runs; otherwise merges totals, raw totals, adapter run-shape
+// telemetry, session markers, and authoritative run mapping.
+export function buildRunUsageJson(input: {
+  normalizedUsage: UsageTotals | null;
+  rawUsage: UsageTotals | null;
+  adapterResult: AdapterExecutionResult;
+  derivedFromSessionTotals: boolean;
+  persistedSessionId: string | null;
+  runId: string;
+  agentId: string;
+  adapterType: string;
+  issueId: string | null;
+  sessionReused: boolean;
+  taskSessionReused: boolean;
+  freshSession: boolean;
+  sessionRotated: boolean;
+  sessionRotationReason: string | null;
+}): Record<string, unknown> | null {
+  const { adapterResult } = input;
+  const usageTelemetry = readUsageTelemetryForStorage(adapterResult.usageTelemetry);
+  const telemetryTurnCount = asNumber(usageTelemetry.turnCount, 0);
+  if (!input.normalizedUsage && adapterResult.costUsd == null && telemetryTurnCount <= 0) {
+    return null;
+  }
+  return {
+    ...(input.normalizedUsage ?? {}),
+    ...(input.rawUsage
+      ? {
+          rawInputTokens: input.rawUsage.inputTokens,
+          rawCachedInputTokens: input.rawUsage.cachedInputTokens,
+          rawOutputTokens: input.rawUsage.outputTokens,
+        }
+      : {}),
+    ...usageTelemetry,
+    ...(input.derivedFromSessionTotals ? { usageSource: "session_delta" } : {}),
+    ...(input.persistedSessionId ? { persistedSessionId: input.persistedSessionId } : {}),
+    runId: input.runId,
+    agentId: input.agentId,
+    adapterType: input.adapterType,
+    ...(input.issueId ? { issueId: input.issueId } : {}),
+    sessionReused: input.sessionReused,
+    taskSessionReused: input.taskSessionReused,
+    freshSession: input.freshSession,
+    sessionRotated: input.sessionRotated,
+    sessionRotationReason: input.sessionRotationReason,
+    provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
+    biller: resolveLedgerBiller(adapterResult),
+    model: readNonEmptyString(adapterResult.model) ?? "unknown",
+    ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
+    billingType: normalizeLedgerBillingType(adapterResult.billingType),
+  };
+}
+
 function deriveNormalizedUsageDelta(current: UsageTotals | null, previous: UsageTotals | null): UsageTotals | null {
   if (!current) return null;
   if (!previous) return { ...current };
@@ -9792,31 +9883,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "timed_out"
               : "failed";
 
-      const usageJson =
-        normalizedUsage || adapterResult.costUsd != null
-          ? ({
-              ...(normalizedUsage ?? {}),
-              ...(rawUsage ? {
-                rawInputTokens: rawUsage.inputTokens,
-                rawCachedInputTokens: rawUsage.cachedInputTokens,
-                rawOutputTokens: rawUsage.outputTokens,
-              } : {}),
-              ...(sessionUsageResolution.derivedFromSessionTotals ? { usageSource: "session_delta" } : {}),
-              ...((nextSessionState.displayId ?? nextSessionState.legacySessionId)
-                ? { persistedSessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId }
-                : {}),
-              sessionReused: runtimeForAdapter.sessionId != null || runtimeForAdapter.sessionDisplayId != null,
-              taskSessionReused: taskSessionForRun != null,
-              freshSession: runtimeForAdapter.sessionId == null && runtimeForAdapter.sessionDisplayId == null,
-              sessionRotated: sessionCompaction.rotate,
-              sessionRotationReason: sessionCompaction.reason,
-              provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
-              biller: resolveLedgerBiller(adapterResult),
-              model: readNonEmptyString(adapterResult.model) ?? "unknown",
-              ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
-              billingType: normalizeLedgerBillingType(adapterResult.billingType),
-            } as Record<string, unknown>)
-          : null;
+      const usageJson = buildRunUsageJson({
+        normalizedUsage,
+        rawUsage,
+        adapterResult,
+        derivedFromSessionTotals: sessionUsageResolution.derivedFromSessionTotals,
+        persistedSessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId,
+        runId: run.id,
+        agentId: agent.id,
+        adapterType: agent.adapterType,
+        issueId,
+        sessionReused: runtimeForAdapter.sessionId != null || runtimeForAdapter.sessionDisplayId != null,
+        taskSessionReused: taskSessionForRun != null,
+        freshSession: runtimeForAdapter.sessionId == null && runtimeForAdapter.sessionDisplayId == null,
+        sessionRotated: sessionCompaction.rotate,
+        sessionRotationReason: sessionCompaction.reason,
+      });
 
       const persistedResultJson = mergeHeartbeatRunResultJson(
         mergeRunStopMetadataForAgent(agent, outcome, {

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  CLAUDE_USAGE_FORMULA_VERSION,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeRefusalResult,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
+  parseClaudeStreamJson,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
@@ -303,5 +305,132 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+describe("parseClaudeStreamJson telemetry", () => {
+  const initLine = JSON.stringify({
+    type: "system",
+    subtype: "init",
+    session_id: "sess-telemetry",
+    model: "claude-opus-4-8",
+  });
+
+  const assistantLine = (
+    content: Array<Record<string, unknown>>,
+    usage: Record<string, number>,
+  ) =>
+    JSON.stringify({
+      type: "assistant",
+      session_id: "sess-telemetry",
+      message: { role: "assistant", content, usage },
+    });
+
+  const textBlock = (text: string) => ({ type: "text", text });
+  const toolBlock = (name: string) => ({ type: "tool_use", id: `tool-${name}`, name, input: {} });
+
+  it("derives turn, tool-call, tool-less, ratio, and resident-window fields from the stream", () => {
+    // 4 assistant turns; turns 1 and 3 are text-only (tool-less), turns 2 and 4
+    // call tools (2 + 1 = 3 tool calls). Per-turn resident window is
+    // input + cache_creation + cache_read; the peak is turn 3 at 160001.
+    const stdout = [
+      initLine,
+      assistantLine([textBlock("thinking out loud")], {
+        input_tokens: 10,
+        cache_creation_input_tokens: 5,
+        cache_read_input_tokens: 100,
+      }),
+      assistantLine([textBlock("reading"), toolBlock("Read"), toolBlock("Grep")], {
+        input_tokens: 2,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 50000,
+      }),
+      assistantLine([textBlock("still narrating, no action")], {
+        input_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 160000,
+      }),
+      assistantLine([toolBlock("Edit")], {
+        input_tokens: 3,
+        cache_creation_input_tokens: 800,
+        cache_read_input_tokens: 120000,
+      }),
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: "sess-telemetry",
+        result: "done",
+        total_cost_usd: 0.42,
+        usage: {
+          input_tokens: 16,
+          cache_read_input_tokens: 330100,
+          output_tokens: 900,
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parseClaudeStreamJson(stdout);
+
+    expect(parsed.telemetry).toEqual({
+      turnCount: 4,
+      toolCallCount: 3,
+      toolLessTurnCount: 2,
+      toolLessTurnRatio: 0.5,
+      residentWindowTokens: 160001,
+      usageFormulaVersion: CLAUDE_USAGE_FORMULA_VERSION,
+    });
+
+    // Existing usage/session semantics are preserved alongside telemetry.
+    expect(parsed.usage).toEqual({
+      inputTokens: 16,
+      cachedInputTokens: 330100,
+      outputTokens: 900,
+    });
+    expect(parsed.costUsd).toBe(0.42);
+    expect(parsed.sessionId).toBe("sess-telemetry");
+    expect(parsed.model).toBe("claude-opus-4-8");
+  });
+
+  it("reports telemetry for a result-less (timed-out mid-stream) run while usage stays null", () => {
+    const stdout = [
+      initLine,
+      assistantLine([toolBlock("Read")], {
+        input_tokens: 5,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 40000,
+      }),
+      assistantLine([textBlock("narrating without acting")], {
+        input_tokens: 2,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 80000,
+      }),
+    ].join("\n");
+
+    const parsed = parseClaudeStreamJson(stdout);
+
+    expect(parsed.usage).toBeNull();
+    expect(parsed.resultJson).toBeNull();
+    expect(parsed.telemetry).toEqual({
+      turnCount: 2,
+      toolCallCount: 1,
+      toolLessTurnCount: 1,
+      toolLessTurnRatio: 0.5,
+      residentWindowTokens: 80002,
+      usageFormulaVersion: CLAUDE_USAGE_FORMULA_VERSION,
+    });
+  });
+
+  it("defaults ratio and resident window to zero when there are no assistant turns", () => {
+    const parsed = parseClaudeStreamJson("");
+
+    expect(parsed.telemetry).toEqual({
+      turnCount: 0,
+      toolCallCount: 0,
+      toolLessTurnCount: 0,
+      toolLessTurnRatio: 0,
+      residentWindowTokens: 0,
+      usageFormulaVersion: CLAUDE_USAGE_FORMULA_VERSION,
+    });
   });
 });

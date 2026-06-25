@@ -14,11 +14,34 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
+// Bump when the run-shape telemetry derivation changes.
+export const CLAUDE_USAGE_FORMULA_VERSION = "claude_local.telemetry.v1";
+
+// Per-wake run-shape metrics from the Claude CLI stream (session lifecycle, not
+// billing totals); the trigger inputs for Phase 2 session rotation. A type alias
+// (not interface) for an implicit index signature so it stays assignable to the
+// adapter-neutral usageTelemetry: Record<string, unknown>.
+export type ClaudeRunTelemetry = {
+  turnCount: number;
+  toolCallCount: number;
+  toolLessTurnCount: number;
+  toolLessTurnRatio: number;
+  // Peak single-turn context window: max over turns of
+  // input_tokens + cache_creation_input_tokens + cache_read_input_tokens.
+  residentWindowTokens: number;
+  usageFormulaVersion: string;
+};
+
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
+
+  let turnCount = 0;
+  let toolCallCount = 0;
+  let toolLessTurnCount = 0;
+  let residentWindowTokens = 0;
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -37,14 +60,27 @@ export function parseClaudeStreamJson(stdout: string) {
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
       const message = parseObject(event.message);
       const content = Array.isArray(message.content) ? message.content : [];
+      turnCount += 1;
+      let turnToolCalls = 0;
       for (const entry of content) {
         if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
         const block = entry as Record<string, unknown>;
-        if (asString(block.type, "") === "text") {
+        const blockType = asString(block.type, "");
+        if (blockType === "text") {
           const text = asString(block.text, "");
           if (text) assistantTexts.push(text);
+        } else if (blockType === "tool_use") {
+          turnToolCalls += 1;
         }
       }
+      toolCallCount += turnToolCalls;
+      if (turnToolCalls === 0) toolLessTurnCount += 1;
+      const turnUsage = parseObject(message.usage);
+      const residentForTurn =
+        asNumber(turnUsage.input_tokens, 0) +
+        asNumber(turnUsage.cache_creation_input_tokens, 0) +
+        asNumber(turnUsage.cache_read_input_tokens, 0);
+      if (residentForTurn > residentWindowTokens) residentWindowTokens = residentForTurn;
       continue;
     }
 
@@ -54,6 +90,15 @@ export function parseClaudeStreamJson(stdout: string) {
     }
   }
 
+  const telemetry: ClaudeRunTelemetry = {
+    turnCount,
+    toolCallCount,
+    toolLessTurnCount,
+    toolLessTurnRatio: turnCount > 0 ? toolLessTurnCount / turnCount : 0,
+    residentWindowTokens,
+    usageFormulaVersion: CLAUDE_USAGE_FORMULA_VERSION,
+  };
+
   if (!finalResult) {
     return {
       sessionId,
@@ -62,6 +107,7 @@ export function parseClaudeStreamJson(stdout: string) {
       usage: null as UsageSummary | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
+      telemetry,
     };
   }
 
@@ -82,6 +128,7 @@ export function parseClaudeStreamJson(stdout: string) {
     usage,
     summary,
     resultJson: finalResult,
+    telemetry,
   };
 }
 

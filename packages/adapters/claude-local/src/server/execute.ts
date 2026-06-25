@@ -831,6 +831,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: "timeout",
         errorMeta,
+        usageTelemetry: parsedStream.telemetry,
         clearSession: Boolean(opts.clearSessionOnMissingSession),
       };
     }
@@ -868,6 +869,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorFamily: transientUpstream ? "transient_upstream" : null,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
         errorMeta,
+        usageTelemetry: parsedStream.telemetry,
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
@@ -986,6 +988,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
       errorMeta,
       usage,
+      usageTelemetry: parsedStream.telemetry,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
