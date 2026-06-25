@@ -243,7 +243,7 @@ env:
     # ANTHROPIC_AUTH_TOKEN is the Bearer-style var preferred by Claude Code /
     # Anthropic SDK >=0.30; ANTHROPIC_API_KEY mirrors it for older SDK paths.
     - name: ANTHROPIC_BASE_URL
-      value: "https://api.penstock.run/anthropic"
+      value: "http://penstock-proxy.penstock.svc.cluster.local/anthropic"
     - name: ANTHROPIC_AUTH_TOKEN
       valueFrom:
         secretKeyRef:
