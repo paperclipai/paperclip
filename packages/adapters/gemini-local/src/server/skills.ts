@@ -27,7 +27,7 @@ function resolveGeminiSkillsHome(config: Record<string, unknown>) {
       : {};
   const configuredHome = asString(env.HOME);
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
-  return path.join(home, ".gemini", "skills");
+  return path.join(home, ".agy", "skills");
 }
 
 async function buildGeminiSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
@@ -41,7 +41,7 @@ async function buildGeminiSkillSnapshot(config: Record<string, unknown>): Promis
     desiredSkills,
     installed,
     skillsHome,
-    locationLabel: "~/.gemini/skills",
+    locationLabel: "~/.agy/skills",
     missingDetail: "Configured but not currently linked into the Gemini skills home.",
     externalConflictDetail: "Skill name is occupied by an external installation.",
     externalDetail: "Installed outside Paperclip management.",

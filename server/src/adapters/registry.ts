@@ -127,18 +127,7 @@ import {
   agentConfigurationDoc as piAgentConfigurationDoc,
   modelProfiles as piModelProfiles,
 } from "@paperclipai/adapter-pi-local";
-import {
-  execute as hermesExecute,
-  testEnvironment as hermesTestEnvironment,
-  sessionCodec as hermesSessionCodec,
-  listSkills as hermesListSkills,
-  syncSkills as hermesSyncSkills,
-  detectModel as detectModelFromHermes,
-} from "hermes-paperclip-adapter/server";
-import {
-  agentConfigurationDoc as hermesAgentConfigurationDoc,
-  models as hermesModels,
-} from "hermes-paperclip-adapter";
+
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -377,8 +366,14 @@ const geminiLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
-  getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec(config, "gemini", "@google/gemini-cli"),
+  getRuntimeCommandSpec: (config) => {
+    const command = readConfiguredCommand(config, "agy");
+    return {
+      command,
+      detectCommand: command,
+      installCommand: null,
+    };
+  },
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
@@ -453,76 +448,7 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
-// hermes-paperclip-adapter v0.2.0 predates the authToken field; cast is
-// intentional until hermes ships a matching AdapterExecutionContext type.
-const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
-// hermes-paperclip-adapter v0.2.0 still depends on the published @paperclipai/adapter-utils
-// that ships the "paperclip_required" origin; casts bridge until hermes upgrades.
-const listHermesSkills = hermesListSkills as unknown as ServerAdapterModule["listSkills"];
-const syncHermesSkills = hermesSyncSkills as unknown as ServerAdapterModule["syncSkills"];
 
-const hermesLocalAdapter: ServerAdapterModule = {
-  type: "hermes_local",
-  execute: async (ctx) => {
-    const normalizedCtx = normalizeHermesConfig(ctx);
-    if (!normalizedCtx.authToken) return executeHermesLocal(normalizedCtx);
-
-    const existingConfig = (normalizedCtx.agent.adapterConfig ?? {}) as Record<string, unknown>;
-    const existingEnv =
-      typeof existingConfig.env === "object" && existingConfig.env !== null && !Array.isArray(existingConfig.env)
-        ? (existingConfig.env as Record<string, string>)
-        : {};
-    const explicitApiKey =
-      typeof existingEnv.PAPERCLIP_API_KEY === "string" && existingEnv.PAPERCLIP_API_KEY.trim().length > 0;
-    const promptTemplate =
-      typeof existingConfig.promptTemplate === "string" && existingConfig.promptTemplate.trim().length > 0
-        ? existingConfig.promptTemplate
-        : "";
-    const authGuardPrompt = [
-      "Paperclip API safety rule:",
-      "Use Authorization: Bearer $PAPERCLIP_API_KEY on every Paperclip API request.",
-      "Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every Paperclip API request that writes or mutates data, including comments and issue updates.",
-      "Never use a board, browser, or local-board session for Paperclip API writes.",
-    ].join("\n");
-
-    const patchedConfig: Record<string, unknown> = {
-      ...existingConfig,
-      env: {
-        ...existingEnv,
-        ...(!explicitApiKey ? { PAPERCLIP_API_KEY: normalizedCtx.authToken } : {}),
-        PAPERCLIP_RUN_ID: normalizedCtx.runId,
-      },
-    };
-    const effectivePatchedConfig = passHermesCustomProviderThroughExtraArgs(patchedConfig);
-
-    // Only inject the auth guard into promptTemplate when a custom template already exists.
-    // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
-    // overwriting it with only the auth guard text would strip the assigned issue/workflow instructions.
-    if (promptTemplate) {
-      effectivePatchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
-    }
-
-    const patchedCtx = {
-      ...normalizedCtx,
-      agent: {
-        ...normalizedCtx.agent,
-        adapterConfig: effectivePatchedConfig,
-      },
-    };
-
-    return executeHermesLocal(patchedCtx);
-  },
-  testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
-  sessionCodec: hermesSessionCodec,
-  listSkills: listHermesSkills,
-  syncSkills: syncHermesSkills,
-  models: hermesModels,
-  supportsLocalAgentJwt: true,
-  supportsInstructionsBundle: false,
-  requiresMaterializedRuntimeSkills: false,
-  agentConfigurationDoc: hermesAgentConfigurationDoc,
-  detectModel: () => detectModelFromHermes(),
-};
 
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
@@ -547,7 +473,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     grokLocalAdapter,
     openclawGatewayAdapter,
-    hermesLocalAdapter,
+
     processAdapter,
     httpAdapter,
   ]) {

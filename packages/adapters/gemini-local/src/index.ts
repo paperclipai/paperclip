@@ -1,31 +1,35 @@
-import {
-  buildSandboxNpmInstallCommand,
-  type AdapterModelProfileDefinition,
+import type {
+  AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
 
 export const type = "gemini_local";
 export const label = "Gemini CLI (local)";
 
-export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@google/gemini-cli");
+// The agy CLI is distributed as a native binary from https://antigravity.google/docs/cli-install
+// and is not available as an npm package. Sandbox install is intentionally disabled — users
+// must pre-install agy on their sandbox image or install it manually following the official docs.
+export const SANDBOX_INSTALL_COMMAND = "";
 
 export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
 export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
-  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
-  { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
+  { id: "gemini-3.5-flash-high", label: "Gemini 3.5 Flash (High)" },
+  { id: "gemini-3.5-flash-medium", label: "Gemini 3.5 Flash (Medium)" },
+  { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
+  { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+  { id: "claude-sonnet-4.6-thinking", label: "Claude Sonnet 4.6 (Thinking)" },
+  { id: "claude-opus-4.6-thinking", label: "Claude Opus 4.6 (Thinking)" },
+  { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (medium)" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use Gemini Flash Lite as the budget Gemini CLI lane while preserving the primary model.",
+    description: "Use Gemini 3.1 Pro (Low) as the budget lane while preserving the primary model.",
     adapterConfig: {
-      model: "gemini-2.5-flash-lite",
+      model: "gemini-3.1-pro-low",
     },
     source: "adapter_default",
   },
@@ -37,7 +41,7 @@ Adapter: gemini_local
 
 Use when:
 - You want Paperclip to run the Gemini CLI locally on the host machine
-- You want Gemini chat sessions resumed across heartbeats with --resume
+- You want Gemini chat sessions resumed across heartbeats with --conversation
 - You want Paperclip skills injected locally without polluting the global environment
 
 Don't use when:
@@ -50,8 +54,8 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.
-- sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
-- command (string, optional): defaults to "gemini"
+- sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=false)
+- command (string, optional): defaults to "agy"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
 
@@ -60,9 +64,10 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- Runs use --prompt for non-interactive execution, not stdin.
+- Runs pass the prompt as a positional argument (index 1) for non-interactive execution, not stdin.
 - The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
-- Sessions resume with --resume when stored session cwd matches the current cwd.
-- Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
+- Sessions resume with --conversation when stored session cwd matches the current cwd.
+- Paperclip auto-injects local skills into \`~/.agy/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
 - Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY or local Gemini CLI login.
+- The agy CLI must be installed manually on the host or sandbox image. It is a native binary (not an npm package); install it by following https://antigravity.google/docs/cli-install.
 `;

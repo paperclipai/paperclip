@@ -51,6 +51,7 @@ import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
+  detectGeminiQuotaExhausted,
   isGeminiTransientNetworkError,
   isGeminiTurnLimitResult,
   isGeminiSessionUnrecoverableError,
@@ -122,11 +123,11 @@ function renderApiAccessNote(env: Record<string, string>): string {
 }
 
 function geminiSkillsHome(): string {
-  return path.join(os.homedir(), ".gemini", "skills");
+  return path.join(os.homedir(), ".agy", "skills");
 }
 
 /**
- * Inject Paperclip skills directly into `~/.gemini/skills/` via symlinks.
+ * Inject Paperclip skills directly into `~/.agy/skills/` via symlinks.
  * This avoids needing GEMINI_CLI_HOME overrides, so the CLI naturally finds
  * both its auth credentials and the injected skills in the real home directory.
  */
@@ -206,7 +207,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
-  const command = asString(config.command, "gemini");
+  const command = asString(config.command, "agy");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
   const sandbox = asBoolean(config.sandbox, false);
 
@@ -335,7 +336,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
         runId,
         target: executionTarget,
-        adapterKey: "gemini",
+        adapterKey: "agy",
         timeoutSec,
         workspaceLocalDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
@@ -383,7 +384,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           onLog,
         }));
       if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
-        remoteSkillsDir = path.posix.join(remoteHomeDir, ".gemini", "skills");
+        remoteSkillsDir = path.posix.join(remoteHomeDir, ".agy", "skills");
         await runAdapterExecutionTargetShellCommand(
           runId,
           executionTarget,
@@ -392,7 +393,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         );
       }
       // Gemini CLI refuses headless runs without an auth selection persisted in
-      // $HOME/.gemini/settings.json ("Invalid auth method selected."); env vars
+      // $HOME/.agy/settings.json ("Invalid auth method selected."); env vars
       // alone (GEMINI_DEFAULT_AUTH_TYPE) do not satisfy it. With a managed HOME
       // the runtime root replaces the image home, so any settings baked into the
       // image are invisible -- pre-select the api-key auth whenever an API key
@@ -411,7 +412,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
       );
       if (managedRemoteHomeDir && hasGeminiApiKey) {
-        const remoteSettingsPath = path.posix.join(managedRemoteHomeDir, ".gemini", "settings.json");
+        const remoteSettingsPath = path.posix.join(managedRemoteHomeDir, ".agy", "settings.json");
         const authSettingsJson = JSON.stringify({
           selectedAuthType: "gemini-api-key",
           security: { auth: { selectedType: "gemini-api-key" } },
@@ -437,7 +438,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runId,
       target: runtimeExecutionTarget,
       runtimeRootDir: remoteRuntimeRootDir,
-      adapterKey: "gemini",
+      adapterKey: "agy",
       timeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
       onLog,
@@ -487,8 +488,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
-    notes.push("Added --approval-mode yolo for unattended execution.");
+    const notes: string[] = ["Prompt is passed to Gemini via --print for non-interactive execution."];
+    notes.push("Added --dangerously-skip-permissions for unattended execution.");
     notes.push("Set headless terminal/browser env so Gemini fails fast instead of opening interactive auth or color prompts.");
     if (executionTargetIsRemote) {
       notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
@@ -547,17 +548,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const buildArgs = (resumeSessionId: string | null) => {
-    const args = ["--output-format", "stream-json"];
-    if (resumeSessionId) args.push("--resume", resumeSessionId);
+    const args = ["--print", prompt];
+    if (resumeSessionId) args.push("--conversation", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-    args.push("--approval-mode", "yolo");
+    args.push("--dangerously-skip-permissions");
     if (sandbox) {
       args.push("--sandbox");
     } else {
-      args.push("--sandbox=none");
+      args.push("--sandbox=false");
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
-    args.push("--prompt", prompt);
     return args;
   };
 
@@ -576,8 +576,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         command: resolvedCommand,
         cwd: effectiveExecutionCwd,
         commandNotes,
-        commandArgs: args.map((value, index) => (
-          index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
+        commandArgs: args.map((value) => (
+          value === prompt ? `<prompt ${prompt.length} chars>` : value
         )),
         env: loggedEnv,
         prompt,
@@ -585,6 +585,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         context,
       });
     }
+
 
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
@@ -620,6 +621,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
     });
+    const quotaMeta = detectGeminiQuotaExhausted({
+      parsed: attempt.parsed.resultEvent,
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+    });
     const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
 
     if (attempt.proc.timedOut) {
@@ -630,9 +636,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: authMeta.requiresAuth
           ? "gemini_auth_required"
-          : networkUnavailable
-            ? "gemini_network_unavailable"
-            : null,
+          : quotaMeta.exhausted
+            ? "gemini_quota_exhausted"
+            : networkUnavailable
+              ? "gemini_network_unavailable"
+              : null,
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -666,8 +674,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
         ...(executionTargetIsRemote
           ? {
-              remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
-            }
+            remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+          }
           : {}),
       } as Record<string, unknown>)
       : null;
@@ -686,11 +694,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage: failed ? fallbackErrorMessage : null,
       errorCode: failed && authMeta.requiresAuth
         ? "gemini_auth_required"
-        : failed && clearSessionForTurnLimit
-        ? "max_turns_exhausted"
-        : failed && networkUnavailable
-        ? "gemini_network_unavailable"
-        : null,
+        : failed && quotaMeta.exhausted
+          ? "gemini_quota_exhausted"
+          : failed && clearSessionForTurnLimit
+            ? "max_turns_exhausted"
+            : failed && networkUnavailable
+              ? "gemini_network_unavailable"
+              : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
