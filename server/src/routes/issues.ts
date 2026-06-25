@@ -1094,7 +1094,7 @@ export function issueRoutes(
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; checkoutRunId?: string | null },
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1132,7 +1132,7 @@ export function issueRoutes(
       }
       return false;
     }
-    if (issue.status !== "in_progress" && !issue.checkoutRunId) {
+    if (issue.status !== "in_progress") {
       return true;
     }
     const runId = requireAgentRunId(req, res);
@@ -3753,13 +3753,7 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(
-      id,
-      req.body.agentId,
-      req.body.expectedStatuses,
-      checkoutRunId,
-      { mode: req.body.mode },
-    );
+    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
 
     await logActivity(db, {

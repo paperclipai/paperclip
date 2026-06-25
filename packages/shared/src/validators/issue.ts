@@ -369,7 +369,6 @@ export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorks
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),
   expectedStatuses: z.array(z.enum(ISSUE_STATUSES)).nonempty(),
-  mode: z.enum(["execute", "blocked_dependency_repair"]).optional().default("execute"),
 });
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;

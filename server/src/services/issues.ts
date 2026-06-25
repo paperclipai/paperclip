@@ -3590,13 +3590,7 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (
-      id: string,
-      agentId: string,
-      expectedStatuses: string[],
-      checkoutRunId: string | null,
-      options: { mode?: "execute" | "blocked_dependency_repair" } = {},
-    ) => {
+    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -3624,14 +3618,7 @@ export function issueService(db: Db) {
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
-      const blockedDependencyRepairMode = options.mode === "blocked_dependency_repair";
-      if (blockedDependencyRepairMode && !expectedStatuses.includes("blocked")) {
-        throw unprocessable("Blocked dependency repair checkout requires blocked expected status");
-      }
-      if (blockedDependencyRepairMode && unresolvedBlockerIssueIds.length === 0) {
-        throw unprocessable("Blocked dependency repair checkout requires unresolved blockers");
-      }
-      if (unresolvedBlockerIssueIds.length > 0 && !blockedDependencyRepairMode) {
+      if (unresolvedBlockerIssueIds.length > 0) {
         throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
       }
 
@@ -3644,21 +3631,17 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
-      const checkoutPatch: Partial<typeof issues.$inferInsert> = {
-        assigneeAgentId: agentId,
-        assigneeUserId: null,
-        checkoutRunId,
-        executionRunId: blockedDependencyRepairMode ? null : checkoutRunId,
-        status: blockedDependencyRepairMode ? "blocked" : "in_progress",
-        updatedAt: now,
-      };
-      if (!blockedDependencyRepairMode) {
-        checkoutPatch.startedAt = now;
-      }
-
       const updated = await db
         .update(issues)
-        .set(checkoutPatch)
+        .set({
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          checkoutRunId,
+          executionRunId: checkoutRunId,
+          status: "in_progress",
+          startedAt: now,
+          updatedAt: now,
+        })
         .where(
           and(
             eq(issues.id, id),
@@ -3776,9 +3759,8 @@ export function issueService(db: Db) {
       if (!current) throw notFound("Issue not found");
 
       if (
-        current.status !== "cancelled" &&
+        current.status === "in_progress" &&
         current.assigneeAgentId === actorAgentId &&
-        current.checkoutRunId &&
         sameRunLock(current.checkoutRunId, actorRunId)
       ) {
         return { ...current, adoptedFromRunId: null as string | null };

@@ -2072,7 +2072,6 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
-    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -2323,63 +2322,6 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await expect(
       svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], null),
     ).rejects.toMatchObject({ status: 422 });
-  });
-
-  it("allows blocked dependency repair checkout without starting execution", async () => {
-    const companyId = randomUUID();
-    const assigneeAgentId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: assigneeAgentId,
-      companyId,
-      name: "CodexCoder",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-
-    const blockerId = randomUUID();
-    const blockedId = randomUUID();
-    const checkoutRunId = randomUUID();
-    await db.insert(issues).values([
-      { id: blockerId, companyId, title: "Canonical blocker", status: "todo", priority: "medium" },
-      {
-        id: blockedId,
-        companyId,
-        title: "Dependent needing blocker repair",
-        status: "blocked",
-        priority: "medium",
-        assigneeAgentId,
-      },
-    ]);
-    await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
-    await db.insert(heartbeatRuns).values({
-      id: checkoutRunId,
-      companyId,
-      agentId: assigneeAgentId,
-      status: "running",
-      invocationSource: "assignment",
-    });
-
-    const checkedOut = await svc.checkout(
-      blockedId,
-      assigneeAgentId,
-      ["blocked"],
-      checkoutRunId,
-      { mode: "blocked_dependency_repair" },
-    );
-
-    expect(checkedOut.status).toBe("blocked");
-    expect(checkedOut.checkoutRunId).toBe(checkoutRunId);
-    expect(checkedOut.executionRunId).toBeNull();
   });
 
   it("wakes parents only when all direct children are terminal", async () => {
