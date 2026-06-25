@@ -516,12 +516,25 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return typeof value === "string" ? value : "";
   }, [adapterCheapDefault]);
 
-  function buildAdapterConfigForTest(): Record<string, unknown> {
+  function buildAdapterConfigForTest(modelOverride?: string | null): Record<string, unknown> {
     if (isCreate) {
-      return uiAdapter.buildAdapterConfig(val!);
+      const next = uiAdapter.buildAdapterConfig(val!);
+      if (typeof modelOverride === "string") {
+        const trimmed = modelOverride.trim();
+        if (trimmed) {
+          next.model = trimmed;
+        }
+      }
+      return next;
     }
     const base = config as Record<string, unknown>;
     const next = { ...base, ...overlay.adapterConfig };
+    if (typeof modelOverride === "string") {
+      const trimmed = modelOverride.trim();
+      if (trimmed) {
+        next.model = trimmed;
+      }
+    }
     if (adapterType === "hermes_local") {
       const hermesCommand =
         typeof next.hermesCommand === "string" && next.hermesCommand.length > 0
@@ -536,15 +549,129 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return next;
   }
 
+  function getCheapModelTestModel(): string | null {
+    if (!currentCheapEnabled) return null;
+    const model = currentCheapModel.trim();
+    return model.length > 0 ? model : null;
+  }
+
+  function prefixEnvironmentTestChecks(
+    result: AdapterEnvironmentTestResult,
+    label: string,
+    model: string | null,
+  ): AdapterEnvironmentTestResult {
+    const modelLabel = model ? ` (${model})` : "";
+    return {
+      ...result,
+      checks: [
+        {
+          code: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_test_started`,
+          level: "info",
+          message: `${label} test${modelLabel}`,
+        },
+        ...result.checks.map((check) => ({
+          ...check,
+          message: `${label} test${modelLabel}: ${check.message}`,
+        })),
+      ],
+    };
+  }
+
+  function buildEnvironmentTestFailureResult(
+    label: string,
+    model: string | null,
+    error: unknown,
+  ): AdapterEnvironmentTestResult {
+    const modelLabel = model ? ` (${model})` : "";
+    const message = error instanceof Error ? error.message : "Environment test failed";
+    return {
+      adapterType,
+      status: "fail",
+      testedAt: new Date().toISOString(),
+      checks: [
+        {
+          code: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_test_failed`,
+          level: "error",
+          message: `${label} test${modelLabel} failed`,
+          detail: message,
+        },
+      ],
+    };
+  }
+
+  async function runEnvironmentTestCase(
+    label: string,
+    model: string | null,
+    adapterConfig: Record<string, unknown>,
+    environmentId: string | null,
+  ): Promise<AdapterEnvironmentTestResult> {
+    try {
+      const result = await agentsApi.testEnvironment(selectedCompanyId!, adapterType, {
+        adapterConfig,
+        environmentId,
+      });
+      return prefixEnvironmentTestChecks(result, label, model);
+    } catch (error) {
+      return buildEnvironmentTestFailureResult(label, model, error);
+    }
+  }
+
+  function mergeEnvironmentTestResults(
+    results: AdapterEnvironmentTestResult[],
+  ): AdapterEnvironmentTestResult {
+    const checks = results.flatMap((result) => result.checks);
+    const status = results.some((result) => result.status === "fail")
+      ? "fail"
+      : results.some((result) => result.status === "warn")
+        ? "warn"
+        : "pass";
+    const testedAt = results[results.length - 1]?.testedAt ?? new Date().toISOString();
+
+    return {
+      adapterType,
+      status,
+      checks,
+      testedAt,
+    };
+  }
+
   const testEnvironment = useMutation({
     mutationFn: async () => {
       if (!selectedCompanyId) {
         throw new Error("Select a company to test adapter environment");
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
-        adapterConfig: buildAdapterConfigForTest(),
-        environmentId: currentDefaultEnvironmentId || null,
-      });
+      const primaryModel = currentModelId.trim() || null;
+      const cheapModel = getCheapModelTestModel();
+      const environmentId = currentDefaultEnvironmentId || null;
+      const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
+        {
+          label: "Primary model",
+          model: primaryModel,
+          result: await runEnvironmentTestCase(
+            "Primary model",
+            primaryModel,
+            buildAdapterConfigForTest(),
+            environmentId,
+          ),
+        },
+      ];
+
+      if (cheapModel) {
+        testResults.push({
+          label: "Cheap model",
+          model: cheapModel,
+          result: await runEnvironmentTestCase(
+            "Cheap model",
+            cheapModel,
+            buildAdapterConfigForTest(cheapModel),
+            environmentId,
+          ),
+        });
+      }
+
+      return testResults.length > 1
+        ? mergeEnvironmentTestResults(testResults.map(({ result }) => result))
+        : testResults[0]!.result;
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
