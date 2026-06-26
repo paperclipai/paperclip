@@ -92,8 +92,10 @@ import {
   agentConfigurationDoc as grokAgentConfigurationDoc,
   models as grokModels,
 } from "@paperclipai/adapter-grok-local";
-import { createServerAdapter as createHermesGatewayServerAdapter } from "@paperclipai/adapter-hermes-gateway";
-import { createServerAdapter as createHermesLocalServerAdapter } from "@paperclipai/hermes-paperclip-adapter";
+import {
+  createHermesGatewayServerAdapter,
+  createHermesLocalServerAdapter,
+} from "@paperclipai/hermes-paperclip-adapter";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,

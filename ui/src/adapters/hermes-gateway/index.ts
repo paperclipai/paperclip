@@ -1,5 +1,5 @@
 import type { UIAdapterModule } from "../types";
-import { parseStdoutLine as parseHermesGatewayStdoutLine } from "@paperclipai/adapter-hermes-gateway/ui";
+import { parseStdoutLine as parseHermesGatewayStdoutLine } from "@paperclipai/hermes-paperclip-adapter/gateway/ui";
 import { SchemaConfigFields, buildSchemaAdapterConfig } from "../schema-config-fields";
 
 export const hermesGatewayUIAdapter: UIAdapterModule = {

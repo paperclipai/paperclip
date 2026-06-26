@@ -6,7 +6,7 @@ import { printCursorStreamEvent } from "@paperclipai/adapter-cursor-local/cli";
 import { printCursorCloudEvent } from "@paperclipai/adapter-cursor-cloud/cli";
 import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
 import { printGrokStreamEvent } from "@paperclipai/adapter-grok-local/cli";
-import { formatStdoutEvent as printHermesGatewayStreamEvent } from "@paperclipai/adapter-hermes-gateway/cli";
+import { formatStdoutEvent as printHermesGatewayStreamEvent } from "@paperclipai/hermes-paperclip-adapter/gateway/cli";
 import { printHermesStreamEvent } from "@paperclipai/hermes-paperclip-adapter/cli";
 import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
 import { printPiStreamEvent } from "@paperclipai/adapter-pi-local/cli";
