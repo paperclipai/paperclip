@@ -6783,30 +6783,26 @@ export function issueRoutes(
     if (req.actor.type === "agent" && !actorRunId) return;
 
     const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : undefined;
-    const isManagerLineOverride =
+    // Only treat this as a manager-line force-release when the actor genuinely
+    // holds the checkout-management grant over the assignee (i.e. is an ancestor
+    // in the assignee's reportsTo chain — allow_manager_chain). Checking merely
+    // "actor != assignee" would also capture other paths assertAgentIssueMutationAllowed
+    // accepts (e.g. task-watchdog scope); re-confirming the grant here keeps the
+    // force-release strictly scoped to the reporting line.
+    const isManagerLineForceRelease =
       req.actor.type === "agent" &&
       !!actorAgentId &&
       !!existing.assigneeAgentId &&
-      existing.assigneeAgentId !== actorAgentId;
+      existing.assigneeAgentId !== actorAgentId &&
+      (await hasActiveCheckoutManagementOverride(actorAgentId, existing.companyId, existing.assigneeAgentId));
 
-    if (isManagerLineOverride) {
-      // Scoped manager-line force-release of a stuck report-owned issue.
-      // assertAgentIssueMutationAllowed above already confirmed the actor is an
-      // ancestor in the assignee's reportsTo chain (allow_manager_chain), so the
-      // assignee-only guard in svc.release does not apply here. Force-clear the
-      // lock, cancel any held IC run so two runs cannot collide, and write an
-      // explicit audited override entry.
-      const overridden = await svc.adminForceRelease(id, { clearAssignee: true });
-      if (!overridden) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-
+    if (isManagerLineForceRelease) {
+      // Cancel the held IC run *before* clearing the lock so no second run can
+      // check the issue out while the original run is still live, then release
+      // (status -> todo, assignee + lock cleared) via the managerOverride path,
+      // and write an explicit audited override entry.
       const cancelledRunIds: string[] = [];
-      for (const heldRunId of [
-        overridden.previous.checkoutRunId,
-        overridden.previous.executionRunId,
-      ]) {
+      for (const heldRunId of [existing.checkoutRunId, existing.executionRunId]) {
         if (!heldRunId || cancelledRunIds.includes(heldRunId)) {
           continue;
         }
@@ -6816,28 +6812,34 @@ export function issueRoutes(
         }
       }
 
+      const overridden = await svc.release(id, actorAgentId, actorRunId, { managerOverride: true });
+      if (!overridden) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+
       const overrideActor = getActorInfo(req);
       await logActivity(db, {
-        companyId: overridden.issue.companyId,
+        companyId: overridden.companyId,
         actorType: overrideActor.actorType,
         actorId: overrideActor.actorId,
         agentId: overrideActor.agentId,
         runId: overrideActor.runId,
         action: "issue.manager_force_release",
         entityType: "issue",
-        entityId: overridden.issue.id,
+        entityId: overridden.id,
         details: {
-          issueId: overridden.issue.id,
+          issueId: overridden.id,
           decisionReason: "allow_manager_chain",
           overriddenAssigneeAgentId: existing.assigneeAgentId,
           actorAgentId,
-          prevCheckoutRunId: overridden.previous.checkoutRunId,
-          prevExecutionRunId: overridden.previous.executionRunId,
+          prevCheckoutRunId: existing.checkoutRunId ?? null,
+          prevExecutionRunId: existing.executionRunId ?? null,
           cancelledRunIds,
         },
       });
 
-      res.json(overridden.issue);
+      res.json(overridden);
       return;
     }
 
