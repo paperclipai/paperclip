@@ -21,6 +21,29 @@ and the non-loopback HTTP guard.
 
 - Set the Hermes gateway key with `HERMES_GATEWAY_API_KEY` or `API_SERVER_KEY`.
   The scripts print only `sha256=<prefix>` and length for secret identifiers.
+- Set at least one Hermes inference provider key on the host before running the
+  Docker E2E smoke. The script passes through set values for
+  `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`,
+  `GOOGLE_API_KEY`, and `MISTRAL_API_KEY`, and logs only the provider env var
+  names.
+- To pin the fresh Hermes container to a known non-secret model config, set
+  `HERMES_SMOKE_MODEL_PROVIDER`, `HERMES_SMOKE_MODEL_DEFAULT`, and optionally
+  `HERMES_SMOKE_MODEL_BASE_URL`. For example, OpenRouter GLM:
+
+  ```sh
+  HERMES_SMOKE_MODEL_PROVIDER=openrouter \
+  HERMES_SMOKE_MODEL_DEFAULT=z-ai/glm-5.2 \
+  HERMES_SMOKE_MODEL_BASE_URL=https://openrouter.ai/api/v1 \
+  pnpm smoke:hermes-gateway-e2e
+  ```
+
+  This writes only `model`, `providers: {}`, and
+  `command_allowlist: [execute_code]` into the temporary Hermes home. Provider
+  keys still come from environment variables and are redacted from diagnostics.
+- The E2E helper always seeds `command_allowlist: [execute_code]` in the fresh
+  Hermes config so non-interactive gateway/API runs do not wait for a manual
+  execute-code approval prompt. Do not copy a host `~/.hermes` directory into
+  the container to solve approval or provider setup.
 - Board/operator auth is required through `PAPERCLIP_AUTH_HEADER`,
   `PAPERCLIP_COOKIE`, or a board-capable `PAPERCLIP_API_KEY`.
 - Diagnostic files are redacted before they are written, except the join output

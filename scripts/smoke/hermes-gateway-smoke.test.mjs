@@ -65,7 +65,33 @@ test("Hermes gateway smoke help documents operator safety flags", () => {
   const e2eHelp = run("bash", [e2eScript, "--help"]).stdout;
   assert.match(e2eHelp, /HERMES_SMOKE_KEEP/);
   assert.match(e2eHelp, /HERMES_SMOKE_NETWORK/);
+  assert.match(e2eHelp, /HERMES_SMOKE_MODEL_DEFAULT/);
   assert.match(e2eHelp, /Docker/);
+});
+
+test("E2E helper can seed a minimal Hermes model config without secrets", () => {
+  const result = runBashFunctions(
+    e2eScript,
+    ["log", "fail", "yaml_single_quote", "write_hermes_model_config"],
+    `
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+HERMES_SMOKE_STATE_DIR="$tmp"
+HERMES_SMOKE_MODEL_PROVIDER="openrouter"
+HERMES_SMOKE_MODEL_DEFAULT="z-ai/glm-5.2"
+HERMES_SMOKE_MODEL_BASE_URL="https://openrouter.ai/api/v1"
+mkdir -p "$HERMES_SMOKE_STATE_DIR/hermes-home"
+write_hermes_model_config
+config="$HERMES_SMOKE_STATE_DIR/hermes-home/config.yaml"
+grep -Fq "default: 'z-ai/glm-5.2'" "$config"
+grep -Fq "provider: 'openrouter'" "$config"
+grep -Fq "base_url: 'https://openrouter.ai/api/v1'" "$config"
+grep -Fq "command_allowlist:" "$config"
+grep -Fq -- "- execute_code" "$config"
+! grep -Eiq "api[_-]?key|token|secret" "$config"
+`,
+  );
+  assertSuccess(result, "write_hermes_model_config");
 });
 
 test("join helper redacts known secrets without exposing raw key material", () => {

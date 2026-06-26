@@ -21,7 +21,8 @@ RUN apt-get update \
 # The npm package is a pinned bridge that exposes the `hermes` binary. Install
 # the matching Python package globally first so the non-root runtime user can
 # import the upstream Hermes modules at container start.
-RUN python3 -m pip install --break-system-packages --no-cache-dir "hermes-agent==${HERMES_VERSION}" \
+RUN python3 -m pip install --break-system-packages --no-cache-dir "hermes-agent[anthropic]==${HERMES_VERSION}" "aiohttp==3.13.4" \
+  && rm -f /usr/local/bin/hermes /usr/local/bin/hermes-agent \
   && npm install -g --ignore-scripts "hermes-agent@${HERMES_VERSION}" \
   && python3 -c "import hermes_cli.main" \
   && command -v hermes >/dev/null

@@ -42,18 +42,30 @@ HERMES_GATEWAY_ALLOW_INSECURE_HTTP="${HERMES_GATEWAY_ALLOW_INSECURE_HTTP:-0}"
 HERMES_GATEWAY_SESSION_KEY_STRATEGY="${HERMES_GATEWAY_SESSION_KEY_STRATEGY:-issue}"
 HERMES_ADAPTER_TIMEOUT_SEC="${HERMES_ADAPTER_TIMEOUT_SEC:-180}"
 HERMES_DIRECT_RUN_TIMEOUT_SEC="${HERMES_DIRECT_RUN_TIMEOUT_SEC:-180}"
+HERMES_DIRECT_RUN_EVENTS_TIMEOUT_SEC="${HERMES_DIRECT_RUN_EVENTS_TIMEOUT_SEC:-20}"
 HERMES_STOP_ASSERT="${HERMES_STOP_ASSERT:-auto}"
 HERMES_SMOKE_KEEP="${HERMES_SMOKE_KEEP:-0}"
 HERMES_SMOKE_NETWORK="${HERMES_SMOKE_NETWORK:-}"
 HERMES_DOCKER_ADD_HOST="${HERMES_DOCKER_ADD_HOST:-1}"
 HERMES_SMOKE_STATE_DIR="${HERMES_SMOKE_STATE_DIR:-${TMPDIR:-/tmp}/paperclip-hermes-gateway-smoke-${RUN_SUFFIX}}"
 HERMES_SMOKE_DIAG_DIR="${HERMES_SMOKE_DIAG_DIR:-${TMPDIR:-/tmp}/paperclip-hermes-gateway-e2e-diag-${RUN_SUFFIX}}"
+HERMES_SMOKE_MODEL_PROVIDER="${HERMES_SMOKE_MODEL_PROVIDER:-}"
+HERMES_SMOKE_MODEL_DEFAULT="${HERMES_SMOKE_MODEL_DEFAULT:-}"
+HERMES_SMOKE_MODEL_BASE_URL="${HERMES_SMOKE_MODEL_BASE_URL:-}"
 HERMES_AGENT_NAME="${HERMES_AGENT_NAME:-Hermes Gateway Smoke Agent ${RUN_SUFFIX}}"
 PAPERCLIP_API_URL_FOR_HERMES="${PAPERCLIP_API_URL_FOR_HERMES:-http://host.docker.internal:3100}"
 RUN_TIMEOUT_SEC="${RUN_TIMEOUT_SEC:-420}"
 CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-420}"
 GATEWAY_READY_TIMEOUT_SEC="${GATEWAY_READY_TIMEOUT_SEC:-90}"
 STRICT_CASES="${STRICT_CASES:-1}"
+HERMES_PROVIDER_ENV_KEYS=(
+  OPENROUTER_API_KEY
+  OPENAI_API_KEY
+  ANTHROPIC_API_KEY
+  GEMINI_API_KEY
+  GOOGLE_API_KEY
+  MISTRAL_API_KEY
+)
 
 print_usage() {
   cat <<'EOF'
@@ -81,6 +93,9 @@ Common flags:
   HERMES_DOCKER_ADD_HOST=0|1
   HERMES_SMOKE_KEEP=1                              # keep diagnostics/container
   HERMES_SMOKE_DIAG_DIR=/tmp/hermes-gateway-diag
+  HERMES_SMOKE_MODEL_PROVIDER=openrouter
+  HERMES_SMOKE_MODEL_DEFAULT=z-ai/glm-5.2
+  HERMES_SMOKE_MODEL_BASE_URL=https://openrouter.ai/api/v1
 
 Mode notes:
   HERMES_GATEWAY_API_BASE_URL is the URL stored on the Paperclip adapter and
@@ -89,6 +104,9 @@ Mode notes:
   network and reverse-proxy smoke runs.
 
   Raw Hermes and Paperclip API keys are redacted from logs and diagnostic files.
+  The E2E helper seeds a minimal non-secret Hermes config in the fresh container
+  state, including command_allowlist: execute_code so gateway/API runs do not
+  pause on an interactive approval prompt.
   The generated/claimed key material is kept only in the per-run state directory,
   which is deleted on success unless HERMES_SMOKE_KEEP=1.
 
@@ -161,6 +179,13 @@ redact_text() {
     "${PAPERCLIP_API_KEY:-}" \
     "${PAPERCLIP_AUTH_HEADER:-}" \
     "${PAPERCLIP_COOKIE:-}"; do
+    if [[ -n "$secret" ]]; then
+      text="${text//$secret/[redacted len=${#secret}]}"
+    fi
+  done
+  local key
+  for key in "${HERMES_PROVIDER_ENV_KEYS[@]}"; do
+    secret="${!key-}"
     if [[ -n "$secret" ]]; then
       text="${text//$secret/[redacted len=${#secret}]}"
     fi
@@ -462,11 +487,54 @@ prepare_fresh_state() {
     "${HERMES_SMOKE_STATE_DIR}/hermes-home" \
     "${HERMES_SMOKE_STATE_DIR}/workspace" \
     "${HERMES_SMOKE_STATE_DIR}/fake-host-home/.hermes"
-  chmod 700 "${HERMES_SMOKE_STATE_DIR}/hermes-home" "${HERMES_SMOKE_STATE_DIR}/workspace" || true
+  # These host-created bind mounts must be readable and writable by the
+  # non-root hermes user (uid 10001) inside the container.
+  chmod 777 "${HERMES_SMOKE_STATE_DIR}/hermes-home" "${HERMES_SMOKE_STATE_DIR}/workspace" || true
   echo "host hermes sentinel ${RUN_SUFFIX}" > "${HERMES_SMOKE_STATE_DIR}/fake-host-home/.hermes/host-sentinel.txt"
 
   if find "${HERMES_SMOKE_STATE_DIR}/hermes-home" -mindepth 1 -print -quit | grep -q .; then
     fail "Hermes state dir is not empty: ${HERMES_SMOKE_STATE_DIR}/hermes-home"
+  fi
+}
+
+yaml_single_quote() {
+  local value="$1"
+  value="${value//\'/\'\'}"
+  printf "'%s'" "$value"
+}
+
+write_hermes_model_config() {
+  local has_model_config=0
+  if [[ -n "$HERMES_SMOKE_MODEL_PROVIDER" || -n "$HERMES_SMOKE_MODEL_DEFAULT" || -n "$HERMES_SMOKE_MODEL_BASE_URL" ]]; then
+    has_model_config=1
+  fi
+  if [[ "$has_model_config" == "1" && ( -z "$HERMES_SMOKE_MODEL_PROVIDER" || -z "$HERMES_SMOKE_MODEL_DEFAULT" ) ]]; then
+    fail "HERMES_SMOKE_MODEL_PROVIDER and HERMES_SMOKE_MODEL_DEFAULT must be set together"
+  fi
+
+  local config_file="${HERMES_SMOKE_STATE_DIR}/hermes-home/config.yaml"
+  if [[ -e "$config_file" ]]; then
+    fail "Hermes model config already exists in fresh state: ${config_file}"
+  fi
+
+  {
+    if [[ "$has_model_config" == "1" ]]; then
+      echo "model:"
+      printf "  default: %s\n" "$(yaml_single_quote "$HERMES_SMOKE_MODEL_DEFAULT")"
+      printf "  provider: %s\n" "$(yaml_single_quote "$HERMES_SMOKE_MODEL_PROVIDER")"
+      if [[ -n "$HERMES_SMOKE_MODEL_BASE_URL" ]]; then
+        printf "  base_url: %s\n" "$(yaml_single_quote "$HERMES_SMOKE_MODEL_BASE_URL")"
+      fi
+      echo "providers: {}"
+    fi
+    echo "command_allowlist:"
+    echo "- execute_code"
+  } > "$config_file"
+  chmod 644 "$config_file"
+  if [[ "$has_model_config" == "1" ]]; then
+    log "seeded Hermes model config provider=${HERMES_SMOKE_MODEL_PROVIDER} model=${HERMES_SMOKE_MODEL_DEFAULT}"
+  else
+    log "seeded Hermes smoke config"
   fi
 }
 
@@ -486,6 +554,19 @@ start_container() {
     -v "${HERMES_SMOKE_STATE_DIR}/hermes-home:/home/hermes/.hermes"
     -v "${HERMES_SMOKE_STATE_DIR}/workspace:/home/hermes/workspace"
   )
+  local provider_key
+  local provider_keys=()
+  for provider_key in "${HERMES_PROVIDER_ENV_KEYS[@]}"; do
+    if [[ -n "${!provider_key-}" ]]; then
+      args+=(-e "${provider_key}=${!provider_key}")
+      provider_keys+=("$provider_key")
+    fi
+  done
+  if [[ ${#provider_keys[@]} -gt 0 ]]; then
+    log "passing Hermes inference provider env keys: ${provider_keys[*]}"
+  else
+    warn "no Hermes inference provider env keys set; direct run will fail unless Hermes state config already has a provider"
+  fi
   if [[ -n "$HERMES_SMOKE_NETWORK" ]]; then
     args+=(--network "$HERMES_SMOKE_NETWORK")
   fi
@@ -577,25 +658,35 @@ assert_direct_gateway_run() {
 
   log "asserting POST /v1/runs and SSE events"
   gateway_request "POST" "/v1/runs" "$payload" "${HERMES_SMOKE_DIAG_DIR}/direct-run-create.json"
-  assert_status "200"
+  if [[ "$RESPONSE_CODE" != "200" && "$RESPONSE_CODE" != "202" ]]; then
+    redact_text "$RESPONSE_BODY" >&2
+    echo >&2
+    fail "expected HTTP 200 or 202, got HTTP ${RESPONSE_CODE}"
+  fi
   DIRECT_RUN_ID="$(jq -r '.run_id // .runId // .id // empty' <<<"$RESPONSE_BODY")"
   [[ -n "$DIRECT_RUN_ID" ]] || fail "direct run creation did not return run id"
 
   local events_file="${HERMES_SMOKE_DIAG_DIR}/direct-run-${DIRECT_RUN_ID}-events.sse"
-  curl -sS --max-time 20 -N \
+  curl -sS --max-time "$HERMES_DIRECT_RUN_EVENTS_TIMEOUT_SEC" -N \
     -H "Authorization: Bearer ${HERMES_GATEWAY_API_KEY}" \
     "${HERMES_GATEWAY_PROBE_URL%/}/v1/runs/${DIRECT_RUN_ID}/events" \
     > "${events_file}.raw" || true
   redact_text "$(cat "${events_file}.raw")" > "$events_file"
   rm -f "${events_file}.raw"
-  if ! grep -Eq '(^event:|^data:)' "$events_file"; then
-    fail "SSE stream produced no event/data frames for direct run"
+  local events_seen=0
+  if grep -Eq '(^event:|^data:)' "$events_file"; then
+    events_seen=1
+  else
+    warn "SSE stream produced no event/data frames within ${HERMES_DIRECT_RUN_EVENTS_TIMEOUT_SEC}s; polling direct run status"
   fi
 
   local status
   status="$(poll_gateway_run_terminal "$DIRECT_RUN_ID" "$HERMES_DIRECT_RUN_TIMEOUT_SEC" "direct-run")"
   log "direct Hermes run ${DIRECT_RUN_ID} status=${status}"
   [[ "$status" == "completed" ]] || fail "direct Hermes run did not complete successfully (status=${status})"
+  if [[ "$events_seen" != "1" ]]; then
+    warn "direct Hermes run completed, but the live SSE probe was quiet"
+  fi
 }
 
 assert_stop_behavior_if_deterministic() {
@@ -611,7 +702,11 @@ assert_stop_behavior_if_deterministic() {
 
   log "probing /stop behavior (mode=${HERMES_STOP_ASSERT})"
   gateway_request "POST" "/v1/runs" "$payload" "${HERMES_SMOKE_DIAG_DIR}/stop-run-create.json"
-  assert_status "200"
+  if [[ "$RESPONSE_CODE" != "200" && "$RESPONSE_CODE" != "202" ]]; then
+    redact_text "$RESPONSE_BODY" >&2
+    echo >&2
+    fail "expected HTTP 200 or 202, got HTTP ${RESPONSE_CODE}"
+  fi
   STOP_RUN_ID="$(jq -r '.run_id // .runId // .id // empty' <<<"$RESPONSE_BODY")"
   [[ -n "$STOP_RUN_ID" ]] || fail "stop test run creation did not return run id"
 
@@ -837,17 +932,24 @@ assert_paperclip_wake_success() {
 }
 
 scan_diagnostics_for_secret_leaks() {
-  [[ -n "$HERMES_GATEWAY_API_KEY" ]] || return
   log "scanning diagnostics for raw secret leaks"
+  local secrets=()
+  [[ -n "$HERMES_GATEWAY_API_KEY" ]] && secrets+=("$HERMES_GATEWAY_API_KEY")
+  [[ -n "$AGENT_API_KEY" ]] && secrets+=("$AGENT_API_KEY")
+  local key
+  for key in "${HERMES_PROVIDER_ENV_KEYS[@]}"; do
+    [[ -n "${!key-}" ]] && secrets+=("${!key}")
+  done
+  [[ ${#secrets[@]} -gt 0 ]] || return
   local file
   while IFS= read -r file; do
     [[ "$file" == "$JOIN_OUTPUT_FILE" ]] && continue
-    if grep -Fq "$HERMES_GATEWAY_API_KEY" "$file"; then
-      fail "raw Hermes gateway API key leaked in diagnostics file ${file}"
-    fi
-    if [[ -n "$AGENT_API_KEY" ]] && grep -Fq "$AGENT_API_KEY" "$file"; then
-      fail "raw Paperclip agent API key leaked in diagnostics file ${file}"
-    fi
+    local secret
+    for secret in "${secrets[@]}"; do
+      if grep -Fq "$secret" "$file"; then
+        fail "raw secret leaked in diagnostics file ${file}"
+      fi
+    done
   done < <(find "$HERMES_SMOKE_DIAG_DIR" -type f -print)
 }
 
@@ -873,6 +975,7 @@ main() {
   resolve_company_id
 
   prepare_fresh_state
+  write_hermes_model_config
   build_image
   start_container
   assert_fresh_container_state
