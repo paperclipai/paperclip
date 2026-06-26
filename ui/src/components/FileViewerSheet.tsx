@@ -16,6 +16,7 @@ import {
   Check,
   Cloud,
   Copy,
+  Download,
   Eye,
   FileCode2,
   FileSearch,
@@ -529,6 +530,9 @@ export function FileViewerSheet({
 
   const resolvedResource: ResolvedWorkspaceResource | undefined = resolveQuery.data;
   const canPreview = resolvedResource?.capabilities.preview ?? false;
+  const downloadUrl = state && resolvedResource?.capabilities.download
+    ? fileResourcesApi.downloadUrl(issueId, state)
+    : null;
 
   const contentQuery = useQuery({
     queryKey: state
@@ -779,6 +783,25 @@ export function FileViewerSheet({
                   <ArrowLeft className="h-3.5 w-3.5" />
                   Back to files
                 </Button>
+              ) : null}
+              {state ? (
+                downloadUrl ? (
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="icon-sm"
+                    className="h-7 w-7"
+                  >
+                    <a
+                      href={downloadUrl}
+                      download={resolvedResource?.title ?? basename(state.path)}
+                      aria-label="Download file"
+                      title="Download file"
+                    >
+                      <Download className="h-4 w-4" />
+                    </a>
+                  </Button>
+                ) : null
               ) : null}
               {state ? (
                 <Button
