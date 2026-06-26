@@ -350,5 +350,69 @@
       "title": "排程標題",
       "assignee": "負責人"
     }
+  },
+  "issueDetail": {
+    "toasts": {
+      "acceptFailed": "接受失敗",
+      "answersSubmitted": "答案已提交",
+      "archiveFailed": "歸檔失敗",
+      "cancelFailed": "取消失敗",
+      "commentDeleted": "評論已删除",
+      "commentFailed": "評論失敗",
+      "copiedToClipboard": "已复制到剪贴板",
+      "copyFailed": "复制失敗",
+      "deleteFailed": "删除失敗",
+      "feedbackSaveFailed": "儲存反馈失敗",
+      "interruptFailed": "中断失敗",
+      "interruptRequested": "已請求中断",
+      "monitorCheckFailed": "監控检查失敗",
+      "monitorCheckQueued": "監控检查已排隊",
+      "questionCancelled": "問題已取消",
+      "queuedCommentCancelled": "排隊的評論已取消",
+      "recoveryFailed": "恢復操作失敗",
+      "rejectFailed": "拒绝失敗",
+      "submitFailed": "提交失敗",
+      "taskArchived": "任務已从收件匣歸檔",
+      "taskUpdateFailed": "任務更新失敗",
+      "subtreeControlFailed": "無法应用子任務控制",
+      "pauseFailed": "無法暂停工作",
+      "workPaused": "工作已暂停"
+    },
+    "errors": {
+      "loadPreview": "無法加载预览。",
+      "deleteFailed": "删除失敗",
+      "documentImport": "文件导入失敗",
+      "tryAgain": "請重试。",
+      "acceptSuggested": "無法接受建議的任務",
+      "archiveFromInbox": "無法从收件匣歸檔此任務",
+      "cancelQuestion": "無法取消该問題",
+      "cancelQueuedComment": "無法取消排隊的評論",
+      "deleteComment": "無法删除評論",
+      "interruptRun": "無法中断正在进行的執行",
+      "postComment": "無法发布評論",
+      "rejectSuggested": "無法拒绝建議的任務",
+      "resolveRecovery": "無法处理恢復操作",
+      "saveSubTask": "無法儲存子任務更改",
+      "saveTask": "無法儲存任務更改",
+      "stopRun": "無法停止執行并更新任務",
+      "submitAnswers": "無法提交答案",
+      "triggerMonitor": "暂时無法触发監控",
+      "updateApproval": "無法更新審批",
+      "unknown": "未知错误",
+      "uploadFailed": "上传失敗",
+      "copyMarkdown": "無法复制任務 Markdown"
+    },
+    "labels": {
+      "archiveFromInbox": "从收件匣歸檔",
+      "backToInbox": "返回收件匣",
+      "moreActions": "更多操作",
+      "moreTaskActions": "更多任務操作",
+      "openFile": "在此任務中開啟文件",
+      "stopAndCancel": "停止并取消",
+      "stopAndDone": "停止并完成"
+    },
+    "status": {
+      "paused": "已暫停"
+    }
   }
 }

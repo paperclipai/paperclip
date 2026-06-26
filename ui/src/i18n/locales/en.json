@@ -350,5 +350,69 @@
       "title": "Routine title",
       "assignee": "Assignee"
     }
+  },
+  "issueDetail": {
+    "toasts": {
+      "acceptFailed": "Accept failed",
+      "answersSubmitted": "Answers submitted",
+      "archiveFailed": "Archive failed",
+      "cancelFailed": "Cancel failed",
+      "commentDeleted": "Comment deleted",
+      "commentFailed": "Comment failed",
+      "copiedToClipboard": "Copied to clipboard",
+      "copyFailed": "Copy failed",
+      "deleteFailed": "Delete failed",
+      "feedbackSaveFailed": "Failed to save feedback",
+      "interruptFailed": "Interrupt failed",
+      "interruptRequested": "Interrupt requested",
+      "monitorCheckFailed": "Monitor check failed",
+      "monitorCheckQueued": "Monitor check queued",
+      "questionCancelled": "Question cancelled",
+      "queuedCommentCancelled": "Queued comment canceled",
+      "recoveryFailed": "Recovery resolution failed",
+      "rejectFailed": "Reject failed",
+      "submitFailed": "Submit failed",
+      "taskArchived": "Task archived from inbox",
+      "taskUpdateFailed": "Task update failed",
+      "subtreeControlFailed": "Unable to apply subtree control",
+      "pauseFailed": "Unable to pause work",
+      "workPaused": "Work paused"
+    },
+    "errors": {
+      "loadPreview": "Unable to load preview.",
+      "deleteFailed": "Delete failed",
+      "documentImport": "Document import failed",
+      "tryAgain": "Please try again.",
+      "acceptSuggested": "Unable to accept the suggested tasks",
+      "archiveFromInbox": "Unable to archive this task from the inbox",
+      "cancelQuestion": "Unable to cancel the question",
+      "cancelQueuedComment": "Unable to cancel the queued comment",
+      "deleteComment": "Unable to delete the comment",
+      "interruptRun": "Unable to interrupt the active run",
+      "postComment": "Unable to post comment",
+      "rejectSuggested": "Unable to reject the suggested tasks",
+      "resolveRecovery": "Unable to resolve recovery action",
+      "saveSubTask": "Unable to save sub-task changes",
+      "saveTask": "Unable to save task changes",
+      "stopRun": "Unable to stop the run and update the task",
+      "submitAnswers": "Unable to submit answers",
+      "triggerMonitor": "Unable to trigger the monitor right now",
+      "updateApproval": "Unable to update approval",
+      "unknown": "Unknown error",
+      "uploadFailed": "Upload failed",
+      "copyMarkdown": "Unable to copy task markdown"
+    },
+    "labels": {
+      "archiveFromInbox": "Archive from inbox",
+      "backToInbox": "Back to inbox",
+      "moreActions": "More actions",
+      "moreTaskActions": "More task actions",
+      "openFile": "Open file in this issue",
+      "stopAndCancel": "Stop and cancel",
+      "stopAndDone": "Stop and done"
+    },
+    "status": {
+      "paused": "Paused"
+    }
   }
 }
