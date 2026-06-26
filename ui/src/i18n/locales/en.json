@@ -93,7 +93,8 @@
       "settings": "Settings",
       "agents": "Agents",
       "home": "Home",
-      "create": "Create"
+      "create": "Create",
+      "approvals": "Approvals"
     },
     "mobileNavAria": "Mobile navigation",
     "sections": {
@@ -182,7 +183,18 @@
     },
     "selectCompany": {
       "tasks": "Select a company to view tasks.",
-      "agents": "Select a company to view agents."
+      "agents": "Select a company to view agents.",
+      "goals": "Select a company to view goals.",
+      "activity": "Select a company to view activity.",
+      "projects": "Select a company to view projects."
+    },
+    "sort": {
+      "name": "Name",
+      "updated": "Updated",
+      "created": "Created",
+      "targetDate": "Target date",
+      "asc": "Asc",
+      "desc": "Desc"
     }
   },
   "agents": {
@@ -214,5 +226,22 @@
       "label": "Search all for",
       "openFullSearch": "open full search"
     }
+  },
+  "goals": {
+    "empty": "No goals yet."
+  },
+  "activity": {
+    "filterByType": "Filter by type",
+    "noActivity": "No activity yet."
+  },
+  "approvals": {
+    "failedApprove": "Failed to approve",
+    "failedReject": "Failed to reject",
+    "noPending": "No pending approvals.",
+    "noApprovals": "No approvals yet."
+  },
+  "projects": {
+    "myProjects": "My Projects",
+    "noProjects": "No projects yet."
   }
 }

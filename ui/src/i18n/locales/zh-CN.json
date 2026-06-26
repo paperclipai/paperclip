@@ -93,7 +93,8 @@
       "settings": "设置",
       "agents": "智能体",
       "home": "首页",
-      "create": "创建"
+      "create": "创建",
+      "approvals": "审批"
     },
     "sections": {
       "work": "工作",
@@ -208,11 +209,39 @@
     },
     "selectCompany": {
       "tasks": "选择一家公司以查看任务。",
-      "agents": "选择一家公司以查看智能体。"
+      "agents": "选择一家公司以查看智能体。",
+      "goals": "选择一家公司以查看目标。",
+      "activity": "选择一家公司以查看活动。",
+      "projects": "选择一家公司以查看项目。"
+    },
+    "sort": {
+      "name": "名称",
+      "updated": "更新时间",
+      "created": "创建时间",
+      "targetDate": "目标日期",
+      "asc": "升序",
+      "desc": "降序"
     }
   },
   "agents": {
     "emptyCreate": "创建你的第一个智能体以开始。",
     "runHeartbeat": "运行心跳"
+  },
+  "goals": {
+    "empty": "暂无目标。"
+  },
+  "activity": {
+    "filterByType": "按类型筛选",
+    "noActivity": "暂无活动。"
+  },
+  "approvals": {
+    "failedApprove": "审批失败",
+    "failedReject": "拒绝失败",
+    "noPending": "暂无待审批事项。",
+    "noApprovals": "暂无审批记录。"
+  },
+  "projects": {
+    "myProjects": "我的项目",
+    "noProjects": "暂无项目。"
   }
 }

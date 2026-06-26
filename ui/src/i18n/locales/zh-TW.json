@@ -93,7 +93,8 @@
       "settings": "設定",
       "agents": "智慧代理",
       "home": "首頁",
-      "create": "建立"
+      "create": "建立",
+      "approvals": "審批"
     },
     "sections": {
       "work": "工作",
@@ -208,11 +209,39 @@
     },
     "selectCompany": {
       "tasks": "選擇一家公司以檢視任務。",
-      "agents": "選擇一家公司以檢視智慧代理。"
+      "agents": "選擇一家公司以檢視智慧代理。",
+      "goals": "選擇一家公司以檢視目標。",
+      "activity": "選擇一家公司以檢視活動。",
+      "projects": "選擇一家公司以檢視專案。"
+    },
+    "sort": {
+      "name": "名稱",
+      "updated": "更新時間",
+      "created": "建立時間",
+      "targetDate": "目標日期",
+      "asc": "升序",
+      "desc": "降序"
     }
   },
   "agents": {
     "emptyCreate": "建立你的第一個智慧代理以開始。",
     "runHeartbeat": "執行心跳"
+  },
+  "goals": {
+    "empty": "暫無目標。"
+  },
+  "activity": {
+    "filterByType": "按類型篩選",
+    "noActivity": "暫無活動。"
+  },
+  "approvals": {
+    "failedApprove": "審批失敗",
+    "failedReject": "拒絕失敗",
+    "noPending": "暫無待審批事項。",
+    "noApprovals": "暫無審批記錄。"
+  },
+  "projects": {
+    "myProjects": "我的專案",
+    "noProjects": "暫無專案。"
   }
 }
