@@ -4258,6 +4258,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       summary?: string | null;
       fields?: Record<string, unknown>;
       parentCaseId?: string | null;
+      workspaceRef?: Record<string, unknown> | null;
       expectedVersion?: number;
       leaseToken?: string | null;
       actor: PipelineActor;
@@ -4505,6 +4506,20 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         ];
         const uniqueRetireCaseIds = [...new Set(retireCaseIds)];
         const now = nowDate();
+        const retiredRows = uniqueRetireCaseIds.length > 0
+          ? await tx
+            .select({
+              id: pipelineCases.id,
+              parentCaseId: pipelineCases.parentCaseId,
+              terminalKind: pipelineCases.terminalKind,
+            })
+            .from(pipelineCases)
+            .where(and(
+              eq(pipelineCases.companyId, input.companyId),
+              inArray(pipelineCases.id, uniqueRetireCaseIds),
+              isNull(pipelineCases.retiredAt),
+            ))
+          : [];
         if (uniqueRetireCaseIds.length > 0) {
           await tx
             .update(pipelineCases)
@@ -4524,14 +4539,17 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
               isNull(pipelineCases.retiredAt),
             ));
         }
-        const retiredDirectNonTerminalCount = input.cleanup.retireDirectChildren
-          ? effects.directNonTerminalCaseIds.length
-          : 0;
-        if (retiredDirectNonTerminalCount > 0) {
+        const terminalDeltasByParent = new Map<string, number>();
+        for (const row of retiredRows) {
+          if (!row.parentCaseId || isTerminalKind(row.terminalKind)) continue;
+          terminalDeltasByParent.set(row.parentCaseId, (terminalDeltasByParent.get(row.parentCaseId) ?? 0) + 1);
+        }
+        for (const [parentCaseId, terminalChildDelta] of terminalDeltasByParent) {
           await adjustParentCounts(tx, {
-            parentCaseId: input.caseId,
-            terminalChildDelta: retiredDirectNonTerminalCount,
+            parentCaseId,
+            terminalChildDelta,
           });
+          await handleChildrenTerminal(tx, input.companyId, parentCaseId);
         }
         const issueIdsToCancel = input.cleanup.cancelLinkedAutomationIssues
           ? effects.linkedAutomationIssueIds

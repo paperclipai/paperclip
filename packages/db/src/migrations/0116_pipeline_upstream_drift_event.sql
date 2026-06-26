@@ -1,27 +1,3 @@
--- 0116 expands pipeline case events for upstream drift while tolerating later event types already present from old branch numbering.
-ALTER TABLE "pipeline_case_events" DROP CONSTRAINT IF EXISTS "pipeline_case_events_type_check";--> statement-breakpoint
-ALTER TABLE "pipeline_case_events" ADD CONSTRAINT "pipeline_case_events_type_check" CHECK ("pipeline_case_events"."type" in (
-        'ingested',
-        'updated',
-        'claimed',
-        'lease_released',
-        'lease_expired',
-        'transitioned',
-        'transition_forced',
-        'transition_suggested',
-        'suggestion_resolved',
-        'review_decided',
-        'conversation_opened',
-        'issue_linked',
-        'issue_unlinked',
-        'automation_executed',
-        'automation_failed',
-        'automation_retry_requested',
-        'automation_effects_retired',
-        'automation_retry_dispatched',
-        'blockers_set',
-        'blockers_resolved',
-        'children_terminal',
-        'upstream_drift',
-        'drift_acknowledged'
-      ));
+-- Event-type constraint expansion is consolidated in 0121_pipeline_automation_retry_effects.sql.
+-- Keep this journal entry as an idempotent placeholder for old branch-number upgrades.
+ALTER TABLE "pipeline_case_events" DROP CONSTRAINT IF EXISTS "pipeline_case_events_0116_placeholder";
