@@ -1,2 +1,1 @@
-export { parseHermesGatewayStdoutLine as parseStdoutLine } from "./parse-stdout.js";
-
+export { parseStdoutLine } from "@paperclipai/hermes-paperclip-adapter/gateway/ui";

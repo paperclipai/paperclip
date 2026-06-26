@@ -40,7 +40,7 @@
     "publishFromCi": true
   },
   {
-    "dir": "packages/adapters/hermes-local",
+    "dir": "packages/adapters/hermes",
     "name": "@paperclipai/hermes-paperclip-adapter",
     "publishFromCi": true
   },

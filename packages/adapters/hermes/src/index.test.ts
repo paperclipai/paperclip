@@ -1,6 +1,12 @@
 import { expect, test } from "vitest";
 
-import { createServerAdapter } from "./index.js";
+import {
+  createHermesGatewayServerAdapter,
+  createHermesLocalServerAdapter,
+  createServerAdapter,
+  hermesGatewayType,
+} from "./index.js";
+import { createServerAdapter as createGatewayServerAdapterFromSubpath } from "./gateway/index.js";
 
 test("root package export exposes Paperclip external adapter entrypoint", () => {
   const adapter = createServerAdapter();
@@ -19,6 +25,28 @@ test("root package export exposes Paperclip external adapter entrypoint", () => 
     installCommand: null,
   });
   expect(typeof adapter.detectModel).toBe("function");
+  expect(typeof adapter.getConfigSchema).toBe("function");
+});
+
+test("root package export keeps explicit local and gateway adapter factories", () => {
+  const localAdapter = createHermesLocalServerAdapter();
+  const gatewayAdapter = createHermesGatewayServerAdapter();
+
+  expect(localAdapter.type).toBe("hermes_local");
+  expect(gatewayAdapter.type).toBe("hermes_gateway");
+  expect(hermesGatewayType).toBe("hermes_gateway");
+  expect(gatewayAdapter.supportsLocalAgentJwt).toBe(false);
+  expect(gatewayAdapter.supportsInstructionsBundle).toBe(false);
+});
+
+test("gateway subpath export exposes the Hermes Gateway adapter entrypoint", () => {
+  const adapter = createGatewayServerAdapterFromSubpath();
+
+  expect(adapter.type).toBe("hermes_gateway");
+  expect(typeof adapter.execute).toBe("function");
+  expect(typeof adapter.testEnvironment).toBe("function");
+  expect(typeof adapter.sessionCodec?.deserialize).toBe("function");
+  expect(adapter.sessionManagement?.nativeContextManagement).toBe("confirmed");
   expect(typeof adapter.getConfigSchema).toBe("function");
 });
 

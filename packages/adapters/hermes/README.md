@@ -1,8 +1,13 @@
-# Paperclip Adapter for Hermes Agent
+# Paperclip Adapters for Hermes Agent
 
-A [Paperclip](https://paperclip.ing) adapter that lets you run [Hermes Agent](https://github.com/NousResearch/hermes-agent) as a managed employee in a Paperclip company.
+A [Paperclip](https://paperclip.ing) adapter package that lets you run [Hermes Agent](https://github.com/NousResearch/hermes-agent) as a managed employee in a Paperclip company.
 
 Hermes Agent is a full-featured AI agent by [Nous Research](https://nousresearch.com) with 30+ native tools, persistent memory, session persistence, 80+ skills, MCP support, and multi-provider model access.
+
+This package owns both built-in Hermes adapter types:
+
+- `hermes_local` runs the local Hermes CLI as a child process. The package root exports remain compatible with the original local adapter.
+- `hermes_gateway` calls an already-running Hermes API server over HTTP/SSE. Gateway entrypoints live under the `./gateway` export namespace.
 
 ## Key Features
 
@@ -35,8 +40,9 @@ This adapter provides:
 
 ## Installation
 
-This package ships with Paperclip core as the built-in `hermes_local` adapter.
-No Adapter manager installation is required for normal Paperclip use.
+This package ships with Paperclip core as the built-in `hermes_local` and
+`hermes_gateway` adapters. No Adapter manager installation is required for
+normal Paperclip use.
 
 ### Prerequisites
 
@@ -57,17 +63,19 @@ adapter while it is enabled:
 [
   {
     "packageName": "@paperclipai/hermes-paperclip-adapter",
-    "localPath": "/absolute/path/to/paperclip/packages/adapters/hermes-local",
+    "localPath": "/absolute/path/to/paperclip/packages/adapters/hermes",
     "type": "hermes_local",
     "installedAt": "2026-06-23T00:00:00.000Z"
   }
 ]
 ```
 
-The adapter package exports `createServerAdapter()` for the server, a
-declarative config schema for the generic agent form, and `./ui-parser` for run
-transcript parsing. Paperclip core imports these same package entrypoints for
-the built-in adapter registration.
+The package root exports `createServerAdapter()` for the local server adapter,
+a declarative config schema for the generic agent form, and `./ui-parser` for
+local run transcript parsing. Gateway entrypoints are exported from `./gateway`,
+`./gateway/server`, `./gateway/ui`, `./gateway/cli`, and `./gateway/ui-parser`.
+Paperclip core imports these same package entrypoints for built-in adapter
+registration.
 
 ### 2. Create a Hermes agent in Paperclip
 
@@ -259,7 +267,7 @@ Paperclip UI can display both managed and native skills in one view.
 
 ```bash
 git clone https://github.com/paperclipai/paperclip
-cd paperclip/packages/adapters/hermes-local
+cd paperclip/packages/adapters/hermes
 pnpm install
 pnpm build
 ```

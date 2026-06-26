@@ -29,6 +29,13 @@ import { resolveHermesCommand } from "./server/execute.js";
 
 export const type = ADAPTER_TYPE;
 export const label = ADAPTER_LABEL;
+export {
+  createServerAdapter as createHermesGatewayServerAdapter,
+  agentConfigurationDoc as hermesGatewayAgentConfigurationDoc,
+  label as hermesGatewayLabel,
+  models as hermesGatewayModels,
+  type as hermesGatewayType,
+} from "./gateway/index.js";
 
 /**
  * Models available through Hermes Agent.
@@ -165,3 +172,5 @@ export function createServerAdapter(): ServerAdapterModule {
     getConfigSchema,
   };
 }
+
+export { createServerAdapter as createHermesLocalServerAdapter };

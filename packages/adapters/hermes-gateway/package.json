@@ -1,7 +1,7 @@
 {
   "name": "@paperclipai/adapter-hermes-gateway",
   "version": "0.1.0",
-  "description": "External Paperclip adapter for Hermes Agent Gateway HTTP/SSE runs",
+  "description": "Deprecated compatibility shim for Hermes Gateway; use @paperclipai/hermes-paperclip-adapter/gateway",
   "type": "module",
   "license": "MIT",
   "author": "Paperclip",
@@ -13,7 +13,7 @@
   "bugs": {
     "url": "https://github.com/paperclipai/paperclip/issues"
   },
-  "homepage": "https://github.com/paperclipai/paperclip/tree/master/packages/adapters/hermes-gateway#readme",
+  "homepage": "https://github.com/paperclipai/paperclip/tree/master/packages/adapters/hermes#readme",
   "keywords": [
     "paperclip",
     "hermes",
@@ -68,7 +68,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@paperclipai/adapter-utils": "workspace:*"
+    "@paperclipai/hermes-paperclip-adapter": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.19.21",
