@@ -20,6 +20,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { documentAnnotationService } from "../services/document-annotations.js";
 import { documentService } from "../services/documents.js";
+import { buildPaperclipWakePayload } from "../services/heartbeat.js";
 import { buildPlanReviewContext, PLAN_REVIEW_CONTEXT_LIMITS } from "../services/plan-review-context.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -477,5 +478,177 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
       issueWorkMode: "standard",
       interactionId: interaction.id,
     })).resolves.toBeNull();
+  });
+
+  it("includes accepted plan annotations in the structured wake payload", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument();
+    const thread = await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Please split this plan step before creating child issues.",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+    const [interaction] = await db
+      .insert(issueThreadInteractions)
+      .values({
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        payload: {
+          version: 1,
+          prompt: "Approve this plan?",
+          target: {
+            type: "issue_document",
+            issueId,
+            documentId: document.id,
+            key: "plan",
+            revisionId: document.latestRevisionId,
+            revisionNumber: document.latestRevisionNumber,
+          },
+        },
+        result: {
+          version: 1,
+          outcome: "accepted",
+        },
+        resolvedAt: new Date("2026-06-05T03:10:00.000Z"),
+      })
+      .returning();
+
+    const payload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        interactionId: interaction.id,
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(payload?.planReviewContext).toMatchObject({
+      interaction: {
+        id: interaction.id,
+        status: "accepted",
+        acceptedTargetRevision: {
+          issueId,
+          documentId: document.id,
+          key: "plan",
+          revisionId: document.latestRevisionId,
+          revisionNumber: document.latestRevisionNumber,
+        },
+        result: {
+          outcome: "accepted",
+        },
+      },
+      totals: {
+        openThreadCount: 1,
+        includedCommentCount: 1,
+      },
+      threads: [
+        expect.objectContaining({
+          id: thread.id,
+          selectedText: "selected text",
+          comments: [
+            expect.objectContaining({
+              body: "Please split this plan step before creating child issues.",
+            }),
+          ],
+        }),
+      ],
+    });
+  });
+
+  it("includes rejection result and open plan annotations even when the reason is empty", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument();
+    await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "The plan needs a concrete QA owner.",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+    const [interaction] = await db
+      .insert(issueThreadInteractions)
+      .values({
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve this plan?",
+          target: {
+            type: "issue_document",
+            issueId,
+            documentId: document.id,
+            key: "plan",
+            revisionId: document.latestRevisionId,
+            revisionNumber: document.latestRevisionNumber,
+          },
+        },
+        result: {
+          version: 1,
+          outcome: "rejected",
+          reason: "",
+        },
+        resolvedAt: new Date("2026-06-05T03:10:00.000Z"),
+      })
+      .returning();
+
+    const payload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        interactionId: interaction.id,
+        interactionKind: "request_confirmation",
+        interactionStatus: "rejected",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(payload?.planReviewContext).toMatchObject({
+      interaction: {
+        id: interaction.id,
+        status: "rejected",
+        result: {
+          outcome: "rejected",
+          reason: null,
+        },
+      },
+      totals: {
+        openThreadCount: 1,
+        includedCommentCount: 1,
+      },
+      threads: [
+        expect.objectContaining({
+          selectedText: "selected text",
+          comments: [
+            expect.objectContaining({
+              body: "The plan needs a concrete QA owner.",
+            }),
+          ],
+        }),
+      ],
+    });
   });
 });
