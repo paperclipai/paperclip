@@ -2050,5 +2050,79 @@
     "placeholders": {
       "searchCreators": "搜索创建人..."
     }
+  },
+  "issuesList": {
+    "labelsJsx": {
+      "needsNextStep": "需要下一步",
+      "paused": "已暂停",
+      "searchTasks": "搜索任务",
+      "subTasksProgress": "子任务完成进度"
+    },
+    "placeholders": {
+      "searchAssignees": "搜索负责人...",
+      "searchTasks": "搜索任务..."
+    }
+  },
+  "workspaceFileBrowser": {
+    "toasts": {
+      "noWorkspace": "尚无工作区",
+      "remotePreviewUnsupported": "不支持远程工作区预览",
+      "workspaceGone": "工作区不再可用",
+      "unavailable": "工作区不可用"
+    },
+    "text": {
+      "loadMore": "从此文件夹加载更多"
+    },
+    "labelsJsx": {
+      "currentFolder": "当前文件夹",
+      "searchFiles": "搜索工作区文件",
+      "workspaceFiles": "工作区文件"
+    },
+    "placeholders": {
+      "searchByName": "按名称或路径搜索文件…"
+    }
+  },
+  "activityFeed": {
+    "text": {
+      "agentFeed": "智能体动态",
+      "filterBy": "筛选依据"
+    },
+    "labelsObj": {
+      "done": "已完成",
+      "inProgress": "进行中",
+      "inReview": "审查中"
+    }
+  },
+  "routineRunVariables": {
+    "text": {
+      "defaultAgentRequired": "此运行需要默认智能体。",
+      "false": "否",
+      "noProject": "无项目",
+      "noValue": "无值",
+      "project": "项目",
+      "runRoutine": "运行例程",
+      "selectAgent": "选择智能体",
+      "true": "是"
+    },
+    "placeholders": {
+      "agent": "智能体",
+      "chooseValue": "选择值",
+      "project": "项目"
+    }
+  },
+  "sidebarAgents": {
+    "text": {
+      "editAgent": "编辑智能体",
+      "seeAllAgents": "查看所有智能体"
+    },
+    "labelsJsx": {
+      "agents": "智能体",
+      "invalidReporting": "无效的汇报链"
+    },
+    "sortOptions": {
+      "alphabetical": "按字母排序",
+      "browseAgents": "浏览智能体",
+      "recent": "最近"
+    }
   }
 }

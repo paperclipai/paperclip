@@ -2050,5 +2050,79 @@
     "placeholders": {
       "searchCreators": "搜尋建立者..."
     }
+  },
+  "issuesList": {
+    "labelsJsx": {
+      "needsNextStep": "需要下一步",
+      "paused": "已暫停",
+      "searchTasks": "搜尋工作",
+      "subTasksProgress": "子工作完成進度"
+    },
+    "placeholders": {
+      "searchAssignees": "搜尋負責人...",
+      "searchTasks": "搜尋工作..."
+    }
+  },
+  "workspaceFileBrowser": {
+    "toasts": {
+      "noWorkspace": "尚無工作區",
+      "remotePreviewUnsupported": "不支援遠端工作區預覽",
+      "workspaceGone": "工作區不再可用",
+      "unavailable": "工作區不可用"
+    },
+    "text": {
+      "loadMore": "從此資料夾載入更多"
+    },
+    "labelsJsx": {
+      "currentFolder": "目前資料夾",
+      "searchFiles": "搜尋工作區檔案",
+      "workspaceFiles": "工作區檔案"
+    },
+    "placeholders": {
+      "searchByName": "按名稱或路徑搜尋檔案…"
+    }
+  },
+  "activityFeed": {
+    "text": {
+      "agentFeed": "智慧代理動態",
+      "filterBy": "篩選依據"
+    },
+    "labelsObj": {
+      "done": "已完成",
+      "inProgress": "進行中",
+      "inReview": "審查中"
+    }
+  },
+  "routineRunVariables": {
+    "text": {
+      "defaultAgentRequired": "此執行需要預設智慧代理。",
+      "false": "否",
+      "noProject": "無專案",
+      "noValue": "無值",
+      "project": "專案",
+      "runRoutine": "執行排程",
+      "selectAgent": "選擇智慧代理",
+      "true": "是"
+    },
+    "placeholders": {
+      "agent": "智慧代理",
+      "chooseValue": "選擇值",
+      "project": "專案"
+    }
+  },
+  "sidebarAgents": {
+    "text": {
+      "editAgent": "編輯智慧代理",
+      "seeAllAgents": "檢視所有智慧代理"
+    },
+    "labelsJsx": {
+      "agents": "智慧代理",
+      "invalidReporting": "無效的匯報鏈"
+    },
+    "sortOptions": {
+      "alphabetical": "按字母排序",
+      "browseAgents": "瀏覽智慧代理",
+      "recent": "最近"
+    }
   }
 }

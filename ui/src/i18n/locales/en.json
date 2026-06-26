@@ -2050,5 +2050,79 @@
     "placeholders": {
       "searchCreators": "Search creators..."
     }
+  },
+  "issuesList": {
+    "labelsJsx": {
+      "needsNextStep": "Needs next step",
+      "paused": "Paused",
+      "searchTasks": "Search tasks",
+      "subTasksProgress": "Sub-tasks completion progress"
+    },
+    "placeholders": {
+      "searchAssignees": "Search assignees...",
+      "searchTasks": "Search tasks..."
+    }
+  },
+  "workspaceFileBrowser": {
+    "toasts": {
+      "noWorkspace": "No workspace yet",
+      "remotePreviewUnsupported": "Remote workspace preview not supported",
+      "workspaceGone": "Workspace is no longer available",
+      "unavailable": "Workspace unavailable"
+    },
+    "text": {
+      "loadMore": "Load more from this folder"
+    },
+    "labelsJsx": {
+      "currentFolder": "Current folder",
+      "searchFiles": "Search workspace files",
+      "workspaceFiles": "Workspace files"
+    },
+    "placeholders": {
+      "searchByName": "Search files by name or path…"
+    }
+  },
+  "activityFeed": {
+    "text": {
+      "agentFeed": "Agent Feed",
+      "filterBy": "Filter by"
+    },
+    "labelsObj": {
+      "done": "Done",
+      "inProgress": "In Progress",
+      "inReview": "In Review"
+    }
+  },
+  "routineRunVariables": {
+    "text": {
+      "defaultAgentRequired": "Default agent required for this run.",
+      "false": "False",
+      "noProject": "No project",
+      "noValue": "No value",
+      "project": "Project",
+      "runRoutine": "Run routine",
+      "selectAgent": "Select an agent",
+      "true": "True"
+    },
+    "placeholders": {
+      "agent": "Agent",
+      "chooseValue": "Choose a value",
+      "project": "Project"
+    }
+  },
+  "sidebarAgents": {
+    "text": {
+      "editAgent": "Edit agent",
+      "seeAllAgents": "See all agents"
+    },
+    "labelsJsx": {
+      "agents": "Agents",
+      "invalidReporting": "Invalid reporting chain"
+    },
+    "sortOptions": {
+      "alphabetical": "Alphabetical",
+      "browseAgents": "Browse agents",
+      "recent": "Recent"
+    }
   }
 }
