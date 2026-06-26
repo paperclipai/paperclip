@@ -406,6 +406,7 @@ export function Secrets() {
   const [usageDialogSecretId, setUsageDialogSecretId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [importInitialVaultId, setImportInitialVaultId] = useState<string | null>(null);
   const [createMode, setCreateMode] = useState<CreateMode>("managed");
   const [createForm, setCreateForm] = useState({
     name: "",
@@ -844,6 +845,11 @@ export function Secrets() {
     setVaultDialogOpen(true);
   }
 
+  function openImportFromVault(config?: CompanySecretProviderConfig | null) {
+    setImportInitialVaultId(config?.id ?? null);
+    setImportOpen(true);
+  }
+
   function applyVaultDiscoveryCandidate(candidate: SecretProviderConfigDiscoveryCandidate) {
     if (candidate.provider !== "aws_secrets_manager") return;
     const config = candidate.config as Record<string, unknown>;
@@ -911,7 +917,7 @@ export function Secrets() {
             />
             <ImportFromVaultButton
               providerConfigs={providerConfigs}
-              onClick={() => setImportOpen(true)}
+              onClick={() => openImportFromVault()}
               onManageVaults={() => setActiveTab("vaults")}
               className="ml-auto"
             />
@@ -1040,6 +1046,7 @@ export function Secrets() {
             onRemove={(config) => setRemoveVaultConfirm(config)}
             onSetDefault={(config) => defaultVaultMutation.mutate(config.id)}
             onHealthCheck={(config) => healthVaultMutation.mutate(config.id)}
+            onImportSecrets={openImportFromVault}
             pendingActionId={
               disableVaultMutation.variables ??
               removeVaultMutation.variables ??
@@ -1187,12 +1194,17 @@ export function Secrets() {
       {selectedCompanyId && (
         <ImportFromVaultDialog
           open={importOpen}
-          onOpenChange={setImportOpen}
+          onOpenChange={(open) => {
+            setImportOpen(open);
+            if (!open) setImportInitialVaultId(null);
+          }}
           companyId={selectedCompanyId}
           providerConfigs={providerConfigs}
           existingSecrets={secrets}
+          initialProviderConfigId={importInitialVaultId}
           onManageVaults={() => {
             setImportOpen(false);
+            setImportInitialVaultId(null);
             setActiveTab("vaults");
           }}
           onImportComplete={() => {
@@ -1910,6 +1922,7 @@ export function ProviderVaultsTab({
   onRemove,
   onSetDefault,
   onHealthCheck,
+  onImportSecrets,
   pendingActionId,
 }: {
   providers: SecretProviderDescriptor[];
@@ -1923,6 +1936,7 @@ export function ProviderVaultsTab({
   onRemove: (config: CompanySecretProviderConfig) => void;
   onSetDefault: (config: CompanySecretProviderConfig) => void;
   onHealthCheck: (config: CompanySecretProviderConfig) => void;
+  onImportSecrets: (config: CompanySecretProviderConfig) => void;
   pendingActionId: string | null;
 }) {
   if (loading) {
@@ -2004,6 +2018,7 @@ export function ProviderVaultsTab({
                     onRemove={() => onRemove(config)}
                     onSetDefault={() => onSetDefault(config)}
                     onHealthCheck={() => onHealthCheck(config)}
+                    onImportSecrets={() => onImportSecrets(config)}
                   />
                 ))}
               </div>
@@ -2023,6 +2038,7 @@ function ProviderVaultCard({
   onRemove,
   onSetDefault,
   onHealthCheck,
+  onImportSecrets,
 }: {
   config: CompanySecretProviderConfig;
   pending: boolean;
@@ -2031,6 +2047,7 @@ function ProviderVaultCard({
   onRemove: () => void;
   onSetDefault: () => void;
   onHealthCheck: () => void;
+  onImportSecrets: () => void;
 }) {
   const blockReason = getProviderConfigBlockReason(config);
   const details = config.healthDetails;
@@ -2081,6 +2098,23 @@ function ProviderVaultCard({
           {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <RefreshCw className="h-3.5 w-3.5 mr-1" />}
           Check health
         </Button>
+        {config.provider === "aws_secrets_manager" ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onImportSecrets}
+            disabled={pending || Boolean(blockReason)}
+            title={
+              blockReason
+                ? blockReason
+                : "Refresh AWS metadata and import existing secrets"
+            }
+            data-testid={`provider-vault-refresh-secrets-${config.id}`}
+          >
+            <Cloud className="h-3.5 w-3.5 mr-1" />
+            Refresh secrets
+          </Button>
+        ) : null}
         <Button
           variant="outline"
           size="sm"

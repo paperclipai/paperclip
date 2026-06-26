@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   CompanySecretProviderConfig,
+  RemoteSecretImportPreviewResult,
   SecretProviderConfigDiscoveryPreviewResult,
   SecretProviderDescriptor,
 } from "@paperclipai/shared";
@@ -25,6 +26,8 @@ const mockSecretsApi = vi.hoisted(() => ({
   removeProviderConfig: vi.fn(),
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
+  remoteImportPreview: vi.fn(),
+  remoteImport: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   rotate: vi.fn(),
@@ -195,6 +198,18 @@ function makeDiscoveryPreview(
   };
 }
 
+function makeRemoteImportPreview(
+  overrides: Partial<RemoteSecretImportPreviewResult> = {},
+): RemoteSecretImportPreviewResult {
+  return {
+    providerConfigId: "vault-aws",
+    provider: "aws_secrets_manager",
+    nextToken: null,
+    candidates: [],
+    ...overrides,
+  };
+}
+
 function setInputValue(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
   setter?.call(input, value);
@@ -242,6 +257,7 @@ describe("Secrets page layout", () => {
     });
     mockSecretsApi.providerConfigs.mockResolvedValue(providerConfigs);
     mockSecretsApi.providerConfigDiscoveryPreview.mockResolvedValue(makeDiscoveryPreview());
+    mockSecretsApi.remoteImportPreview.mockResolvedValue(makeRemoteImportPreview());
   });
 
   afterEach(() => {
@@ -292,6 +308,7 @@ describe("Secrets page layout", () => {
           onRemove={vi.fn()}
           onSetDefault={vi.fn()}
           onHealthCheck={vi.fn()}
+          onImportSecrets={vi.fn()}
           pendingActionId={null}
         />,
       );
@@ -305,6 +322,58 @@ describe("Secrets page layout", () => {
 
     await act(async () => {
       vaultRoot.unmount();
+    });
+  });
+
+  it("refreshes existing AWS secrets from a provider vault card", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const vaultTabButton = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Provider vaults"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      vaultTabButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      vaultTabButton?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      vaultTabButton?.click();
+    });
+    await flushReact();
+
+    const refreshButton = document.querySelector(
+      '[data-testid="provider-vault-refresh-secrets-vault-aws"]',
+    ) as HTMLButtonElement | null;
+    expect(refreshButton).not.toBeNull();
+
+    await act(async () => {
+      refreshButton?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Import from AWS Secrets Manager");
+    expect(mockSecretsApi.remoteImportPreview).toHaveBeenCalledWith("company-1", {
+      providerConfigId: "vault-aws",
+      query: null,
+      nextToken: null,
+      pageSize: 50,
+    });
+
+    await act(async () => {
+      root.unmount();
     });
   });
 

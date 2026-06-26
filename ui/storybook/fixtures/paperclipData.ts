@@ -1375,6 +1375,35 @@ export const storybookSecretProviderConfigs: CompanySecretProviderConfig[] = [
     createdAt: recent(1_800),
     updatedAt: recent(18),
   },
+  {
+    id: "provider-config-aws-blocked",
+    companyId: "company-storybook",
+    provider: "aws_secrets_manager",
+    displayName: "AWS staging blocked",
+    status: "ready",
+    isDefault: false,
+    config: {
+      region: "us-west-2",
+      namespace: "staging",
+      secretNamePrefix: "paperclip",
+      kmsKeyId: "",
+      ownerTag: "platform",
+      environmentTag: "staging",
+    },
+    healthStatus: "error",
+    healthCheckedAt: recent(22),
+    healthMessage: "AWS Secrets Manager denied ListSecrets for this vault.",
+    healthDetails: {
+      code: "access_denied",
+      message: "AWS Secrets Manager denied ListSecrets for this vault.",
+      guidance: ["Grant secretsmanager:ListSecrets before importing from this vault."],
+    },
+    disabledAt: null,
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    createdAt: recent(1_200),
+    updatedAt: recent(22),
+  },
 ];
 
 export const storybookSecretProviderDiscoveryPreview: SecretProviderConfigDiscoveryPreviewResult = {
