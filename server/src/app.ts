@@ -143,6 +143,8 @@ export async function createApp(
     databaseBackupService?: InstanceDatabaseBackupService;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
+    /** NEO-234 Option 2: scoped install-only loopback deploy token. */
+    localDeployToken?: string;
     allowedHostnames: string[];
     pluginHttpAllowedPrivateHosts?: string[];
     bindHost: string;
@@ -320,6 +322,7 @@ export async function createApp(
       { workerManager },
       { toolDispatcher },
       { workerManager },
+      { localDeployToken: opts.localDeployToken },
     ),
   );
   api.use(adapterRoutes());
