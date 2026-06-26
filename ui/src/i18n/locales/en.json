@@ -91,11 +91,46 @@
       "costs": "Costs",
       "activity": "Activity",
       "settings": "Settings",
-      "agents": "Agents"
+      "agents": "Agents",
+      "home": "Home",
+      "create": "Create"
     },
+    "mobileNavAria": "Mobile navigation",
     "sections": {
       "work": "Work",
       "company": "Company"
+    }
+  },
+  "account": {
+    "boardFallback": "Board",
+    "signedIn": "Signed in",
+    "localBoard": "Local workspace board",
+    "badgeAccount": "Account",
+    "badgeLocal": "Local",
+    "openMenu": "Open account menu",
+    "version": "Paperclip v{{version}}",
+    "actions": {
+      "viewProfile": {
+        "label": "View profile",
+        "description": "Open your activity, task, and usage ledger."
+      },
+      "editProfile": {
+        "label": "Edit profile",
+        "description": "Update your display name and avatar."
+      },
+      "documentation": {
+        "label": "Documentation",
+        "description": "Open Paperclip docs in a new tab."
+      },
+      "feedback": {
+        "label": "Feedback",
+        "description": "Share feedback or report an issue."
+      }
+    },
+    "signOut": {
+      "label": "Sign out",
+      "pending": "Signing out...",
+      "description": "End this browser session."
     }
   },
   "command": {

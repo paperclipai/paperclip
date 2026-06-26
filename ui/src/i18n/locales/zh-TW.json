@@ -91,12 +91,15 @@
       "costs": "成本",
       "activity": "活動",
       "settings": "設定",
-      "agents": "智慧代理"
+      "agents": "智慧代理",
+      "home": "首頁",
+      "create": "建立"
     },
     "sections": {
       "work": "工作",
       "company": "公司"
-    }
+    },
+    "mobileNavAria": "行動導覽"
   },
   "command": {
     "placeholder": "搜尋任務、智慧代理、專案……",
@@ -122,6 +125,38 @@
     "searchAll": {
       "label": "搜尋全部",
       "openFullSearch": "開啟完整搜尋"
+    }
+  },
+  "account": {
+    "boardFallback": "委員會",
+    "signedIn": "已登入",
+    "localBoard": "本機工作區委員會",
+    "badgeAccount": "帳號",
+    "badgeLocal": "本機",
+    "openMenu": "開啟帳號選單",
+    "version": "Paperclip v{{version}}",
+    "actions": {
+      "viewProfile": {
+        "label": "檢視個人檔案",
+        "description": "開啟你的活動、任務和使用記錄。"
+      },
+      "editProfile": {
+        "label": "編輯資料",
+        "description": "更新你的顯示名稱和頭像。"
+      },
+      "documentation": {
+        "label": "文件",
+        "description": "在新分頁開啟 Paperclip 文件。"
+      },
+      "feedback": {
+        "label": "回饋",
+        "description": "分享回饋或回報問題。"
+      }
+    },
+    "signOut": {
+      "label": "登出",
+      "pending": "正在登出……",
+      "description": "結束目前瀏覽器工作階段。"
     }
   }
 }

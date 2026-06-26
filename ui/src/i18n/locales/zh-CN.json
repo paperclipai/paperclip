@@ -91,12 +91,15 @@
       "costs": "成本",
       "activity": "活动",
       "settings": "设置",
-      "agents": "智能体"
+      "agents": "智能体",
+      "home": "首页",
+      "create": "创建"
     },
     "sections": {
       "work": "工作",
       "company": "公司"
-    }
+    },
+    "mobileNavAria": "移动端导航"
   },
   "command": {
     "placeholder": "搜索任务、智能体、项目……",
@@ -122,6 +125,38 @@
     "searchAll": {
       "label": "搜索全部",
       "openFullSearch": "打开完整搜索"
+    }
+  },
+  "account": {
+    "boardFallback": "委员会",
+    "signedIn": "已登录",
+    "localBoard": "本地工作区委员会",
+    "badgeAccount": "账号",
+    "badgeLocal": "本地",
+    "openMenu": "打开账号菜单",
+    "version": "Paperclip v{{version}}",
+    "actions": {
+      "viewProfile": {
+        "label": "查看个人主页",
+        "description": "打开你的活动、任务和使用记录。"
+      },
+      "editProfile": {
+        "label": "编辑资料",
+        "description": "更新你的显示名称和头像。"
+      },
+      "documentation": {
+        "label": "文档",
+        "description": "在新标签页打开 Paperclip 文档。"
+      },
+      "feedback": {
+        "label": "反馈",
+        "description": "分享反馈或报告问题。"
+      }
+    },
+    "signOut": {
+      "label": "退出登录",
+      "pending": "正在退出……",
+      "description": "结束当前浏览器会话。"
     }
   }
 }
