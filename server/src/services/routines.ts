@@ -46,6 +46,7 @@ import {
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
+  isValidRoutineDateString,
   pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
@@ -223,10 +224,22 @@ function parseNumberVariableValue(name: string, raw: unknown) {
   throw unprocessable(`Variable "${name}" must be a number`);
 }
 
+function parseDateVariableValue(name: string, raw: unknown) {
+  if (typeof raw !== "string") {
+    throw unprocessable(`Variable "${name}" must be a YYYY-MM-DD date`);
+  }
+  const normalized = raw.trim();
+  if (!isValidRoutineDateString(normalized)) {
+    throw unprocessable(`Variable "${name}" must be a valid YYYY-MM-DD date`);
+  }
+  return normalized;
+}
+
 function normalizeRoutineVariableValue(variable: RoutineVariable, raw: unknown): string | number | boolean | null {
   if (raw == null) return null;
   if (variable.type === "boolean") return parseBooleanVariableValue(variable.name, raw);
   if (variable.type === "number") return parseNumberVariableValue(variable.name, raw);
+  if (variable.type === "date") return parseDateVariableValue(variable.name, raw);
 
   const normalized = stringifyRoutineVariableValue(raw);
   if (variable.type === "select") {

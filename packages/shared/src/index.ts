@@ -1439,6 +1439,8 @@ export {
   getBuiltinRoutineVariableValues,
   interpolateRoutineTemplate,
   isBuiltinRoutineVariable,
+  isRoutineDateVariableName,
+  isValidRoutineDateString,
   isValidRoutineVariableName,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,

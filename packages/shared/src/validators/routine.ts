@@ -13,6 +13,7 @@ import {
   issueExecutionWorkspaceSettingsSchema,
 } from "./issue.js";
 import { envConfigSchema } from "./secret.js";
+import { isValidRoutineDateString } from "../routine-variables.js";
 
 const routineVariableValueSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
 
@@ -44,6 +45,15 @@ export const routineVariableSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ["defaultValue"],
         message: "Select variable defaults must match one of the allowed options",
+      });
+    }
+  }
+  if (value.type === "date" && value.defaultValue != null) {
+    if (typeof value.defaultValue !== "string" || !isValidRoutineDateString(value.defaultValue)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["defaultValue"],
+        message: "Date variable defaults must be valid YYYY-MM-DD calendar dates",
       });
     }
   }
