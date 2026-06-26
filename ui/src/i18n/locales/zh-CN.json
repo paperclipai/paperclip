@@ -40,5 +40,61 @@
       "wrongAccount": "账号不对?",
       "switchAccount": "切换账号"
     }
+  },
+  "auth": {
+    "loading": "加载中……",
+    "brandName": "Paperclip",
+    "signIn": {
+      "title": "登录 Paperclip",
+      "subtitle": "使用邮箱和密码访问此实例。",
+      "submit": "登录",
+      "promptSwitch": "还没有账号?",
+      "switchAction": "创建一个"
+    },
+    "signUp": {
+      "title": "创建你的 Paperclip 账号",
+      "subtitle": "为此实例创建账号。v1 版本无需邮箱验证。",
+      "submit": "创建账号",
+      "promptSwitch": "已有账号?",
+      "switchAction": "去登录"
+    },
+    "fields": {
+      "name": "姓名",
+      "email": "邮箱",
+      "password": "密码"
+    },
+    "submitting": "处理中……",
+    "error": {
+      "requiredFields": "请填写所有必填项。",
+      "authenticationFailed": "认证失败"
+    }
+  },
+  "nav": {
+    "search": "打开搜索",
+    "expandSidebar": "展开侧边栏",
+    "collapseSidebar": "收起侧边栏",
+    "keepExpanded": "保持侧边栏展开",
+    "newTask": "新建任务",
+    "unread": "未读",
+    "items": {
+      "dashboard": "仪表盘",
+      "inbox": "收件箱",
+      "conferenceRoom": "会议室",
+      "tasks": "任务",
+      "routines": "例程",
+      "goals": "目标",
+      "artifacts": "产物",
+      "skills": "技能",
+      "workspaces": "工作区",
+      "projects": "项目",
+      "org": "组织",
+      "costs": "成本",
+      "activity": "活动",
+      "settings": "设置"
+    },
+    "sections": {
+      "work": "工作",
+      "company": "公司"
+    }
   }
 }

@@ -40,5 +40,61 @@
       "wrongAccount": "Wrong account?",
       "switchAccount": "Switch account"
     }
+  },
+  "auth": {
+    "loading": "Loading…",
+    "brandName": "Paperclip",
+    "signIn": {
+      "title": "Sign in to Paperclip",
+      "subtitle": "Use your email and password to access this instance.",
+      "submit": "Sign In",
+      "promptSwitch": "Need an account?",
+      "switchAction": "Create one"
+    },
+    "signUp": {
+      "title": "Create your Paperclip account",
+      "subtitle": "Create an account for this instance. Email confirmation is not required in v1.",
+      "submit": "Create Account",
+      "promptSwitch": "Already have an account?",
+      "switchAction": "Sign in"
+    },
+    "fields": {
+      "name": "Name",
+      "email": "Email",
+      "password": "Password"
+    },
+    "submitting": "Working…",
+    "error": {
+      "requiredFields": "Please fill in all required fields.",
+      "authenticationFailed": "Authentication failed"
+    }
+  },
+  "nav": {
+    "search": "Open search",
+    "expandSidebar": "Expand sidebar",
+    "collapseSidebar": "Collapse sidebar",
+    "keepExpanded": "Keep sidebar expanded",
+    "newTask": "New Task",
+    "unread": "unread",
+    "items": {
+      "dashboard": "Dashboard",
+      "inbox": "Inbox",
+      "conferenceRoom": "Conference Room",
+      "tasks": "Tasks",
+      "routines": "Routines",
+      "goals": "Goals",
+      "artifacts": "Artifacts",
+      "skills": "Skills",
+      "workspaces": "Workspaces",
+      "projects": "Projects",
+      "org": "Org",
+      "costs": "Costs",
+      "activity": "Activity",
+      "settings": "Settings"
+    },
+    "sections": {
+      "work": "Work",
+      "company": "Company"
+    }
   }
 }

@@ -40,5 +40,61 @@
       "wrongAccount": "帳號不對?",
       "switchAccount": "切換帳號"
     }
+  },
+  "auth": {
+    "loading": "載入中……",
+    "brandName": "Paperclip",
+    "signIn": {
+      "title": "登入 Paperclip",
+      "subtitle": "使用電子郵件和密碼存取此實例。",
+      "submit": "登入",
+      "promptSwitch": "還沒有帳號?",
+      "switchAction": "建立一個"
+    },
+    "signUp": {
+      "title": "建立你的 Paperclip 帳號",
+      "subtitle": "為此實例建立帳號。v1 版本無需電子郵件驗證。",
+      "submit": "建立帳號",
+      "promptSwitch": "已有帳號?",
+      "switchAction": "去登入"
+    },
+    "fields": {
+      "name": "姓名",
+      "email": "電子郵件",
+      "password": "密碼"
+    },
+    "submitting": "處理中……",
+    "error": {
+      "requiredFields": "請填寫所有必填欄位。",
+      "authenticationFailed": "認證失敗"
+    }
+  },
+  "nav": {
+    "search": "開啟搜尋",
+    "expandSidebar": "展開側邊欄",
+    "collapseSidebar": "收合側邊欄",
+    "keepExpanded": "保持側邊欄展開",
+    "newTask": "新建任務",
+    "unread": "未讀",
+    "items": {
+      "dashboard": "儀表板",
+      "inbox": "收件匣",
+      "conferenceRoom": "會議室",
+      "tasks": "任務",
+      "routines": "排程",
+      "goals": "目標",
+      "artifacts": "產物",
+      "skills": "技能",
+      "workspaces": "工作區",
+      "projects": "專案",
+      "org": "組織",
+      "costs": "成本",
+      "activity": "活動",
+      "settings": "設定"
+    },
+    "sections": {
+      "work": "工作",
+      "company": "公司"
+    }
   }
 }
