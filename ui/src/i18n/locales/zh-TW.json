@@ -158,5 +158,45 @@
       "pending": "正在登出……",
       "description": "結束目前瀏覽器工作階段。"
     }
+  },
+  "dashboard": {
+    "welcome": {
+      "message": "歡迎使用 Paperclip。設定你的第一家公司和智慧代理即可開始。",
+      "action": "開始設定"
+    },
+    "noCompany": "建立或選擇一家公司以檢視儀表板。",
+    "noAgents": {
+      "warning": "你還沒有智慧代理。",
+      "createHere": "在此建立"
+    },
+    "budget": {
+      "incidents": "{{count}} 個活躍預算事件",
+      "summary": "{{pausedAgents}} 個智慧代理已暫停 · {{pausedProjects}} 個專案已暫停 · {{pendingApprovals}} 個預算審批待處理",
+      "open": "檢視預算"
+    },
+    "metrics": {
+      "agentsEnabled": "已啟用智慧代理",
+      "agentsDesc": "{{running}} 運行中，{{paused}} 已暫停，{{error}} 個錯誤",
+      "tasksInProgress": "進行中任務",
+      "tasksDesc": "{{open}} 個待辦，{{blocked}} 個阻塞",
+      "monthSpend": "本月支出",
+      "budgetPercent": "已用 {{budget}} 預算的 {{percent}}%",
+      "unlimitedBudget": "無預算限制",
+      "pendingApprovals": "待審批",
+      "budgetOverrides": "{{count}} 個預算變更待委員會審查",
+      "awaitingReview": "等待委員會審查"
+    },
+    "charts": {
+      "runActivity": "執行活動",
+      "tasksByPriority": "按優先級",
+      "tasksByStatus": "按狀態",
+      "successRate": "成功率",
+      "last14Days": "近 14 天"
+    },
+    "sections": {
+      "recentActivity": "最近活動",
+      "recentTasks": "最近任務"
+    },
+    "noTasks": "暫無任務。"
   }
 }

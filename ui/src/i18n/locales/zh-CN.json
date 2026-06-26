@@ -158,5 +158,45 @@
       "pending": "正在退出……",
       "description": "结束当前浏览器会话。"
     }
+  },
+  "dashboard": {
+    "welcome": {
+      "message": "欢迎使用 Paperclip。设置你的第一家公司和智能体即可开始。",
+      "action": "开始设置"
+    },
+    "noCompany": "创建或选择一家公司以查看仪表盘。",
+    "noAgents": {
+      "warning": "你还没有智能体。",
+      "createHere": "在此创建"
+    },
+    "budget": {
+      "incidents": "{{count}} 个活跃预算事件",
+      "summary": "{{pausedAgents}} 个智能体已暂停 · {{pausedProjects}} 个项目已暂停 · {{pendingApprovals}} 个预算审批待处理",
+      "open": "查看预算"
+    },
+    "metrics": {
+      "agentsEnabled": "已启用智能体",
+      "agentsDesc": "{{running}} 运行中，{{paused}} 已暂停，{{error}} 个错误",
+      "tasksInProgress": "进行中任务",
+      "tasksDesc": "{{open}} 个待办，{{blocked}} 个阻塞",
+      "monthSpend": "本月支出",
+      "budgetPercent": "已用 {{budget}} 预算的 {{percent}}%",
+      "unlimitedBudget": "无预算限制",
+      "pendingApprovals": "待审批",
+      "budgetOverrides": "{{count}} 个预算变更待委员会审查",
+      "awaitingReview": "等待委员会审查"
+    },
+    "charts": {
+      "runActivity": "运行活动",
+      "tasksByPriority": "按优先级",
+      "tasksByStatus": "按状态",
+      "successRate": "成功率",
+      "last14Days": "近 14 天"
+    },
+    "sections": {
+      "recentActivity": "最近活动",
+      "recentTasks": "最近任务"
+    },
+    "noTasks": "暂无任务。"
   }
 }
