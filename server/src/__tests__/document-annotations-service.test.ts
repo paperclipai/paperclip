@@ -11,6 +11,7 @@ import {
   documents,
   issueComments,
   issueDocuments,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import {
@@ -19,6 +20,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { documentAnnotationService } from "../services/document-annotations.js";
 import { documentService } from "../services/documents.js";
+import { buildPlanReviewContext, PLAN_REVIEW_CONTEXT_LIMITS } from "../services/plan-review-context.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -56,6 +58,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     await db.delete(documentAnnotationAnchorSnapshots);
     await db.delete(documentAnnotationComments);
     await db.delete(documentAnnotationThreads);
+    await db.delete(issueThreadInteractions);
     await db.delete(documentRevisions);
     await db.delete(issueDocuments);
     await db.delete(documents);
@@ -86,6 +89,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
       title: "Annotation race",
       description: "Validate annotation revision guards",
       status: "in_progress",
+      workMode: "planning",
       priority: "high",
     });
 
@@ -313,5 +317,165 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
 
     expect(cleanup.deletedCommentIds).toEqual([thread.comments[0]!.id]);
     expect(cleanup.resolvedThreadIds).toEqual([]);
+  });
+
+  it("builds compact open plan review context and excludes resolved threads", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument();
+    const longBody = "x".repeat(PLAN_REVIEW_CONTEXT_LIMITS.maxBodyChars + 25);
+    const openThread = await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: longBody,
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+    const resolvedThread = await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Already resolved",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+    await db
+      .update(documentAnnotationThreads)
+      .set({
+        status: "resolved",
+        anchorState: "stale",
+        anchorConfidence: "fuzzy",
+        resolvedByUserId: "board-user",
+        resolvedAt: new Date("2026-06-05T03:05:00.000Z"),
+      })
+      .where(eq(documentAnnotationThreads.id, resolvedThread.id));
+
+    const context = await buildPlanReviewContext({
+      db,
+      companyId,
+      issueId,
+      issueWorkMode: "planning",
+    });
+
+    expect(context).toMatchObject({
+      documentKey: "plan",
+      issueId,
+      latestRevisionId: document.latestRevisionId,
+      latestRevisionNumber: document.latestRevisionNumber,
+      totals: {
+        openThreadCount: 1,
+        includedThreadCount: 1,
+        omittedThreadCount: 0,
+        commentCount: 1,
+        includedCommentCount: 1,
+        omittedCommentCount: 0,
+      },
+      truncated: true,
+    });
+    expect(context?.threads.map((thread) => thread.id)).toEqual([openThread.id]);
+    expect(context?.threads[0]).toMatchObject({
+      status: "open",
+      anchorState: "active",
+      anchorConfidence: "exact",
+      selectedText: "selected text",
+      prefixText: "Alpha ",
+      suffixText: " omega",
+      comments: [
+        expect.objectContaining({
+          body: "x".repeat(PLAN_REVIEW_CONTEXT_LIMITS.maxBodyChars),
+          bodyTruncated: true,
+          author: { type: "user", id: "board-user" },
+        }),
+      ],
+    });
+  });
+
+  it("includes same-issue plan confirmation target/result and rejects cross-issue interaction context", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument();
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId,
+      identifier: "PAP-9443",
+      title: "Other planning task",
+      description: null,
+      status: "in_progress",
+      workMode: "planning",
+      priority: "medium",
+    });
+    const [interaction] = await db
+      .insert(issueThreadInteractions)
+      .values({
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        payload: {
+          version: 1,
+          prompt: "Approve this plan?",
+          target: {
+            type: "issue_document",
+            issueId,
+            documentId: document.id,
+            key: "plan",
+            revisionId: document.latestRevisionId,
+            revisionNumber: document.latestRevisionNumber,
+          },
+        },
+        result: {
+          version: 1,
+          outcome: "accepted",
+          reason: null,
+        },
+        resolvedAt: new Date("2026-06-05T03:10:00.000Z"),
+      })
+      .returning();
+
+    const context = await buildPlanReviewContext({
+      db,
+      companyId,
+      issueId,
+      issueWorkMode: "standard",
+      interactionId: interaction.id,
+    });
+    expect(context?.interaction).toMatchObject({
+      id: interaction.id,
+      status: "accepted",
+      target: {
+        issueId,
+        documentId: document.id,
+        key: "plan",
+        revisionId: document.latestRevisionId,
+        revisionNumber: document.latestRevisionNumber,
+      },
+      acceptedTargetRevision: {
+        revisionId: document.latestRevisionId,
+        revisionNumber: document.latestRevisionNumber,
+      },
+      result: {
+        outcome: "accepted",
+        reason: null,
+      },
+    });
+
+    await expect(buildPlanReviewContext({
+      db,
+      companyId,
+      issueId: otherIssueId,
+      issueWorkMode: "standard",
+      interactionId: interaction.id,
+    })).resolves.toBeNull();
   });
 });
