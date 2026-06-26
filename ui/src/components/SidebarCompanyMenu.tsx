@@ -291,7 +291,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           disabled={isEditingOrder}
         >
           <Plus className="size-4" />
-          <span>Create new company</span>
+          <span>Create new company...</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild disabled={isEditingOrder}>
