@@ -193,7 +193,8 @@
       "costs": "Select a company to view costs.",
       "skills": "Select a company to manage skills.",
       "secrets": "Select a company to manage secrets.",
-      "workspace": "Select a company to manage execution workspaces."
+      "workspace": "Select a company to manage execution workspaces.",
+      "access": "Select a company to manage access."
     },
     "sort": {
       "name": "Name",
@@ -766,6 +767,58 @@
     },
     "placeholders": {
       "searchFiles": "Search files..."
+    }
+  },
+  "companyAccess": {
+    "toasts": {
+      "approveJoinFailed": "Failed to approve join request",
+      "rejectJoinFailed": "Failed to reject join request",
+      "removeMemberFailed": "Failed to remove member",
+      "updateMemberFailed": "Failed to update member",
+      "joinApproved": "Join request approved",
+      "joinRejected": "Join request rejected",
+      "memberRemoved": "Member removed",
+      "memberUpdated": "Member updated"
+    },
+    "errors": {
+      "unknown": "Unknown error"
+    },
+    "fallbacks": {
+      "unknownRequester": "Unknown human requester",
+      "noEmail": "No email available"
+    },
+    "labelsJsx": {
+      "agents": "Agents",
+      "humans": "Humans"
+    },
+    "labelsObj": {
+      "access": "Access",
+      "members": "Members",
+      "settings": "Settings"
+    },
+    "text": {
+      "action": "Action",
+      "active": "Active",
+      "advancedPermissions": "Advanced Permissions",
+      "advancedPermissionsUnavailable": "Advanced permissions unavailable",
+      "checkingExtensions": "Checking for advanced permission extensions...",
+      "companyMembers": "Company Members",
+      "companyRole": "Company role",
+      "editMember": "Edit member",
+      "leaveUnassigned": "Leave unassigned",
+      "membershipStatus": "Membership status",
+      "noMembershipsFound": "No user memberships found for this company yet.",
+      "openInvites": "Open Invites",
+      "openMembers": "Open Members",
+      "pending": "Pending",
+      "pendingHumanJoins": "Pending human joins",
+      "removeMember": "Remove member",
+      "role": "Role",
+      "status": "Status",
+      "suspended": "Suspended",
+      "taskReassignment": "Task reassignment",
+      "unset": "Unset",
+      "userAccount": "User account"
     }
   }
 }

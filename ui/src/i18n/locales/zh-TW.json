@@ -219,7 +219,8 @@
       "costs": "選擇一家公司以檢視成本。",
       "skills": "選擇一家公司以管理技能。",
       "secrets": "選擇一家公司以管理密鑰。",
-      "workspace": "選擇一家公司以管理工作區。"
+      "workspace": "選擇一家公司以管理工作區。",
+      "access": "選擇一家公司以管理存取權限。"
     },
     "sort": {
       "name": "名稱",
@@ -766,6 +767,58 @@
     },
     "placeholders": {
       "searchFiles": "搜尋檔案……"
+    }
+  },
+  "companyAccess": {
+    "toasts": {
+      "approveJoinFailed": "審批加入請求失敗",
+      "rejectJoinFailed": "拒絕加入請求失敗",
+      "removeMemberFailed": "移除成員失敗",
+      "updateMemberFailed": "更新成員失敗",
+      "joinApproved": "加入請求已核准",
+      "joinRejected": "加入請求已拒絕",
+      "memberRemoved": "成員已移除",
+      "memberUpdated": "成員已更新"
+    },
+    "errors": {
+      "unknown": "未知錯誤"
+    },
+    "fallbacks": {
+      "unknownRequester": "未知人類請求者",
+      "noEmail": "無可用電子郵件"
+    },
+    "labelsJsx": {
+      "agents": "智慧代理",
+      "humans": "人類"
+    },
+    "labelsObj": {
+      "access": "存取",
+      "members": "成員",
+      "settings": "設定"
+    },
+    "text": {
+      "action": "操作",
+      "active": "活躍",
+      "advancedPermissions": "進階權限",
+      "advancedPermissionsUnavailable": "進階權限不可用",
+      "checkingExtensions": "正在檢查進階權限擴充……",
+      "companyMembers": "公司成員",
+      "companyRole": "公司角色",
+      "editMember": "編輯成員",
+      "leaveUnassigned": "保持未分配",
+      "membershipStatus": "成員資格狀態",
+      "noMembershipsFound": "此公司暫無使用者成員。",
+      "openInvites": "開啟邀請",
+      "openMembers": "開啟成員",
+      "pending": "待處理",
+      "pendingHumanJoins": "待處理的人類加入",
+      "removeMember": "移除成員",
+      "role": "角色",
+      "status": "狀態",
+      "suspended": "已暫停",
+      "taskReassignment": "工作重新分配",
+      "unset": "未設定",
+      "userAccount": "使用者帳號"
     }
   }
 }
