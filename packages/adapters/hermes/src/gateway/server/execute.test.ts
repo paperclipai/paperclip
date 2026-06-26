@@ -144,6 +144,51 @@ describe("execute", () => {
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 
+  it("redacts echoed auth material from stream logs and summaries", async () => {
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: message.delta",
+              "data: {\"delta\":\"Authorization: Bearer secret-key\\nX-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1\"}",
+              "",
+              "event: run.completed",
+              "data: {\"status\":\"completed\",\"output\":\"Authorization: Bearer secret-key\\nX-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1\"}",
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(ctx);
+    const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toContain("Bearer [redacted]");
+    expect(result.summary).toContain("X-Hermes-Session-Key: [redacted]");
+    expect(result.summary).not.toContain("secret-key");
+    expect(result.summary).not.toContain("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+    expect(result.resultJson?.output).toBe(result.summary);
+    expect(logText).toContain("Bearer [redacted]");
+    expect(logText).toContain("X-Hermes-Session-Key: [redacted]");
+    expect(logText).not.toContain("secret-key");
+    expect(logText).not.toContain("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+  });
+
   it("falls back to polling when SSE is unavailable", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -181,6 +226,34 @@ describe("execute", () => {
     }));
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_auth_failed");
+  });
+
+  it("redacts echoed auth material from HTTP error payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            message: "Authorization rejected: Bearer secret-key",
+            detail: "X-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1",
+          }),
+          { status: 401 },
+        )),
+    );
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_auth_failed");
+    expect(result.errorMeta?.body).toEqual({
+      message: "Authorization rejected: Bearer [redacted]",
+      detail: "X-Hermes-Session-Key: [redacted]",
+    });
+    expect(result.errorMessage).not.toContain("secret-key");
+    expect(result.errorMessage).not.toContain("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 
   it("calls stop on timeout", async () => {

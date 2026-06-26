@@ -65,6 +65,10 @@ const CRITICAL_HEADERS = new Set([
 
 const SENSITIVE_KEY_PATTERN =
   /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)/i;
+const BEARER_TOKEN_PATTERN = /Bearer\s+\S+/gi;
+const HERMES_SESSION_KEY_HEADER_PATTERN = /(X-Hermes-Session-Key\s*[:=]\s*)([^\s,;]+)/gi;
+const PAPERCLIP_SESSION_KEY_PATTERN =
+  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+:(?:issue|run):[A-Za-z0-9-]+|run:[A-Za-z0-9-]+)\b/gi;
 
 const TERMINAL_STATUSES = new Set([
   "completed",
@@ -153,11 +157,21 @@ function stringifyForLog(value: unknown, maxChars = 4_000): string {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}... [truncated ${text.length - maxChars} chars]`;
 }
 
+function sanitizeSensitiveText(value: string): string {
+  return value
+    .replace(BEARER_TOKEN_PATTERN, "Bearer [redacted]")
+    .replace(HERMES_SESSION_KEY_HEADER_PATTERN, "$1[redacted]")
+    .replace(PAPERCLIP_SESSION_KEY_PATTERN, "[redacted-session-key]");
+}
+
 function redactForLog(value: unknown, keyPath: string[] = [], depth = 0): unknown {
   const key = keyPath[keyPath.length - 1] ?? "";
   if (typeof value === "string") {
     if (SENSITIVE_KEY_PATTERN.test(key)) return `[redacted len=${value.length}]`;
-    return value.length > 500 ? `${value.slice(0, 500)}... [truncated ${value.length - 500} chars]` : value;
+    const sanitized = sanitizeSensitiveText(value);
+    return sanitized.length > 500
+      ? `${sanitized.slice(0, 500)}... [truncated ${sanitized.length - 500} chars]`
+      : sanitized;
   }
   if (value == null || typeof value === "number" || typeof value === "boolean") return value;
   if (Array.isArray(value)) {
@@ -407,8 +421,9 @@ async function handleEvent(
 
   const delta = nonEmpty(record?.delta) ?? nonEmpty(record?.text_delta);
   if (eventName === "message.delta" && delta) {
-    state.outputChunks.push(delta);
-    await ctx.onLog("stdout", delta);
+    const sanitizedDelta = sanitizeSensitiveText(delta);
+    state.outputChunks.push(sanitizedDelta);
+    await ctx.onLog("stdout", sanitizedDelta);
   }
 
   const status = extractStatus(parsed) ?? (eventName?.startsWith("run.") ? eventName.slice(4) : null);
@@ -579,11 +594,16 @@ export function mapFinalResultForTest(input: {
   strategy: SessionKeyStrategy;
 }): AdapterExecutionResult {
   const payload = input.terminal.payload ?? {};
-  const output = input.terminal.output ?? extractOutput(payload) ?? input.outputChunks.join("").trim();
+  const output = sanitizeSensitiveText(
+    input.terminal.output ?? extractOutput(payload) ?? input.outputChunks.join("").trim(),
+  );
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
+  const errorMessage = mapped.errorCode
+    ? sanitizeSensitiveText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
+    : null;
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
@@ -591,7 +611,7 @@ export function mapFinalResultForTest(input: {
     provider: "hermes_gateway",
     model: extractModel(payload),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
-    ...(mapped.errorCode ? { errorMessage: extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}` } : {}),
+    ...(errorMessage ? { errorMessage } : {}),
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
     ...(output ? { summary: output.slice(0, 2_000) } : {}),
@@ -659,8 +679,8 @@ async function fetchFinalStatus(input: {
 }
 
 function redactErrorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message.replace(/Bearer\s+\S+/gi, "Bearer [redacted]");
-  return String(err).replace(/Bearer\s+\S+/gi, "Bearer [redacted]");
+  if (err instanceof Error) return sanitizeSensitiveText(err.message);
+  return sanitizeSensitiveText(String(err));
 }
 
 function errorResult(err: unknown): AdapterExecutionResult {
