@@ -10098,10 +10098,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ) {
         continue;
       }
-      let cascadeDeleteLiveJob = false;
       let confirmedMissingExternalJob = false;
       if (externalLifecycleRun && externalLifecycleStarted) {
-        const lastSignalRef = run.lastOutputAt
+        const lastSignalRef = run.lastUsefulActionAt
+          ? new Date(run.lastUsefulActionAt).getTime()
+          : run.lastOutputAt
           ? new Date(run.lastOutputAt).getTime()
           : run.startedAt
           ? new Date(run.startedAt).getTime()
@@ -10155,21 +10156,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           }
 
-          if (!isSilent) continue;
-          cascadeDeleteLiveJob = true;
+          continue;
         } else if (liveJobRunIds !== null) {
-          // RCA 2026-05-06: Job-alive ≠ process-progressing. The reaper used
-          // to trust `liveJobRunIds.has(run.id)` as an oracle and skip
-          // silence checks entirely, so pods stuck in tail-loop / MCP RPC /
-          // rate-limit-overage hangs survived for hours and wedged the
-          // dispatch lock. We now apply the silence threshold uniformly,
-          // and additionally flag the live Job for cascade-deletion so the
-          // next dispatch's "Concurrent run blocked" precondition unwedges.
+          // Job-alive is the strongest liveness signal we have for external
+          // adapters. Do not kill a live-but-quiet agent just because stdout is
+          // stale; only use the silence floor when the Job is absent or kube
+          // status is unavailable.
           //
           // kube API path. Two sub-cases:
-          //   - Job IS in our snapshot: if output is fresh, skip; if silent
-          //     past the threshold, fall through AND cascade-delete the Job
-          //     so the dispatch lock unwedges.
+          //   - Job IS in our snapshot: the execution pod is alive; skip.
           //   - Job is NOT in our snapshot: previously we reaped
           //     immediately, but the snapshot can be a false negative
           //     (kube API list timeout returning a partial set, eventual
@@ -10182,8 +10177,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           //     of silence, but a healthy long-running agent whose Job
           //     just didn't make this snapshot is no longer killed.
           if (liveJobRunIds.has(run.id)) {
-            if (!isSilent) continue;
-            cascadeDeleteLiveJob = true;
+            continue;
           } else {
             if (!isSilent) continue;
           }
@@ -10349,24 +10343,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await environmentsSvc.releaseLeasesForRun(run.id, "failed");
       reaped.push(run.id);
 
-      // Cascade-delete the live k8s Job whose in-pod process hung. Without
-      // this, the next dispatch's precondition check matches the surviving
-      // Job and rejects with "Concurrent run blocked: orphaned Job ...".
-      // Best-effort: deleteAgentJobsForRun returns null on kube-API failure.
-      if (cascadeDeleteLiveJob) {
-        try {
-          const deleted = await deleteAgentJobsForRun(run.id);
-          logger.info(
-            { runId: run.id, deletedJobs: deleted },
-            "reapOrphanedRuns: cascaded Job deletion for silent external-lifecycle run",
-          );
-        } catch (error) {
-          logger.warn(
-            { runId: run.id, error: error instanceof Error ? error.message : String(error) },
-            "reapOrphanedRuns: cascade Job delete failed (run still finalized as failed)",
-          );
-        }
-      }
     }
 
     if (reaped.length > 0) {

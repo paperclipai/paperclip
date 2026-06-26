@@ -1178,15 +1178,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(run?.errorCode).toBe("process_lost");
   });
 
-  it("reaps external-lifecycle runs whose kube-API Job is live but output is silent past the staleness window (RCA 2026-05-06)", async () => {
-    // The harness reaper used to trust kube-API Job liveness as an oracle:
-    // if the Job existed, the run was assumed healthy. RCA on 2026-05-06
-    // showed 4 distinct in-pod hang causes (tail-loop wrapper, MCP RPC
-    // with no client timeout, Webflow MCP unresponsiveness, rate-limit
-    // overage rejected) where the Job stayed Running for hours while the
-    // process inside was wedged. The reaper now applies the same silence
-    // floor (EXTERNAL_LIFECYCLE_STALE_MS) regardless of Job liveness, and
-    // cascades the Job deletion so the dispatch lock unwedges.
+  it("does not reap external-lifecycle runs whose kube-API Job is live but output is silent", async () => {
+    // BLO-12138: long-running agents can be live but quiet while deep work is
+    // in progress. A live Job is an execution-liveness signal; stdout silence
+    // alone must not be upgraded to process_lost.
     const stale = new Date(Date.now() - 16 * 60 * 1000);
     const { companyId, agentId, runId } = await seedRunFixture({
       adapterType: "claude_k8s",
@@ -1199,12 +1194,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set([runId]));
 
     const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
-    expect(result.reaped).toBe(1);
-    expect(result.runIds).toEqual([runId]);
+    expect(result.reaped).toBe(0);
     const run = await heartbeat.getRun(runId);
-    expect(run?.status).toBe("failed");
-    expect(run?.errorCode).toBe("process_lost");
-    expect(mockDeleteAgentJobsForRun).toHaveBeenCalledWith(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
   });
 
   it("does not cascade-delete the Job when the run is reaped because the Job was already gone", async () => {
@@ -1626,6 +1620,27 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
   });
 
+  it("does not reap active external-lifecycle Jobs from the kube status snapshot even when output is silent", async () => {
+    const stale = new Date(Date.now() - 16 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: stale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map([[runId, { phase: "active" }]]));
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
+  });
+
   it("marks a missing external-lifecycle Job as job_missing only after the silence floor", async () => {
     const stale = new Date(Date.now() - 16 * 60 * 1000);
     const { companyId, agentId, runId } = await seedRunFixture({
@@ -1840,18 +1855,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(2);
 
     const failedRun = runs.find((row) => row.id === runId);
-    const retryRun = runs.find((row) =>
-      (row.contextSnapshot as Record<string, unknown> | null)?.retryOfRunId === runId
-    );
+    const retryRun = runs.find((row) => row.retryOfRunId === runId);
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("process_lost");
     expect(failedRun?.error).toContain("before external adapter invocation");
     expect(retryRun?.status).toBe("queued");
-    expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
   });
 
-  it("queues exactly one retry when the recorded local pid is dead", async () => {
+  it("does not queue process_lost_retry for non-PR runs when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
       processPid: 999_999_999,

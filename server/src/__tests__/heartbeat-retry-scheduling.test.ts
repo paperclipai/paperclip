@@ -306,27 +306,41 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await expectPlainPrReviewFailureSchedulesRetry("process_lost");
   });
 
-  it("does not schedule a bounded retry for non-PR adapter_failed without adapter recovery metadata", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const sourceRunId = randomUUID();
-    const now = new Date("2026-05-25T08:05:00.000Z");
+  it.each(["adapter_failed", "process_lost"] as const)(
+    "does not schedule a bounded retry for non-PR %s without adapter recovery metadata",
+    async (errorCode) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const sourceRunId = randomUUID();
+      const now = new Date("2026-05-25T08:05:00.000Z");
 
-    await seedQueuedRunFixture({
-      companyId,
-      agentId,
-      runId: sourceRunId,
-      now,
-      contextSnapshot: {
-        issueId: randomUUID(),
-        wakeReason: "issue_assigned",
-      },
-    });
+      await seedQueuedRunFixture({
+        companyId,
+        agentId,
+        runId: sourceRunId,
+        now,
+        contextSnapshot: {
+          issueId: randomUUID(),
+          wakeReason: "issue_assigned",
+        },
+      });
+      mockAdapterExecute.mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: errorCode === "process_lost" ? "Process lost" : "Adapter failed",
+        errorCode,
+        summary: "failed",
+        resultJson: {},
+        provider: "test",
+        model: "test-model",
+      });
 
-    await heartbeat.__test_executeRunForTesting(sourceRunId);
+      await heartbeat.__test_executeRunForTesting(sourceRunId);
 
-    expect(await getScheduledTransientRetryForRun(sourceRunId)).toBeNull();
-  });
+      expect(await getScheduledTransientRetryForRun(sourceRunId)).toBeNull();
+    },
+  );
 
   it("schedules a retry with durable metadata and only promotes it when due", async () => {
     const companyId = randomUUID();
@@ -444,6 +458,17 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
           wakeReason: "github_pr_review_submitted",
           reviewKind: "pr_review",
           githubPrNumber: 976,
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "process_lost",
+        resultJson: {},
+        contextSnapshot: {
+          taskKey: "pr_review:Blockcast/paperclip:976",
+          wakeReason: "process_lost_retry",
         },
       }),
     ).toBe(true);
