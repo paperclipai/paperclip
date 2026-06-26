@@ -160,6 +160,7 @@ export const queryKeys = {
   },
   environments: {
     list: (companyId: string) => ["environments", companyId] as const,
+    capabilities: (companyId: string) => ["environment-capabilities", companyId] as const,
   },
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,

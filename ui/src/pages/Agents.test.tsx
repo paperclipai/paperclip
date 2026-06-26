@@ -374,6 +374,82 @@ describe("Agents", () => {
     expect(container.textContent).toContain("Daytona sandbox provider");
   });
 
+  it("uses configured names for local-driver environments", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        defaultEnvironmentId: "env-local",
+      }),
+    ]);
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({
+        id: "env-local",
+        name: "Dev Laptop",
+        driver: "local",
+        config: {},
+      }),
+      makeEnvironment({ id: "env-daytona" }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Dev Laptop");
+    expect(container.textContent).toContain("Paperclip host");
+  });
+
+  it("reserves the environment column while environment metadata is loading", async () => {
+    let resolveEnvironments: (environments: Environment[]) => void = () => {};
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        defaultEnvironmentId: "env-daytona",
+      }),
+    ]);
+    mockEnvironmentsApi.list.mockReturnValue(new Promise((resolve) => {
+      resolveEnvironments = resolve;
+    }));
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Loading environment");
+
+    await act(async () => {
+      resolveEnvironments([
+        makeEnvironment({
+          id: "env-local",
+          name: "Local",
+          driver: "local",
+          config: {},
+        }),
+        makeEnvironment({ id: "env-daytona" }),
+      ]);
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Daytona Sandbox");
+    expect(container.textContent).not.toContain("Loading environment");
+  });
+
   it("hides the environment column when there is only one configured environment", async () => {
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({

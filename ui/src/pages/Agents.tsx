@@ -34,20 +34,22 @@ const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 type FilterTab = "all" | "active" | "paused" | "error";
 
-const LOCAL_ENVIRONMENT_KEY = "__local__";
-
 interface EnvironmentDescriptor {
-  key: string;
   label: string;
   detail: string;
   title: string;
 }
 
 const localEnvironmentDescriptor: EnvironmentDescriptor = {
-  key: LOCAL_ENVIRONMENT_KEY,
   label: "Local",
   detail: "Paperclip host",
   title: "Local - Paperclip host",
+};
+
+const loadingEnvironmentDescriptor: EnvironmentDescriptor = {
+  label: "—",
+  detail: "Loading environment",
+  title: "Loading environment",
 };
 
 // Agents in these states never appear in the agents list — `terminated` is
@@ -96,14 +98,13 @@ function describeEnvironment(
   environment: Environment,
   capabilities?: EnvironmentCapabilities | null,
 ): EnvironmentDescriptor {
-  if (environment.driver === "local") return localEnvironmentDescriptor;
-
   const detail = environment.driver === "sandbox"
     ? `${getSandboxProviderLabel(environment, capabilities)} sandbox provider`
-    : formatEnvironmentDriver(environment.driver);
+    : environment.driver === "local"
+      ? "Paperclip host"
+      : formatEnvironmentDriver(environment.driver);
 
   return {
-    key: environment.id,
     label: environment.name,
     detail,
     title: `${environment.name} - ${detail}`,
@@ -112,7 +113,6 @@ function describeEnvironment(
 
 function describeMissingEnvironment(environmentId: string): EnvironmentDescriptor {
   return {
-    key: environmentId,
     label: "Unknown environment",
     detail: environmentId.slice(0, 8),
     title: `Unknown environment - ${environmentId}`,
@@ -190,7 +190,7 @@ export function Agents() {
   });
 
   const { data: environmentCapabilities } = useQuery({
-    queryKey: [...queryKeys.environments.list(selectedCompanyId!), "capabilities"],
+    queryKey: queryKeys.environments.capabilities(selectedCompanyId!),
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
     enabled: !!selectedCompanyId && environmentsEnabled,
   });
@@ -261,7 +261,13 @@ export function Agents() {
 
   const filtered = filterAgents(agents ?? [], tab);
   const filteredOrg = filterOrgTree(orgTree ?? [], tab);
-  const showEnvironmentColumn = environmentsEnabled && (environments?.length ?? 0) > 1;
+  const environmentDataLoading = environmentsEnabled && environments === undefined;
+  const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
+  const resolveRenderedEnvironment = (agentId: string) => (
+    environmentDataLoading
+      ? loadingEnvironmentDescriptor
+      : environmentByAgentId.get(agentId) ?? localEnvironmentDescriptor
+  );
 
   const renderAgentRow = (agent: Agent) => {
     const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
@@ -290,7 +296,7 @@ export function Agents() {
           <div className="hidden xl:flex items-center gap-3">
             <AgentMetaColumns
               agent={agent}
-              environment={environmentByAgentId.get(agent.id) ?? localEnvironmentDescriptor}
+              environment={resolveRenderedEnvironment(agent.id)}
               showEnvironment={showEnvironmentColumn}
             />
           </div>
@@ -454,6 +460,7 @@ export function Agents() {
               agentMap={agentMap}
               liveRunByAgent={liveRunByAgent}
               environmentByAgentId={environmentByAgentId}
+              environmentDataLoading={environmentDataLoading}
               showEnvironment={showEnvironmentColumn}
               tab={tab}
               memberships={membershipsQuery.data}
@@ -484,6 +491,7 @@ function OrgTreeNode({
   agentMap,
   liveRunByAgent,
   environmentByAgentId,
+  environmentDataLoading,
   showEnvironment,
   tab,
   memberships,
@@ -494,6 +502,7 @@ function OrgTreeNode({
   agentMap: Map<string, Agent>;
   liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
   environmentByAgentId: Map<string, EnvironmentDescriptor>;
+  environmentDataLoading: boolean;
   showEnvironment: boolean;
   tab: FilterTab;
   memberships: ReturnType<typeof useResourceMemberships>["data"];
@@ -552,7 +561,11 @@ function OrgTreeNode({
               <div className="hidden xl:flex items-center gap-3">
                 <AgentMetaColumns
                   agent={agent}
-                  environment={environmentByAgentId.get(agent.id) ?? localEnvironmentDescriptor}
+                  environment={
+                    environmentDataLoading
+                      ? loadingEnvironmentDescriptor
+                      : environmentByAgentId.get(agent.id) ?? localEnvironmentDescriptor
+                  }
                   showEnvironment={showEnvironment}
                 />
               </div>
@@ -591,6 +604,7 @@ function OrgTreeNode({
               agentMap={agentMap}
               liveRunByAgent={liveRunByAgent}
               environmentByAgentId={environmentByAgentId}
+              environmentDataLoading={environmentDataLoading}
               showEnvironment={showEnvironment}
               tab={tab}
               memberships={memberships}
