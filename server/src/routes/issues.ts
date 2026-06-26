@@ -5645,8 +5645,8 @@ export function issueRoutes(
         text: req.body.comment,
         companyId: existing.companyId,
         lookup: async (candidate, cid) => {
-          const row = await svc.getByIdentifier(candidate);
-          return { exists: !!row && row.companyId === cid };
+          const row = await svc.getByIdentifierForCompany(candidate, cid);
+          return { exists: !!row };
         },
       });
       if (!btcGuardResult.ok) {
@@ -7502,8 +7502,8 @@ export function issueRoutes(
         text: req.body.body,
         companyId: issue.companyId,
         lookup: async (candidate, cid) => {
-          const row = await svc.getByIdentifier(candidate);
-          return { exists: !!row && row.companyId === cid };
+          const row = await svc.getByIdentifierForCompany(candidate, cid);
+          return { exists: !!row };
         },
       });
       if (!btcGuardResult.ok) {

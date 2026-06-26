@@ -3296,6 +3296,17 @@ export function issueService(db: Db) {
     return enriched;
   }
 
+  async function getIssueByIdentifierForCompany(identifier: string, companyId: string) {
+    const row = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.identifier, identifier.toUpperCase()), eq(issues.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const [enriched] = await withIssueLabels(db, [row]);
+    return enriched;
+  }
+
   async function getCurrentScheduledRetryForIssue(issueId: string, companyId: string): Promise<IssueScheduledRetryRow | null> {
     const row = await db
       .select({
@@ -4493,6 +4504,10 @@ export function issueService(db: Db) {
 
     getByIdentifier: async (identifier: string) => {
       return getIssueByIdentifier(identifier);
+    },
+
+    getByIdentifierForCompany: async (identifier: string, companyId: string) => {
+      return getIssueByIdentifierForCompany(identifier, companyId);
     },
 
     getCurrentScheduledRetry: async (issueId: string) => {
