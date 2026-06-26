@@ -59,4 +59,18 @@ tests/release-smoke/playwright-report/
 .superset/
 .superpowers/
 .claude/worktrees/
+.claude/tsc-cache/
 .herenow
+
+# Local code-intelligence / trust-workflow generated artifacts
+.trust/
+.trust-wave-hygiene/
+.trust-wave-repo-hygiene-result.md
+.trust-wave-proof-classifier-result.md
+.tldr/
+.tldrignore
+
+# Per-issue local investigation artifacts and API dumps
+.mic212/
+/server/MIC-*.md
+/server/MIC-*.txt
