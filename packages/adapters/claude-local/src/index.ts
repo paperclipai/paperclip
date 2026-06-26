@@ -43,6 +43,8 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional, default true): allow non-interactive Claude runs to proceed without approval prompts. Local targets receive --dangerously-skip-permissions; remote targets receive a curated --allowedTools list so they do not inherit local bypass permissions.
+- localRunAsUser (string, optional): local-only non-root account used to launch Claude through sudo -E -H -u <user>; use this on root-hosted Paperclip servers when dangerouslySkipPermissions is enabled, because Claude rejects bypass permissions when the Claude process itself runs as root/sudo
+- localRunAsWorkspaceDir (string, optional): absolute directory owned by localRunAsUser used as the writable working directory for local non-root runs; defaults to <user-home>/paperclip-workspace, must not live under /root, and is created on demand as the run-as user. Without it the non-root lane would inherit the root-owned server checkout and be unable to write
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

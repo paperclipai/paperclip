@@ -23,6 +23,11 @@ import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import {
+  buildClaudeLocalRunAsInvocation,
+  ensureClaudeLocalRunAsWorkspace,
+  readClaudeLocalRunAsUser,
+} from "./run-as.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -61,7 +66,22 @@ export async function testEnvironment(
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
-  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const localRunAsUser = readClaudeLocalRunAsUser(config);
+  let cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  if (localRunAsUser && !targetIsRemote) {
+    // Probe the same writable workspace the non-root lane will run in, not the
+    // root-owned checkout the run-as user cannot enter/write. See MIC-206.
+    try {
+      const runAsWorkspace = await ensureClaudeLocalRunAsWorkspace({ runAsUser: localRunAsUser, config });
+      cwd = runAsWorkspace.cwd;
+    } catch (err) {
+      checks.push({
+        code: "claude_local_run_as_workspace_error",
+        level: "error",
+        message: err instanceof Error ? err.message : "Could not prepare non-root run-as workspace",
+      });
+    }
+  }
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
     : null;
@@ -101,6 +121,21 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  if (localRunAsUser && !targetIsRemote) {
+    checks.push({
+      code: "claude_local_run_as_user",
+      level: "info",
+      message: `Local probe will run Claude as non-root user: ${localRunAsUser}`,
+      detail: "Paperclip invokes sudo -E -H -u <user> -- claude so Claude itself is not a root/sudo process.",
+    });
+  } else if (localRunAsUser && targetIsRemote) {
+    checks.push({
+      code: "claude_local_run_as_user_ignored_remote",
+      level: "info",
+      message: `Ignoring localRunAsUser for ${targetLabel ?? "remote execution target"}.`,
+      detail: "Remote/sandbox identity is controlled by the selected execution environment.",
+    });
+  }
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
     target,
@@ -238,11 +273,18 @@ export async function testEnvironment(
         asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
       );
 
+      const invocation = buildClaudeLocalRunAsInvocation({
+        command,
+        args,
+        config,
+        targetIsRemote,
+      });
+
       const probe = await runAdapterExecutionTargetProcess(
         runId,
         target,
-        command,
-        args,
+        invocation.command,
+        invocation.args,
         {
           cwd,
           env,

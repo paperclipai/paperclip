@@ -64,6 +64,11 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import {
+  buildClaudeLocalRunAsInvocation,
+  ensureClaudeLocalRunAsWorkspace,
+  readClaudeLocalRunAsUser,
+} from "./run-as.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -167,9 +172,26 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
-  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const requestedWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
+  const requestedCwd = requestedWorkspaceCwd || configuredCwd || process.cwd();
+  // The non-root local lane (sudo -E -H -u <user>) cannot enter or write the
+  // root-owned server checkout (e.g. /root/paperclip). Redirect the working
+  // directory to a workspace the run-as user owns so code-fix agents have a
+  // writable place to operate while root-owned source stays untouched. See MIC-206.
+  const runAsUser = readClaudeLocalRunAsUser(config);
+  let effectiveWorkspaceCwd = requestedWorkspaceCwd;
+  let cwd = requestedCwd;
+  if (runAsUser && !executionTargetIsRemote) {
+    const runAsWorkspace = await ensureClaudeLocalRunAsWorkspace({
+      runAsUser,
+      config,
+      requestedCwd,
+      onLog,
+    });
+    cwd = runAsWorkspace.cwd;
+    effectiveWorkspaceCwd = runAsWorkspace.cwd;
+  }
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
@@ -178,7 +200,11 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  if (runAsUser && !executionTargetIsRemote) {
+    // Workspace already created (as the run-as user) by ensureClaudeLocalRunAsWorkspace.
+  } else {
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  }
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -381,6 +407,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  const localRunAsUser = readClaudeLocalRunAsUser(config);
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -396,7 +423,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : [];
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
-  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
+  let effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const hasExplicitClaudeConfigDir =
     typeof configEnv.CLAUDE_CONFIG_DIR === "string" && configEnv.CLAUDE_CONFIG_DIR.trim().length > 0;
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
@@ -426,6 +453,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } = runtimeConfig;
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  if (localRunAsUser && !executionTargetIsRemote) {
+    // Mirror the writable run-as workspace (resolved in buildClaudeRuntimeConfig)
+    // into the workspace env so PAPERCLIP_WORKSPACE_CWD stays coherent. MIC-206.
+    effectiveWorkspaceCwd = cwd;
+  }
   const terminalResultCleanupGraceMs = Math.max(
     0,
     asNumber(config.terminalResultCleanupGraceMs, 5_000),
@@ -765,6 +797,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "Using a broad --allowedTools whitelist for remote execution so hosted targets do not inherit local Claude bypass permissions.",
       );
     }
+    const invocation = buildClaudeLocalRunAsInvocation({
+      command,
+      args,
+      config,
+      targetIsRemote: executionTargetIsRemote,
+    });
+    if (invocation.runAsUser) {
+      commandNotes.push(
+        `Running Claude locally as non-root user "${invocation.runAsUser}" via sudo -E -H so --dangerously-skip-permissions can be used without a root/sudo Claude process.`,
+      );
+    } else if (localRunAsUser && executionTargetIsRemote) {
+      commandNotes.push(
+        `Ignoring localRunAsUser "${localRunAsUser}" because this run uses ${describeAdapterExecutionTarget(runtimeExecutionTarget)}; remote/sandbox identity is controlled by the execution target.`,
+      );
+    }
     if (attemptInstructionsFilePath && !resumeSessionId) {
       commandNotes.push(
         `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
@@ -773,9 +820,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (onMeta) {
       await onMeta({
         adapterType: "claude_local",
-        command: resolvedCommand,
+        command: invocation.commandLabel === command ? resolvedCommand : invocation.commandLabel,
         cwd: effectiveExecutionCwd,
-        commandArgs: args,
+        commandArgs: invocation.args,
         commandNotes,
         env: loggedEnv,
         prompt,
@@ -784,7 +831,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+    const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, invocation.command, invocation.args, {
       cwd,
       env,
       stdin: prompt,
