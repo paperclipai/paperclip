@@ -194,7 +194,8 @@
       "skills": "Select a company to manage skills.",
       "secrets": "Select a company to manage secrets.",
       "workspace": "Select a company to manage execution workspaces.",
-      "access": "Select a company to manage access."
+      "access": "Select a company to manage access.",
+      "invites": "Select a company to manage invites."
     },
     "sort": {
       "name": "Name",
@@ -859,6 +860,48 @@
       "environments": "Environments",
       "instanceSettings": "Instance settings",
       "settings": "Settings"
+    }
+  },
+  "companyInvites": {
+    "toasts": {
+      "clipboardUnavailable": "Clipboard unavailable",
+      "createFailed": "Failed to create invite",
+      "revokeFailed": "Failed to revoke invite",
+      "created": "Invite created",
+      "revoked": "Invite revoked"
+    },
+    "errors": {
+      "unknown": "Unknown error"
+    },
+    "text": {
+      "action": "Action",
+      "chooseRole": "Choose a role",
+      "companyInvites": "Company Invites",
+      "created": "Created",
+      "inactive": "Inactive",
+      "invitePerson": "Invite a person",
+      "invitedBy": "Invited by",
+      "inviteHistory": "Invite history",
+      "auditTrail": "Invite history below keeps the audit trail.",
+      "joinRequest": "Join request",
+      "latestInviteLink": "Latest invite link",
+      "latestInviteUrl": "Latest invite URL",
+      "state": "State"
+    },
+    "labelsJsx": {
+      "latestInviteUrl": "Latest invite URL"
+    },
+    "labelsObj": {
+      "admin": "Admin",
+      "invites": "Invites",
+      "operator": "Operator",
+      "owner": "Owner",
+      "settings": "Settings",
+      "viewer": "Viewer"
+    },
+    "roleDescriptions": {
+      "viewer": "Can view company work and follow along.",
+      "admin": "Full company access, including membership management."
     }
   }
 }

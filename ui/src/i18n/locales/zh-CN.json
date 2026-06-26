@@ -220,7 +220,8 @@
       "skills": "选择一家公司以管理技能。",
       "secrets": "选择一家公司以管理密钥。",
       "workspace": "选择一家公司以管理执行工作区。",
-      "access": "选择一家公司以管理访问权限。"
+      "access": "选择一家公司以管理访问权限。",
+      "invites": "选择一家公司以管理邀请。"
     },
     "sort": {
       "name": "名称",
@@ -859,6 +860,48 @@
       "environments": "环境",
       "instanceSettings": "实例设置",
       "settings": "设置"
+    }
+  },
+  "companyInvites": {
+    "toasts": {
+      "clipboardUnavailable": "剪贴板不可用",
+      "createFailed": "创建邀请失败",
+      "revokeFailed": "撤销邀请失败",
+      "created": "邀请已创建",
+      "revoked": "邀请已撤销"
+    },
+    "errors": {
+      "unknown": "未知错误"
+    },
+    "text": {
+      "action": "操作",
+      "chooseRole": "选择角色",
+      "companyInvites": "公司邀请",
+      "created": "创建时间",
+      "inactive": "未活跃",
+      "invitePerson": "邀请人员",
+      "invitedBy": "邀请者",
+      "inviteHistory": "邀请历史",
+      "auditTrail": "以下邀请历史保留审计记录。",
+      "joinRequest": "加入请求",
+      "latestInviteLink": "最新邀请链接",
+      "latestInviteUrl": "最新邀请 URL",
+      "state": "状态"
+    },
+    "labelsJsx": {
+      "latestInviteUrl": "最新邀请 URL"
+    },
+    "labelsObj": {
+      "admin": "管理员",
+      "invites": "邀请",
+      "operator": "操作员",
+      "owner": "所有者",
+      "settings": "设置",
+      "viewer": "查看者"
+    },
+    "roleDescriptions": {
+      "viewer": "可查看公司工作并跟进。",
+      "admin": "完全公司访问权限,包括成员管理。"
     }
   }
 }
