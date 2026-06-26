@@ -115,6 +115,24 @@ describe("ExternalObjectPill", () => {
     expect(html).not.toContain("Github Pull Request");
     expect(html).toContain('aria-label="GitHub pull request — Merged: acme/web#241: Add rich object presentation metadata"');
   });
+
+  it("labels generic URL link objects as URL instead of URL link", () => {
+    const html = renderToStaticMarkup(
+      <ExternalObjectPill
+        object={{
+          providerKey: "url",
+          objectType: "link",
+          statusCategory: "unknown",
+          liveness: "unknown",
+          displayTitle: null,
+          url: "https://example.com/",
+        }}
+      />,
+    );
+
+    expect(html).toContain('aria-label="URL — Not yet resolved"');
+    expect(html).not.toContain("URL link");
+  });
 });
 
 describe("ExternalObjectStatusSummary", () => {
