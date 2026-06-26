@@ -140,7 +140,7 @@ describe("SidebarCompanyMenu", () => {
     vi.clearAllMocks();
   });
 
-  it("uses team-centric create copy without the chat flag", async () => {
+  it("uses company-centric create copy without the chat flag", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -164,7 +164,7 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Create new team...");
+    expect(document.body.textContent).toContain("Create new company");
     expect(document.body.textContent).not.toContain("Add company...");
 
     act(() => {
@@ -199,11 +199,11 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Switch workspace");
+    expect(document.body.textContent).toContain("Switch company");
     expect(document.body.textContent).toContain("Edit");
     expect(document.body.textContent).toContain("Strata");
     expect(document.body.textContent).toContain("ANA");
-    expect(document.body.textContent).toContain("Create new team...");
+    expect(document.body.textContent).toContain("Create new company");
     expect(document.body.textContent).toContain("Invite people to Acme Labs");
     expect(document.body.textContent).toContain("Company settings");
     expect(document.body.textContent).toContain("Sign out");

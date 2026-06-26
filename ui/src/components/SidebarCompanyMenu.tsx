@@ -245,7 +245,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
         <div className="flex items-center justify-between gap-2 px-2 py-1.5">
           <DropdownMenuLabel className="p-0 text-[11px] font-semibold uppercase text-muted-foreground">
-            Switch workspace
+            Switch company
           </DropdownMenuLabel>
           <button
             type="button"
@@ -281,7 +281,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             </SortableContext>
           </DndContext>
           {orderedCompanies.length === 0 ? (
-            <DropdownMenuItem disabled>No workspaces</DropdownMenuItem>
+            <DropdownMenuItem disabled>No companies</DropdownMenuItem>
           ) : null}
         </div>
         <DropdownMenuSeparator />
@@ -291,7 +291,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           disabled={isEditingOrder}
         >
           <Plus className="size-4" />
-          <span>Create new team...</span>
+          <span>Create new company</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild disabled={isEditingOrder}>
