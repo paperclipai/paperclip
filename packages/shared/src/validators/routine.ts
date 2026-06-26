@@ -159,6 +159,7 @@ export const runRoutineSchema = z.object({
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   variables: z.record(z.string(), routineVariableValueSchema).optional().nullable(),
   projectId: z.string().uuid().optional().nullable(),
+  projectWorkspaceId: z.string().uuid().optional().nullable(),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   idempotencyKey: z.string().trim().max(255).optional().nullable(),
   source: z.enum(["manual", "api"]).optional().default("manual"),

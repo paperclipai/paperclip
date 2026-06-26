@@ -1,6 +1,6 @@
-import type { IssueCommentAuthorType } from "@paperclipai/shared";
+import type { IssueCommentAuthorType, SourceTrustMetadata } from "@paperclipai/shared";
 import { sql } from "drizzle-orm";
-import { check, index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { check, index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { documentAnnotationThreads } from "./document_annotation_threads.js";
@@ -25,6 +25,7 @@ export const documentAnnotationComments = pgTable(
     authorUserId: text("author_user_id"),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     issueCommentId: uuid("issue_comment_id").references(() => issueComments.id, { onDelete: "set null" }),
+    sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

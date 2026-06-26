@@ -57,6 +57,7 @@ export function Sidebar() {
   });
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const showPipelines = experimentalSettings?.enablePipelines === true;
   // IA flag: branch the sidebar nav presentation. Default ON =
   // streamlined (top-level Projects link). Users can opt out in experiments to
   // get classic (per-project collapsible, no Projects nav link). Issue/Task
@@ -175,6 +176,9 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+          {showPipelines ? (
+            <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
+          ) : null}
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />

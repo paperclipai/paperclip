@@ -331,7 +331,11 @@ export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_activ
 export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
-export const SYSTEM_ISSUE_DOCUMENT_KEYS = [ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY] as const;
+export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
+export const SYSTEM_ISSUE_DOCUMENT_KEYS = [
+  ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  PIPELINE_CASE_BODY_DOCUMENT_KEY,
+] as const;
 export type SystemIssueDocumentKey = (typeof SYSTEM_ISSUE_DOCUMENT_KEYS)[number];
 
 const SYSTEM_ISSUE_DOCUMENT_KEY_SET = new Set<string>(SYSTEM_ISSUE_DOCUMENT_KEYS);
@@ -786,6 +790,7 @@ export const PERMISSION_KEYS = [
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
+  "pipelines:write",
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];

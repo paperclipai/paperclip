@@ -352,6 +352,46 @@ describe("Sidebar", () => {
     });
   });
 
+  it("hides the Pipelines nav item when pipelines are disabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enablePipelines: false,
+    });
+    const root = await renderSidebar();
+
+    expect(container.textContent).not.toContain("Pipelines");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows the Pipelines nav item when pipelines are enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enablePipelines: true,
+    });
+    const root = await renderSidebar();
+
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Pipelines");
+    expect(link?.getAttribute("href")).toBe("/pipelines");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not flash the Pipelines nav item while experimental settings are loading", async () => {
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const root = await renderSidebar();
+
+    expect(container.textContent).not.toContain("Pipelines");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("shows the Workspaces link when isolated workspaces are enabled", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();

@@ -50,6 +50,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
+    enablePipelines: false,
     enableConferenceRoomChat: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
@@ -121,6 +122,14 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(headings).toContain("Streamlined Left Navigation Bar");
     expect(headings).not.toContain("Conference Room Chat");
     expect(container.querySelector(CONFERENCE_TOGGLE_SELECTOR)).toBeNull();
+  });
+
+  it("does not render the Pipelines experimental setting for now", async () => {
+    await renderPage();
+
+    const headings = [...container.querySelectorAll("section h2")].map((h) => h.textContent);
+    expect(headings).not.toContain("Pipelines");
+    expect(container.querySelector('button[aria-label="Toggle pipelines experimental setting"]')).toBeNull();
   });
 
   it("does not render the toggle even when the stored flag is currently enabled", async () => {
