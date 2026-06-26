@@ -113,7 +113,13 @@ export function useLiveRunTranscripts({
   const seenChunkKeysRef = useRef(new Set<string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
-  const missingTerminalLogRunIdsRef = useRef(new Set<string>());
+  // Run ids whose GET /log returned 404 — polling is suppressed for them so the
+  // live-runs panel stops hammering /log for runs whose persisted log does not
+  // exist (yet). This is the dominant slice of the board 404 storm
+  // (LUN-2659 / LUN-2660 pattern 2). Live output still arrives over the
+  // websocket; the reconciliation effect below re-enables polling for a
+  // non-terminal run once its reported byte counts show the log now exists.
+  const suppressedLogPollRunIdsRef = useRef(new Set<string>());
   const transcriptCacheRef = useRef(new Map<string, {
     adapterType: string;
     chunks: RunLogChunk[];
@@ -196,9 +202,18 @@ export function useLiveRunTranscripts({
         logOffsetByRunRef.current.delete(runId);
       }
     }
-    for (const runId of missingTerminalLogRunIdsRef.current.keys()) {
+    const suppressed = suppressedLogPollRunIdsRef.current;
+    for (const runId of [...suppressed]) {
       if (!knownRunIds.has(runId)) {
-        missingTerminalLogRunIdsRef.current.delete(runId);
+        suppressed.delete(runId);
+      }
+    }
+    // Re-enable polling for a non-terminal run once it reports persisted log
+    // bytes — the log that 404'd earlier now exists and is worth backfilling.
+    // Terminal runs whose log never existed stay suppressed permanently.
+    for (const run of normalizedRuns) {
+      if (suppressed.has(run.id) && !isTerminalStatus(run.status) && runKnownLogBytes(run) !== null) {
+        suppressed.delete(run.id);
       }
     }
     for (const runId of transcriptCacheRef.current.keys()) {
@@ -214,7 +229,7 @@ export function useLiveRunTranscripts({
     let cancelled = false;
 
     const readRunLog = async (run: RunTranscriptSource) => {
-      if (missingTerminalLogRunIdsRef.current.has(run.id)) {
+      if (suppressedLogPollRunIdsRef.current.has(run.id)) {
         return;
       }
       const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
@@ -232,8 +247,12 @@ export function useLiveRunTranscripts({
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
       } catch (error) {
-        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
-          missingTerminalLogRunIdsRef.current.add(run.id);
+        // Any 404 means the persisted log does not exist — stop polling it.
+        // For a terminal run this is permanent; for an active run the
+        // reconciliation effect re-enables polling once byte counts show the
+        // log materialized. Live output continues to arrive over the websocket.
+        if (error instanceof ApiError && error.status === 404) {
+          suppressedLogPollRunIdsRef.current.add(run.id);
         }
       } finally {
         if (!cancelled) {
