@@ -36,7 +36,7 @@ host, for example `https://pages.paperclip.ing/<slug>/`.
 4. Publish:
 
 ```bash
-skills/paperclip-page/scripts/publish.sh ./site --slug my-page
+.agents/skills/paperclip-page/scripts/publish.sh ./site --slug my-page
 ```
 
 5. Return the printed public URL and S3 prefix to the issue/user.
@@ -46,7 +46,7 @@ skills/paperclip-page/scripts/publish.sh ./site --slug my-page
 Updates are additive overwrites only. The helper never deletes remote objects.
 
 ```bash
-skills/paperclip-page/scripts/publish.sh ./site --slug my-page --update
+.agents/skills/paperclip-page/scripts/publish.sh ./site --slug my-page --update
 ```
 
 When the target prefix already exists, `--update` requires local ownership proof

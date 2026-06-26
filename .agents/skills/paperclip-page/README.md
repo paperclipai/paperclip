@@ -27,19 +27,19 @@ site/
 Validate without AWS writes:
 
 ```bash
-skills/paperclip-page/scripts/publish.sh ./site --slug demo --dry-run
+.agents/skills/paperclip-page/scripts/publish.sh ./site --slug demo --dry-run
 ```
 
 Publish:
 
 ```bash
-skills/paperclip-page/scripts/publish.sh ./site --slug demo
+.agents/skills/paperclip-page/scripts/publish.sh ./site --slug demo
 ```
 
 Update an existing page from the same source directory:
 
 ```bash
-skills/paperclip-page/scripts/publish.sh ./site --slug demo --update
+.agents/skills/paperclip-page/scripts/publish.sh ./site --slug demo --update
 ```
 
 The helper prints:
@@ -515,7 +515,7 @@ pnpm paperclipai skills create \
   --name "Paperclip Page" \
   --slug paperclip-page \
   --description "Publish static pages to the Paperclip pages host" \
-  --body-file skills/paperclip-page/SKILL.md
+  --body-file .agents/skills/paperclip-page/SKILL.md
 ```
 
 Attach it to an agent:
