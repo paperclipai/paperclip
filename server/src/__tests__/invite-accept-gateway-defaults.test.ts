@@ -117,3 +117,53 @@ describe("normalizeAgentDefaultsForJoin (openclaw_gateway)", () => {
     expect(normalized.normalized?.devicePrivateKeyPem).toBeUndefined();
   });
 });
+
+describe("normalizeAgentDefaultsForJoin (hermes_gateway)", () => {
+  it("rejects remote plain HTTP by default", () => {
+    const normalized = normalizeAgentDefaultsForJoin({
+      adapterType: "hermes_gateway",
+      defaultsPayload: {
+        apiBaseUrl: "http://192.168.1.25:8642",
+        apiKey: "hermes-key-1234567890",
+      },
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      bindHost: "127.0.0.1",
+      allowedHostnames: [],
+    });
+
+    expect(normalized.fatalErrors.join("\n")).toContain("remote plain HTTP");
+    expect(normalized.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "hermes_gateway_plain_http_remote_denied",
+        }),
+      ]),
+    );
+  });
+
+  it("allows remote plain HTTP only with the explicit unsafe flag", () => {
+    const normalized = normalizeAgentDefaultsForJoin({
+      adapterType: "hermes_gateway",
+      defaultsPayload: {
+        apiBaseUrl: "http://192.168.1.25:8642",
+        apiKey: "hermes-key-1234567890",
+        dangerouslyAllowInsecureRemoteHttp: true,
+      },
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      bindHost: "127.0.0.1",
+      allowedHostnames: [],
+    });
+
+    expect(normalized.fatalErrors).toEqual([]);
+    expect(normalized.normalized?.apiBaseUrl).toBe("http://192.168.1.25:8642/");
+    expect(normalized.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "hermes_gateway_plain_http_remote_unsafe_allowed",
+        }),
+      ]),
+    );
+  });
+});

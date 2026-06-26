@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { testEnvironment } from "./test.js";
 
 function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
   return {
@@ -79,6 +80,20 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
+  it("rejects remote plain HTTP unless the unsafe dev escape hatch is enabled", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://192.168.1.25:8642",
+      apiKey: "secret-key",
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_plain_http_remote_denied");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("constructs POST /v1/runs with auth, idempotency, and Hermes session headers", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -196,6 +211,62 @@ describe("execute", () => {
     expect(result.timedOut).toBe(true);
     expect(result.errorCode).toBe("hermes_gateway_timeout");
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/stop"))).toBe(true);
+  });
+});
+
+describe("testEnvironment", () => {
+  it("fails remote plain HTTP before probing health", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "hermes_gateway",
+      config: {
+        apiBaseUrl: "http://hermes.example:8642",
+        apiKey: "secret-key",
+      },
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "hermes_gateway_plain_http_remote_denied",
+          level: "error",
+        }),
+      ]),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("allows remote plain HTTP only with the unsafe dev escape hatch", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "hermes_gateway",
+      config: {
+        apiBaseUrl: "http://hermes.example:8642",
+        apiKey: "secret-key",
+        dangerouslyAllowInsecureRemoteHttp: true,
+      },
+    });
+
+    expect(result.status).toBe("warn");
+    expect(result.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "hermes_gateway_plain_http_remote_unsafe_allowed",
+          level: "warn",
+        }),
+        expect.objectContaining({
+          code: "hermes_gateway_health_ok",
+        }),
+      ]),
+    );
+    expect(fetchMock).toHaveBeenCalled();
   });
 });
 

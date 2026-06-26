@@ -18,6 +18,11 @@ import {
   DEFAULT_TIMEOUT_SEC,
   STOP_GRACE_MS,
 } from "../shared/constants.js";
+import {
+  allowsInsecureRemoteHttp,
+  isRemotePlainHttp,
+  remotePlainHttpDeniedMessage,
+} from "./transport-security.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -697,6 +702,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_api_base_url_invalid",
       errorMessage: `Invalid Hermes gateway apiBaseUrl: ${apiBaseUrlValue}`,
+    };
+  }
+  if (isRemotePlainHttp(baseUrl) && !allowsInsecureRemoteHttp(ctx.config)) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_gateway_plain_http_remote_denied",
+      errorMessage: remotePlainHttpDeniedMessage(baseUrl.hostname),
     };
   }
 

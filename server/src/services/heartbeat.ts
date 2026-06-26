@@ -412,7 +412,10 @@ const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64",
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
-  "resolveAdapterConfigForRuntime" | "resolveEnvBindings" | "collectMissingRuntimeBindings"
+  | "resolveAdapterConfigForRuntime"
+  | "resolveEnvBindings"
+  | "collectMissingRuntimeBindings"
+  | "collectMissingAdapterConfigRuntimeBindings"
 >;
 
 function formatMissingBindingForOperator(missing: MissingRuntimeBinding): string {
@@ -494,6 +497,7 @@ function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
   agentId?: string | null;
+  adapterType?: string | null;
   issueId?: string | null;
   heartbeatRunId?: string | null;
   environmentId?: string | null;
@@ -574,6 +578,16 @@ export async function resolveExecutionRunAdapterConfig(input: {
           { consumerType: "agent", consumerId: input.agentId },
         )),
       );
+      if (typeof input.secretsSvc.collectMissingAdapterConfigRuntimeBindings === "function") {
+        missingBindings.push(
+          ...(await input.secretsSvc.collectMissingAdapterConfigRuntimeBindings(
+            input.companyId,
+            executionRunConfig,
+            input.adapterType ?? null,
+            { consumerType: "agent", consumerId: input.agentId },
+          )),
+        );
+      }
     }
     if (projectEnv && input.projectId) {
       missingBindings.push(
@@ -666,6 +680,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
           ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
         }
       : undefined,
+    { adapterType: input.adapterType ?? null },
   );
   if (Object.keys(environmentEnvResolution.env).length > 0) {
     resolvedConfig.env = {
@@ -8943,6 +8958,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
+      adapterType: agent.adapterType,
       issueId,
       heartbeatRunId: run.id,
       environmentId: selectedEnvironmentForConfig?.id ?? null,
