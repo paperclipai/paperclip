@@ -221,7 +221,8 @@
       "secrets": "选择一家公司以管理密钥。",
       "workspace": "选择一家公司以管理执行工作区。",
       "access": "选择一家公司以管理访问权限。",
-      "invites": "选择一家公司以管理邀请。"
+      "invites": "选择一家公司以管理邀请。",
+      "cloudUpstream": "选择一家公司以配置云上游。"
     },
     "sort": {
       "name": "名称",
@@ -936,6 +937,42 @@
     "tabs": {
       "adapters": "适配器",
       "instanceSettings": "实例设置",
+      "settings": "设置"
+    }
+  },
+  "cloudUpstream": {
+    "errors": {
+      "activateEntities": "激活导入实体失败。",
+      "finishConnection": "完成连接失败。",
+      "runPush": "运行推送失败。",
+      "startConnection": "启动连接失败。"
+    },
+    "text": {
+      "activationChecklist": "激活检查清单",
+      "cloudUpstream": "云上游",
+      "conflicts": "冲突",
+      "connection": "连接",
+      "loadingExperimental": "正在加载实验设置……",
+      "noConflicts": "此预览未检测到目标冲突。",
+      "preview": "预览",
+      "progressAndFinish": "进度与完成"
+    },
+    "labelsJsx": {
+      "stackUrl": "Paperclip Cloud 栈地址"
+    },
+    "steps": {
+      "scan": "扫描",
+      "connect": "连接",
+      "preview": "预览",
+      "activate": "激活",
+      "push": "推送",
+      "verify": "验证",
+      "agents": "智能体",
+      "routines": "例程",
+      "monitors": "监控"
+    },
+    "tabs": {
+      "cloudUpstream": "云上游",
       "settings": "设置"
     }
   }

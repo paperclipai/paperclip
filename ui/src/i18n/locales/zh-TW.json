@@ -221,7 +221,8 @@
       "secrets": "選擇一家公司以管理密鑰。",
       "workspace": "選擇一家公司以管理工作區。",
       "access": "選擇一家公司以管理存取權限。",
-      "invites": "選擇一家公司以管理邀請。"
+      "invites": "選擇一家公司以管理邀請。",
+      "cloudUpstream": "選擇一家公司以設定雲端上游。"
     },
     "sort": {
       "name": "名稱",
@@ -936,6 +937,42 @@
     "tabs": {
       "adapters": "介接器",
       "instanceSettings": "實例設定",
+      "settings": "設定"
+    }
+  },
+  "cloudUpstream": {
+    "errors": {
+      "activateEntities": "啟動匯入實體失敗。",
+      "finishConnection": "完成連線失敗。",
+      "runPush": "執行推送失敗。",
+      "startConnection": "啟動連線失敗。"
+    },
+    "text": {
+      "activationChecklist": "啟動檢查清單",
+      "cloudUpstream": "雲端上游",
+      "conflicts": "衝突",
+      "connection": "連線",
+      "loadingExperimental": "正在載入實驗設定……",
+      "noConflicts": "此預覽未偵測到目標衝突。",
+      "preview": "預覽",
+      "progressAndFinish": "進度與完成"
+    },
+    "labelsJsx": {
+      "stackUrl": "Paperclip Cloud 棧址"
+    },
+    "steps": {
+      "scan": "掃描",
+      "connect": "連線",
+      "preview": "預覽",
+      "activate": "啟動",
+      "push": "推送",
+      "verify": "驗證",
+      "agents": "智慧代理",
+      "routines": "排程",
+      "monitors": "監控"
+    },
+    "tabs": {
+      "cloudUpstream": "雲端上游",
       "settings": "設定"
     }
   }

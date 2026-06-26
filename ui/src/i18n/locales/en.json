@@ -195,7 +195,8 @@
       "secrets": "Select a company to manage secrets.",
       "workspace": "Select a company to manage execution workspaces.",
       "access": "Select a company to manage access.",
-      "invites": "Select a company to manage invites."
+      "invites": "Select a company to manage invites.",
+      "cloudUpstream": "Select a company to configure cloud upstream."
     },
     "sort": {
       "name": "Name",
@@ -936,6 +937,42 @@
     "tabs": {
       "adapters": "Adapters",
       "instanceSettings": "Instance settings",
+      "settings": "Settings"
+    }
+  },
+  "cloudUpstream": {
+    "errors": {
+      "activateEntities": "Failed to activate imported entities.",
+      "finishConnection": "Failed to finish connection.",
+      "runPush": "Failed to run push.",
+      "startConnection": "Failed to start connection."
+    },
+    "text": {
+      "activationChecklist": "Activation checklist",
+      "cloudUpstream": "Cloud upstream",
+      "conflicts": "Conflicts",
+      "connection": "Connection",
+      "loadingExperimental": "Loading experimental settings...",
+      "noConflicts": "No target conflicts detected for this preview.",
+      "preview": "Preview",
+      "progressAndFinish": "Progress and finish"
+    },
+    "labelsJsx": {
+      "stackUrl": "Paperclip Cloud stack URL"
+    },
+    "steps": {
+      "scan": "Scan",
+      "connect": "Connect",
+      "preview": "Preview",
+      "activate": "Activate",
+      "push": "Push",
+      "verify": "Verify",
+      "agents": "Agents",
+      "routines": "Routines",
+      "monitors": "Monitors"
+    },
+    "tabs": {
+      "cloudUpstream": "Cloud upstream",
       "settings": "Settings"
     }
   }
