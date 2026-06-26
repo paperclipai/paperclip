@@ -9,6 +9,12 @@ This package owns both built-in Hermes adapter types:
 - `hermes_local` runs the local Hermes CLI as a child process. The package root exports remain compatible with the original local adapter.
 - `hermes_gateway` calls an already-running Hermes API server over HTTP/SSE. Gateway entrypoints live under the `./gateway` export namespace.
 
+Choose `hermes_local` when Paperclip and Hermes run on the same trusted host
+and Paperclip should start `hermes chat` for each heartbeat. Choose
+`hermes_gateway` when Hermes is already running as an API server, often on
+another host, in Docker, or behind a private-network/TLS endpoint. The adapter
+type keys did not change during package consolidation.
+
 ## Key Features
 
 This adapter provides:
@@ -56,8 +62,8 @@ normal Paperclip use.
 
 For local adapter development, install the package from a local path in Adapter
 manager, or add an entry to `~/.paperclip/adapter-plugins.json` and restart
-Paperclip. The external package can override the built-in `hermes_local`
-adapter while it is enabled:
+Paperclip. The external package can override either built-in Hermes adapter
+while it is enabled:
 
 ```json
 [
@@ -70,6 +76,9 @@ adapter while it is enabled:
 ]
 ```
 
+Use `"type": "hermes_gateway"` with the same package when testing a gateway
+override.
+
 The package root exports `createServerAdapter()` for the local server adapter,
 a declarative config schema for the generic agent form, and `./ui-parser` for
 local run transcript parsing. Gateway entrypoints are exported from `./gateway`,
@@ -77,7 +86,7 @@ local run transcript parsing. Gateway entrypoints are exported from `./gateway`,
 Paperclip core imports these same package entrypoints for built-in adapter
 registration.
 
-### 2. Create a Hermes agent in Paperclip
+### 2. Create a local Hermes agent in Paperclip
 
 In the Paperclip UI or via API, create an agent with adapter type `hermes_local`:
 
@@ -94,6 +103,48 @@ In the Paperclip UI or via API, create an agent with adapter type `hermes_local`
   }
 }
 ```
+
+This mode shells out to the local `hermes` CLI. Paperclip injects runtime
+environment variables and captures stdout/stderr from the child process.
+
+### 3. Create a Hermes gateway agent in Paperclip
+
+Start Hermes with its API server enabled first:
+
+```bash
+API_SERVER_ENABLED=true \
+API_SERVER_KEY=<generated-secret> \
+hermes gateway run --replace --accept-hooks
+```
+
+Then create an agent with adapter type `hermes_gateway`:
+
+```json
+{
+  "name": "Hermes Gateway Engineer",
+  "adapterType": "hermes_gateway",
+  "adapterConfig": {
+    "apiBaseUrl": "http://127.0.0.1:8642",
+    "apiKey": "<same-value-as-API_SERVER_KEY>",
+    "paperclipApiUrl": "http://127.0.0.1:3100",
+    "sessionKeyStrategy": "issue",
+    "timeoutSec": 120
+  }
+}
+```
+
+This mode does not start Hermes. It creates runs with `POST /v1/runs`, streams
+Hermes events with SSE, polls run status as a fallback, and stops timed-out runs
+with `POST /v1/runs/{run_id}/stop`.
+
+### Compatibility with the old gateway package
+
+`@paperclipai/adapter-hermes-gateway` remains as a deprecated compatibility shim
+for one release. It re-exports the gateway entrypoints from
+`@paperclipai/hermes-paperclip-adapter/gateway` and preserves the legacy exports
+for existing plugin installs. New installs and built-in Paperclip registrations
+should use `@paperclipai/hermes-paperclip-adapter`; the adapter type remains
+`hermes_gateway`.
 
 ### Runtime API guidance
 
@@ -147,7 +198,7 @@ Create the bridge key with `scope.kind = "task_bridge"` plus a `parentIssueId`
 or `projectId` boundary. Do not use a normal claimed agent API key for
 internet-facing Hermes chat/webhook task-bridge operations.
 
-### 3. Assign work
+### 4. Assign work
 
 Create issues in Paperclip and assign them to your Hermes agent. On each heartbeat, Hermes will:
 
