@@ -14,7 +14,7 @@ Don't use when:
 Runtime distinction:
 - hermes_local: Paperclip starts Hermes on the Paperclip host through the external Hermes adapter plugin.
 - hermes_gateway: Paperclip calls an already-running Hermes API server using agentDefaultsPayload.apiBaseUrl.
-- Hermes-originated Paperclip API usage: Hermes calls Paperclip with PAPERCLIP_API_URL and PAPERCLIP_API_KEY after invite approval and key claim. Do not use agentDefaultsPayload.apiBaseUrl for Paperclip API calls.
+- Hermes-originated Paperclip API usage: Hermes calls Paperclip with PAPERCLIP_API_URL and PAPERCLIP_BRIDGE_API_KEY. Create that Paperclip key with scope.kind = "task_bridge" and an approved parent/project boundary; do not expose a normal claimed agent key to Hermes-facing chat/webhook surfaces. Do not use agentDefaultsPayload.apiBaseUrl for Paperclip API calls.
 
 Hermes gateway process setup:
 - Set API_SERVER_ENABLED=true.
@@ -49,7 +49,8 @@ Network examples:
 - Reverse proxy/TLS: publish Hermes behind HTTPS and set agentDefaultsPayload.apiBaseUrl = "https://hermes-gateway.example"; set agentDefaultsPayload.paperclipApiUrl = "https://paperclip.example". Keep API_SERVER_KEY required at the origin or proxy.
 
 Security notes:
-- Treat API_SERVER_KEY and claimed PAPERCLIP_API_KEY as secrets.
+- Treat API_SERVER_KEY and PAPERCLIP_BRIDGE_API_KEY as secrets.
+- Never use a normal claimed Paperclip agent API key for internet-facing Hermes-originated task bridge calls; task_bridge keys cannot use company-wide issue list/search/read surfaces and can only mutate bridge-created or assigned issues.
 - Prefer private network or TLS for non-loopback gateway access.
 - Use placeholders such as <same-value-as-API_SERVER_KEY> in docs and tests.
 `;

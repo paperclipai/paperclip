@@ -17,7 +17,9 @@ Usage:
 
 Environment:
   PAPERCLIP_API_URL    Paperclip base URL, with or without /api.
-  PAPERCLIP_API_KEY    Scoped Paperclip agent API key.
+  PAPERCLIP_BRIDGE_API_KEY
+                       Task-bridge Paperclip API key with kind=task_bridge scope.
+  PAPERCLIP_API_KEY    Fallback bridge key env var. Do not use a full agent key.
   PAPERCLIP_COMPANY_ID Optional company id override.
   PAPERCLIP_AGENT_ID   Optional agent id override.
   PAPERCLIP_RUN_ID     Optional run id for X-Paperclip-Run-Id on mutations.
@@ -101,8 +103,8 @@ function normalizeApiBaseUrl(raw) {
 }
 
 function getConfig() {
-  const apiKey = process.env.PAPERCLIP_API_KEY?.trim();
-  if (!apiKey) throw new UsageError("PAPERCLIP_API_KEY is required");
+  const apiKey = process.env.PAPERCLIP_BRIDGE_API_KEY?.trim() || process.env.PAPERCLIP_API_KEY?.trim();
+  if (!apiKey) throw new UsageError("PAPERCLIP_BRIDGE_API_KEY is required");
   return {
     apiBaseUrl: normalizeApiBaseUrl(process.env.PAPERCLIP_API_URL),
     apiKey,
@@ -217,39 +219,21 @@ function parseLimit(args) {
   return value;
 }
 
-async function resolveIssueId(config, companyId, ref) {
-  if (UUID_RE.test(ref)) return ref;
-  const query = new URLSearchParams({
-    q: ref,
-    limit: "10",
-  });
-  const issues = await apiFetch(config, `/companies/${encodeURIComponent(companyId)}/issues?${query}`);
-  const match = Array.isArray(issues)
-    ? issues.find((issue) => issue?.identifier === ref || issue?.id === ref)
-    : null;
-  if (!match?.id) throw new ApiError(404, { error: `Issue not found for reference ${ref}` });
-  return match.id;
-}
-
 async function listAssigned(config, args) {
   const identity = await resolveIdentity(config);
   const status = readStringFlag(args, "status") || "todo,in_progress,in_review,blocked";
   const limit = parseLimit(args);
-  const query = new URLSearchParams({
-    assigneeAgentId: identity.agentId,
-    status,
-    limit: String(limit),
-    sortField: "updated",
-    sortDir: "desc",
-    includeBlockedBy: "true",
-  });
-  const issues = await apiFetch(config, `/companies/${encodeURIComponent(identity.companyId)}/issues?${query}`);
+  const issues = await apiFetch(config, "/agents/me/inbox-lite");
+  const allowedStatuses = new Set(status.split(",").map((entry) => entry.trim()).filter(Boolean));
+  const filteredIssues = Array.isArray(issues)
+    ? issues.filter((issue) => !allowedStatuses.size || allowedStatuses.has(issue?.status)).slice(0, limit)
+    : [];
   printJson({
     command: "list-assigned",
     companyId: identity.companyId,
     agentId: identity.agentId,
-    count: Array.isArray(issues) ? issues.length : 0,
-    issues: Array.isArray(issues) ? issues.map(issueSummary) : [],
+    count: filteredIssues.length,
+    issues: filteredIssues.map(issueSummary),
   });
 }
 
@@ -298,37 +282,33 @@ async function createTask(config, args) {
 }
 
 async function comment(config, args) {
-  const identity = await resolveIdentity(config);
   const issueRef = requireStringFlag(args, "issue");
   const bodyText = await readBody(args, "body", "body-file");
   if (!bodyText || bodyText.trim().length === 0) throw new UsageError("comment requires --body or --body-file");
-  const issueId = await resolveIssueId(config, identity.companyId, issueRef);
   const commentBody = {
     body: bodyText,
     ...(boolFlag(args, "resume") ? { resume: true } : {}),
     ...(boolFlag(args, "reopen") ? { reopen: true } : {}),
   };
-  const created = await apiFetch(config, `/issues/${encodeURIComponent(issueId)}/comments`, {
+  const created = await apiFetch(config, `/issues/${encodeURIComponent(issueRef)}/comments`, {
     method: "POST",
     mutating: true,
     body: commentBody,
   });
-  printJson({ command: "comment", issueId, comment: commentSummary(created) });
+  printJson({ command: "comment", issue: issueRef, comment: commentSummary(created) });
 }
 
 async function updateStatus(config, args) {
-  const identity = await resolveIdentity(config);
   const issueRef = requireStringFlag(args, "issue");
   const status = validateEnum(requireStringFlag(args, "status"), STATUSES, "status");
   const commentText = await readBody(args, "comment", "comment-file");
-  const issueId = await resolveIssueId(config, identity.companyId, issueRef);
   const body = {
     status,
     ...(commentText && commentText.trim().length > 0 ? { comment: commentText } : {}),
     ...(boolFlag(args, "resume") ? { resume: true } : {}),
     ...(boolFlag(args, "reopen") ? { reopen: true } : {}),
   };
-  const issue = await apiFetch(config, `/issues/${encodeURIComponent(issueId)}`, {
+  const issue = await apiFetch(config, `/issues/${encodeURIComponent(issueRef)}`, {
     method: "PATCH",
     mutating: true,
     body,

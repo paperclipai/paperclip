@@ -68,7 +68,7 @@ describe("paperclip-task-bridge helper", () => {
         res.end(JSON.stringify({ id: "11111111-1111-4111-8111-111111111111", companyId: "22222222-2222-4222-8222-222222222222" }));
         return;
       }
-      if (req.method === "GET" && req.url?.startsWith("/api/companies/22222222-2222-4222-8222-222222222222/issues")) {
+      if (req.method === "GET" && req.url === "/api/agents/me/inbox-lite") {
         res.end(JSON.stringify([
           {
             id: "33333333-3333-4333-8333-333333333333",
@@ -94,7 +94,7 @@ describe("paperclip-task-bridge helper", () => {
         }));
         return;
       }
-      if (req.method === "POST" && req.url === "/api/issues/33333333-3333-4333-8333-333333333333/comments") {
+      if (req.method === "POST" && req.url === "/api/issues/PAP-123/comments") {
         res.statusCode = 201;
         res.end(JSON.stringify({
           id: "55555555-5555-4555-8555-555555555555",
@@ -105,7 +105,7 @@ describe("paperclip-task-bridge helper", () => {
         }));
         return;
       }
-      if (req.method === "PATCH" && req.url === "/api/issues/33333333-3333-4333-8333-333333333333") {
+      if (req.method === "PATCH" && req.url === "/api/issues/PAP-123") {
         res.end(JSON.stringify({
           id: "33333333-3333-4333-8333-333333333333",
           identifier: "PAP-123",
@@ -134,7 +134,7 @@ describe("paperclip-task-bridge helper", () => {
   function env() {
     return {
       PAPERCLIP_API_URL: baseUrl,
-      PAPERCLIP_API_KEY: apiKey,
+      PAPERCLIP_BRIDGE_API_KEY: apiKey,
       PAPERCLIP_COMPANY_ID: "22222222-2222-4222-8222-222222222222",
       PAPERCLIP_AGENT_ID: "11111111-1111-4111-8111-111111111111",
       PAPERCLIP_RUN_ID: "66666666-6666-4666-8666-666666666666",
@@ -149,7 +149,7 @@ describe("paperclip-task-bridge helper", () => {
     expect(result.stdout).toContain('"identifier": "PAP-123"');
     expect(result.stdout).not.toContain(apiKey);
     expect(result.stderr).not.toContain(apiKey);
-    expect(requests.some((request) => request.url.includes("assigneeAgentId=11111111-1111-4111-8111-111111111111"))).toBe(true);
+    expect(requests.some((request) => request.url === "/api/agents/me/inbox-lite")).toBe(true);
   });
 
   it("creates tasks assigned to the authenticated agent by default", async () => {
@@ -169,7 +169,7 @@ describe("paperclip-task-bridge helper", () => {
     expect(result.stdout).not.toContain(apiKey);
   });
 
-  it("comments and updates status by resolving issue identifiers", async () => {
+  it("comments and updates status through direct issue identifier routes", async () => {
     const comment = await runHelper(["comment", "--issue", "PAP-123", "--body", "Progress from Hermes"], env());
     const update = await runHelper(["update-status", "--issue", "PAP-123", "--status", "in_review", "--comment", "Ready"], env());
 

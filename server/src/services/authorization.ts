@@ -10,7 +10,7 @@ import {
   principalPermissionGrants,
   projects,
 } from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type { AgentApiKeyScope, PermissionKey, PrincipalType, TaskBridgeAgentKeyScope } from "@paperclipai/shared";
 import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
@@ -29,6 +29,8 @@ export type AuthorizationActor =
     isInstanceAdmin?: boolean;
     agentId?: string | null;
     companyId?: string | null;
+    keyId?: string | null;
+    keyScope?: AgentApiKeyScope | null;
     runId?: string | null;
     source?:
       | "local_implicit"
@@ -66,6 +68,8 @@ export type AuthorizationResource =
       parentIssueId?: string | null;
       assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
+      originKind?: string | null;
+      originId?: string | null;
       status?: string | null;
     };
 
@@ -211,6 +215,8 @@ type IssueAuthorizationRow = {
   assigneeUserId: string | null;
   status: string;
   executionPolicy: unknown;
+  originKind: string | null;
+  originId: string | null;
 };
 
 function evaluateAuthorizationPolicyForAssignment(
@@ -550,6 +556,8 @@ export function authorizationService(db: Db) {
         assigneeUserId: issues.assigneeUserId,
         status: issues.status,
         executionPolicy: issues.executionPolicy,
+        originKind: issues.originKind,
+        originId: issues.originId,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
@@ -797,6 +805,130 @@ export function authorizationService(db: Db) {
         return lowTrustDeny("Assignee agent is outside this low-trust boundary.");
       }
       return null;
+    }
+
+    return null;
+  }
+
+  function taskBridgeScopeIds(
+    scope: TaskBridgeAgentKeyScope,
+    singularKey: "projectId" | "parentIssueId",
+    pluralKey: "projectIds" | "parentIssueIds",
+  ) {
+    return [
+      ...(typeof scope[singularKey] === "string" ? [scope[singularKey]] : []),
+      ...(Array.isArray(scope[pluralKey]) ? scope[pluralKey] : []),
+    ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  }
+
+  async function parentIssueMatchesTaskBridgeBoundary(
+    parentIssueId: string | null | undefined,
+    companyId: string,
+    allowedParentIssueIds: string[],
+  ) {
+    if (!parentIssueId || allowedParentIssueIds.length === 0) return false;
+    if (allowedParentIssueIds.includes(parentIssueId)) return true;
+    for (const rootIssueId of allowedParentIssueIds) {
+      if (await issueIdIsDescendantOf(parentIssueId, rootIssueId, companyId)) return true;
+    }
+    return false;
+  }
+
+  async function issueMatchesTaskBridgeCreateBoundary(
+    scope: TaskBridgeAgentKeyScope,
+    resource: Extract<AuthorizationResource, { type: "issue" }>,
+  ) {
+    const allowedProjectIds = taskBridgeScopeIds(scope, "projectId", "projectIds");
+    const allowedParentIssueIds = taskBridgeScopeIds(scope, "parentIssueId", "parentIssueIds");
+    if (resource.projectId && allowedProjectIds.includes(resource.projectId)) return true;
+    if (await parentIssueMatchesTaskBridgeBoundary(resource.parentIssueId, resource.companyId, allowedParentIssueIds)) {
+      return true;
+    }
+    if (resource.parentIssueId && allowedProjectIds.length > 0) {
+      const parent = await loadIssue(resource.parentIssueId);
+      if (parent?.companyId === resource.companyId && parent.projectId && allowedProjectIds.includes(parent.projectId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function issueMatchesTaskBridgeWriteBoundary(input: {
+    actorAgentId: string;
+    keyId: string;
+    resource: Extract<AuthorizationResource, { type: "issue" }>;
+  }) {
+    const issue = input.resource.issueId ? await loadIssue(input.resource.issueId) : null;
+    const assigneeAgentId = issue?.assigneeAgentId ?? input.resource.assigneeAgentId ?? null;
+    if (assigneeAgentId === input.actorAgentId) return true;
+    const originKind = issue?.originKind ?? input.resource.originKind ?? null;
+    const originId = issue?.originId ?? input.resource.originId ?? null;
+    return originKind === "task_bridge" && originId === input.keyId;
+  }
+
+  async function decideTaskBridgeAccess(input: {
+    actorAgentId: string;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope: TaskBridgeAgentKeyScope;
+    keyId: string;
+  }): Promise<AuthorizationDecision | null> {
+    const denyBridge = (explanation: string) =>
+      deny({
+        action: input.action,
+        reason: "deny_scope",
+        explanation,
+      });
+    const allowBridge = (explanation: string) =>
+      allow({
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation,
+      });
+
+    if (
+      input.action === "company_scope:read" ||
+      input.action === "agent:read" ||
+      input.action === "agent:wake" ||
+      input.action === "project:read" ||
+      input.action === "runtime:manage" ||
+      input.action === "secrets:read"
+    ) {
+      return denyBridge("Task bridge keys cannot use company-wide, peer-agent, project, runtime, or secret APIs.");
+    }
+
+    if (input.action === "tasks:assign") {
+      if (input.resource.type !== "issue") {
+        return denyBridge("Task bridge assignment requires an issue resource.");
+      }
+      if (!(await issueMatchesTaskBridgeCreateBoundary(input.scope, input.resource))) {
+        return denyBridge("Task bridge key is outside its approved parent or project boundary.");
+      }
+      if (input.resource.assigneeUserId) {
+        return denyBridge("Task bridge keys cannot assign work to board users.");
+      }
+      const allowedAssigneeAgentIds = input.scope.allowedAssigneeAgentIds ?? [];
+      if (
+        input.resource.assigneeAgentId &&
+        input.resource.assigneeAgentId !== input.actorAgentId &&
+        !allowedAssigneeAgentIds.includes(input.resource.assigneeAgentId)
+      ) {
+        return denyBridge("Task bridge key cannot assign work to that agent.");
+      }
+      return allowBridge("Allowed by task bridge create boundary.");
+    }
+
+    if (input.action === "issue:read" || input.action === "issue:comment" || input.action === "issue:mutate") {
+      if (input.resource.type !== "issue") {
+        return denyBridge("Task bridge issue access requires an issue resource.");
+      }
+      return await issueMatchesTaskBridgeWriteBoundary({
+        actorAgentId: input.actorAgentId,
+        keyId: input.keyId,
+        resource: input.resource,
+      })
+        ? allowBridge("Allowed for bridge-created or assigned issue.")
+        : denyBridge("Task bridge key can only access assigned or bridge-created issues.");
     }
 
     return null;
@@ -1181,6 +1313,25 @@ export function authorizationService(db: Db) {
         reason: "deny_company_boundary",
         explanation: "Actor agent was not found in the target company.",
       });
+    }
+
+    if (input.actor.source === "agent_key" && input.actor.keyScope?.kind === "task_bridge") {
+      const keyId = input.actor.keyId ?? null;
+      if (!keyId) {
+        return deny({
+          action: input.action,
+          reason: "deny_scope",
+          explanation: "Task bridge key context is missing.",
+        });
+      }
+      const taskBridgeDecision = await decideTaskBridgeAccess({
+        actorAgentId,
+        action: input.action,
+        resource: input.resource,
+        scope: input.actor.keyScope,
+        keyId,
+      });
+      if (taskBridgeDecision) return taskBridgeDecision;
     }
 
     const lowTrustDecision = await decideLowTrustAccess({

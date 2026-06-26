@@ -12,15 +12,35 @@ Use this skill when a Hermes-originated request needs to create or update Paperc
 Configure these in Hermes env/profile secrets, not in prompt text:
 
 - `PAPERCLIP_API_URL` - Paperclip base URL, with or without `/api`.
-- `PAPERCLIP_API_KEY` - scoped Paperclip agent API key for the Hermes actor.
+- `PAPERCLIP_BRIDGE_API_KEY` - a Paperclip agent API key created with `scope.kind = "task_bridge"`.
 
 Optional:
 
+- `PAPERCLIP_API_KEY` - fallback env var for older profiles; it must still contain a `task_bridge` scoped key, never a full agent key.
 - `PAPERCLIP_COMPANY_ID` - skips one identity lookup when set.
 - `PAPERCLIP_AGENT_ID` - skips one identity lookup when set.
 - `PAPERCLIP_RUN_ID` - sent as `X-Paperclip-Run-Id` on mutating requests when Hermes is running inside a Paperclip heartbeat.
 
-Never print or paste API keys. The helper reads credentials from environment variables and only prints response summaries.
+Never print or paste API keys. The helper reads credentials from environment variables and only prints response summaries. Do not put a normal claimed agent API key in an internet-facing Hermes runtime; normal keys can use broad same-company Paperclip routes.
+
+## Create a Bridge Key
+
+Create the key from a board-authenticated Paperclip API session and store the returned token once:
+
+```sh
+curl -X POST "$PAPERCLIP_API_URL/api/agents/$HERMES_AGENT_ID/keys" \
+  -H "Authorization: Bearer $BOARD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Hermes task bridge",
+    "scope": {
+      "kind": "task_bridge",
+      "parentIssueId": "00000000-0000-4000-8000-000000000000"
+    }
+  }'
+```
+
+Use `parentIssueId` or `parentIssueIds` when Hermes should only create child tasks under approved work. Use `projectId` or `projectIds` when the approved boundary is a project. A bridge key can create tasks only inside that boundary, can comment/update only bridge-created or assigned issues, and cannot use company-wide issue list/search/read surfaces.
 
 ## Helper
 
@@ -34,7 +54,7 @@ Commands:
 
 ```sh
 node ./paperclip-task.mjs list-assigned
-node ./paperclip-task.mjs create-task --title "Investigate checkout failures" --description "Capture failing request and root cause."
+node ./paperclip-task.mjs create-task --parent-id "00000000-0000-4000-8000-000000000000" --title "Investigate checkout failures" --description "Capture failing request and root cause."
 node ./paperclip-task.mjs comment --issue PAP-123 --body "Found the failing request path."
 node ./paperclip-task.mjs update-status --issue PAP-123 --status in_review --comment "Ready for review."
 ```

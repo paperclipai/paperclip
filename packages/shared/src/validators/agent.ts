@@ -114,8 +114,45 @@ export const updateAgentInstructionsPathSchema = z.object({
 
 export type UpdateAgentInstructionsPath = z.infer<typeof updateAgentInstructionsPathSchema>;
 
+export const taskBridgeAgentKeyScopeSchema = z.object({
+  kind: z.literal("task_bridge"),
+  projectId: z.string().uuid().optional().nullable(),
+  projectIds: z.array(z.string().uuid()).max(50).optional(),
+  parentIssueId: z.string().uuid().optional().nullable(),
+  parentIssueIds: z.array(z.string().uuid()).max(50).optional(),
+  allowedAssigneeAgentIds: z.array(z.string().uuid()).max(50).optional(),
+}).strict().superRefine((value, ctx) => {
+  const hasProjectBoundary = Boolean(value.projectId) || Boolean(value.projectIds?.length);
+  const hasParentBoundary = Boolean(value.parentIssueId) || Boolean(value.parentIssueIds?.length);
+  if (!hasProjectBoundary && !hasParentBoundary) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "task_bridge keys require at least one project or parent issue boundary",
+      path: ["projectId"],
+    });
+  }
+});
+
+export const standardAgentKeyScopeSchema = z.object({
+  kind: z.literal("standard"),
+}).strict();
+
+export const agentApiKeyScopeSchema = z.union([
+  standardAgentKeyScopeSchema,
+  taskBridgeAgentKeyScopeSchema,
+]);
+
+export type AgentApiKeyScope = z.infer<typeof agentApiKeyScopeSchema>;
+export type TaskBridgeAgentKeyScope = z.infer<typeof taskBridgeAgentKeyScopeSchema>;
+
+export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
+  const parsed = agentApiKeyScopeSchema.safeParse(value);
+  return parsed.success ? parsed.data : { kind: "standard" };
+}
+
 export const createAgentKeySchema = z.object({
   name: z.string().min(1).default("default"),
+  scope: agentApiKeyScopeSchema.optional().default({ kind: "standard" }),
 });
 
 export type CreateAgentKey = z.infer<typeof createAgentKeySchema>;

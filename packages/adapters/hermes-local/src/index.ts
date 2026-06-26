@@ -115,7 +115,8 @@ to create, comment on, update, or list Paperclip tasks.
 Configure credentials through Hermes env/profile secrets, never in prompt text:
 
 - \`PAPERCLIP_API_URL\` - Paperclip base URL, with or without \`/api\`
-- \`PAPERCLIP_API_KEY\` - scoped Paperclip agent API key
+- \`PAPERCLIP_BRIDGE_API_KEY\` - Paperclip agent API key created with \`scope.kind = "task_bridge"\`
+- optional fallback \`PAPERCLIP_API_KEY\` - must still be a task_bridge key, never a normal claimed agent key
 - optional \`PAPERCLIP_COMPANY_ID\`, \`PAPERCLIP_AGENT_ID\`, and \`PAPERCLIP_RUN_ID\`
 
 The bridge is separate from adapter execution:
@@ -123,6 +124,10 @@ The bridge is separate from adapter execution:
 - \`hermes_local\` means Paperclip shells out to local \`hermes chat\`.
 - \`hermes_gateway\` means Paperclip wakes remote Hermes through Hermes's API server.
 - \`paperclip-task-bridge\` means Hermes calls Paperclip's REST API to manage tasks.
+
+Create task bridge keys with a parent issue or project boundary. Do not expose
+normal claimed Paperclip agent API keys to internet-facing Hermes chat/webhook
+task-bridge surfaces.
 
 ## Available Template Variables
 

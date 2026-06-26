@@ -1947,6 +1947,18 @@ export function agentRoutes(
       res.json(buildLowTrustSelfView(agent));
       return;
     }
+    if (req.actor.keyScope?.kind === "task_bridge") {
+      res.json({
+        id: agent.id,
+        companyId: agent.companyId,
+        name: agent.name,
+        role: agent.role,
+        title: agent.title,
+        status: agent.status,
+        keyScope: req.actor.keyScope,
+      });
+      return;
+    }
     res.json(await buildAgentDetail(agent));
   });
 
@@ -3188,7 +3200,7 @@ export function agentRoutes(
     if (!agent) {
       return;
     }
-    const key = await svc.createApiKey(id, req.body.name);
+    const key = await svc.createApiKey(id, req.body.name, req.body.scope);
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -3197,7 +3209,7 @@ export function agentRoutes(
       action: "agent.key_created",
       entityType: "agent",
       entityId: agent.id,
-      details: { keyId: key.id, name: key.name },
+      details: { keyId: key.id, name: key.name, scope: key.scope },
     });
 
     res.status(201).json(key);

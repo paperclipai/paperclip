@@ -118,7 +118,7 @@ Configure Paperclip access in Hermes env/profile secrets, not prompt text:
 
 ```bash
 PAPERCLIP_API_URL=http://127.0.0.1:3100/api
-PAPERCLIP_API_KEY=<scoped-agent-api-key>
+PAPERCLIP_BRIDGE_API_KEY=<task-bridge-scoped-agent-api-key>
 ```
 
 Optional env values:
@@ -132,7 +132,7 @@ commands:
 
 ```bash
 node ./paperclip-task.mjs list-assigned
-node ./paperclip-task.mjs create-task --title "Investigate checkout failures" --description "Capture failing request and root cause."
+node ./paperclip-task.mjs create-task --parent-id "<approved-parent-issue-id>" --title "Investigate checkout failures" --description "Capture failing request and root cause."
 node ./paperclip-task.mjs comment --issue PAP-123 --body "Found the failing request path."
 node ./paperclip-task.mjs update-status --issue PAP-123 --status in_review --comment "Ready for review."
 ```
@@ -140,6 +140,10 @@ node ./paperclip-task.mjs update-status --issue PAP-123 --status in_review --com
 The helper reads credentials from environment variables and prints only JSON
 summaries. It supports `create-task`, `comment`, `update-status`, and
 `list-assigned`.
+
+Create the bridge key with `scope.kind = "task_bridge"` plus a `parentIssueId`
+or `projectId` boundary. Do not use a normal claimed agent API key for
+internet-facing Hermes chat/webhook task-bridge operations.
 
 ### 3. Assign work
 

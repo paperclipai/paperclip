@@ -869,6 +869,13 @@
       "when": 1781903700000,
       "tag": "0123_document_annotation_source_trust",
       "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1782440000000,
+      "tag": "0124_agent_api_key_scope_config",
+      "breakpoints": true
     }
   ]
 }
