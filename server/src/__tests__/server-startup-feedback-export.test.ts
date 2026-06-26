@@ -257,6 +257,7 @@ describe("startServer authenticated auth origin setup", () => {
         authPublicBaseUrl: "http://127.0.0.1:3211/",
       }),
       ["http://board.example.test:3211"],
+      expect.objectContaining({ disableSignUp: expect.any(Boolean) }),
     );
     expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
       serverPort: 3211,
