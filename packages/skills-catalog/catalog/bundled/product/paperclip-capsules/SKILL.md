@@ -56,7 +56,7 @@ Use the **hero capsule bank** only for brand hero imagery, feature-video hero sc
 
 Use **graphic-generator layouts** when the task asks for capsule graphics such as blend rows, chains, grids, icon marks, or hero compositions. Prefer seeded tools and exportable workflows; read `references/generator-workflows.md`.
 
-Use **seeded identicons/profile pills** when an agent needs a reproducible personal capsule mark. Keep the seed/config with the output.
+Use **seeded identicons/profile pills** when an agent needs a reproducible personal capsule mark. Read `references/identicon-prototyper.md` before choosing variants, color schemes, dither algorithms, density, sheen, aurora, mesh, motion, or exports.
 
 ## Implementation Workflow
 
@@ -96,3 +96,4 @@ For code changes, include targeted checks that exercise the edited surface. For 
 - `references/individual-status-capsules.md` - product app capsules, heartbeat status capsules, palette caveats, and reduced-motion rules.
 - `references/hero-capsule-bank.md` - canonical hero-bank geometry, palette, grain, wave, crop, and rendering checklist.
 - `references/generator-workflows.md` - website generator, external graphic-generator, and seeded identicon/profile-pill workflows.
+- `references/identicon-prototyper.md` - deterministic profile-pill variants, color schemes, dither algorithms, density behavior, motion, export/share controls, and recommended combinations.
