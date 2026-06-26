@@ -67,18 +67,66 @@ function countMatches(value, pattern) {
   return Array.from(value.matchAll(pattern)).length;
 }
 
-function assertCcrotateServeSecretEnv(rendered, envName) {
+function assertValueEnv(rendered, envName, value) {
+  assert.match(
+    rendered,
+    new RegExp(
+      `- name: ${escapeRegExp(envName)}\\n` +
+        `\\s+value: "?${escapeRegExp(value)}"?`,
+    ),
+    `${envName} should render as ${value}`,
+  );
+}
+
+function extractValueEnv(rendered, envName) {
+  const match = rendered.match(
+    new RegExp(
+      `- name: ${escapeRegExp(envName)}\\n` +
+        "\\s+value: (?<quote>[\"']?)(?<value>.*?)(?:\\k<quote>)\\n",
+    ),
+  );
+  assert.ok(match?.groups?.value, `${envName} should render a literal value`);
+  return match.groups.value;
+}
+
+function assertPenstockOrgKeySecretEnv(rendered, envName) {
   assert.match(
     rendered,
     new RegExp(
       `- name: ${escapeRegExp(envName)}\\n` +
         "\\s+valueFrom:\\n" +
         "\\s+secretKeyRef:\\n" +
-        "\\s+key: serveToken\\n" +
-        "\\s+name: paperclip-ccrotate-serve-secrets",
+        "\\s+key: token\\n" +
+        "\\s+name: paperclip-penstock-org-key",
     ),
-    `${envName} should inherit the ccrotate-serve bearer secret`,
+    `${envName} should inherit the Penstock org key secret`,
   );
+}
+
+function assertNoLegacyProviderSecretEnv(rendered, envName) {
+  const envBlock = rendered.match(
+    new RegExp(`- name: ${escapeRegExp(envName)}\\n(?:\\s{12,}.+\\n)+`),
+  )?.[0];
+
+  assert.ok(envBlock, `${envName} should render`);
+  assert.doesNotMatch(
+    envBlock,
+    /paperclip-ccrotate-serve-secrets|paperclip-ccrotate-board-token/,
+    `${envName} should not inherit a legacy ccrotate secret`,
+  );
+}
+
+function assertCodexPenstockProvider(rendered) {
+  const value = extractValueEnv(rendered, "PAPERCLIP_CODEX_PROVIDERS");
+  const parsed = JSON.parse(value);
+
+  assert.equal(parsed.model_provider, "penstock");
+  assert.deepEqual(parsed.providers?.penstock, {
+    name: "Penstock OpenAI gateway",
+    base_url: "https://api.penstock.run/v1",
+    env_key: "OPENAI_API_KEY",
+    wire_api: "responses",
+  });
 }
 
 test("runtimeCache mounts emptyDir and redirects regenerable caches", () => {
@@ -153,27 +201,31 @@ test("runtimeCache can be disabled for API tier rollback", () => {
   assert.doesNotMatch(rendered, /XDG_CACHE_HOME/);
 });
 
-test("Blockcast values inherit ccrotate-serve bearer for Anthropic agent traffic", () => {
+test("Blockcast values route agent LLM traffic through Penstock gateway", () => {
   const renderedStatefulSet = renderStatefulSet();
   const renderedApiDeployment = renderApiDeployment();
 
   for (const rendered of [renderedStatefulSet, renderedApiDeployment]) {
-    assert.match(
-      rendered,
-      /- name: ANTHROPIC_BASE_URL\n\s+value: "?http:\/\/ccrotate-serve\.paperclip\.svc:4001"?/,
-      "agent Anthropic traffic must use the in-cluster ccrotate-serve endpoint",
-    );
-    assertCcrotateServeSecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
-    assertCcrotateServeSecretEnv(rendered, "ANTHROPIC_API_KEY");
+    assertValueEnv(rendered, "ANTHROPIC_BASE_URL", "https://api.penstock.run/anthropic");
+    assertPenstockOrgKeySecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
+    assertPenstockOrgKeySecretEnv(rendered, "ANTHROPIC_API_KEY");
+    assertNoLegacyProviderSecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
+    assertNoLegacyProviderSecretEnv(rendered, "ANTHROPIC_API_KEY");
+    assertValueEnv(rendered, "OPENAI_BASE_URL", "https://api.penstock.run/v1");
+    assertValueEnv(rendered, "OPENAI_API_BASE", "https://api.penstock.run/v1");
+    assertValueEnv(rendered, "OPENAI_API_BASE_URL", "https://api.penstock.run/v1");
+    assertPenstockOrgKeySecretEnv(rendered, "OPENAI_API_KEY");
+    assertNoLegacyProviderSecretEnv(rendered, "OPENAI_API_KEY");
+    assertCodexPenstockProvider(rendered);
     assert.doesNotMatch(
       rendered,
       /https:\/\/paperclip\.blockcast\.net\/ccrotate/,
-      "agent Anthropic traffic must not use the public auth-proxy endpoint",
+      "agent LLM traffic must not use the public auth-proxy endpoint",
     );
     assert.doesNotMatch(
       rendered,
       /paperclip-ccrotate-board-token/,
-      "agent Anthropic env refs must not inherit the board-session bearer",
+      "agent provider env refs must not inherit the board-session bearer",
     );
   }
 });
