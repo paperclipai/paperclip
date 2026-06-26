@@ -59,6 +59,7 @@
   },
   "files": [
     "dist",
+    "skills",
     "ui-parser.cjs",
     "README.md",
     "LICENSE"
