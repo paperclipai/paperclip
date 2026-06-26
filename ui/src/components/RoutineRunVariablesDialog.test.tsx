@@ -480,7 +480,7 @@ describe("RoutineRunVariablesDialog", () => {
     });
   });
 
-  it("renders date inputs for explicit date variables and capital-Date text variables", async () => {
+  it("respects explicit date and text variable types for Date-suffixed names", async () => {
     const { root } = await renderRoutineRunDialog(container, {
       variables: [
         {
@@ -503,8 +503,12 @@ describe("RoutineRunVariablesDialog", () => {
     });
 
     const dateInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="date"]'));
-    expect(dateInputs).toHaveLength(2);
-    expect(dateInputs.map((input) => input.value)).toEqual(["2026-06-26", "2026-07-01"]);
+    expect(dateInputs).toHaveLength(1);
+    expect(dateInputs[0]?.value).toBe("2026-07-01");
+
+    const textInput = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="text"]'))
+      .find((input) => input.value === "2026-06-26");
+    expect(textInput).toBeTruthy();
 
     await flushUi(() => {
       root.unmount();
@@ -518,7 +522,7 @@ describe("RoutineRunVariablesDialog", () => {
         {
           name: "startDate",
           label: null,
-          type: "text",
+          type: "date",
           defaultValue: null,
           required: true,
           options: [],
@@ -534,7 +538,7 @@ describe("RoutineRunVariablesDialog", () => {
         {
           name: "endDate",
           label: null,
-          type: "text",
+          type: "date",
           defaultValue: null,
           required: false,
           options: [],

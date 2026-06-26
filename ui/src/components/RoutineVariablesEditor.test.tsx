@@ -9,7 +9,7 @@ import { RoutineVariablesEditor, RoutineVariablesHint } from "./RoutineVariables
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-function act(callback: () => void) {
+function flushUi(callback: () => void) {
   flushSync(callback);
 }
 
@@ -39,7 +39,7 @@ describe("RoutineVariablesEditor", () => {
       },
     ];
 
-    act(() => {
+    flushUi(() => {
       root.render(
         <RoutineVariablesEditor
           title="Review {{startDate}}"
@@ -53,26 +53,26 @@ describe("RoutineVariablesEditor", () => {
     const dateInput = container.querySelector<HTMLInputElement>('input[type="date"]');
     expect(dateInput?.value).toBe("2026-06-26");
 
-    act(() => root.unmount());
+    flushUi(() => root.unmount());
   });
 
-  it("documents capital-Date manual run date picker behavior", () => {
+  it("documents capital-Date default type behavior", () => {
     const root = createRoot(container);
 
-    act(() => {
+    flushUi(() => {
       root.render(<RoutineVariablesHint />);
     });
 
     const helpButton = document.querySelector<HTMLButtonElement>('button[aria-label="Show variable help"]');
     expect(helpButton).toBeTruthy();
 
-    act(() => {
+    flushUi(() => {
       helpButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(document.body.textContent).toContain("Variable names ending in capital Date");
     expect(document.body.textContent).toContain("startDate");
 
-    act(() => root.unmount());
+    flushUi(() => root.unmount());
   });
 });

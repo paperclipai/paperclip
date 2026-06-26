@@ -313,7 +313,7 @@ export function RoutineVariablesHint() {
               <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
                 <li>Names must start with a letter and may use letters, numbers, and underscores.</li>
                 <li>Pick a type (text, textarea, number, boolean, select, date), default value, and whether it is required.</li>
-                <li>Variable names ending in capital Date, such as startDate, open a date picker during manual runs.</li>
+                <li>Variable names ending in capital Date, such as startDate, are created as date variables by default.</li>
                 <li>The same name reused across the title and instructions is treated as one variable.</li>
               </ul>
             </section>

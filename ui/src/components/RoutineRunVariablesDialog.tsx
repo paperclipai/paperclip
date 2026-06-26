@@ -7,7 +7,6 @@ import {
   type IssueExecutionWorkspaceSettings,
   type Project,
   type RoutineVariable,
-  isRoutineDateVariableName,
 } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -155,7 +154,7 @@ function isMissingRequiredValue(value: unknown) {
 }
 
 function shouldUseDateInput(variable: RoutineVariable) {
-  return variable.type === "date" || isRoutineDateVariableName(variable.name);
+  return variable.type === "date";
 }
 
 function supportsRoutineRunWorkspaceSelection(
