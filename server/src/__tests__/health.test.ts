@@ -7,10 +7,17 @@ import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
 
 const mockReadPersistedDevServerStatus = vi.hoisted(() => vi.fn());
+const mockGetLiveEventsTransportHealth = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ mode: "in-process" }),
+);
 
 vi.mock("../dev-server-status.js", () => ({
   readPersistedDevServerStatus: mockReadPersistedDevServerStatus,
   toDevServerHealthStatus: vi.fn(),
+}));
+
+vi.mock("../services/live-events.js", () => ({
+  getLiveEventsTransportHealth: mockGetLiveEventsTransportHealth,
 }));
 
 function createApp(db?: Db) {
@@ -45,7 +52,7 @@ describe("GET /health", () => {
 
     expect(res.status).toBe(200);
     expect(db.execute).toHaveBeenCalledTimes(1);
-    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
+    expect(res.body).toMatchObject({ status: "ok", version: serverVersion, liveEvents: { mode: "in-process" } });
   });
 
   it("returns 503 when the database probe fails", async () => {
