@@ -32,8 +32,6 @@ type BuildPlanReviewContextInput = {
   includeForIssueComment?: boolean;
   includeForAnnotationDelta?: boolean;
   interactionId?: string | null;
-  interactionKind?: string | null;
-  interactionStatus?: string | null;
 };
 
 function nonEmptyString(value: unknown) {
@@ -224,7 +222,8 @@ export async function buildPlanReviewContext(input: BuildPlanReviewContextInput)
         eq(documentAnnotationComments.documentId, planDocument.documentId),
         inArray(documentAnnotationComments.threadId, threadIds),
       ))
-      .orderBy(asc(documentAnnotationComments.createdAt), asc(documentAnnotationComments.id));
+      .orderBy(asc(documentAnnotationComments.createdAt), asc(documentAnnotationComments.id))
+      .limit(PLAN_REVIEW_CONTEXT_LIMITS.maxComments);
 
   const [{ count: commentCount }] = await input.db
     .select({ count: sql<number>`count(*)::int` })
