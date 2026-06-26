@@ -94,6 +94,36 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
   }
 }
 
+export function buildPaperclipMcpServerConfig(
+  env: Record<string, string>,
+): Record<string, unknown> | null {
+  const apiKey = env.PAPERCLIP_API_KEY?.trim();
+  const apiUrl = env.PAPERCLIP_API_URL?.trim();
+  if (!apiKey || !apiUrl) return null;
+
+  const environment: Record<string, string> = {
+    PAPERCLIP_API_URL: apiUrl,
+    PAPERCLIP_API_KEY: apiKey,
+  };
+  if (env.PAPERCLIP_COMPANY_ID?.trim()) {
+    environment.PAPERCLIP_COMPANY_ID = env.PAPERCLIP_COMPANY_ID.trim();
+  }
+  if (env.PAPERCLIP_AGENT_ID?.trim()) {
+    environment.PAPERCLIP_AGENT_ID = env.PAPERCLIP_AGENT_ID.trim();
+  }
+  if (env.PAPERCLIP_RUN_ID?.trim()) {
+    environment.PAPERCLIP_RUN_ID = env.PAPERCLIP_RUN_ID.trim();
+  }
+
+  return {
+    type: "local",
+    command: ["npx", "-y", "@paperclipai/mcp-server"],
+    enabled: true,
+    environment,
+    timeout: 15_000,
+  };
+}
+
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
@@ -183,7 +213,17 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.provider = nextProvider;
   }
 
-  // Pin OpenCode's auxiliary "small" model (used for session-title generation and
+  const paperclipMcp = buildPaperclipMcpServerConfig(input.env);
+  if (paperclipMcp) {
+    const existingMcp = isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {};
+    nextConfig.mcp = {
+      ...existingMcp,
+      paperclip: paperclipMcp,
+    };
+    notes.push("Injected Paperclip MCP server (paperclip) for on-demand API reads.");
+  }
+
+  // Pin OpenCode's auxiliary "small" model
   // other helper tasks) via PAPERCLIP_OPENCODE_SMALL_MODEL. OpenCode otherwise
   // defaults the small model to a built-in provider default (e.g. a claude-* model
   // for the anthropic provider); when that provider is repointed at a gateway that

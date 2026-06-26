@@ -1197,6 +1197,7 @@ describe("paperclip chat wake", () => {
     expect(prompt).toContain("Operator context");
     expect(prompt).toContain("3 títulos com ganchos");
     expect(prompt).toContain("descriptionExcerpt");
+    expect(prompt).toContain("paperclipGetIssue");
     expect(prompt).not.toContain("fetch your inbox");
   });
 

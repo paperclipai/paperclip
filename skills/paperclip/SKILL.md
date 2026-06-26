@@ -17,6 +17,16 @@ You run in **heartbeats** — short execution windows triggered by Paperclip. Ea
 
 In Paperclip, **task** and **issue** refer to the same work item. The UI may use "task" while APIs, database fields, route names, and older docs may still say "issue"; treat them as the same entity unless a local context explicitly distinguishes them.
 
+## BizCursor / Pure Chat Mode (`PAPERCLIP_PURE_CHAT=1`)
+
+When this env var is set, you are in a **direct operator chat** (BizCursor), not a heartbeat inbox run.
+
+- **Skip Steps 1–4** of the Heartbeat Procedure below — do not call `/api/agents/me`, inbox, or pick tasks from your queue.
+- Start from the **Context Pack** and operator message in the wake prompt.
+- **Use Paperclip MCP tools** for fresh reads when the pack lacks detail: `paperclipGetIssue`, `paperclipGetDocument`, `paperclipListComments`, `paperclipGetHeartbeatContext`, `paperclipListIssues`.
+- Only checkout, update, or create issues when the operator explicitly asks to delegate or change work state.
+- Answer conversationally in Portuguese unless asked otherwise.
+
 ## Authentication
 
 Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.

@@ -245,23 +245,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const chatWake = normalizePaperclipChatWakePayload(context.paperclipChatWake);
-  const pureChatWake =
-    chatWake !== null ||
-    asString(context.wakeMode, "").trim() === "chat" ||
-    (typeof context.wakeReason === "string" &&
-      context.wakeReason.trim() === PAPERCLIP_CHAT_WAKE_REASON);
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  let desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries);
-  if (pureChatWake) {
-    desiredOpenCodeSkillNames = desiredOpenCodeSkillNames.filter((name) => {
-      const normalized = name.trim().toLowerCase();
-      return (
-        normalized !== "paperclip" &&
-        !normalized.endsWith("/paperclip") &&
-        !normalized.includes("paperclip-converting-plans-to-tasks")
-      );
-    });
-  }
+  const desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries);
   if (!executionTargetIsRemote) {
     await ensureOpenCodeSkillsInjected(
       onLog,

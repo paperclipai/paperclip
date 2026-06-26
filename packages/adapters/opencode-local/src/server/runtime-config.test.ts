@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import { buildPaperclipMcpServerConfig, prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
 
@@ -29,6 +29,35 @@ async function makeConfigHome(initialConfig?: Record<string, unknown>) {
   }
   return root;
 }
+
+describe("buildPaperclipMcpServerConfig", () => {
+  it("returns null when API credentials are missing", () => {
+    expect(buildPaperclipMcpServerConfig({})).toBeNull();
+    expect(buildPaperclipMcpServerConfig({ PAPERCLIP_API_URL: "https://x/api" })).toBeNull();
+  });
+
+  it("builds local MCP server config with optional company/agent/run ids", () => {
+    const config = buildPaperclipMcpServerConfig({
+      PAPERCLIP_API_URL: "https://paperclip.example/api",
+      PAPERCLIP_API_KEY: "pk-test",
+      PAPERCLIP_COMPANY_ID: "co-1",
+      PAPERCLIP_AGENT_ID: "ag-1",
+      PAPERCLIP_RUN_ID: "run-1",
+    });
+    expect(config).toMatchObject({
+      type: "local",
+      command: ["npx", "-y", "@paperclipai/mcp-server"],
+      enabled: true,
+      environment: {
+        PAPERCLIP_API_URL: "https://paperclip.example/api",
+        PAPERCLIP_API_KEY: "pk-test",
+        PAPERCLIP_COMPANY_ID: "co-1",
+        PAPERCLIP_AGENT_ID: "ag-1",
+        PAPERCLIP_RUN_ID: "run-1",
+      },
+    });
+  });
+});
 
 describe("prepareOpenCodeRuntimeConfig", () => {
   it("injects an external_directory allow rule by default", async () => {
@@ -250,6 +279,30 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.notes).toContain(
       "PAPERCLIP_OPENCODE_PROVIDERS: skipped provider(s) with non-object values: bifrost.",
     );
+    await prepared.cleanup();
+  });
+
+  it("injects Paperclip MCP server when API credentials are present", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: {
+        XDG_CONFIG_HOME: configHome,
+        PAPERCLIP_API_URL: "https://paperclip.example/api",
+        PAPERCLIP_API_KEY: "pk-test",
+        PAPERCLIP_COMPANY_ID: "co-1",
+      },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp?: { paperclip?: Record<string, unknown> } };
+    expect(runtimeConfig.mcp?.paperclip).toMatchObject({
+      type: "local",
+      command: ["npx", "-y", "@paperclipai/mcp-server"],
+      enabled: true,
+    });
+    expect(prepared.notes.some((n) => n.includes("Paperclip MCP"))).toBe(true);
     await prepared.cleanup();
   });
 
