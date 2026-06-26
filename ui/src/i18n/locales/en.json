@@ -1161,5 +1161,44 @@
     "placeholders": {
       "searchByName": "Search by name or email"
     }
+  },
+  "instanceExperimental": {
+    "errors": {
+      "createRecovery": "Failed to create recovery tasks.",
+      "previewRecovery": "Failed to preview recovery tasks.",
+      "updateSettings": "Failed to update experimental settings."
+    },
+    "features": {
+      "experimental": "Experimental",
+      "warning": "Experimental features may break at any time.",
+      "loading": "Loading experimental settings...",
+      "cloudSync": "Cloud Sync",
+      "conferenceRoomChat": "Conference Room Chat",
+      "enableEnvironments": "Enable Environments",
+      "enableExternalObjects": "Enable External Objects",
+      "enableIsolatedWorkspaces": "Enable Isolated Workspaces",
+      "experimentalFileViewer": "Experimental File Viewer",
+      "streamlinedLeftNav": "Streamlined Left Navigation Bar",
+      "taskPlanDecomposition": "Task Plan Decomposition Panel",
+      "taskWatchdogs": "Task Watchdogs"
+    },
+    "aria": {
+      "toggleCloudSync": "Toggle cloud sync experimental setting",
+      "toggleConferenceRoomChat": "Toggle conference room chat experimental setting",
+      "toggleEnvironments": "Toggle environments experimental setting",
+      "toggleExperimentalFileViewer": "Toggle experimental file viewer setting",
+      "toggleExternalObjects": "Toggle external objects experimental setting",
+      "toggleGuardedDevServer": "Toggle guarded dev-server auto-restart",
+      "toggleIsolatedWorkspaces": "Toggle isolated workspaces experimental setting",
+      "toggleStreamlinedLeftNav": "Toggle streamlined left navigation experimental setting",
+      "toggleTaskGraphLiveness": "Toggle task graph liveness auto-recovery",
+      "toggleTaskPlanDecomposition": "Toggle task plan decomposition panel experimental setting",
+      "toggleTaskWatchdogs": "Toggle task watchdogs experimental setting"
+    },
+    "tabs": {
+      "experimental": "Experimental",
+      "instanceSettings": "Instance settings",
+      "settings": "Settings"
+    }
   }
 }

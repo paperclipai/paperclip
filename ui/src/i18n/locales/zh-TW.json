@@ -1161,5 +1161,44 @@
     "placeholders": {
       "searchByName": "按名稱或電子郵件搜尋"
     }
+  },
+  "instanceExperimental": {
+    "errors": {
+      "createRecovery": "建立復原任務失敗。",
+      "previewRecovery": "預覽復原任務失敗。",
+      "updateSettings": "更新實驗設定失敗。"
+    },
+    "features": {
+      "experimental": "實驗性",
+      "warning": "實驗性功能可能隨時中斷。",
+      "loading": "正在載入實驗設定……",
+      "cloudSync": "雲端同步",
+      "conferenceRoomChat": "會議室聊天",
+      "enableEnvironments": "啟用環境",
+      "enableExternalObjects": "啟用外部物件",
+      "enableIsolatedWorkspaces": "啟用隔離工作區",
+      "experimentalFileViewer": "實驗性檔案檢視器",
+      "streamlinedLeftNav": "精簡左側導覽列",
+      "taskPlanDecomposition": "工作計畫分解面板",
+      "taskWatchdogs": "工作看門狗"
+    },
+    "aria": {
+      "toggleCloudSync": "切換雲端同步實驗設定",
+      "toggleConferenceRoomChat": "切換會議室聊天實驗設定",
+      "toggleEnvironments": "切換環境實驗設定",
+      "toggleExperimentalFileViewer": "切換實驗性檔案檢視器設定",
+      "toggleExternalObjects": "切換外部物件實驗設定",
+      "toggleGuardedDevServer": "切換受保護的開發伺服器自動重啟",
+      "toggleIsolatedWorkspaces": "切換隔離工作區實驗設定",
+      "toggleStreamlinedLeftNav": "切換精簡左側導覽實驗設定",
+      "toggleTaskGraphLiveness": "切換工作圖活性自動復原",
+      "toggleTaskPlanDecomposition": "切換工作計畫分解面板實驗設定",
+      "toggleTaskWatchdogs": "切換工作看門狗實驗設定"
+    },
+    "tabs": {
+      "experimental": "實驗性",
+      "instanceSettings": "實例設定",
+      "settings": "設定"
+    }
   }
 }

@@ -1161,5 +1161,44 @@
     "placeholders": {
       "searchByName": "按名称或邮箱搜索"
     }
+  },
+  "instanceExperimental": {
+    "errors": {
+      "createRecovery": "创建恢复任务失败。",
+      "previewRecovery": "预览恢复任务失败。",
+      "updateSettings": "更新实验设置失败。"
+    },
+    "features": {
+      "experimental": "实验性",
+      "warning": "实验性功能可能随时中断。",
+      "loading": "正在加载实验设置……",
+      "cloudSync": "云同步",
+      "conferenceRoomChat": "会议室聊天",
+      "enableEnvironments": "启用环境",
+      "enableExternalObjects": "启用外部对象",
+      "enableIsolatedWorkspaces": "启用隔离工作区",
+      "experimentalFileViewer": "实验性文件查看器",
+      "streamlinedLeftNav": "精简左侧导航栏",
+      "taskPlanDecomposition": "任务计划分解面板",
+      "taskWatchdogs": "任务看门狗"
+    },
+    "aria": {
+      "toggleCloudSync": "切换云同步实验设置",
+      "toggleConferenceRoomChat": "切换会议室聊天实验设置",
+      "toggleEnvironments": "切换环境实验设置",
+      "toggleExperimentalFileViewer": "切换实验性文件查看器设置",
+      "toggleExternalObjects": "切换外部对象实验设置",
+      "toggleGuardedDevServer": "切换受保护的开发服务器自动重启",
+      "toggleIsolatedWorkspaces": "切换隔离工作区实验设置",
+      "toggleStreamlinedLeftNav": "切换精简左侧导航实验设置",
+      "toggleTaskGraphLiveness": "切换任务图活性自动恢复",
+      "toggleTaskPlanDecomposition": "切换任务计划分解面板实验设置",
+      "toggleTaskWatchdogs": "切换任务看门狗实验设置"
+    },
+    "tabs": {
+      "experimental": "实验性",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    }
   }
 }
