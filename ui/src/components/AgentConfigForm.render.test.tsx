@@ -61,23 +61,35 @@ vi.mock("../context/CompanyContext", () => ({
 }));
 
 vi.mock("../adapters", () => ({
-  getUIAdapter: () => ({
-    type: "codex_local",
-    label: "Codex",
-    ConfigFields: () => null,
+  getUIAdapter: (type: string) => ({
+    type,
+    label: type === "hermes_gateway" ? "Hermes Gateway" : "Codex",
+    ConfigFields: ({ adapterType }: { adapterType: string }) =>
+      adapterType === "hermes_gateway"
+        ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
+        : null,
     buildAdapterConfig: () => ({}),
     parseStdoutLine: () => [],
   }),
 }));
 
 vi.mock("../adapters/use-adapter-capabilities", () => ({
-  useAdapterCapabilities: () => () => ({
-    supportsInstructionsBundle: true,
-    supportsSkills: true,
-    supportsLocalAgentJwt: true,
-    requiresMaterializedRuntimeSkills: false,
-    supportsModelProfiles: true,
-  }),
+  useAdapterCapabilities: () => (adapterType: string) =>
+    adapterType === "hermes_gateway"
+      ? {
+          supportsInstructionsBundle: false,
+          supportsSkills: false,
+          supportsLocalAgentJwt: false,
+          requiresMaterializedRuntimeSkills: false,
+          supportsModelProfiles: false,
+        }
+      : {
+          supportsInstructionsBundle: true,
+          supportsSkills: true,
+          supportsLocalAgentJwt: true,
+          requiresMaterializedRuntimeSkills: false,
+          supportsModelProfiles: true,
+        },
 }));
 
 vi.mock("../adapters/use-disabled-adapters", () => ({
@@ -281,6 +293,23 @@ describe("AgentConfigForm environment selector", () => {
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("Default: Local");
     expect(selector?.textContent).toContain("Fake Sandbox · sandbox");
+  });
+
+  it("renders non-local adapter config fields in the Adapter card", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterType: "hermes_gateway",
+        adapterConfig: {
+          apiBaseUrl: "http://127.0.0.1:8642",
+          apiKey: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
+        },
+      },
+    );
+    roots.push(result.root);
+
+    expect(result.container.querySelector('[data-testid="hermes-gateway-config-fields"]')).toBeTruthy();
+    expect(result.container.textContent).toContain("Hermes Gateway fields");
   });
 
   it("tests both the primary and cheap models when a cheap profile is configured", async () => {
