@@ -12204,8 +12204,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return db
         .select()
         .from(agentTaskSessions)
-        .where(and(eq(agentTaskSessions.companyId, agent.companyId), eq(agentTaskSessions.agentId, agentId)))
+        .where(
+          and(
+            eq(agentTaskSessions.companyId, agent.companyId),
+            eq(agentTaskSessions.agentId, agentId),
+            eq(agentTaskSessions.adapterType, agent.adapterType),
+          ),
+        )
         .orderBy(desc(agentTaskSessions.updatedAt), desc(agentTaskSessions.createdAt));
+    },
+
+    clearAgentSessions: async (agentId: string) => {
+      const agent = await getAgent(agentId);
+      if (!agent) throw notFound("Agent not found");
+      return clearTaskSessions(agent.companyId, agentId, { adapterType: agent.adapterType });
     },
 
     resetRuntimeSession: async (agentId: string, opts?: { taskKey?: string | null }) => {
