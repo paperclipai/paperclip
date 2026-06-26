@@ -1,8 +1,8 @@
 import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import fs from "node:fs/promises";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, companySecretBindings, companySecrets, heartbeatRuns, issues, routines, routineTriggers } from "@paperclipai/db";
-import type { CeoControlRoomStatus, CeoControlRoomCategoryKey, CeoControlRoomSourceStatus } from "@paperclipai/shared";
+import { agents, approvals, companies, companySecretBindings, companySecrets, heartbeatRuns, issueWorkProducts, issues, routines, routineTriggers } from "@paperclipai/db";
+import type { CeoControlRoomStatus, CeoControlRoomCategoryKey, CeoControlRoomSeverity, CeoControlRoomSourceStatus } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { dashboardService } from "./dashboard.js";
@@ -199,10 +199,163 @@ function category(key: CeoControlRoomCategoryKey, label: string, severity: "ok" 
   };
 }
 
+type ConveyorAgentRow = {
+  id: string;
+  name: string;
+  status: string;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+  lastHeartbeatAt: Date | null;
+  errorReason: string | null;
+};
+
+type ConveyorRunRow = {
+  id: string;
+  agentId: string;
+  status: string;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  lastOutputAt: Date | null;
+  errorCode: string | null;
+  error: string | null;
+};
+
+function agentConveyorSummary(agent: ConveyorAgentRow, latestRun: ConveyorRunRow | null) {
+  const config = agent.adapterConfig ?? {};
+  const localRunAsUser = typeof config.localRunAsUser === "string" && config.localRunAsUser.trim().length > 0
+    ? config.localRunAsUser.trim()
+    : null;
+  const workspace = typeof config.localRunAsWorkspaceDir === "string" && config.localRunAsWorkspaceDir.trim().length > 0
+    ? config.localRunAsWorkspaceDir.trim()
+    : typeof config.cwd === "string" && config.cwd.trim().length > 0
+      ? config.cwd.trim()
+      : null;
+  const apiUrl = typeof config.env === "object" && config.env !== null
+    ? (config.env as Record<string, unknown>).PAPERCLIP_API_URL
+    : null;
+  const apiUrlValue = typeof apiUrl === "object" && apiUrl !== null && typeof (apiUrl as Record<string, unknown>).value === "string"
+    ? (apiUrl as Record<string, unknown>).value as string
+    : typeof apiUrl === "string"
+      ? apiUrl
+      : null;
+  const permissions = config.dangerouslySkipPermissions === true
+    ? "bypass"
+    : typeof config.permissionMode === "string"
+      ? config.permissionMode
+      : "default";
+  const runState = latestRun
+    ? `${latestRun.status}${latestRun.errorCode ? `/${latestRun.errorCode}` : ""}`
+    : "no recent run";
+  const parts = [
+    agent.adapterType,
+    localRunAsUser ? `run-as ${localRunAsUser}` : null,
+    workspace ? `workspace ${workspace}` : null,
+    apiUrlValue ? `api ${apiUrlValue}` : null,
+    `permissions ${permissions}`,
+    `latest ${runState}`,
+  ].filter(Boolean);
+  return `${agent.name}: ${parts.join(" · ")}`;
+}
+
+function proofSignals(input: { executionRunId: string | null; workProductCount: number; completedAt: Date | null; status: string }) {
+  const signals = [] as string[];
+  if (input.executionRunId) signals.push("run-linked");
+  if (input.workProductCount > 0) signals.push(`${input.workProductCount} work product${input.workProductCount === 1 ? "" : "s"}`);
+  if (input.completedAt) signals.push("completed");
+  if (signals.length === 0) signals.push(`status ${input.status}`);
+  return signals.join(" · ");
+}
+
+// Issue origins whose deliverable is the run/review output itself (a routine run,
+// a productivity review, a durable incident thread) rather than a filed work product.
+// A completed issue from one of these origins is self-documenting, so the absence of a
+// work product is not a real proof-ledger gap — only substantive work (manual/operator
+// issues) should be flagged proof_missing.
+export const SELF_DOCUMENTING_PROOF_ORIGIN_KINDS = new Set([
+  "routine_execution",
+  "issue_productivity_review",
+  "operational_loop_incident", // === OPERATIONAL_LOOP_INCIDENT_ORIGIN_KIND (declared below)
+]);
+
+export type ProofLedgerItemType = "proof_linked" | "proof_pending" | "proof_indirect" | "proof_missing";
+
+export function classifyProofLedgerEntry(input: {
+  status: string;
+  executionRunId: string | null;
+  workProductCount: number;
+  originKind: string | null;
+}): ProofLedgerItemType {
+  if (input.workProductCount > 0 || input.executionRunId) return "proof_linked";
+  // Still under review: proof may legitimately be attached before it closes.
+  if (input.status === "in_review") return "proof_pending";
+  // Closed work whose proof lives in the run/review/incident thread, not a work product.
+  if (input.originKind && SELF_DOCUMENTING_PROOF_ORIGIN_KINDS.has(input.originKind)) return "proof_indirect";
+  // Closed substantive work with no machine-checkable proof artifact: the real ledger gap.
+  return "proof_missing";
+}
+
+export type UnboundSecretItemType = "secret_missing" | "secret_external_ref" | "secret_unbound";
+
+// Classifies a secret surfaced by the unbound/non-active query. An active secret that is
+// merely unbound is not a missing secret: external_reference rows are pointers to canonical
+// secrets held outside Paperclip (CLI/CPS/Nautilus broker readiness), and active managed rows
+// with no binding are registered but not yet consumed by any lane. Only a non-active status is
+// a genuine missing/inactive secret.
+export function classifyUnboundSecret(input: { status: string; managedMode: string | null }): {
+  type: UnboundSecretItemType;
+  descriptor: string;
+} {
+  if (input.status !== "active") {
+    return { type: "secret_missing", descriptor: input.status };
+  }
+  if (input.managedMode === "external_reference") {
+    return { type: "secret_external_ref", descriptor: "external reference — canonical secret held outside Paperclip" };
+  }
+  return { type: "secret_unbound", descriptor: "registered but not bound to any lane" };
+}
+
+// A non-empty category only escalates to warning/critical when it contains a genuine problem.
+// missing_secret and proof_ledger now carry informational items (external refs, indirect proof)
+// that must not inflate the board into a false warning.
+export function severityForNonEmptyCategory(
+  key: CeoControlRoomCategoryKey,
+  items: Array<{ type: string }>,
+): CeoControlRoomSeverity {
+  switch (key) {
+    case "promotion_candidate":
+      return "info";
+    case "agent_conveyor":
+      return items.some((item) => item.type === "lane_attention") ? "warning" : "info";
+    case "proof_ledger":
+      return items.some((item) => item.type === "proof_missing") ? "warning" : "info";
+    case "missing_secret":
+      return items.some((item) => item.type === "issue" || item.type === "secret_missing") ? "warning" : "info";
+    case "spend_cap":
+    case "operational_loop":
+      return "critical";
+    default:
+      return "warning";
+  }
+}
+
 const OPEN_INCIDENT_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
+export const OPERATIONAL_LOOP_INCIDENT_ORIGIN_KIND = "operational_loop_incident";
 
 function incidentTitleForRoutine(title: string) {
   return `Operational incident: ${title}`;
+}
+
+function normalizeOperationalIncidentKey(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export function operationalIncidentFingerprint(input: { routineId?: string | null; routineTitle: string }) {
+  if (input.routineId) return `operational-loop:routine:${input.routineId}`;
+  return `operational-loop:title:${normalizeOperationalIncidentKey(input.routineTitle)}`;
+}
+
+export function legacyOperationalIncidentFingerprint(routineTitle: string) {
+  return `operational-loop:${routineTitle}`;
 }
 
 function normalizeOperatorNote(note?: string | null) {
@@ -251,15 +404,26 @@ export function ceoControlRoomService(db: Db) {
     const routineTitle = routine?.title ?? input.routineTitle.trim();
     if (!routineTitle) throw notFound("Routine title required");
     const title = incidentTitleForRoutine(routineTitle);
+    const incidentFingerprint = operationalIncidentFingerprint({ routineId: routine?.id ?? null, routineTitle });
+    const legacyFingerprint = legacyOperationalIncidentFingerprint(routineTitle);
     const note = normalizeOperatorNote(input.note);
     const existing = await db
       .select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status })
       .from(issues)
       .where(and(
         eq(issues.companyId, companyId),
-        eq(issues.title, title),
         inArray(issues.status, OPEN_INCIDENT_STATUSES),
         isNull(issues.hiddenAt),
+        or(
+          and(
+            eq(issues.originKind, OPERATIONAL_LOOP_INCIDENT_ORIGIN_KIND),
+            eq(issues.originFingerprint, incidentFingerprint),
+          ),
+          and(
+            eq(issues.title, title),
+            eq(issues.originFingerprint, legacyFingerprint),
+          ),
+        ),
       ))
       .orderBy(desc(issues.updatedAt))
       .limit(1)
@@ -287,8 +451,9 @@ export function ceoControlRoomService(db: Db) {
         status: "blocked",
         priority: "high",
         assigneeAgentId: null,
-        originKind: "manual",
-        originFingerprint: `operational-loop:${routineTitle}`,
+        originKind: OPERATIONAL_LOOP_INCIDENT_ORIGIN_KIND,
+        originId: routine?.id ?? null,
+        originFingerprint: incidentFingerprint,
       });
     }
 
@@ -334,7 +499,7 @@ export function ceoControlRoomService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!company) throw notFound("Company not found");
 
-      const [dashboard, budgetOverview, blockedIssueRows, pendingApprovalRows, suspiciousSecretIssueRows, unboundSecretRows, errorAgentRows, staleRunRows, promotionIssueRows, repeatedRoutineRows, noisyRoutineRows] = await Promise.all([
+      const [dashboard, budgetOverview, blockedIssueRows, pendingApprovalRows, suspiciousSecretIssueRows, unboundSecretRows, errorAgentRows, staleRunRows, promotionIssueRows, repeatedRoutineRows, noisyRoutineRows, activeOperationalIncidentRows, conveyorAgentRows, recentConveyorRunRows, recentProofIssueRows, proofWorkProductRows] = await Promise.all([
         dashboardService(db).summary(companyId),
         budgetService(db).overview(companyId),
         db
@@ -366,7 +531,7 @@ export function ceoControlRoomService(db: Db) {
           .orderBy(desc(issues.updatedAt))
           .limit(10),
         db
-          .select({ id: companySecrets.id, key: companySecrets.key, name: companySecrets.name, status: companySecrets.status })
+          .select({ id: companySecrets.id, key: companySecrets.key, name: companySecrets.name, status: companySecrets.status, managedMode: companySecrets.managedMode })
           .from(companySecrets)
           .leftJoin(companySecretBindings, eq(companySecretBindings.secretId, companySecrets.id))
           .where(and(eq(companySecrets.companyId, companyId), isNull(companySecrets.deletedAt), or(ne(companySecrets.status, "active"), isNull(companySecretBindings.id))))
@@ -436,6 +601,74 @@ export function ceoControlRoomService(db: Db) {
             ),
           ))
           .limit(20),
+        db
+          .select({
+            id: issues.id,
+            title: issues.title,
+            originId: issues.originId,
+            originFingerprint: issues.originFingerprint,
+          })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, OPERATIONAL_LOOP_INCIDENT_ORIGIN_KIND),
+            inArray(issues.status, OPEN_INCIDENT_STATUSES),
+            isNull(issues.hiddenAt),
+          ))
+          .limit(100),
+        db
+          .select({
+            id: agents.id,
+            name: agents.name,
+            status: agents.status,
+            adapterType: agents.adapterType,
+            adapterConfig: agents.adapterConfig,
+            lastHeartbeatAt: agents.lastHeartbeatAt,
+            errorReason: agents.errorReason,
+          })
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), inArray(agents.adapterType, ["claude_local", "codex_local", "hermes_local", "process", "http"])))
+          .orderBy(agents.name)
+          .limit(50),
+        db
+          .select({
+            id: heartbeatRuns.id,
+            agentId: heartbeatRuns.agentId,
+            status: heartbeatRuns.status,
+            startedAt: heartbeatRuns.startedAt,
+            finishedAt: heartbeatRuns.finishedAt,
+            lastOutputAt: heartbeatRuns.lastOutputAt,
+            errorCode: heartbeatRuns.errorCode,
+            error: heartbeatRuns.error,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.companyId, companyId))
+          .orderBy(desc(heartbeatRuns.createdAt))
+          .limit(200),
+        db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            priority: issues.priority,
+            executionRunId: issues.executionRunId,
+            completedAt: issues.completedAt,
+            originKind: issues.originKind,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), inArray(issues.status, ["done", "in_review"]), isNull(issues.hiddenAt)))
+          .orderBy(desc(issues.updatedAt))
+          .limit(10),
+        db
+          .select({
+            issueId: issueWorkProducts.issueId,
+            count: sql<number>`count(*)::int`,
+          })
+          .from(issueWorkProducts)
+          .where(eq(issueWorkProducts.companyId, companyId))
+          .groupBy(issueWorkProducts.issueId)
+          .limit(200),
       ]);
 
       const microBase = firstNonEmpty(process.env.PAPERCLIP_MICRO_API_BASE, process.env.MICRO_API_BASE, "http://127.0.0.1:8093");
@@ -463,6 +696,8 @@ export function ceoControlRoomService(db: Db) {
         missing_secret: category("missing_secret", "Missing secret", "ok"),
         worker_offline: category("worker_offline", "Worker offline", "ok"),
         operational_loop: category("operational_loop", "Operational loop", "ok"),
+        agent_conveyor: category("agent_conveyor", "Agent conveyor", "ok"),
+        proof_ledger: category("proof_ledger", "Proof ledger", "ok"),
         spend_cap: category("spend_cap", "Spend cap", "ok"),
         promotion_candidate: category("promotion_candidate", "Promotion candidate", "ok"),
       };
@@ -478,7 +713,8 @@ export function ceoControlRoomService(db: Db) {
         categories.missing_secret.items.push({ type: "issue", summary: row.title, issue: extractIssueRef(row) });
       }
       for (const row of unboundSecretRows) {
-        categories.missing_secret.items.push({ type: "secret", summary: `${row.name} (${row.key}) is ${row.status === "active" ? "unbound" : row.status}`, metadata: row });
+        const classified = classifyUnboundSecret({ status: row.status, managedMode: row.managedMode });
+        categories.missing_secret.items.push({ type: classified.type, summary: `${row.name} (${row.key}) — ${classified.descriptor}`, metadata: row });
       }
 
       for (const row of errorAgentRows) {
@@ -497,8 +733,17 @@ export function ceoControlRoomService(db: Db) {
       }
 
       const noisyRoutineByTitle = new Map(noisyRoutineRows.map((row) => [row.title, row]));
+      const activeOperationalIncidentFingerprints = new Set(
+        activeOperationalIncidentRows.map((row) => row.originFingerprint).filter(Boolean),
+      );
+      const activeOperationalIncidentTitles = new Set(activeOperationalIncidentRows.map((row) => row.title));
       for (const row of repeatedRoutineRows) {
         const routine = noisyRoutineByTitle.get(row.title) ?? null;
+        const fingerprint = operationalIncidentFingerprint({ routineId: routine?.id ?? null, routineTitle: row.title });
+        const isCoveredByDurableIncident =
+          activeOperationalIncidentFingerprints.has(fingerprint)
+          || activeOperationalIncidentTitles.has(incidentTitleForRoutine(row.title));
+        if (isCoveredByDurableIncident) continue;
         categories.operational_loop.items.push({
           type: "routine_repeat",
           summary: `${row.title} created ${row.count} inbox issues in the last 24h`,
@@ -510,6 +755,35 @@ export function ceoControlRoomService(db: Db) {
           type: "routine_active_trigger",
           summary: `${row.title} still has an active schedule (${row.cronExpression ?? "unscheduled"})`,
           metadata: row,
+        });
+      }
+
+      const latestRunByAgent = new Map<string, ConveyorRunRow>();
+      for (const row of recentConveyorRunRows as ConveyorRunRow[]) {
+        if (!latestRunByAgent.has(row.agentId)) latestRunByAgent.set(row.agentId, row);
+      }
+      for (const row of conveyorAgentRows as ConveyorAgentRow[]) {
+        const latestRun = latestRunByAgent.get(row.id) ?? null;
+        const healthy = row.status !== "error" && row.status !== "paused" && (!latestRun || !["failed", "cancelled"].includes(latestRun.status));
+        categories.agent_conveyor.items.push({
+          type: healthy ? "lane_ready" : "lane_attention",
+          summary: agentConveyorSummary(row, latestRun),
+          metadata: { agent: row, latestRun },
+        });
+      }
+
+      const workProductCounts = new Map<string, number>();
+      for (const row of proofWorkProductRows as Array<{ issueId: string; count: number }>) {
+        workProductCounts.set(row.issueId, Number(row.count) || 0);
+      }
+      for (const row of recentProofIssueRows) {
+        const workProductCount = workProductCounts.get(row.id) ?? 0;
+        const proofType = classifyProofLedgerEntry({ status: row.status, executionRunId: row.executionRunId, workProductCount, originKind: row.originKind });
+        categories.proof_ledger.items.push({
+          type: proofType,
+          summary: `${row.identifier ?? row.id}: ${proofSignals({ executionRunId: row.executionRunId, workProductCount, completedAt: row.completedAt, status: row.status })} — ${row.title}`,
+          issue: extractIssueRef(row),
+          metadata: { executionRunId: row.executionRunId, completedAt: row.completedAt, workProductCount, originKind: row.originKind },
         });
       }
 
@@ -530,7 +804,7 @@ export function ceoControlRoomService(db: Db) {
       for (const entry of Object.values(categories)) {
         entry.count = entry.items.length;
         if (entry.count === 0) continue;
-        entry.severity = entry.key === "promotion_candidate" ? "info" : entry.key === "spend_cap" ? "critical" : entry.key === "operational_loop" ? "critical" : "warning";
+        entry.severity = severityForNonEmptyCategory(entry.key, entry.items);
       }
 
       const orderedCategories = [
@@ -538,6 +812,8 @@ export function ceoControlRoomService(db: Db) {
         categories.missing_secret,
         categories.worker_offline,
         categories.operational_loop,
+        categories.agent_conveyor,
+        categories.proof_ledger,
         categories.spend_cap,
         categories.promotion_candidate,
       ];

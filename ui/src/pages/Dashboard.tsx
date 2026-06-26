@@ -357,7 +357,7 @@ export function Dashboard() {
                   {new Date(controlRoom.generatedAt).toLocaleTimeString()}
                 </span>
               </div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
                 {controlRoom.categories.map((entry) => {
                   const isSelected = selectedControlRoomCategoryKey === entry.key;
                   return (

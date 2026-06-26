@@ -3,6 +3,8 @@ export type CeoControlRoomCategoryKey =
   | "missing_secret"
   | "worker_offline"
   | "operational_loop"
+  | "agent_conveyor"
+  | "proof_ledger"
   | "spend_cap"
   | "promotion_candidate";
 
