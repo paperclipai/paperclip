@@ -173,6 +173,22 @@
     },
     "noTasks": "No tasks yet."
   },
+  "common": {
+    "status": {
+      "all": "All",
+      "active": "Active",
+      "paused": "Paused",
+      "error": "Error"
+    },
+    "selectCompany": {
+      "tasks": "Select a company to view tasks.",
+      "agents": "Select a company to view agents."
+    }
+  },
+  "agents": {
+    "emptyCreate": "Create your first agent to get started.",
+    "runHeartbeat": "Run Heartbeat"
+  },
   "command": {
     "placeholder": "Search tasks, agents, projects...",
     "empty": {

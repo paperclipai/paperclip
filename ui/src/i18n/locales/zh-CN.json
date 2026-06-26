@@ -198,5 +198,21 @@
       "recentTasks": "最近任务"
     },
     "noTasks": "暂无任务。"
+  },
+  "common": {
+    "status": {
+      "all": "全部",
+      "active": "活跃",
+      "paused": "已暂停",
+      "error": "错误"
+    },
+    "selectCompany": {
+      "tasks": "选择一家公司以查看任务。",
+      "agents": "选择一家公司以查看智能体。"
+    }
+  },
+  "agents": {
+    "emptyCreate": "创建你的第一个智能体以开始。",
+    "runHeartbeat": "运行心跳"
   }
 }

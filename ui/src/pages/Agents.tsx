@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
@@ -131,12 +132,13 @@ export function Agents() {
     return map;
   }, [agents]);
 
+  const { t } = useTranslation();
   useEffect(() => {
-    setBreadcrumbs([{ label: "Agents" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("nav.items.agents") }]);
+  }, [setBreadcrumbs, t]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message={t("common.selectCompany.agents")} />;
   }
 
   if (isLoading) {
@@ -152,10 +154,10 @@ export function Agents() {
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
             items={[
-              { value: "all", label: "All" },
-              { value: "active", label: "Active" },
-              { value: "paused", label: "Paused" },
-              { value: "error", label: "Error" },
+              { value: "all", label: t("common.status.all") },
+              { value: "active", label: t("common.status.active") },
+              { value: "paused", label: t("common.status.paused") },
+              { value: "error", label: t("common.status.error") },
             ]}
             value={tab}
             onValueChange={(v) => navigate(`/agents/${v}`)}
@@ -201,7 +203,7 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
+          message={t("agents.emptyCreate")}
           action="New Agent"
           onAction={openNewAgent}
         />
@@ -274,7 +276,7 @@ export function Agents() {
                       <AgentActionButtons
                         agent={agent}
                         companyId={selectedCompanyId}
-                        runLabel="Run Heartbeat"
+                        runLabel={t("agents.runHeartbeat")}
                         showStatus={false}
                       />
                     </div>

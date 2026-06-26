@@ -198,5 +198,21 @@
       "recentTasks": "最近任務"
     },
     "noTasks": "暫無任務。"
+  },
+  "common": {
+    "status": {
+      "all": "全部",
+      "active": "活躍",
+      "paused": "已暫停",
+      "error": "錯誤"
+    },
+    "selectCompany": {
+      "tasks": "選擇一家公司以檢視任務。",
+      "agents": "選擇一家公司以檢視智慧代理。"
+    }
+  },
+  "agents": {
+    "emptyCreate": "建立你的第一個智慧代理以開始。",
+    "runHeartbeat": "執行心跳"
   }
 }
