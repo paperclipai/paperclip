@@ -71,8 +71,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
-import { issueStatusText, issueStatusTextClassic, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
-import { useConferenceRoomChatEnabled } from "../hooks/useConferenceRoomChatEnabled";
+import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
@@ -220,12 +219,8 @@ function formatFileSize(file: File) {
   return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// PAP-75 brand hues ship behind the Conference Room Chat flag (PAP-139); OFF
-// keeps master's palette (`issueStatusTextClassic`).
-function buildStatusOptions(
-  conferenceRoomChat: boolean,
-): ReadonlyArray<{ value: string; label: string; color: string; description?: string }> {
-  const palette = conferenceRoomChat ? issueStatusText : issueStatusTextClassic;
+function buildStatusOptions(): ReadonlyArray<{ value: string; label: string; color: string; description?: string }> {
+  const palette = issueStatusText;
   return [
     {
       value: "backlog",
@@ -381,10 +376,8 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
 export function NewIssueDialog() {
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
-  // Conference Room Chat flag (PAP-139): selects work-mode labels + status hues.
-  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
-  const workModeOptions = useMemo(() => workModeMetaList(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
-  const statuses = useMemo(() => buildStatusOptions(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
+  const workModeOptions = useMemo(() => workModeMetaList(), []);
+  const statuses = useMemo(() => buildStatusOptions(), []);
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [title, setTitle] = useState("");
@@ -1015,7 +1008,7 @@ export function NewIssueDialog() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.code === "Period") {
       e.preventDefault();
-      setWorkMode((current) => nextWorkMode(current, conferenceRoomChatEnabled));
+      setWorkMode((current) => nextWorkMode(current));
       return;
     }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -1221,7 +1214,7 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
-  const currentWorkMode = workModeMetaFor(workMode, conferenceRoomChatEnabled);
+  const currentWorkMode = workModeMetaFor(workMode);
   const CurrentWorkModeIcon = currentWorkMode.icon;
 
   return (

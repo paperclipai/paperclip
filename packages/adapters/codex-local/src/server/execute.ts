@@ -464,6 +464,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             installCommand: SANDBOX_INSTALL_COMMAND,
             detectCommand: command,
             onProgress: (line) => onLog("stdout", line),
+            onRuntimeProgress: ctx.onRuntimeProgress,
             assets: [
               {
                 key: "home",
@@ -875,6 +876,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           timeoutSec,
           graceSec,
           onSpawn: wrappedOnSpawn,
+          onRuntimeProgress: ctx.onRuntimeProgress,
           onLog: async (stream, chunk) => {
             if (stream === "stdout") {
               monitor?.noteStdoutChunk(chunk);

@@ -68,6 +68,7 @@ import {
   upsertSidebarOrderPreferenceSchema,
   // Execution workspaces
   updateExecutionWorkspaceSchema,
+  workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
   // Environments
   createEnvironmentSchema,
@@ -3276,6 +3277,18 @@ registry.registerPath({
   summary: "List execution workspaces for a company",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/workspace-overview",
+  tags: ["execution-workspaces"],
+  summary: "List bounded execution workspace overview rows for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: workspaceOverviewQuerySchema,
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({

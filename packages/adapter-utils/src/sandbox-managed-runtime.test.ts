@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetLocalGitIndexToHead } from "./git-workspace-sync.js";
 
 import {
   mirrorDirectory,
@@ -103,6 +104,7 @@ describe("sandbox managed runtime", () => {
         });
       },
     };
+    const runtimeStatuses: string[] = [];
 
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
@@ -118,6 +120,9 @@ describe("sandbox managed runtime", () => {
       workspaceLocalDir: localWorkspaceDir,
       workspaceExclude: [".claude"],
       preserveAbsentOnRestore: [".claude"],
+      onRuntimeProgress: async (status) => {
+        runtimeStatuses.push(`${status.phase}:${status.message}`);
+      },
       assets: [{
         key: "skills",
         localDir: localAssetsDir,
@@ -143,6 +148,12 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "local-stale.txt"), "utf8")).resolves.toBe("remove\n");
     await expect(readFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "utf8")).resolves.toBe("{\"local\":true}\n");
     await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
+    expect(runtimeStatuses).toEqual([
+      "config_sync:Syncing workspace to sandbox",
+      "config_sync:Syncing runtime assets to sandbox",
+      "restore:Restoring workspace from sandbox",
+      "finalize:Finalizing sandbox workspace",
+    ]);
   });
 
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {
@@ -197,6 +208,7 @@ describe("sandbox managed runtime", () => {
         await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
       },
     };
+    const runtimeStatusPhases: string[] = [];
 
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
@@ -210,6 +222,9 @@ describe("sandbox managed runtime", () => {
       adapterKey: "test-adapter",
       client,
       workspaceLocalDir: localWorkspaceDir,
+      onRuntimeProgress: async (status) => {
+        runtimeStatusPhases.push(status.phase);
+      },
     });
 
     expect((await lstat(path.join(remoteWorkspaceDir, ".git"))).isDirectory()).toBe(true);
@@ -254,6 +269,123 @@ describe("sandbox managed runtime", () => {
     const downloadMembers = await listTarMembers(rootDir, "workspace-download-list.tar", downloadedTars[0]!.bytes);
     expect(downloadMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
     expect(downloadMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
+    expect(runtimeStatusPhases).toEqual([
+      "git_sync",
+      "config_sync",
+      "export",
+      "restore",
+      "finalize",
+    ]);
+  });
+
+  it("repairs stale host index deletions when the sandbox restores a clean git worktree", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-clean-restore-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-worktree");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "kept.txt"), "kept\n", "utf8");
+    await writeFile(path.join(sourceRepoDir, "restored.txt"), "restored\n", "utf8");
+    await git(sourceRepoDir, ["add", "kept.txt", "restored.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+
+    await git(localWorkspaceDir, ["rm", "restored.txt"]);
+    expect(await git(localWorkspaceDir, ["status", "--short"])).toContain("D  restored.txt");
+
+    const missingStatusReads: string[] = [];
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => {
+        if (remotePath.endsWith("workspace-status.txt")) {
+          missingStatusReads.push(remotePath);
+          throw new Error("status file unavailable");
+        }
+        return await readFile(remotePath);
+      },
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    expect(await git(remoteWorkspaceDir, ["status", "--short"])).toContain("D restored.txt");
+    await git(remoteWorkspaceDir, ["reset", "--hard", "HEAD"]);
+    expect(await git(remoteWorkspaceDir, ["status", "--short"])).toBe("");
+
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(localWorkspaceDir, "restored.txt"), "utf8")).resolves.toBe("restored\n");
+    expect(await git(localWorkspaceDir, ["ls-files", "restored.txt"])).toBe("restored.txt");
+    expect(await git(localWorkspaceDir, ["status", "--short"])).toBe("");
+    expect(await git(localWorkspaceDir, ["diff", "--name-status", "HEAD", "--"])).toBe("");
+    expect(await git(localWorkspaceDir, ["diff", "--cached", "--name-status", "HEAD", "--"])).toBe("");
+    expect(missingStatusReads).toHaveLength(1);
+  });
+
+  it("does not fail clean restore checks when local working tree changes survive", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-preserved-local-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-worktree");
+
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "kept.txt"), "base\n", "utf8");
+    await git(sourceRepoDir, ["add", "kept.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+
+    await writeFile(path.join(localWorkspaceDir, "kept.txt"), "local user change\n", "utf8");
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await resetLocalGitIndexToHead({
+        localDir: localWorkspaceDir,
+        checkWorkingTreeClean: true,
+      });
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[paperclip] Workspace restore preserved local working tree changes after clean sandbox restore.",
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    await expect(readFile(path.join(localWorkspaceDir, "kept.txt"), "utf8")).resolves.toBe("local user change\n");
+    expect(await git(localWorkspaceDir, ["diff", "--cached", "--name-status", "HEAD", "--"])).toBe("");
+    expect(await git(localWorkspaceDir, ["status", "--short"])).toContain("M kept.txt");
   });
 
   it("excludes unignored dependency trees from git-backed workspace overlay archives", async () => {

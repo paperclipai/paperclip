@@ -1,4 +1,4 @@
--- 0115 expands pipeline case events for forced transitions while tolerating later event types already present from old branch numbering.
+-- 0114 expands pipeline case events for issue unlinking while tolerating later event types already present from old branch numbering.
 ALTER TABLE "pipeline_case_events" DROP CONSTRAINT IF EXISTS "pipeline_case_events_type_check";--> statement-breakpoint
 ALTER TABLE "pipeline_case_events" ADD CONSTRAINT "pipeline_case_events_type_check" CHECK ("pipeline_case_events"."type" in (
         'ingested',

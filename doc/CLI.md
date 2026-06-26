@@ -282,7 +282,7 @@ pnpm paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-i
 Agent configuration and runtime endpoints:
 
 ```sh
-pnpm paperclipai agent permissions:update <agent-id> --payload-json '{"canCreateAgents":true,"canAssignTasks":true}'
+pnpm paperclipai agent permissions:update <agent-id> --payload-json '{"canCreateAgents":true,"canCreateSkills":true,"canAssignTasks":true}'
 pnpm paperclipai agent configuration <agent-id>
 pnpm paperclipai agent config-revisions <agent-id>
 pnpm paperclipai agent config-revision:get <agent-id> <revision-id>
@@ -398,6 +398,11 @@ By default the command creates a `todo` issue assigned to the target agent and w
 
 Required Paperclip runtime skills (heartbeat, etc.) remain server-enforced and
 are added on top of whatever the desired set names.
+
+Company skill mutations (`skills install`, `skills import`, `skills create`, and
+`skills scan-projects`) require board authentication, an explicit `skills:create`
+grant, or an agent whose permissions keep `canCreateSkills` enabled. They do not
+require `agents:create` unless the command also creates agents.
 
 ### Catalog (app-shipped skills)
 

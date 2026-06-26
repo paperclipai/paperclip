@@ -9,9 +9,11 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AgentConfigForm } from "./AgentConfigForm";
 
 const mockAgentsApi = vi.hoisted(() => ({
+  adapterModelProfiles: vi.fn(),
   adapterModels: vi.fn(),
   detectModel: vi.fn(),
   list: vi.fn(),
+  testEnvironment: vi.fn(),
 }));
 
 const mockEnvironmentsApi = vi.hoisted(() => ({
@@ -155,7 +157,11 @@ function makeEnvironment(overrides: Partial<Environment>): Environment {
   };
 }
 
-async function renderForm(environments: Environment[], agentOverrides: Partial<Agent> = {}) {
+async function renderForm(
+  environments: Environment[],
+  agentOverrides: Partial<Agent> = {},
+  options: { showAdapterTestEnvironmentButton?: boolean } = {},
+) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
 
   const container = document.createElement("div");
@@ -178,7 +184,7 @@ async function renderForm(environments: Environment[], agentOverrides: Partial<A
             onSave={vi.fn()}
             hidePromptTemplate
             showAdapterTypeField={false}
-            showAdapterTestEnvironmentButton={false}
+            showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
           />
         </TooltipProvider>
       </QueryClientProvider>,
@@ -193,9 +199,16 @@ describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
 
   beforeEach(() => {
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
+    mockAgentsApi.testEnvironment.mockResolvedValue({
+      adapterType: "codex_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date(0).toISOString(),
+    });
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
@@ -268,5 +281,84 @@ describe("AgentConfigForm environment selector", () => {
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("Default: Local");
     expect(selector?.textContent).toContain("Fake Sandbox · sandbox");
+  });
+
+  it("tests both the primary and cheap models when a cheap profile is configured", async () => {
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {
+              model: "gpt-5.4-mini",
+              baseUrl: "https://cheap-models.example.test",
+              provider: "budget-provider",
+            },
+          },
+        },
+      },
+    }, {
+      showAdapterTestEnvironmentButton: true,
+    });
+    roots.push(result.root);
+
+    const testButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test",
+    );
+    expect(testButton).toBeTruthy();
+
+    await act(async () => {
+      testButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
+    expect(mockAgentsApi.testEnvironment.mock.calls[0]?.[2]).toMatchObject({
+      adapterConfig: expect.objectContaining({ model: "gpt-5.4" }),
+    });
+    expect(mockAgentsApi.testEnvironment.mock.calls[1]?.[2]).toMatchObject({
+      adapterConfig: expect.objectContaining({
+        model: "gpt-5.4-mini",
+        baseUrl: "https://cheap-models.example.test",
+        provider: "budget-provider",
+      }),
+    });
+  });
+
+  it("surfaces request failures instead of converting them into model test checks", async () => {
+    mockAgentsApi.testEnvironment.mockRejectedValueOnce(new Error("Network unavailable"));
+
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: { model: "gpt-5.4-mini" },
+          },
+        },
+      },
+    }, {
+      showAdapterTestEnvironmentButton: true,
+    });
+    roots.push(result.root);
+
+    const testButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test",
+    );
+    expect(testButton).toBeTruthy();
+
+    await act(async () => {
+      testButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(result.container.textContent).toContain("Network unavailable");
   });
 });
