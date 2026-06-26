@@ -708,5 +708,64 @@
       "settings": "設定",
       "status": "狀態"
     }
+  },
+  "boardChat": {
+    "actions": {
+      "jumpToLatest": "跳到最新訊息",
+      "openAgentFeed": "開啟智慧代理動態",
+      "resizeSplit": "調整會議室聊天和智慧代理動態大小"
+    },
+    "prompts": {
+      "hiringPlan": "制定招聘計畫",
+      "companyBrief": "起草公司簡介",
+      "firstThirtyDays": "規劃前 30 天",
+      "introPitch": "寫一段介紹"
+    },
+    "placeholders": {
+      "askAnything": "詢問關於貴公司的任何問題……"
+    }
+  },
+  "companyImport": {
+    "toasts": {
+      "complete": "匯入完成",
+      "failed": "匯入失敗",
+      "readFailed": "包讀取失敗",
+      "previewFailed": "預覽失敗"
+    },
+    "errors": {
+      "apply": "套用匯入失敗。",
+      "preview": "預覽匯入失敗。",
+      "readFolder": "讀取資料夾失敗。"
+    },
+    "labels": {
+      "collisionStrategy": "衝突策略",
+      "githubUrl": "GitHub 網址",
+      "newCompanyName": "新公司名稱",
+      "target": "目標"
+    },
+    "tabs": {
+      "githubRepo": "GitHub 儲存庫",
+      "import": "匯入",
+      "localZip": "本機壓縮檔"
+    },
+    "placeholders": {
+      "importedCompany": "已匯入公司"
+    }
+  },
+  "companyExport": {
+    "toasts": {
+      "downloaded": "匯出已下載",
+      "failed": "匯出失敗"
+    },
+    "errors": {
+      "buildPackage": "建構匯出包失敗。",
+      "loadData": "載入匯出資料失敗。"
+    },
+    "tabs": {
+      "export": "匯出"
+    },
+    "placeholders": {
+      "searchFiles": "搜尋檔案……"
+    }
   }
 }

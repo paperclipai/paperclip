@@ -708,5 +708,64 @@
       "settings": "Settings",
       "status": "Status"
     }
+  },
+  "boardChat": {
+    "actions": {
+      "jumpToLatest": "Jump to latest messages",
+      "openAgentFeed": "Open agent feed",
+      "resizeSplit": "Resize board chat and agent feed"
+    },
+    "prompts": {
+      "hiringPlan": "Create a hiring plan",
+      "companyBrief": "Draft a Company Brief",
+      "firstThirtyDays": "Outline our first 30 days",
+      "introPitch": "Write an intro pitch"
+    },
+    "placeholders": {
+      "askAnything": "Ask anything about your company..."
+    }
+  },
+  "companyImport": {
+    "toasts": {
+      "complete": "Import complete",
+      "failed": "Import failed",
+      "readFailed": "Package read failed",
+      "previewFailed": "Preview failed"
+    },
+    "errors": {
+      "apply": "Failed to apply import.",
+      "preview": "Failed to preview import.",
+      "readFolder": "Failed to read folder."
+    },
+    "labels": {
+      "collisionStrategy": "Collision strategy",
+      "githubUrl": "GitHub URL",
+      "newCompanyName": "New company name",
+      "target": "Target"
+    },
+    "tabs": {
+      "githubRepo": "GitHub repo",
+      "import": "Import",
+      "localZip": "Local zip"
+    },
+    "placeholders": {
+      "importedCompany": "Imported Company"
+    }
+  },
+  "companyExport": {
+    "toasts": {
+      "downloaded": "Export downloaded",
+      "failed": "Export failed"
+    },
+    "errors": {
+      "buildPackage": "Failed to build export package.",
+      "loadData": "Failed to load export data."
+    },
+    "tabs": {
+      "export": "Export"
+    },
+    "placeholders": {
+      "searchFiles": "Search files..."
+    }
   }
 }

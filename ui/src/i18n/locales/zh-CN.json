@@ -708,5 +708,64 @@
       "settings": "设置",
       "status": "状态"
     }
+  },
+  "boardChat": {
+    "actions": {
+      "jumpToLatest": "跳到最新消息",
+      "openAgentFeed": "打开智能体动态",
+      "resizeSplit": "调整会议室聊天和智能体动态大小"
+    },
+    "prompts": {
+      "hiringPlan": "制定招聘计划",
+      "companyBrief": "起草公司简介",
+      "firstThirtyDays": "规划前 30 天",
+      "introPitch": "写一段介绍"
+    },
+    "placeholders": {
+      "askAnything": "询问关于贵公司的任何问题……"
+    }
+  },
+  "companyImport": {
+    "toasts": {
+      "complete": "导入完成",
+      "failed": "导入失败",
+      "readFailed": "包读取失败",
+      "previewFailed": "预览失败"
+    },
+    "errors": {
+      "apply": "应用导入失败。",
+      "preview": "预览导入失败。",
+      "readFolder": "读取文件夹失败。"
+    },
+    "labels": {
+      "collisionStrategy": "冲突策略",
+      "githubUrl": "GitHub 地址",
+      "newCompanyName": "新公司名称",
+      "target": "目标"
+    },
+    "tabs": {
+      "githubRepo": "GitHub 仓库",
+      "import": "导入",
+      "localZip": "本地压缩包"
+    },
+    "placeholders": {
+      "importedCompany": "已导入公司"
+    }
+  },
+  "companyExport": {
+    "toasts": {
+      "downloaded": "导出已下载",
+      "failed": "导出失败"
+    },
+    "errors": {
+      "buildPackage": "构建导出包失败。",
+      "loadData": "加载导出数据失败。"
+    },
+    "tabs": {
+      "export": "导出"
+    },
+    "placeholders": {
+      "searchFiles": "搜索文件……"
+    }
   }
 }

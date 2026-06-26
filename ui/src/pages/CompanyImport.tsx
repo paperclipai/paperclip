@@ -645,6 +645,7 @@ async function readLocalPackageZip(file: File): Promise<{
 // ── Main page ─────────────────────────────────────────────────────────
 
 export function CompanyImport() {
+  const { t } = useTranslation();
   const {
     selectedCompanyId,
     selectedCompany,
@@ -708,8 +709,8 @@ export function CompanyImport() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Org Chart", href: "/org" },
-      { label: "Import" },
+      { label: t("nav.items.org"), href: "/org" },
+      { label: t("companyImport.tabs.import") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -804,8 +805,8 @@ export function CompanyImport() {
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Preview failed",
-        body: err instanceof Error ? err.message : "Failed to preview import.",
+        title: t("companyImport.toasts.previewFailed"),
+        body: err instanceof Error ? err.message : t("companyImport.errors.preview"),
       });
     },
   });
@@ -863,7 +864,7 @@ export function CompanyImport() {
       setSelectedCompanyId(importedCompany.id);
       pushToast({
         tone: "success",
-        title: "Import complete",
+        title: t("companyImport.toasts.complete"),
         body: `${result.company.name}: ${result.agents.length} agent${result.agents.length === 1 ? "" : "s"} processed.`,
       });
       // Force a fresh dashboard load so newly imported agents are immediately visible.
@@ -872,8 +873,8 @@ export function CompanyImport() {
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Import failed",
-        body: err instanceof Error ? err.message : "Failed to apply import.",
+        title: t("companyImport.toasts.failed"),
+        body: err instanceof Error ? err.message : t("companyImport.errors.apply"),
       });
     },
   });
@@ -888,8 +889,8 @@ export function CompanyImport() {
     } catch (err) {
       pushToast({
         tone: "error",
-        title: "Package read failed",
-        body: err instanceof Error ? err.message : "Failed to read folder.",
+        title: t("companyImport.toasts.readFailed"),
+        body: err instanceof Error ? err.message : t("companyImport.errors.readFolder"),
       });
     }
   }
@@ -1103,8 +1104,8 @@ export function CompanyImport() {
         <div className="grid gap-2 md:grid-cols-2">
           {(
             [
-              { key: "github", icon: Github, label: "GitHub repo" },
-              { key: "local", icon: Upload, label: "Local zip" },
+              { key: "github", icon: Github, label: t("companyImport.tabs.githubRepo") },
+              { key: "local", icon: Upload, label: t("companyImport.tabs.localZip") },
             ] as const
           ).map(({ key, icon: Icon, label }) => (
             <button
@@ -1162,7 +1163,7 @@ export function CompanyImport() {
           </div>
         ) : (
           <Field
-            label="GitHub URL"
+            label={t("companyImport.labels.githubUrl")}
             hint="Repo tree path or blob URL to COMPANY.md (e.g. github.com/owner/repo/tree/main/company)."
           >
             <input
@@ -1178,7 +1179,7 @@ export function CompanyImport() {
           </Field>
         )}
 
-        <Field label="Target" hint="Import into this company or create a new one.">
+        <Field label={t("companyImport.labels.target")} hint="Import into this company or create a new one.">
           <select
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
             value={targetMode}
@@ -1196,7 +1197,7 @@ export function CompanyImport() {
 
         {targetMode === "new" && (
           <Field
-            label="New company name"
+            label={t("companyImport.labels.newCompanyName")}
             hint="Optional override. Leave blank to use the package name."
           >
             <input
@@ -1204,13 +1205,13 @@ export function CompanyImport() {
               type="text"
               value={newCompanyName}
               onChange={(e) => setNewCompanyName(e.target.value)}
-              placeholder="Imported Company"
+              placeholder={t("companyImport.placeholders.importedCompany")}
             />
           </Field>
         )}
 
         <Field
-          label="Collision strategy"
+          label={t("companyImport.labels.collisionStrategy")}
           hint="Board imports can rename, skip, or replace matching company content."
         >
           <select

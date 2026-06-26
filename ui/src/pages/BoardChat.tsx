@@ -101,12 +101,13 @@ function TypingBubble() {
 }
 
 export function BoardChat() {
+  const { t } = useTranslation();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Conference Room" }]);
+    setBreadcrumbs([{ label: t("nav.items.conferenceRoom") }]);
   }, [setBreadcrumbs]);
 
   const splitContainerRef = useRef<HTMLDivElement>(null);
@@ -756,19 +757,19 @@ export function BoardChat() {
 
                 const chips: Array<{ label: string; prompt: string }> = [
                   {
-                    label: "Draft a Company Brief",
+                    label: t("boardChat.prompts.companyBrief"),
                     prompt: `Draft a one-page Company Brief for ${companyName} — include our mission, team roster, and first priorities.`,
                   },
                   {
-                    label: "Create a hiring plan",
+                    label: t("boardChat.prompts.hiringPlan"),
                     prompt: `Create a hiring plan for ${companyName}. List the next roles to hire, in priority order, with a short rationale for each.`,
                   },
                   {
-                    label: "Outline our first 30 days",
+                    label: t("boardChat.prompts.firstThirtyDays"),
                     prompt: `Outline our first 30 days. Break it into weekly priorities with who owns what.`,
                   },
                   {
-                    label: "Write an intro pitch",
+                    label: t("boardChat.prompts.introPitch"),
                     prompt: `Write a short intro pitch for ${companyName} that I could reuse for investors, customers, or recruits.`,
                   },
                 ];
@@ -940,7 +941,7 @@ export function BoardChat() {
             <button
               type="button"
               onClick={() => scrollToLatest("smooth")}
-              aria-label="Jump to latest messages"
+              aria-label={t("boardChat.actions.jumpToLatest")}
               className="absolute bottom-24 left-1/2 z-20 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-border bg-card text-foreground shadow-md transition-colors duration-150 hover:bg-accent hover:border-muted-foreground/30"
             >
               <ArrowDown className="h-4 w-4" />
@@ -965,7 +966,7 @@ export function BoardChat() {
               value={input}
               onChange={setInput}
               onSubmit={handleSend}
-              placeholder="Ask anything about your company..."
+              placeholder={t("boardChat.placeholders.askAnything")}
               submitKey="enter"
               surface="translucent"
               submitting={sending}
@@ -980,7 +981,7 @@ export function BoardChat() {
         <div
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize board chat and agent feed"
+          aria-label={t("boardChat.actions.resizeSplit")}
           className="group relative hidden w-3 shrink-0 cursor-col-resize bg-background md:flex"
           onMouseDown={handleSplitDragStart}
         >
@@ -1005,7 +1006,7 @@ export function BoardChat() {
               size="icon"
               variant="secondary"
               className="fixed bottom-20 right-4 z-20 h-10 w-10 rounded-full shadow-lg"
-              aria-label="Open agent feed"
+              aria-label={t("boardChat.actions.openAgentFeed")}
             >
               <Activity className="h-4 w-4" />
             </Button>
