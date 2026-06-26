@@ -54,6 +54,12 @@ Bizbox needs a clearer path from solo operator to real human teams. That means s
 
 Bizbox makes outputs first-class. Generated deliverables, previews, deployable outputs, and the handoff from "agent did work" to "here is the result" are now part of the product surface.
 
+### ✅ AI Workflows
+
+Bizbox now supports first-class multi-step workflow orchestration alongside the existing task model. You can define sequential or branching ADK workflow steps, add human-checkpoint steps that hand off to ClickUp for approval and continue automatically when approved, import workflow definitions from version-controlled directories, and use saved prompt templates as pre-filled run starters. The workflow detail page surfaces selectable run history for inspection. Google ADK workflows and join-node patterns are supported.
+
+**Where to contribute:** Workflow graph visualization and layout improvements are actively in flight — see [open PRs](https://github.com/zesthq/bizbox/pulls) for the current shape. Feedback on the prompt-template API and ClickUp handoff ergonomics is welcome in Discussions.
+
 ### ⚪ Memory / Knowledge
 
 We want a stronger memory and knowledge surface for companies, agents, and projects. That includes durable memory, better recall of prior decisions and context, and a clearer path for knowledge-style capabilities without turning Bizbox into a generic chat app.
