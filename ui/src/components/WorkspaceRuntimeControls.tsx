@@ -75,6 +75,7 @@ type WorkspaceRuntimeControlsProps = {
 export function hasRunningRuntimeServices(
   runtimeServices: Array<{ status: string }> | null | undefined,
 ) {
+  const { t } = useTranslation();
   return (runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running");
 }
 
@@ -195,6 +196,7 @@ export function buildWorkspaceRuntimeControlItems(input: {
 export function getRunningRuntimeServiceUrl(
   sections: WorkspaceRuntimeControlSections,
 ) {
+  const { t } = useTranslation();
   const runningService = [...sections.services, ...sections.otherServices].find(
     (item) => (item.statusLabel === "running" || item.statusLabel === "starting") && item.url,
   );
@@ -387,6 +389,7 @@ export function WorkspaceRuntimeControls({
   className,
   square,
 }: WorkspaceRuntimeControlsProps) {
+  const { t } = useTranslation();
   const resolvedSections = sections ?? {
     services: (items ?? []).map((item) => ({
       ...item,
@@ -405,7 +408,7 @@ export function WorkspaceRuntimeControls({
     <div className={cn("space-y-4", className)}>
       <div className={cn("border border-border/70 bg-background p-3", square ? "rounded-none" : "rounded-xl")}>
         <div className="space-y-1">
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
+          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{t("workspaceRuntimeControls.text.commands")}</div>
           <div className="flex flex-wrap items-center gap-2">
             <span
               className={cn(

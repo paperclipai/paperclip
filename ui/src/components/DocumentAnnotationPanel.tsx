@@ -65,6 +65,7 @@ export interface AnnotationPanelProps {
 }
 
 export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
+  const { t } = useTranslation();
   if (props.isMobile) {
     return (
       <Sheet open={props.open} onOpenChange={props.onOpenChange}>
@@ -340,7 +341,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
             props.onFocusThread(null);
             props.onOpenChange(false);
           }}
-          aria-label="Close annotation panel"
+          aria-label={t("documentAnnotationPanel.labelsJsx.closePanel")}
         >
           <X className="h-4 w-4" />
         </Button>
@@ -430,7 +431,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
                 }
               }
             }}
-            placeholder="Write a comment…"
+            placeholder={t("documentAnnotationPanel.placeholders.writeComment")}
             disabled={props.newCommentDisabled}
             className="resize-y rounded-none text-sm"
           />
@@ -534,7 +535,7 @@ function ThreadCard(props: {
                   }
                 }
               }}
-              placeholder="Reply…"
+              placeholder={t("documentAnnotationPanel.placeholders.reply")}
               className="resize-y rounded-none text-sm"
               disabled={props.pendingReply}
             />
@@ -573,7 +574,7 @@ function ThreadCard(props: {
                     size="icon-xs"
                     className="text-muted-foreground"
                     title="More actions"
-                    aria-label="More thread actions"
+                    aria-label={t("documentAnnotationPanel.labelsJsx.moreThreadActions")}
                   >
                     <MoreHorizontal className="h-3.5 w-3.5" />
                   </Button>

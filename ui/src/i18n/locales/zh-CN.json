@@ -2124,5 +2124,100 @@
       "browseAgents": "浏览智能体",
       "recent": "最近"
     }
+  },
+  "newProjectDialog": {
+    "errors": {
+      "createFailed": "创建项目失败。"
+    },
+    "text": {
+      "localFolder": "本地文件夹",
+      "newProject": "新建项目",
+      "repoUrl": "仓库 URL"
+    },
+    "labelsObj": {
+      "backlog": "待办",
+      "cancelled": "已取消",
+      "completed": "已完成",
+      "inProgress": "进行中",
+      "planned": "已计划"
+    }
+  },
+  "newAgentDialog": {
+    "toasts": {
+      "inviteCreated": "智能体邀请已创建",
+      "clipboardUnavailable": "剪贴板不可用",
+      "createNew": "创建新智能体"
+    },
+    "errors": {
+      "unknown": "未知错误"
+    },
+    "text": {
+      "addNewAgent": "添加新智能体",
+      "onboardingPrompt": "智能体引导提示",
+      "inviteExternal": "邀请外部智能体",
+      "optionalMessage": "智能体的可选消息"
+    },
+    "placeholders": {
+      "onboarding": "添加引导上下文、预期角色或初始指令。"
+    }
+  },
+  "envVarEditor": {
+    "errors": {
+      "createSecret": "创建密钥失败"
+    },
+    "text": {
+      "plain": "明文",
+      "secret": "密钥"
+    },
+    "labelsJsx": {
+      "bindingMode": "绑定模式",
+      "secret": "密钥",
+      "version": "版本"
+    },
+    "placeholders": {
+      "selectSecret": "选择密钥..."
+    }
+  },
+  "commentThread": {
+    "text": {
+      "assignee": "负责人",
+      "commentDeleted": "评论已删除",
+      "noTimeline": "暂无时间线条目。"
+    },
+    "labelsJsx": {
+      "copyAsMarkdown": "以 Markdown 复制评论"
+    },
+    "placeholders": {
+      "assignee": "负责人",
+      "leaveComment": "留下评论..."
+    }
+  },
+  "documentAnnotationPanel": {
+    "labelsJsx": {
+      "closePanel": "关闭批注面板",
+      "moreThreadActions": "更多线程操作"
+    },
+    "placeholders": {
+      "reply": "回复……",
+      "writeComment": "写评论……"
+    }
+  },
+  "workspaceRuntimeControls": {
+    "text": {
+      "commands": "工作区命令"
+    },
+    "descriptions": {
+      "oneShot": "立即运行的一次性命令,完成后退出。"
+    }
+  },
+  "issueWorkspaceCard": {
+    "text": {
+      "repo": "仓库:"
+    },
+    "labelsObj": {
+      "newIsolated": "新建隔离工作区",
+      "projectDefault": "项目默认",
+      "reuseExisting": "复用现有工作区"
+    }
   }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { accessApi } from "../api/access";
@@ -41,6 +42,7 @@ function isAgentAdapterType(type: string): boolean {
 }
 
 export function NewAgentDialog() {
+  const { t } = useTranslation();
   const { newAgentOpen, closeNewAgent, openNewIssue } = useDialog();
   const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
@@ -119,7 +121,7 @@ export function NewAgentDialog() {
     closeNewAgent();
     openNewIssue({
       assigneeAgentId: ceoAgent?.id,
-      title: "Create a new agent",
+      title: t("newAgentDialog.toasts.createNew"),
       description: "(type in what kind of agent you want here)",
     });
   }
@@ -149,7 +151,7 @@ export function NewAgentDialog() {
     }
 
     pushToast({
-      title: "Clipboard unavailable",
+      title: t("newAgentDialog.toasts.clipboardUnavailable"),
       body: unavailableBody,
       tone: "warn",
     });
@@ -199,7 +201,7 @@ export function NewAgentDialog() {
 
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
       pushToast({
-        title: "Agent invite created",
+        title: t("newAgentDialog.toasts.inviteCreated"),
         body: copied ? "Agent onboarding prompt ready below and copied to clipboard." : "Agent onboarding prompt ready below.",
         tone: "success",
       });
@@ -207,7 +209,7 @@ export function NewAgentDialog() {
     onError: (error) => {
       pushToast({
         title: "Failed to create agent invite",
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: error instanceof Error ? error.message : t("newAgentDialog.errors.unknown"),
         tone: "error",
       });
     },
@@ -232,7 +234,7 @@ export function NewAgentDialog() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <span className="text-sm text-muted-foreground">Add a new agent</span>
+          <span className="text-sm text-muted-foreground">{t("newAgentDialog.text.addNewAgent")}</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -335,7 +337,7 @@ export function NewAgentDialog() {
                   Back
                 </button>
                 <div className="space-y-1">
-                  <h2 className="text-sm font-semibold">Invite an external agent</h2>
+                  <h2 className="text-sm font-semibold">{t("newAgentDialog.text.inviteExternal")}</h2>
                   <p className="text-sm text-muted-foreground">
                     Generate a one-time onboarding prompt that any compatible agent can use to request access, wait for approval, and claim its Paperclip API key.
                   </p>
@@ -343,12 +345,12 @@ export function NewAgentDialog() {
               </div>
 
               <label className="block space-y-2">
-                <span className="text-sm font-medium">Optional message for the agent</span>
+                <span className="text-sm font-medium">{t("newAgentDialog.text.optionalMessage")}</span>
                 <Textarea
                   value={agentMessage}
                   onChange={(event) => setAgentMessage(event.target.value)}
                   className="min-h-24 resize-y"
-                  placeholder="Add onboarding context, expected role, or first instructions."
+                  placeholder={t("newAgentDialog.placeholders.onboarding")}
                   maxLength={4000}
                 />
               </label>
@@ -378,7 +380,7 @@ export function NewAgentDialog() {
                 </button>
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-3">
-                    <h2 className="text-sm font-semibold">Agent onboarding prompt</h2>
+                    <h2 className="text-sm font-semibold">{t("newAgentDialog.text.onboardingPrompt")}</h2>
                     {latestAgentPromptCopied ? (
                       <div className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
                         <Check className="h-3.5 w-3.5" />

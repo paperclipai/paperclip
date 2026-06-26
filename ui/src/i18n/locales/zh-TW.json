@@ -2124,5 +2124,100 @@
       "browseAgents": "瀏覽智慧代理",
       "recent": "最近"
     }
+  },
+  "newProjectDialog": {
+    "errors": {
+      "createFailed": "建立專案失敗。"
+    },
+    "text": {
+      "localFolder": "本機資料夾",
+      "newProject": "新建專案",
+      "repoUrl": "倉庫 URL"
+    },
+    "labelsObj": {
+      "backlog": "待辦",
+      "cancelled": "已取消",
+      "completed": "已完成",
+      "inProgress": "進行中",
+      "planned": "已規劃"
+    }
+  },
+  "newAgentDialog": {
+    "toasts": {
+      "inviteCreated": "智慧代理邀請已建立",
+      "clipboardUnavailable": "剪貼簿不可用",
+      "createNew": "建立新智慧代理"
+    },
+    "errors": {
+      "unknown": "未知錯誤"
+    },
+    "text": {
+      "addNewAgent": "新增新智慧代理",
+      "onboardingPrompt": "智慧代理引導提示",
+      "inviteExternal": "邀請外部智慧代理",
+      "optionalMessage": "智慧代理的可選訊息"
+    },
+    "placeholders": {
+      "onboarding": "新增引導上下文、預期角色或初始指令。"
+    }
+  },
+  "envVarEditor": {
+    "errors": {
+      "createSecret": "建立密鑰失敗"
+    },
+    "text": {
+      "plain": "明文",
+      "secret": "密鑰"
+    },
+    "labelsJsx": {
+      "bindingMode": "綁定模式",
+      "secret": "密鑰",
+      "version": "版本"
+    },
+    "placeholders": {
+      "selectSecret": "選擇密鑰..."
+    }
+  },
+  "commentThread": {
+    "text": {
+      "assignee": "負責人",
+      "commentDeleted": "評論已刪除",
+      "noTimeline": "暫無時間軸條目。"
+    },
+    "labelsJsx": {
+      "copyAsMarkdown": "以 Markdown 複製評論"
+    },
+    "placeholders": {
+      "assignee": "負責人",
+      "leaveComment": "留下評論..."
+    }
+  },
+  "documentAnnotationPanel": {
+    "labelsJsx": {
+      "closePanel": "關閉註解面板",
+      "moreThreadActions": "更多執行緒操作"
+    },
+    "placeholders": {
+      "reply": "回覆……",
+      "writeComment": "寫評論……"
+    }
+  },
+  "workspaceRuntimeControls": {
+    "text": {
+      "commands": "工作區命令"
+    },
+    "descriptions": {
+      "oneShot": "立即執行的一次性命令,完成後退出。"
+    }
+  },
+  "issueWorkspaceCard": {
+    "text": {
+      "repo": "倉庫:"
+    },
+    "labelsObj": {
+      "newIsolated": "新建隔離工作區",
+      "projectDefault": "專案預設",
+      "reuseExisting": "複用現有工作區"
+    }
   }
 }

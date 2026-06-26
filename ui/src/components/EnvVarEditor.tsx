@@ -215,7 +215,7 @@ export function EnvVarEditor({
       const created = await onCreateSecret(name, plain);
       updateRow(index, { source: "secret", secretId: created.id });
     } catch (error) {
-      setSealError(error instanceof Error ? error.message : "Failed to create secret");
+      setSealError(error instanceof Error ? error.message : t("envVarEditor.errors.createSecret"));
     }
   }
 
@@ -244,12 +244,12 @@ export function EnvVarEditor({
                 })
               }
             >
-              <SelectTrigger className={cn(selectTriggerClass, "flex-[1]")} aria-label="Binding mode">
+              <SelectTrigger className={cn(selectTriggerClass, "flex-[1]")} aria-label={t("envVarEditor.labelsJsx.bindingMode")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="plain">Plain</SelectItem>
-                <SelectItem value="secret">Secret</SelectItem>
+                <SelectItem value="plain">{t("envVarEditor.text.plain")}</SelectItem>
+                <SelectItem value="secret">{t("envVarEditor.text.secret")}</SelectItem>
               </SelectContent>
             </Select>
             {row.source === "secret" ? (
@@ -261,7 +261,7 @@ export function EnvVarEditor({
                   }
                 >
                   <SelectTrigger
-                    aria-label="Secret"
+                    aria-label={t("envVarEditor.labelsJsx.secret")}
                     className={cn(
                       selectTriggerClass,
                       "flex-[3]",
@@ -270,7 +270,7 @@ export function EnvVarEditor({
                         "border-destructive text-destructive",
                     )}
                   >
-                    <SelectValue placeholder="Select secret..." />
+                    <SelectValue placeholder={t("envVarEditor.placeholders.selectSecret")} />
                   </SelectTrigger>
                   <SelectContent>
                     {row.secretId && !secrets.some((s) => s.id === row.secretId) ? (
@@ -295,7 +295,7 @@ export function EnvVarEditor({
                   }
                   disabled={!row.secretId}
                 >
-                  <SelectTrigger className={cn(selectTriggerClass, "flex-[1]")} aria-label="Version">
+                  <SelectTrigger className={cn(selectTriggerClass, "flex-[1]")} aria-label={t("envVarEditor.labelsJsx.version")}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>

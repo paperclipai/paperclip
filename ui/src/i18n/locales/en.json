@@ -2124,5 +2124,100 @@
       "browseAgents": "Browse agents",
       "recent": "Recent"
     }
+  },
+  "newProjectDialog": {
+    "errors": {
+      "createFailed": "Failed to create project."
+    },
+    "text": {
+      "localFolder": "Local folder",
+      "newProject": "New project",
+      "repoUrl": "Repo URL"
+    },
+    "labelsObj": {
+      "backlog": "Backlog",
+      "cancelled": "Cancelled",
+      "completed": "Completed",
+      "inProgress": "In Progress",
+      "planned": "Planned"
+    }
+  },
+  "newAgentDialog": {
+    "toasts": {
+      "inviteCreated": "Agent invite created",
+      "clipboardUnavailable": "Clipboard unavailable",
+      "createNew": "Create a new agent"
+    },
+    "errors": {
+      "unknown": "Unknown error"
+    },
+    "text": {
+      "addNewAgent": "Add a new agent",
+      "onboardingPrompt": "Agent onboarding prompt",
+      "inviteExternal": "Invite an external agent",
+      "optionalMessage": "Optional message for the agent"
+    },
+    "placeholders": {
+      "onboarding": "Add onboarding context, expected role, or first instructions."
+    }
+  },
+  "envVarEditor": {
+    "errors": {
+      "createSecret": "Failed to create secret"
+    },
+    "text": {
+      "plain": "Plain",
+      "secret": "Secret"
+    },
+    "labelsJsx": {
+      "bindingMode": "Binding mode",
+      "secret": "Secret",
+      "version": "Version"
+    },
+    "placeholders": {
+      "selectSecret": "Select secret..."
+    }
+  },
+  "commentThread": {
+    "text": {
+      "assignee": "Assignee",
+      "commentDeleted": "Comment deleted",
+      "noTimeline": "No timeline entries yet."
+    },
+    "labelsJsx": {
+      "copyAsMarkdown": "Copy comment as markdown"
+    },
+    "placeholders": {
+      "assignee": "Assignee",
+      "leaveComment": "Leave a comment..."
+    }
+  },
+  "documentAnnotationPanel": {
+    "labelsJsx": {
+      "closePanel": "Close annotation panel",
+      "moreThreadActions": "More thread actions"
+    },
+    "placeholders": {
+      "reply": "Reply…",
+      "writeComment": "Write a comment…"
+    }
+  },
+  "workspaceRuntimeControls": {
+    "text": {
+      "commands": "Workspace commands"
+    },
+    "descriptions": {
+      "oneShot": "One-shot commands that run now and exit when they finish."
+    }
+  },
+  "issueWorkspaceCard": {
+    "text": {
+      "repo": "Repo:"
+    },
+    "labelsObj": {
+      "newIsolated": "New isolated workspace",
+      "projectDefault": "Project default",
+      "reuseExisting": "Reuse existing workspace"
+    }
   }
 }
