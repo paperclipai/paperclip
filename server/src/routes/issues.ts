@@ -6782,9 +6782,68 @@ export function issueRoutes(
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
 
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : undefined;
+    const isManagerLineOverride =
+      req.actor.type === "agent" &&
+      !!actorAgentId &&
+      !!existing.assigneeAgentId &&
+      existing.assigneeAgentId !== actorAgentId;
+
+    if (isManagerLineOverride) {
+      // Scoped manager-line force-release of a stuck report-owned issue.
+      // assertAgentIssueMutationAllowed above already confirmed the actor is an
+      // ancestor in the assignee's reportsTo chain (allow_manager_chain), so the
+      // assignee-only guard in svc.release does not apply here. Force-clear the
+      // lock, cancel any held IC run so two runs cannot collide, and write an
+      // explicit audited override entry.
+      const overridden = await svc.adminForceRelease(id, { clearAssignee: true });
+      if (!overridden) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+
+      const cancelledRunIds: string[] = [];
+      for (const heldRunId of [
+        overridden.previous.checkoutRunId,
+        overridden.previous.executionRunId,
+      ]) {
+        if (!heldRunId || cancelledRunIds.includes(heldRunId)) {
+          continue;
+        }
+        const cancelled = await heartbeat.cancelRun(heldRunId);
+        if (cancelled) {
+          cancelledRunIds.push(heldRunId);
+        }
+      }
+
+      const overrideActor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: overridden.issue.companyId,
+        actorType: overrideActor.actorType,
+        actorId: overrideActor.actorId,
+        agentId: overrideActor.agentId,
+        runId: overrideActor.runId,
+        action: "issue.manager_force_release",
+        entityType: "issue",
+        entityId: overridden.issue.id,
+        details: {
+          issueId: overridden.issue.id,
+          decisionReason: "allow_manager_chain",
+          overriddenAssigneeAgentId: existing.assigneeAgentId,
+          actorAgentId,
+          prevCheckoutRunId: overridden.previous.checkoutRunId,
+          prevExecutionRunId: overridden.previous.executionRunId,
+          cancelledRunIds,
+        },
+      });
+
+      res.json(overridden.issue);
+      return;
+    }
+
     const released = await svc.release(
       id,
-      req.actor.type === "agent" ? req.actor.agentId : undefined,
+      actorAgentId,
       actorRunId,
     );
     if (!released) {
