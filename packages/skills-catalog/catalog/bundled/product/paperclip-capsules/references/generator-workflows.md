@@ -12,11 +12,9 @@ Use this reference when the request is to generate Paperclip capsule graphics, c
 3. Website embedded generator:
    - `paperclip-website/public/brand/generator.js`
    - `paperclip-website/src/components/brand/sections/08-imagery.html`
-4. External generator repo:
-   - `https://github.com/scotttong/paperclip-graphic-generator`
-   - Verified source-mining commit: `36a8a092c6ea6aa85bd0862bafb35ff9b9fab852`
+4. Mirrored graphic-generator contract in this file.
 
-The external repo is a production/advanced workflow reference, not stronger brand authority than the Paperclip app, website guide, video references, or hero-bank spec.
+The mirrored contract below was source-mined from the external prototype at commit `36a8a092c6ea6aa85bd0862bafb35ff9b9fab852`, but this skill must not depend on that personal repository being reachable. Treat the mode, palette, and control lists in this reference as the durable workflow contract.
 
 ## Choose a Workflow
 
@@ -55,11 +53,11 @@ Behavior:
 - Good for understanding public brand-guide templates and palettes.
 - Weaker for issue deliverables because the UI does not expose seed/config as a first-class copyable control.
 
-## External Graphic Generator
+## Mirrored Graphic Generator Contract
 
-Use this when the task needs reproducible generated capsule art beyond the small embedded website tool.
+Use this when the task needs reproducible generated capsule art beyond the small embedded website tool. The contract here is intentionally mirrored into Paperclip so agents can proceed if the original prototype repository is renamed, deleted, or private.
 
-Known modes/templates from source mining:
+Known modes/templates:
 
 - `blendRow`
 - `icon`
@@ -79,6 +77,8 @@ Useful controls:
 - Logo overlay panel.
 - Background controls including images.
 - PNG and SVG export.
+
+If an implementation needs source code, prefer the Paperclip website embedded generator or a Paperclip-owned tool. Use any external prototype link only as optional historical context, not as required task input.
 
 Palette caution:
 

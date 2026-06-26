@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-06-26T02:58:28.981Z",
+  "generatedAt": "2026-06-26T10:57:05.518Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -146,8 +146,8 @@
         {
           "path": "references/generator-workflows.md",
           "kind": "reference",
-          "sizeBytes": 4387,
-          "sha256": "a69e59335bb18e9b28fb192c5b2bf69c728919d50f0a72e8915df96b7aca255a"
+          "sizeBytes": 4753,
+          "sha256": "26f2eb9b58187351cc064f9af02c2e75f9c9512d0f5f5b80c8a9079019a48ec7"
         },
         {
           "path": "references/hero-capsule-bank.md",
@@ -162,7 +162,7 @@
           "sha256": "be1f2eccf96b4d2deefe45b3bc1dd0a3597278472c2ffedadc43c57161e9103d"
         }
       ],
-      "contentHash": "sha256:c2dac99868971240800aa6923ff7754cb226b60cd0d7569fce4f820db7ba1c46"
+      "contentHash": "sha256:1a573063759019928d591f29ad1c32029939058ec652880c7f41c58c7ebe0f4e"
     },
     {
       "id": "paperclipai:bundled:product:wireframe",
