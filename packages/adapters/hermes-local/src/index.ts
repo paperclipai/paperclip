@@ -106,6 +106,24 @@ tools, persistent memory, session persistence, skills, and MCP support.
 | env | object | {} | Extra environment variables |
 | promptTemplate | string | (default) | Custom prompt template with {{variable}} placeholders |
 
+## Hermes-Originated Paperclip Tasks
+
+This adapter package also ships a Hermes-facing Paperclip task bridge skill:
+\`paperclip-task-bridge\`. Use it when a user starts in Hermes and asks Hermes
+to create, comment on, update, or list Paperclip tasks.
+
+Configure credentials through Hermes env/profile secrets, never in prompt text:
+
+- \`PAPERCLIP_API_URL\` - Paperclip base URL, with or without \`/api\`
+- \`PAPERCLIP_API_KEY\` - scoped Paperclip agent API key
+- optional \`PAPERCLIP_COMPANY_ID\`, \`PAPERCLIP_AGENT_ID\`, and \`PAPERCLIP_RUN_ID\`
+
+The bridge is separate from adapter execution:
+
+- \`hermes_local\` means Paperclip shells out to local \`hermes chat\`.
+- \`hermes_gateway\` means Paperclip wakes remote Hermes through Hermes's API server.
+- \`paperclip-task-bridge\` means Hermes calls Paperclip's REST API to manage tasks.
+
 ## Available Template Variables
 
 - \`{{agentId}}\` — Paperclip agent ID

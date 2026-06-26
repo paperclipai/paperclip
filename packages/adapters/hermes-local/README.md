@@ -108,6 +108,39 @@ secret values, so do not copy printed tokens into comments or config. Use
 multiline comments or status updates, preserve newlines with a heredoc plus
 `jq --arg`.
 
+### Hermes-originated Paperclip tasks
+
+The package includes a Hermes skill/helper for the reverse direction: a user
+starts in Hermes and asks Hermes to create or update Paperclip work. This is not
+the same as Paperclip waking Hermes through `hermes_local` or `hermes_gateway`.
+
+Configure Paperclip access in Hermes env/profile secrets, not prompt text:
+
+```bash
+PAPERCLIP_API_URL=http://127.0.0.1:3100/api
+PAPERCLIP_API_KEY=<scoped-agent-api-key>
+```
+
+Optional env values:
+
+- `PAPERCLIP_COMPANY_ID`
+- `PAPERCLIP_AGENT_ID`
+- `PAPERCLIP_RUN_ID`
+
+The bundled `paperclip-task-bridge` skill provides deterministic helper
+commands:
+
+```bash
+node ./paperclip-task.mjs list-assigned
+node ./paperclip-task.mjs create-task --title "Investigate checkout failures" --description "Capture failing request and root cause."
+node ./paperclip-task.mjs comment --issue PAP-123 --body "Found the failing request path."
+node ./paperclip-task.mjs update-status --issue PAP-123 --status in_review --comment "Ready for review."
+```
+
+The helper reads credentials from environment variables and prints only JSON
+summaries. It supports `create-task`, `comment`, `update-status`, and
+`list-assigned`.
+
 ### 3. Assign work
 
 Create issues in Paperclip and assign them to your Hermes agent. On each heartbeat, Hermes will:

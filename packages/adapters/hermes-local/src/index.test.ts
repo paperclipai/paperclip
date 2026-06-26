@@ -21,3 +21,15 @@ test("root package export exposes Paperclip external adapter entrypoint", () => 
   expect(typeof adapter.detectModel).toBe("function");
   expect(typeof adapter.getConfigSchema).toBe("function");
 });
+
+test("Hermes adapter exposes bundled Paperclip task bridge skill", async () => {
+  const adapter = createServerAdapter();
+  const snapshot = await adapter.listSkills?.({
+    adapterType: "hermes_local",
+    agentId: "11111111-1111-4111-8111-111111111111",
+    companyId: "22222222-2222-4222-8222-222222222222",
+    config: {},
+  });
+
+  expect(snapshot?.entries.some((entry) => entry.runtimeName === "paperclip-task-bridge")).toBe(true);
+});
