@@ -94,7 +94,8 @@
       "agents": "智慧代理",
       "home": "首頁",
       "create": "建立",
-      "approvals": "審批"
+      "approvals": "審批",
+      "search": "搜尋"
     },
     "sections": {
       "work": "工作",
@@ -287,5 +288,44 @@
       "warnings": "有警告",
       "failed": "失敗"
     }
+  },
+  "settings": {
+    "fields": {
+      "companyName": "公司名稱",
+      "companyNameHint": "公司的顯示名稱。",
+      "description": "描述",
+      "descriptionHint": "在公司資料中顯示的可選描述。",
+      "descriptionPlaceholder": "可選的公司描述",
+      "logo": "標誌",
+      "logoHint": "上傳 PNG、JPEG、WEBP、GIF 或 SVG 格式的標誌圖片。",
+      "removing": "移除中……",
+      "removeLogo": "移除標誌",
+      "logoFailed": "標誌上傳失敗",
+      "brandColor": "品牌色",
+      "brandColorHint": "設定公司圖示的色調。留空則自動產生顏色。",
+      "brandColorPlaceholder": "自動",
+      "attachmentLimit": "附件大小限制"
+    },
+    "buttons": {
+      "saving": "儲存中……",
+      "save": "儲存變更",
+      "saveFailed": "儲存失敗"
+    },
+    "hiring": {
+      "requireApproval": "新僱用需委員會審批",
+      "requireApprovalHint": "新智慧代理僱用在委員會審批前保持待定狀態。"
+    },
+    "archive": {
+      "archiving": "歸檔中……",
+      "alreadyArchived": "已歸檔",
+      "archive": "歸檔公司"
+    }
+  },
+  "search": {
+    "placeholder": "搜尋任務、評論、文件、產物、智慧代理、專案……",
+    "allScopes": "全部範圍",
+    "unknownError": "未知錯誤",
+    "serverError": "伺服器傳回 {{status}}。",
+    "requestFailed": "請求失敗。"
   }
 }

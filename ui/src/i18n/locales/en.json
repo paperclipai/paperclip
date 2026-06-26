@@ -94,7 +94,8 @@
       "agents": "Agents",
       "home": "Home",
       "create": "Create",
-      "approvals": "Approvals"
+      "approvals": "Approvals",
+      "search": "Search"
     },
     "mobileNavAria": "Mobile navigation",
     "sections": {
@@ -287,5 +288,44 @@
       "warnings": "Warnings",
       "failed": "Failed"
     }
+  },
+  "settings": {
+    "fields": {
+      "companyName": "Company name",
+      "companyNameHint": "The display name for your company.",
+      "description": "Description",
+      "descriptionHint": "Optional description shown in the company profile.",
+      "descriptionPlaceholder": "Optional company description",
+      "logo": "Logo",
+      "logoHint": "Upload a PNG, JPEG, WEBP, GIF, or SVG logo image.",
+      "removing": "Removing...",
+      "removeLogo": "Remove logo",
+      "logoFailed": "Logo upload failed",
+      "brandColor": "Brand color",
+      "brandColorHint": "Sets the hue for the company icon. Leave empty for auto-generated color.",
+      "brandColorPlaceholder": "Auto",
+      "attachmentLimit": "Attachment size limit"
+    },
+    "buttons": {
+      "saving": "Saving...",
+      "save": "Save changes",
+      "saveFailed": "Failed to save"
+    },
+    "hiring": {
+      "requireApproval": "Require board approval for new hires",
+      "requireApprovalHint": "New agent hires stay pending until approved by board."
+    },
+    "archive": {
+      "archiving": "Archiving...",
+      "alreadyArchived": "Already archived",
+      "archive": "Archive company"
+    }
+  },
+  "search": {
+    "placeholder": "Search tasks, comments, documents, artifacts, agents, projects…",
+    "allScopes": "All scopes",
+    "unknownError": "Unknown error",
+    "serverError": "The server returned {{status}}.",
+    "requestFailed": "The request failed."
   }
 }
