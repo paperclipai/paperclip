@@ -90,7 +90,12 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
-export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
+export function createBetterAuthInstance(
+  db: Db,
+  config: Config,
+  trustedOrigins: string[],
+  overrides?: { disableSignUp?: boolean },
+): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
   if (!secret) {
@@ -118,7 +123,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,
-      disableSignUp: config.authDisableSignUp,
+      disableSignUp: overrides?.disableSignUp ?? config.authDisableSignUp,
     },
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: isHttpOnly }),
   };
