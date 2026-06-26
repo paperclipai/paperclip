@@ -72,6 +72,7 @@ export interface Config {
   databaseBackupDir: string;
   serveUi: boolean;
   uiDevMiddleware: boolean;
+  localPluginDir: string | undefined;
   secretsProvider: SecretProvider;
   secretsStrictMode: boolean;
   secretsMasterKeyFilePath: string;
@@ -340,6 +341,12 @@ export function loadConfig(): Config {
         ? process.env.SERVE_UI === "true"
         : fileConfig?.server.serveUi ?? true,
     uiDevMiddleware: process.env.PAPERCLIP_UI_DEV_MIDDLEWARE === "true",
+    // Override the homedir-derived default plugin dir (~/.paperclip/plugins). This is
+    // load-bearing for running a second instance (e.g. cortex-beta) on the same host as
+    // live: without it both resolve the same plugin dir off os.homedir() and share plugins.
+    localPluginDir: process.env.PAPERCLIP_LOCAL_PLUGIN_DIR?.trim()
+      ? resolveHomeAwarePath(process.env.PAPERCLIP_LOCAL_PLUGIN_DIR.trim())
+      : undefined,
     secretsProvider,
     secretsStrictMode,
     secretsMasterKeyFilePath:

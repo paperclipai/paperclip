@@ -18,6 +18,7 @@ DO $$ BEGIN
  ALTER TABLE "identity_maps" ADD CONSTRAINT "identity_maps_paperclip_user_id_auth_users_id_fk" FOREIGN KEY ("paperclip_user_id") REFERENCES "public"."auth_users"("id") ON DELETE no action ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
+ WHEN undefined_table THEN null;
 END $$;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "identity_maps_company_idx" ON "identity_maps" USING btree ("company_id");--> statement-breakpoint

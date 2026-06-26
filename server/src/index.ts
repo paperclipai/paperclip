@@ -630,6 +630,7 @@ export async function startServer(): Promise<StartedServer> {
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
+    localPluginDir: config.localPluginDir,
     storageService,
     feedbackExportService: feedback,
     databaseBackupService: {
