@@ -35,9 +35,8 @@ This adapter provides:
 
 ## Installation
 
-```bash
-npm install @paperclipai/hermes-paperclip-adapter
-```
+This package ships with Paperclip core as the built-in `hermes_local` adapter.
+No Adapter manager installation is required for normal Paperclip use.
 
 ### Prerequisites
 
@@ -47,17 +46,12 @@ npm install @paperclipai/hermes-paperclip-adapter
 
 ## Quick Start
 
-### 1. Install the adapter in Paperclip
-
-Install through **Board -> Adapter manager**:
-
-```text
-@paperclipai/hermes-paperclip-adapter
-```
+### 1. Optional: override the built-in for adapter development
 
 For local adapter development, install the package from a local path in Adapter
 manager, or add an entry to `~/.paperclip/adapter-plugins.json` and restart
-Paperclip:
+Paperclip. The external package can override the built-in `hermes_local`
+adapter while it is enabled:
 
 ```json
 [
@@ -72,8 +66,8 @@ Paperclip:
 
 The adapter package exports `createServerAdapter()` for the server, a
 declarative config schema for the generic agent form, and `./ui-parser` for run
-transcript parsing. Paperclip core does not require source edits or a built-in
-`hermes_local` registration.
+transcript parsing. Paperclip core imports these same package entrypoints for
+the built-in adapter registration.
 
 ### 2. Create a Hermes agent in Paperclip
 

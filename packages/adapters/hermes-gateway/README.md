@@ -1,10 +1,10 @@
 # Hermes Gateway Adapter
 
-External Paperclip adapter for Hermes Agent's authenticated HTTP/SSE API server.
+Built-in Paperclip adapter for Hermes Agent's authenticated HTTP/SSE API server.
 
-Install it through Paperclip's Adapter manager as a local path or npm package. The
-adapter type is `hermes_gateway`; it is intentionally not registered as a built-in
-core adapter.
+The adapter type is `hermes_gateway` and ships with Paperclip core. Operators can
+still install an external adapter package with the same type through Adapter
+manager when they intentionally want to override the built-in.
 
 Required config:
 

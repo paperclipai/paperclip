@@ -38,6 +38,7 @@ describe("server adapter registry", () => {
   beforeEach(() => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("hermes_local");
+    unregisterServerAdapter("hermes_gateway");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
   });
@@ -45,6 +46,7 @@ describe("server adapter registry", () => {
   afterEach(() => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("hermes_local");
+    unregisterServerAdapter("hermes_gateway");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
   });
@@ -128,11 +130,22 @@ describe("server adapter registry", () => {
     ]);
   });
 
-  it("does not ship hermes_local as a built-in adapter, but accepts it externally", () => {
-    expect(findServerAdapter("hermes_local")).toBeNull();
-    expect(() => requireServerAdapter("hermes_local")).toThrow(
-      "Unknown adapter type: hermes_local",
-    );
+  it("ships Hermes adapters as built-ins and still accepts external overrides", () => {
+    const builtInLocal = findServerAdapter("hermes_local");
+    const builtInGateway = findServerAdapter("hermes_gateway");
+
+    expect(builtInLocal).not.toBeNull();
+    expect(builtInLocal?.supportsLocalAgentJwt).toBe(true);
+    expect(builtInLocal?.supportsInstructionsBundle).toBe(true);
+    expect(builtInLocal?.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(builtInLocal?.detectModel).toBeTypeOf("function");
+    expect(builtInLocal?.getConfigSchema).toBeTypeOf("function");
+
+    expect(builtInGateway).not.toBeNull();
+    expect(builtInGateway?.supportsLocalAgentJwt).toBe(false);
+    expect(builtInGateway?.supportsInstructionsBundle).toBe(false);
+    expect(builtInGateway?.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(builtInGateway?.getConfigSchema).toBeTypeOf("function");
 
     const hermesExternalAdapter: ServerAdapterModule = {
       type: "hermes_local",
@@ -167,6 +180,10 @@ describe("server adapter registry", () => {
 
     expect(requireServerAdapter("hermes_local")).toBe(hermesExternalAdapter);
     expect(findActiveServerAdapter("hermes_local")?.supportsLocalAgentJwt).toBe(true);
+
+    unregisterServerAdapter("hermes_local");
+
+    expect(requireServerAdapter("hermes_local")).toBe(builtInLocal);
   });
 
   it("exposes capability flags from registered adapters", () => {

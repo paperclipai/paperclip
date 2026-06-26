@@ -8,11 +8,11 @@ Use when:
 - The Hermes runtime may live on another host, a private overlay, in Docker, or behind a TLS reverse proxy.
 
 Don't use when:
-- Paperclip should start the Hermes CLI directly on the same host. Use hermes_local from the external Hermes adapter plugin for that flow.
+- Paperclip should start the Hermes CLI directly on the same host. Use the built-in hermes_local adapter for that flow.
 - Hermes is the process calling Paperclip APIs after claiming its key. That is Hermes-originated Paperclip API usage, not the gateway adapter transport.
 
 Runtime distinction:
-- hermes_local: Paperclip starts Hermes on the Paperclip host through the external Hermes adapter plugin.
+- hermes_local: Paperclip starts Hermes on the Paperclip host through the built-in local adapter.
 - hermes_gateway: Paperclip calls an already-running Hermes API server using agentDefaultsPayload.apiBaseUrl.
 - Hermes-originated Paperclip API usage: Hermes calls Paperclip with PAPERCLIP_API_URL and PAPERCLIP_BRIDGE_API_KEY. Create that Paperclip key with scope.kind = "task_bridge" and an approved parent/project boundary; do not expose a normal claimed agent key to Hermes-facing chat/webhook surfaces. Do not use agentDefaultsPayload.apiBaseUrl for Paperclip API calls.
 

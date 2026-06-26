@@ -82,6 +82,17 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Grok Build agent",
     icon: Bot,
   },
+  hermes_gateway: {
+    label: "Hermes",
+    description: "Remote Hermes API server",
+    icon: Bot,
+    hideFromVisualSelection: true,
+  },
+  hermes_local: {
+    label: "Hermes",
+    description: "Local Hermes agent",
+    icon: Bot,
+  },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",

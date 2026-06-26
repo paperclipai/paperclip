@@ -40,6 +40,7 @@ Built-in adapters:
 - `cursor`: runs Cursor in background mode
 - `pi_local`: runs an embedded Pi agent locally
 - `hermes_local`: runs your local `hermes` CLI (`hermes-paperclip-adapter`)
+- `hermes_gateway`: connects to a running Hermes API server
 - `openclaw_gateway`: connects to an OpenClaw gateway endpoint
 - `process`: generic shell command adapter
 - `http`: calls an external HTTP endpoint
@@ -48,7 +49,7 @@ External plugin adapters (install via the adapter manager or API):
 
 - `droid_local`: runs your local Factory Droid CLI (`@henkey/droid-paperclip-adapter`)
 
-For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
+For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine. For `hermes_gateway`, Paperclip assumes the Hermes API server is already reachable and configured with an API key.
 
 ## 3.2 Runtime behavior
 
