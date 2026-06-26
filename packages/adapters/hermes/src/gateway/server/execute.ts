@@ -55,6 +55,8 @@ type ExecutionState = {
   terminalPromise: Promise<TerminalState>;
 };
 
+type TextRedactor = (value: string) => string;
+
 const CRITICAL_HEADERS = new Set([
   "authorization",
   "content-type",
@@ -68,7 +70,7 @@ const SENSITIVE_KEY_PATTERN =
 const BEARER_TOKEN_PATTERN = /Bearer\s+\S+/gi;
 const HERMES_SESSION_KEY_HEADER_PATTERN = /(X-Hermes-Session-Key\s*[:=]\s*)([^\s,;]+)/gi;
 const PAPERCLIP_SESSION_KEY_PATTERN =
-  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+:(?:issue|run):[A-Za-z0-9-]+|run:[A-Za-z0-9-]+)\b/gi;
+  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)\b/gi;
 
 const TERMINAL_STATUSES = new Set([
   "completed",
@@ -164,11 +166,32 @@ function sanitizeSensitiveText(value: string): string {
     .replace(PAPERCLIP_SESSION_KEY_PATTERN, "[redacted-session-key]");
 }
 
-function redactForLog(value: unknown, keyPath: string[] = [], depth = 0): unknown {
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function createTextRedactor(secrets: Array<string | null | undefined>): TextRedactor {
+  const exactSecrets = [...new Set(secrets.filter((secret): secret is string => typeof secret === "string" && secret.length >= 4))]
+    .sort((a, b) => b.length - a.length)
+    .map((secret) => ({
+      secret,
+      regex: new RegExp(escapeRegExp(secret), "g"),
+    }));
+
+  return (value: string) => {
+    let result = sanitizeSensitiveText(value);
+    for (const entry of exactSecrets) {
+      result = result.replace(entry.regex, `[redacted len=${entry.secret.length}]`);
+    }
+    return result;
+  };
+}
+
+function redactForLog(value: unknown, keyPath: string[] = [], depth = 0, redactText: TextRedactor = sanitizeSensitiveText): unknown {
   const key = keyPath[keyPath.length - 1] ?? "";
   if (typeof value === "string") {
     if (SENSITIVE_KEY_PATTERN.test(key)) return `[redacted len=${value.length}]`;
-    const sanitized = sanitizeSensitiveText(value);
+    const sanitized = redactText(value);
     return sanitized.length > 500
       ? `${sanitized.slice(0, 500)}... [truncated ${sanitized.length - 500} chars]`
       : sanitized;
@@ -176,17 +199,17 @@ function redactForLog(value: unknown, keyPath: string[] = [], depth = 0): unknow
   if (value == null || typeof value === "number" || typeof value === "boolean") return value;
   if (Array.isArray(value)) {
     if (depth > 5) return "[array-truncated]";
-    return value.slice(0, 40).map((entry, index) => redactForLog(entry, [...keyPath, String(index)], depth + 1));
+    return value.slice(0, 40).map((entry, index) => redactForLog(entry, [...keyPath, String(index)], depth + 1, redactText));
   }
   if (typeof value === "object") {
     if (depth > 5) return "[object-truncated]";
     const out: Record<string, unknown> = {};
     for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>).slice(0, 80)) {
-      out[entryKey] = redactForLog(entryValue, [...keyPath, entryKey], depth + 1);
+      out[entryKey] = redactForLog(entryValue, [...keyPath, entryKey], depth + 1, redactText);
     }
     return out;
   }
-  return String(value);
+  return redactText(String(value));
 }
 
 function parseHeaders(value: unknown): Record<string, string> {
@@ -409,6 +432,7 @@ async function handleEvent(
   ctx: AdapterExecutionContext,
   state: ExecutionState,
   frame: SseFrame,
+  redactText: TextRedactor = sanitizeSensitiveText,
 ): Promise<void> {
   const parsed = parseJsonData(frame.data);
   const record = asRecord(parsed);
@@ -416,12 +440,12 @@ async function handleEvent(
   state.lastEventName = eventName;
   await ctx.onLog(
     "stdout",
-    `[hermes-gateway:event] run=${state.runId} event=${eventName ?? "message"} data=${stringifyForLog(redactForLog(parsed), 8_000)}\n`,
+    `[hermes-gateway:event] run=${state.runId} event=${eventName ?? "message"} data=${stringifyForLog(redactForLog(parsed, [], 0, redactText), 8_000)}\n`,
   );
 
   const delta = nonEmpty(record?.delta) ?? nonEmpty(record?.text_delta);
   if (eventName === "message.delta" && delta) {
-    const sanitizedDelta = sanitizeSensitiveText(delta);
+    const sanitizedDelta = redactText(delta);
     state.outputChunks.push(sanitizedDelta);
     await ctx.onLog("stdout", sanitizedDelta);
   }
@@ -460,6 +484,7 @@ async function pollStatus(input: {
   state: ExecutionState;
   signal: AbortSignal;
   intervalMs: number;
+  redactText?: TextRedactor;
 }): Promise<void> {
   while (!input.signal.aborted && !input.state.terminal) {
     await delay(input.intervalMs, input.signal);
@@ -481,7 +506,7 @@ async function pollStatus(input: {
       }
     } catch (err) {
       if (input.signal.aborted) return;
-      await input.ctx.onLog("stderr", `[hermes-gateway] status poll failed: ${redactErrorMessage(err)}\n`);
+      await input.ctx.onLog("stderr", `[hermes-gateway] status poll failed: ${redactErrorMessage(err, input.redactText)}\n`);
     }
   }
 }
@@ -493,6 +518,7 @@ async function consumeEvents(input: {
   state: ExecutionState;
   signal: AbortSignal;
   reconnectMs: number;
+  redactText?: TextRedactor;
 }): Promise<void> {
   while (!input.signal.aborted && !input.state.terminal) {
     try {
@@ -521,7 +547,7 @@ async function consumeEvents(input: {
             const parsed = parseSseFramesForTest(`${buffer}\n\n`);
             buffer = parsed.rest;
             for (const frame of parsed.frames) {
-              await handleEvent(input.ctx, input.state, frame);
+              await handleEvent(input.ctx, input.state, frame, input.redactText);
               if (input.state.terminal) break;
             }
           }
@@ -531,13 +557,13 @@ async function consumeEvents(input: {
         const parsed = parseSseFramesForTest(buffer);
         buffer = parsed.rest;
         for (const frame of parsed.frames) {
-          await handleEvent(input.ctx, input.state, frame);
+          await handleEvent(input.ctx, input.state, frame, input.redactText);
           if (input.state.terminal) break;
         }
       }
     } catch (err) {
       if (input.signal.aborted || input.state.terminal) return;
-      await input.ctx.onLog("stderr", `[hermes-gateway] event stream disconnected: ${redactErrorMessage(err)}\n`);
+      await input.ctx.onLog("stderr", `[hermes-gateway] event stream disconnected: ${redactErrorMessage(err, input.redactText)}\n`);
     }
     if (!input.state.terminal) await delay(input.reconnectMs, input.signal);
   }
@@ -592,17 +618,20 @@ export function mapFinalResultForTest(input: {
   outputChunks: string[];
   sessionKey: string | null;
   strategy: SessionKeyStrategy;
+  redactText?: TextRedactor;
 }): AdapterExecutionResult {
+  const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
-  const output = sanitizeSensitiveText(
+  const output = redactText(
     input.terminal.output ?? extractOutput(payload) ?? input.outputChunks.join("").trim(),
   );
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
+  const sessionDisplayId = sessionId ? redactText(sessionId) : null;
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
   const errorMessage = mapped.errorCode
-    ? sanitizeSensitiveText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
+    ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
   return {
     exitCode: mapped.exitCode,
@@ -615,18 +644,17 @@ export function mapFinalResultForTest(input: {
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
     ...(output ? { summary: output.slice(0, 2_000) } : {}),
-    sessionId,
+    sessionId: sessionDisplayId,
     sessionParams: {
       hermesRunId: input.terminal.runId,
-      ...(sessionId ? { hermesSessionId: sessionId } : {}),
-      ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
+      ...(sessionId && sessionDisplayId === sessionId ? { hermesSessionId: sessionId } : {}),
       strategy: input.strategy,
     },
-    sessionDisplayId: sessionId,
+    sessionDisplayId,
     resultJson: {
       run_id: input.terminal.runId,
       status: input.terminal.status,
-      session_id: sessionId,
+      session_id: sessionDisplayId,
       last_event: input.terminal.eventName ?? null,
       output: output ?? "",
       usage: usage ?? null,
@@ -640,6 +668,7 @@ async function stopRun(input: {
   baseUrl: URL;
   headers: Record<string, string>;
   runId: string;
+  redactText?: TextRedactor;
 }): Promise<Record<string, unknown> | null> {
   try {
     const stopped = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}/stop`), {
@@ -649,7 +678,7 @@ async function stopRun(input: {
     await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
     return asRecord(stopped);
   } catch (err) {
-    await input.ctx.onLog("stderr", `[hermes-gateway] stop request failed: ${redactErrorMessage(err)}\n`);
+    await input.ctx.onLog("stderr", `[hermes-gateway] stop request failed: ${redactErrorMessage(err, input.redactText)}\n`);
     return null;
   }
 }
@@ -678,12 +707,12 @@ async function fetchFinalStatus(input: {
   return null;
 }
 
-function redactErrorMessage(err: unknown): string {
-  if (err instanceof Error) return sanitizeSensitiveText(err.message);
-  return sanitizeSensitiveText(String(err));
+function redactErrorMessage(err: unknown, redactText: TextRedactor = sanitizeSensitiveText): string {
+  if (err instanceof Error) return redactText(err.message);
+  return redactText(String(err));
 }
 
-function errorResult(err: unknown): AdapterExecutionResult {
+function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveText): AdapterExecutionResult {
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
@@ -694,10 +723,10 @@ function errorResult(err: unknown): AdapterExecutionResult {
     errorCode: code,
     errorFamily: classified?.family ?? (code === "hermes_gateway_connect_failed" ? "transient_upstream" : null),
     retryNotBefore: hermesError.retryNotBefore ?? null,
-    errorMessage: redactErrorMessage(err),
+    errorMessage: redactErrorMessage(err, redactText),
     errorMeta: {
       ...(hermesError.status ? { status: hermesError.status } : {}),
-      ...(hermesError.body ? { body: redactForLog(hermesError.body) as Record<string, unknown> } : {}),
+      ...(hermesError.body ? { body: redactForLog(hermesError.body, [], 0, redactText) as Record<string, unknown> } : {}),
     },
   };
 }
@@ -773,6 +802,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraHeaders,
     accept: "text/event-stream",
   });
+  const redactText = createTextRedactor([
+    apiKey,
+    sessionKey,
+    runHeaders.Authorization,
+    runHeaders["X-Hermes-Session-Key"],
+  ]);
   const body = buildRunBody(ctx, sessionKey);
 
   await ctx.onMeta?.({
@@ -788,7 +823,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     },
   });
   await ctx.onLog("stdout", `[hermes-gateway] creating run at ${baseUrl.origin}/v1/runs (timeout=${timeoutSec}s, session=${strategy})\n`);
-  await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders), 3_000)}\n`);
+  await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
   let runId: string | null = null;
   try {
@@ -805,11 +840,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: false,
         errorCode: "hermes_gateway_protocol_error",
         errorMessage: "Hermes /v1/runs response did not include run_id.",
-        errorMeta: { response: redactForLog(created) as Record<string, unknown> },
+        errorMeta: { response: redactForLog(created, [], 0, redactText) as Record<string, unknown> },
       };
     }
   } catch (err) {
-    return errorResult(err);
+    return errorResult(err, redactText);
   }
 
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
@@ -823,6 +858,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     state,
     signal: controller.signal,
     reconnectMs,
+    redactText,
   }).catch(() => undefined);
   void pollStatus({
     ctx,
@@ -831,6 +867,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     state,
     signal: controller.signal,
     intervalMs: pollIntervalMs,
+    redactText,
   }).catch(() => undefined);
 
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -844,7 +881,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   controller.abort();
 
   if (outcome === "timeout") {
-    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId });
+    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
     const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
     return {
       exitCode: 1,
@@ -857,14 +894,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         run_id: runId,
         status: extractStatus(finalStatus) ?? "timeout",
         last_event: state.lastEventName,
-        final_status: redactForLog(finalStatus),
+        final_status: redactForLog(finalStatus, [], 0, redactText),
       },
       sessionParams: {
         hermesRunId: runId,
-        ...(sessionKey ? { sessionKey } : {}),
         strategy,
       },
-      sessionDisplayId: sessionKey,
+      sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
     };
   }
 
@@ -873,5 +909,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     outputChunks: state.outputChunks,
     sessionKey,
     strategy,
+    redactText,
   });
 }

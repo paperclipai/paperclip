@@ -163,7 +163,7 @@ describe("execute", () => {
               "data: {\"delta\":\"Authorization: Bearer secret-key\\nX-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1\"}",
               "",
               "event: run.completed",
-              "data: {\"status\":\"completed\",\"output\":\"Authorization: Bearer secret-key\\nX-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1\"}",
+              "data: {\"status\":\"completed\",\"output\":\"Authorization: Bearer secret-key\\nraw key secret-key\\nX-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1\"}",
               "",
             ].join("\n"),
           ),
@@ -179,6 +179,7 @@ describe("execute", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.summary).toContain("Bearer [redacted]");
+    expect(result.summary).toContain("raw key [redacted len=10]");
     expect(result.summary).toContain("X-Hermes-Session-Key: [redacted]");
     expect(result.summary).not.toContain("secret-key");
     expect(result.summary).not.toContain("paperclip:company:company-1:agent:agent-1:issue:issue-1");
@@ -187,6 +188,54 @@ describe("execute", () => {
     expect(logText).toContain("X-Hermes-Session-Key: [redacted]");
     expect(logText).not.toContain("secret-key");
     expect(logText).not.toContain("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+  });
+
+  it("redacts agent-scoped Paperclip session keys from logs and public result metadata", async () => {
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      sessionKeyStrategy: "agent",
+      timeoutSec: 5,
+    });
+    const agentSessionKey = "paperclip:company:company-1:agent:agent-1";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: message.delta",
+              `data: {"delta":"session ${agentSessionKey}"}`,
+              "",
+              "event: run.completed",
+              `data: {"status":"completed","output":"session ${agentSessionKey}","session_id":"${agentSessionKey}"}`,
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(ctx);
+    const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("session [redacted-session-key]");
+    expect(result.sessionId).toBe("[redacted-session-key]");
+    expect(result.sessionDisplayId).toBe("[redacted-session-key]");
+    expect(result.resultJson?.session_id).toBe("[redacted-session-key]");
+    expect(result.sessionParams).toEqual({
+      hermesRunId: "run-hermes-1",
+      strategy: "agent",
+    });
+    expect(logText).toContain("[redacted-session-key]");
+    expect(logText).not.toContain(agentSessionKey);
   });
 
   it("falls back to polling when SSE is unavailable", async () => {
@@ -234,8 +283,11 @@ describe("execute", () => {
       vi.fn(async () =>
         new Response(
           JSON.stringify({
-            message: "Authorization rejected: Bearer secret-key",
+            message: "Authorization rejected: Bearer secret-key raw secret-key",
             detail: "X-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1",
+            nested: {
+              note: "session paperclip:company:company-1:agent:agent-1",
+            },
           }),
           { status: 401 },
         )),
@@ -249,8 +301,11 @@ describe("execute", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_auth_failed");
     expect(result.errorMeta?.body).toEqual({
-      message: "Authorization rejected: Bearer [redacted]",
+      message: "Authorization rejected: Bearer [redacted] raw [redacted len=10]",
       detail: "X-Hermes-Session-Key: [redacted]",
+      nested: {
+        note: "session [redacted-session-key]",
+      },
     });
     expect(result.errorMessage).not.toContain("secret-key");
     expect(result.errorMessage).not.toContain("paperclip:company:company-1:agent:agent-1:issue:issue-1");
