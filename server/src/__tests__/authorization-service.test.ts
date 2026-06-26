@@ -1050,7 +1050,6 @@ describeEmbeddedPostgres("authorization service", () => {
     const resource = {
       type: "issue" as const,
       companyId: company.id,
-      issueId: "issue-managed",
       assigneeAgentId: ic.id,
       assigneeUserId: null,
       status: "in_progress",
@@ -1085,7 +1084,6 @@ describeEmbeddedPostgres("authorization service", () => {
     const resource = {
       type: "issue" as const,
       companyId: company.id,
-      issueId: "issue-foreign",
       assigneeAgentId: ic.id,
       assigneeUserId: null,
       status: "in_progress",
@@ -1117,7 +1115,6 @@ describeEmbeddedPostgres("authorization service", () => {
       resource: {
         type: "issue",
         companyId: company.id,
-        issueId: "issue-manager-owned",
         assigneeAgentId: manager.id,
         assigneeUserId: null,
         status: "in_progress",
