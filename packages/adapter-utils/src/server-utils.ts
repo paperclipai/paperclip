@@ -688,6 +688,8 @@ export interface PaperclipChatWakePayload {
   userMessage: string;
   transcript: PaperclipChatWakeTranscriptEntry[];
   runId?: string | null;
+  contextPack?: unknown;
+  contextBrief?: string | null;
 }
 
 const MAX_CHAT_TRANSCRIPT_ENTRIES = 40;
@@ -738,6 +740,8 @@ export function buildPaperclipChatWakePayload(input: {
   userMessage: string;
   transcript?: unknown;
   runId?: string | null;
+  contextPack?: unknown;
+  contextBrief?: string | null;
 }): PaperclipChatWakePayload | null {
   const threadId = input.threadId.trim();
   const userMessage = input.userMessage.trim();
@@ -763,6 +767,8 @@ export function buildPaperclipChatWakePayload(input: {
     userMessage,
     transcript,
     runId: input.runId?.trim() || null,
+    contextPack: input.contextPack,
+    contextBrief: input.contextBrief?.trim() || null,
   };
 }
 
@@ -780,6 +786,8 @@ export function normalizePaperclipChatWakePayload(value: unknown): PaperclipChat
     userMessage: asString(raw.userMessage, "").trim() || asString(raw.text, "").trim(),
     transcript: raw.transcript,
     runId: asString(raw.runId, "").trim() || null,
+    contextPack: raw.contextPack,
+    contextBrief: asString(raw.contextBrief, "").trim() || null,
   });
 }
 
@@ -800,8 +808,8 @@ export function renderPaperclipChatWakePrompt(
     ? [
         "## BizCursor Chat Resume",
         "",
-        "You are resuming a direct chat session (not a Paperclip issue workflow).",
-        "Focus on the latest user message and continue the conversation naturally.",
+        "You are resuming a **direct chat session** — not a Paperclip heartbeat run.",
+        "Do not run inbox/checkout/heartbeat steps. Continue the conversation from the latest user message.",
         "",
         `- session: ${normalized.threadId}`,
         `- run: ${normalized.runId ?? "unknown"}`,
@@ -809,12 +817,37 @@ export function renderPaperclipChatWakePrompt(
     : [
         "## BizCursor Chat Wake",
         "",
-        "You are responding in a direct chat session (not a Paperclip issue workflow).",
-        "Answer the user's latest message. Use Paperclip API only if you need to delegate work or create tasks.",
+        "You are in a **direct chat session** with the operator — not a Paperclip heartbeat run.",
+        "Answer in Portuguese unless the user asks otherwise.",
+        "",
+        "**Rules:**",
+        "- Use `contextPack` and the Operator context below as the primary source for company goal, goals, routines, tasks, team, and date/time.",
+        "- Enriched tasks may include `descriptionExcerpt`, `planExcerpt`, and `latestCommentExcerpt` — use these for deliverables already produced.",
+        "- If the user request matches a **routine** in the pack, explain that and what it does on schedule.",
+        "- Only call tools when the user needs details not present in the context pack.",
+        "- When asked what day it is today, use `contextPack.client.now` when available.",
+        "",
+        "**Do not:**",
+        "- load or follow the `paperclip` skill heartbeat procedure (Steps 1–9)",
+        "- call `GET /api/agents/me`, inbox, checkout, or pick tasks from your assignment queue",
         "",
         `- session: ${normalized.threadId}`,
         `- run: ${normalized.runId ?? "unknown"}`,
       ];
+
+  const contextBrief = normalized.contextBrief?.trim();
+  if (contextBrief) {
+    lines.push("", "### Operator context", "", contextBrief);
+  } else if (normalized.contextPack) {
+    lines.push(
+      "",
+      "### Operator context",
+      "",
+      "```json",
+      JSON.stringify(normalized.contextPack, null, 2),
+      "```",
+    );
+  }
 
   if (normalized.transcript.length > 0) {
     lines.push("", "### Conversation");

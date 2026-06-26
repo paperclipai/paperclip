@@ -2415,6 +2415,13 @@ function enrichWakeContextSnapshot(input: {
     if (Array.isArray(payload?.transcript)) {
       contextSnapshot.bizcursorTranscript = payload.transcript;
     }
+    if (payload?.contextPack !== undefined) {
+      contextSnapshot.bizcursorContextPack = payload.contextPack;
+    }
+    const contextBrief = readNonEmptyString(payload?.contextBrief);
+    if (contextBrief) {
+      contextSnapshot.bizcursorContextBrief = contextBrief;
+    }
     if (!readNonEmptyString(contextSnapshot.wakeReason) && reason) {
       contextSnapshot.wakeReason = reason;
     }
@@ -8150,6 +8157,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             userMessage: readNonEmptyString(context.bizcursorUserMessage) ?? "",
             transcript: context.bizcursorTranscript,
             runId: run.id,
+            contextPack: context.bizcursorContextPack,
+            contextBrief: readNonEmptyString(context.bizcursorContextBrief),
           })
         : null;
       if (chatWake) {

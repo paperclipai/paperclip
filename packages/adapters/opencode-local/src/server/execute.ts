@@ -37,6 +37,7 @@ import {
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
   normalizePaperclipChatWakePayload,
+  PAPERCLIP_CHAT_WAKE_REASON,
   renderPaperclipChatWakePrompt,
   renderPaperclipWakePrompt,
   stringifyPaperclipChatWakePayload,
@@ -243,8 +244,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  const chatWake = normalizePaperclipChatWakePayload(context.paperclipChatWake);
+  const pureChatWake =
+    chatWake !== null ||
+    asString(context.wakeMode, "").trim() === "chat" ||
+    (typeof context.wakeReason === "string" &&
+      context.wakeReason.trim() === PAPERCLIP_CHAT_WAKE_REASON);
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries);
+  let desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries);
+  if (pureChatWake) {
+    desiredOpenCodeSkillNames = desiredOpenCodeSkillNames.filter((name) => {
+      const normalized = name.trim().toLowerCase();
+      return (
+        normalized !== "paperclip" &&
+        !normalized.endsWith("/paperclip") &&
+        !normalized.includes("paperclip-converting-plans-to-tasks")
+      );
+    });
+  }
   if (!executionTargetIsRemote) {
     await ensureOpenCodeSkillsInjected(
       onLog,
@@ -281,7 +298,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  const chatWake = normalizePaperclipChatWakePayload(context.paperclipChatWake);
   const wakePayloadJson = chatWake
     ? stringifyPaperclipChatWakePayload(chatWake)
     : stringifyPaperclipWakePayload(context.paperclipWake);
@@ -294,6 +310,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  if (chatWake) {
+    env.PAPERCLIP_PURE_CHAT = "1";
+    env.PAPERCLIP_WAKE_REASON = PAPERCLIP_CHAT_WAKE_REASON;
+    delete env.PAPERCLIP_TASK_ID;
+    delete env.PAPERCLIP_WAKE_COMMENT_ID;
+    delete env.PAPERCLIP_WAKE_PAYLOAD_JSON;
+  }
   refreshPaperclipWorkspaceEnvForExecution({
     env,
     envConfig,
@@ -558,7 +581,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const prompt = joinPromptSections(
       chatWake
-        ? [instructionsPrefix, chatWakePrompt, sessionHandoffNote]
+        ? [chatWakePrompt, sessionHandoffNote]
         : [
             instructionsPrefix,
             renderedBootstrapPrompt,

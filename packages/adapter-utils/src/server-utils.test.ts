@@ -1184,6 +1184,22 @@ describe("paperclip chat wake", () => {
     expect(readPaperclipChatThreadId(null, { taskKey: "chat:thread-xyz" })).toBe("thread-xyz");
   });
 
+  it("renders chat prompt with operator context brief from context pack", () => {
+    const payload = buildPaperclipChatWakePayload({
+      threadId: "thread-1",
+      sessionId: "session-1",
+      userMessage: "Qual a estratégia da semana?",
+      transcript: [{ role: "system", content: "Context Pack v3", at: null }],
+      runId: "run-1",
+      contextBrief: "### Tarefas\n- Plano: 3 títulos com ganchos",
+    });
+    const prompt = renderPaperclipChatWakePrompt(payload);
+    expect(prompt).toContain("Operator context");
+    expect(prompt).toContain("3 títulos com ganchos");
+    expect(prompt).toContain("descriptionExcerpt");
+    expect(prompt).not.toContain("fetch your inbox");
+  });
+
   it("renders chat prompt with user message and without inbox boilerplate", () => {
     const payload = buildPaperclipChatWakePayload({
       threadId: "thread-1",
