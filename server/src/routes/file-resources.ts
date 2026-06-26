@@ -1,4 +1,5 @@
 import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { Router } from "express";
 import { ZodError } from "zod";
 import type { Db } from "@paperclipai/db";
@@ -649,13 +650,13 @@ export function fileResourceRoutes(db: Db, opts: {
         });
 
         res.setHeader("Content-Type", result.resource.contentType ?? "application/octet-stream");
-        res.setHeader("Content-Length", String(result.resource.byteSize ?? 0));
+        if (result.resource.byteSize != null) {
+          res.setHeader("Content-Length", String(result.resource.byteSize));
+        }
         res.setHeader("Cache-Control", "private, max-age=60");
         res.setHeader("X-Content-Type-Options", "nosniff");
         res.setHeader("Content-Disposition", `attachment; filename="${safeAttachmentFilename(result.resource.title)}"`);
-        createReadStream(result.realPath).on("error", (error) => {
-          res.destroy(error);
-        }).pipe(res);
+        await pipeline(createReadStream(result.realPath), res);
         return;
       }
 

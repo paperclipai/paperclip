@@ -1278,6 +1278,92 @@ describeEmbeddedPostgres("workspace file resources", () => {
     expect(JSON.stringify(rowsAfterLimits.map((row) => row.details))).not.toContain(projectRoot);
   });
 
+  it("holds download concurrency slots until the file stream completes", async () => {
+    if (process.platform === "win32") return;
+
+    const { projectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot });
+    const fifoPath = path.join(projectRoot, "slow-download.bin");
+    await execFileAsync("mkfifo", [fifoPath]);
+    let slowDownloadStarted: (() => void) | null = null;
+    const downloadStarted = new Promise<void>((resolve) => {
+      slowDownloadStarted = resolve;
+    });
+    const service: WorkspaceFileResourceService = {
+      getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
+      list: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      resolve: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      readContent: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      prepareDownload: vi.fn(async () => {
+        slowDownloadStarted?.();
+        return {
+          resource: {
+            kind: "file",
+            provider: "local_fs",
+            title: "slow-download.bin",
+            displayPath: "slow-download.bin",
+            workspaceLabel: "Workspace",
+            workspaceKind: "project_workspace",
+            workspaceId: "11111111-1111-4111-8111-111111111111",
+            previewKind: "unsupported",
+            contentType: "application/octet-stream",
+            byteSize: null,
+            capabilities: { preview: false, download: true, listChildren: false },
+          },
+          realPath: fifoPath,
+        };
+      }),
+    };
+    const app = createApp(
+      db,
+      {
+        type: "board",
+        userId: "board-user",
+        companyIds: [graph.companyId],
+        source: "session",
+        isInstanceAdmin: false,
+      },
+      {
+        service,
+        limiter: createFileResourceLimiter({ maxConcurrent: 1, maxRequests: 100, windowMs: 60_000 }),
+      },
+    );
+    const firstDownload = request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query({ path: "slow-download.bin", download: "1" })
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => callback(null, Buffer.concat(chunks)));
+      });
+    const firstDownloadResponse = firstDownload.then((res) => res);
+
+    await downloadStarted;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const secondDownload = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query({ path: "slow-download.bin", download: "1" });
+    expect(secondDownload.status).toBe(429);
+
+    const writer = await fs.open(fifoPath, "w");
+    await writer.write(Buffer.from("slow"));
+    await writer.close();
+
+    const first = await firstDownloadResponse;
+    expect(first.status).toBe(200);
+    expect(first.headers["content-length"]).toBeUndefined();
+    expect(first.headers["content-disposition"]).toBe('attachment; filename="slow-download.bin"');
+    expect(Buffer.compare(first.body as Buffer, Buffer.from("slow"))).toBe(0);
+  });
+
   it("uses tighter list-specific rate and concurrency limits", async () => {
     const { projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });
