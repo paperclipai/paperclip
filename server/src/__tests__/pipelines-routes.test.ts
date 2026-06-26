@@ -333,6 +333,37 @@ describeEmbeddedPostgres("pipeline routes", () => {
     expect(events[1]!.payload).toMatchObject({ materialChanged: true, workspaceRefChanged: true });
   });
 
+  it("hides retired children from the flat case children route", async () => {
+    const company = await seedCompany();
+    const http = request(app(boardActor));
+    const pipeline = await http
+      .post(`/api/companies/${company.id}/pipelines`)
+      .send({ key: "hidden-children", name: "Hidden children" })
+      .expect(201);
+    const parent = await http
+      .post(`/api/pipelines/${pipeline.body.id}/cases`)
+      .send({ caseKey: "parent", title: "Parent" })
+      .expect(201);
+    const visible = await http
+      .post(`/api/pipelines/${pipeline.body.id}/cases`)
+      .send({ caseKey: "visible-child", title: "Visible child", parentCaseId: parent.body.case.id })
+      .expect(201);
+    const hidden = await http
+      .post(`/api/pipelines/${pipeline.body.id}/cases`)
+      .send({ caseKey: "hidden-child", title: "Hidden child", parentCaseId: parent.body.case.id })
+      .expect(201);
+    await db
+      .update(pipelineCases)
+      .set({ hiddenFromBoardAt: new Date(), retiredAt: new Date(), retiredReason: "automation_retry" })
+      .where(eq(pipelineCases.id, hidden.body.case.id));
+
+    const children = await http.get(`/api/cases/${parent.body.case.id}/children`).expect(200);
+
+    expect(children.body.map((row: { case: { id: string; caseKey: string } }) => [row.case.id, row.case.caseKey])).toEqual([
+      [visible.body.case.id, "visible-child"],
+    ]);
+  });
+
   it("writes an audit event when an agent removes a case issue link", async () => {
     const company = await seedCompany();
     const [agent] = await db.insert(agents).values({

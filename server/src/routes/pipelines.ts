@@ -1895,6 +1895,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       .where(and(
         eq(pipelineCases.companyId, companyId),
         eq(pipelineCases.parentCaseId, caseId),
+        isNull(pipelineCases.hiddenFromBoardAt),
       ))
       .orderBy(asc(pipelineCases.createdAt));
     const caseIds = rows.map((row) => row.case.id);
