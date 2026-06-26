@@ -453,6 +453,33 @@ export function requiresPushCapabilityPreflight(input: {
     && hasGithubPrWorkflowSkill(input.explicitRunScopedSkillKeys);
 }
 
+function isUnconfiguredSecretProviderRuntimeError(error: unknown): error is HttpError {
+  return error instanceof HttpError &&
+    error.status === 422 &&
+    / provider is not configured in this deployment$/i.test(error.message);
+}
+
+function configurationIncompleteFromSecretProviderError(input: {
+  error: HttpError;
+  companyId: string;
+  agentId?: string | null;
+  issueId?: string | null;
+  projectId?: string | null;
+  routineId?: string | null;
+}) {
+  return new ConfigurationIncompleteFailure(`configuration incomplete: ${input.error.message}`, {
+    configurationIncomplete: {
+      reason: "secret_provider_unconfigured",
+      companyId: input.companyId,
+      agentId: input.agentId ?? null,
+      issueId: input.issueId ?? null,
+      projectId: input.projectId ?? null,
+      routineId: input.routineId ?? null,
+      message: input.error.message,
+    },
+  });
+}
+
 const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
@@ -649,110 +676,124 @@ export async function resolveExecutionRunAdapterConfig(input: {
       });
     }
   }
-  const environmentEnvResolution = environmentEnv
-    ? await input.secretsSvc.resolveEnvBindings(
-        input.companyId,
-        environmentEnv,
-        input.environmentId
-          ? {
-              consumerType: "environment",
-              consumerId: input.environmentId,
-              actorType: "agent",
-              actorId: input.agentId ?? null,
-              issueId: input.issueId ?? null,
-              heartbeatRunId: input.heartbeatRunId ?? null,
-              ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
-            }
-          : undefined,
-      )
-    : { env: {}, secretKeys: new Set<string>(), manifest: [] };
-  const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
-    input.companyId,
-    executionRunConfig,
-    input.agentId
-      ? {
-          consumerType: "agent",
-          consumerId: input.agentId,
-          actorType: "agent",
-          actorId: input.agentId,
-          issueId: input.issueId ?? null,
-          heartbeatRunId: input.heartbeatRunId ?? null,
-          ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
-        }
-      : undefined,
-    { adapterType: input.adapterType ?? null },
-  );
-  if (Object.keys(environmentEnvResolution.env).length > 0) {
-    resolvedConfig.env = {
-      ...environmentEnvResolution.env,
-      ...parseObject(resolvedConfig.env),
-    };
-    for (const key of environmentEnvResolution.secretKeys) {
-      secretKeys.add(key);
+  try {
+    const environmentEnvResolution = environmentEnv
+      ? await input.secretsSvc.resolveEnvBindings(
+          input.companyId,
+          environmentEnv,
+          input.environmentId
+            ? {
+                consumerType: "environment",
+                consumerId: input.environmentId,
+                actorType: "agent",
+                actorId: input.agentId ?? null,
+                issueId: input.issueId ?? null,
+                heartbeatRunId: input.heartbeatRunId ?? null,
+                ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
+              }
+            : undefined,
+        )
+      : { env: {}, secretKeys: new Set<string>(), manifest: [] };
+    const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
+      input.companyId,
+      executionRunConfig,
+      input.agentId
+        ? {
+            consumerType: "agent",
+            consumerId: input.agentId,
+            actorType: "agent",
+            actorId: input.agentId,
+            issueId: input.issueId ?? null,
+            heartbeatRunId: input.heartbeatRunId ?? null,
+            ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
+          }
+        : undefined,
+      { adapterType: input.adapterType ?? null },
+    );
+    if (Object.keys(environmentEnvResolution.env).length > 0) {
+      resolvedConfig.env = {
+        ...environmentEnvResolution.env,
+        ...parseObject(resolvedConfig.env),
+      };
+      for (const key of environmentEnvResolution.secretKeys) {
+        secretKeys.add(key);
+      }
     }
-  }
-  const projectEnvResolution = projectEnv
-    ? await input.secretsSvc.resolveEnvBindings(
-        input.companyId,
-        projectEnv,
-        input.projectId
-          ? {
-              consumerType: "project",
-              consumerId: input.projectId,
-              actorType: "agent",
-              actorId: input.agentId ?? null,
-              issueId: input.issueId ?? null,
-              heartbeatRunId: input.heartbeatRunId ?? null,
-              ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
-            }
-          : undefined,
-      )
-    : { env: {}, secretKeys: new Set<string>(), manifest: [] };
-  if (Object.keys(projectEnvResolution.env).length > 0) {
-    resolvedConfig.env = {
-      ...parseObject(resolvedConfig.env),
-      ...projectEnvResolution.env,
-    };
-    for (const key of projectEnvResolution.secretKeys) {
-      secretKeys.add(key);
+    const projectEnvResolution = projectEnv
+      ? await input.secretsSvc.resolveEnvBindings(
+          input.companyId,
+          projectEnv,
+          input.projectId
+            ? {
+                consumerType: "project",
+                consumerId: input.projectId,
+                actorType: "agent",
+                actorId: input.agentId ?? null,
+                issueId: input.issueId ?? null,
+                heartbeatRunId: input.heartbeatRunId ?? null,
+                ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
+              }
+            : undefined,
+        )
+      : { env: {}, secretKeys: new Set<string>(), manifest: [] };
+    if (Object.keys(projectEnvResolution.env).length > 0) {
+      resolvedConfig.env = {
+        ...parseObject(resolvedConfig.env),
+        ...projectEnvResolution.env,
+      };
+      for (const key of projectEnvResolution.secretKeys) {
+        secretKeys.add(key);
+      }
     }
-  }
-  const routineEnvResolution = routineEnv
-    ? await input.secretsSvc.resolveEnvBindings(
-        input.companyId,
-        routineEnv,
-        input.routineId
-          ? {
-              consumerType: "routine",
-              consumerId: input.routineId,
-              actorType: "agent",
-              actorId: input.agentId ?? null,
-              issueId: input.issueId ?? null,
-              heartbeatRunId: input.heartbeatRunId ?? null,
-              ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
-            }
-          : undefined,
-      )
-    : { env: {}, secretKeys: new Set<string>(), manifest: [] };
-  if (Object.keys(routineEnvResolution.env).length > 0) {
-    resolvedConfig.env = {
-      ...parseObject(resolvedConfig.env),
-      ...routineEnvResolution.env,
-    };
-    for (const key of routineEnvResolution.secretKeys) {
-      secretKeys.add(key);
+    const routineEnvResolution = routineEnv
+      ? await input.secretsSvc.resolveEnvBindings(
+          input.companyId,
+          routineEnv,
+          input.routineId
+            ? {
+                consumerType: "routine",
+                consumerId: input.routineId,
+                actorType: "agent",
+                actorId: input.agentId ?? null,
+                issueId: input.issueId ?? null,
+                heartbeatRunId: input.heartbeatRunId ?? null,
+                ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
+              }
+            : undefined,
+        )
+      : { env: {}, secretKeys: new Set<string>(), manifest: [] };
+    if (Object.keys(routineEnvResolution.env).length > 0) {
+      resolvedConfig.env = {
+        ...parseObject(resolvedConfig.env),
+        ...routineEnvResolution.env,
+      };
+      for (const key of routineEnvResolution.secretKeys) {
+        secretKeys.add(key);
+      }
     }
+    return {
+      resolvedConfig,
+      secretKeys,
+      secretManifest: [
+        ...(environmentEnvResolution.manifest ?? []),
+        ...(manifest ?? []),
+        ...(projectEnvResolution.manifest ?? []),
+        ...(routineEnvResolution.manifest ?? []),
+      ],
+    };
+  } catch (err) {
+    if (isUnconfiguredSecretProviderRuntimeError(err)) {
+      throw configurationIncompleteFromSecretProviderError({
+        error: err,
+        companyId: input.companyId,
+        agentId: input.agentId ?? null,
+        issueId: input.issueId ?? null,
+        projectId: input.projectId ?? null,
+        routineId: input.routineId ?? null,
+      });
+    }
+    throw err;
   }
-  return {
-    resolvedConfig,
-    secretKeys,
-    secretManifest: [
-      ...(environmentEnvResolution.manifest ?? []),
-      ...(manifest ?? []),
-      ...(projectEnvResolution.manifest ?? []),
-      ...(routineEnvResolution.manifest ?? []),
-    ],
-  };
 }
 
 export function extractMentionedSkillIdsFromSources(
