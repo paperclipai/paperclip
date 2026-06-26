@@ -768,6 +768,22 @@ registry.registerPath({
       deploymentMode: z.string().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
+      serverInfo: z.object({
+        processStartedAt: z.string().datetime(),
+        git: z.union([
+          z.object({
+            available: z.literal(true),
+            fullSha: z.string(),
+            shortSha: z.string(),
+            subject: z.string(),
+            committedAt: z.string().datetime().nullable(),
+          }).strict(),
+          z.object({
+            available: z.literal(false),
+            unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
+          }).strict(),
+        ]),
+      }).strict().optional(),
     })),
     503: { description: "Service unavailable", content: { "application/json": { schema: ErrorSchema } } },
   },

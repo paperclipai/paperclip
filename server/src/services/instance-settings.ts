@@ -54,6 +54,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
       enableCloudSync: parsed.data.enableCloudSync ?? false,
       enableExternalObjects: parsed.data.enableExternalObjects ?? false,
+      enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
       issueGraphLivenessAutoRecoveryLookbackHours:
@@ -72,6 +73,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableExperimentalFileViewer: false,
     enableCloudSync: false,
     enableExternalObjects: false,
+    enableServerInfoDebugView: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours:

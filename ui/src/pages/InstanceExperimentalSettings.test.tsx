@@ -44,6 +44,8 @@ const STREAMLINED_TOGGLE_SELECTOR =
   'button[aria-label="Toggle streamlined left navigation experimental setting"]';
 const TASK_WATCHDOGS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task watchdogs experimental setting"]';
+const SERVER_INFO_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle server info debug view experimental setting"]';
 
 function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
@@ -57,6 +59,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableExternalObjects: false,
     enableTaskWatchdogs: false,
     enableCloudSync: false,
+    enableServerInfoDebugView: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -200,5 +203,27 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
       enableTaskWatchdogs: false,
     });
+  });
+
+  it("renders and patches the Server Info Debug View experimental toggle", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Server Info Debug View");
+    expect(container.textContent).toContain(
+      'Show a "Server" section in the account drawer with the current server restart time and running commit.',
+    );
+
+    const toggle = container.querySelector<HTMLButtonElement>(SERVER_INFO_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableServerInfoDebugView: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 });
