@@ -144,6 +144,43 @@ describe("execute", () => {
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 
+  it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "http://127.0.0.1:9119/api/v1/runs") {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url === "http://127.0.0.1:9119/api/v1/runs/run-hermes-1/events") {
+        return new Response(
+          sseStream(
+            [
+              "event: run.completed",
+              "data: {\"status\":\"completed\",\"output\":\"done\"}",
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:9119",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(
+      expect.arrayContaining([
+        "http://127.0.0.1:9119/api/v1/runs",
+        "http://127.0.0.1:9119/api/v1/runs/run-hermes-1/events",
+      ]),
+    );
+  });
+
   it("redacts echoed auth material from stream logs and summaries", async () => {
     const ctx = makeCtx({
       apiBaseUrl: "http://127.0.0.1:8642",
@@ -464,6 +501,26 @@ describe("testEnvironment", () => {
           message: "Hermes Gateway health endpoint returned HTTP 401.",
         }),
       ]),
+    );
+  });
+
+  it("tests a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "hermes_gateway",
+      config: {
+        apiBaseUrl: "http://127.0.0.1:9119",
+        apiKey: "secret-key",
+      },
+    });
+
+    expect(result.status).toBe("pass");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:9119/api/health",
+      expect.objectContaining({ method: "GET" }),
     );
   });
 });

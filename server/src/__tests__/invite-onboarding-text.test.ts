@@ -62,6 +62,8 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain("hermes_local");
     expect(text).toContain("Hermes-originated Paperclip API usage");
     expect(text).toContain("http://127.0.0.1:8642");
+    expect(text).toContain("http://127.0.0.1:9119");
+    expect(text).toContain("maps to /api");
     expect(text).toContain("http://192.168.1.25:8642");
     expect(text).toContain("tailnet-name.ts.net:8642");
     expect(text).toContain("http://host.docker.internal:8642");

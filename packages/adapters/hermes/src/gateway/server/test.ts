@@ -17,14 +17,25 @@ function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentT
   return "pass";
 }
 
+const DEFAULT_HERMES_DASHBOARD_PORT = "9119";
+
 function normalizeBaseUrl(value: string): URL | null {
   try {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    const hasExplicitPath = url.pathname !== "" && url.pathname !== "/";
+    if (!hasExplicitPath && url.port === DEFAULT_HERMES_DASHBOARD_PORT) {
+      url.pathname = "/api";
+    }
     return url;
   } catch {
     return null;
   }
+}
+
+function apiUrl(baseUrl: URL, path: string): string {
+  const base = baseUrl.toString().replace(/\/+$/, "");
+  return `${base}${path}`;
 }
 
 function errorDetail(err: unknown): string {
@@ -105,7 +116,7 @@ export async function testEnvironment(
   }
 
   try {
-    const healthUrl = new URL("/health", parsed);
+    const healthUrl = apiUrl(parsed, "/health");
     const response = await fetch(healthUrl, {
       method: "GET",
       headers: {

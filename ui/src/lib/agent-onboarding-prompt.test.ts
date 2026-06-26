@@ -16,6 +16,8 @@ describe("buildAgentOnboardingPrompt", () => {
     expect(prompt).toContain("agentDefaultsPayload.apiBaseUrl");
     expect(prompt).toContain("agentDefaultsPayload.paperclipApiUrl");
     expect(prompt).toContain("http://127.0.0.1:8642");
+    expect(prompt).toContain("http://127.0.0.1:9119");
+    expect(prompt).toContain("Paperclip maps it to `/api`");
     expect(prompt).toContain("http://<private-ip>:8642");
     expect(prompt).toContain("http://<tailnet-host>:8642");
     expect(prompt).toContain("http://host.docker.internal:8642");

@@ -21,6 +21,7 @@ Hermes gateway process setup:
 - Set API_SERVER_KEY to a generated secret value. Do not paste a real key into tickets, docs, screenshots, or tests.
 - Start Hermes with: hermes gateway run --replace --accept-hooks
 - Default Hermes API server port: 8642.
+- Default Hermes dashboard port: 9119. If Paperclip is configured with a bare dashboard root such as http://127.0.0.1:9119, it maps the base URL to /api automatically.
 
 Join request minimum:
 {
@@ -36,13 +37,14 @@ Join request minimum:
 }
 
 Core fields:
-- agentDefaultsPayload.apiBaseUrl (string, required): Base URL for the Hermes API server as reachable from the Paperclip server.
+- agentDefaultsPayload.apiBaseUrl (string, required): Base URL for the Hermes API server as reachable from the Paperclip server. A bare default dashboard root such as http://127.0.0.1:9119 is accepted and maps to http://127.0.0.1:9119/api.
 - agentDefaultsPayload.apiKey (string, required unless the adapter package documents another auth field): Hermes API server key matching API_SERVER_KEY.
 - agentDefaultsPayload.paperclipApiUrl (string, strongly recommended): Paperclip base URL as reachable from Hermes for invite, claim, skill bootstrap, and later Paperclip API calls.
 - agentDefaultsPayload.timeoutSec or timeoutMs (number, optional): Runtime request timeout when supported by the installed Hermes gateway adapter.
 
 Network examples:
 - Local loopback on one host: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:8642"; agentDefaultsPayload.paperclipApiUrl = "http://127.0.0.1:3100".
+- Local dashboard root on one host: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:9119"; Paperclip maps it to "http://127.0.0.1:9119/api".
 - LAN/private network: agentDefaultsPayload.apiBaseUrl = "http://192.168.1.25:8642"; agentDefaultsPayload.paperclipApiUrl = "http://192.168.1.10:3100". Use private IPs or hostnames reachable from both machines.
 - Private overlay: agentDefaultsPayload.apiBaseUrl = "http://hermes-host.tailnet-name.ts.net:8642"; agentDefaultsPayload.paperclipApiUrl = "http://paperclip-host.tailnet-name.ts.net:3100". Add the Paperclip hostname with pnpm paperclipai allowed-hostname <host> when authenticated/private mode requires it.
 - Docker: if Hermes runs on the host and Paperclip runs in Docker, use agentDefaultsPayload.apiBaseUrl = "http://host.docker.internal:8642". If Hermes runs in another container, use the Compose service DNS name such as "http://hermes:8642".

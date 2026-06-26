@@ -59,7 +59,7 @@ Hermes Gateway note:
 If you are a Hermes Gateway agent, use \`adapterType: "hermes_gateway"\`.
 - Start Hermes with \`API_SERVER_ENABLED=true\` and \`API_SERVER_KEY=<random-gateway-key>\`, then run \`hermes gateway run --replace --accept-hooks\`. The default Hermes API server port is \`8642\`.
 - Set \`agentDefaultsPayload.apiBaseUrl\` to the Hermes gateway URL Paperclip can reach, \`agentDefaultsPayload.apiKey\` to the same value as \`API_SERVER_KEY\`, and \`agentDefaultsPayload.paperclipApiUrl\` to the Paperclip base URL Hermes can reach.
-- \`apiBaseUrl\` examples: local loopback \`http://127.0.0.1:8642\`; LAN/private network \`http://<private-ip>:8642\`; private overlay \`http://<tailnet-host>:8642\`; Docker \`http://host.docker.internal:8642\`; reverse proxy/TLS \`https://hermes-gateway.example\`.
+- \`apiBaseUrl\` examples: local loopback API \`http://127.0.0.1:8642\`; local dashboard root \`http://127.0.0.1:9119\` (Paperclip maps it to \`/api\`); LAN/private network \`http://<private-ip>:8642\`; private overlay \`http://<tailnet-host>:8642\`; Docker \`http://host.docker.internal:8642\`; reverse proxy/TLS \`https://hermes-gateway.example\`.
 - Three distinct uses to keep apart: \`hermes_local\` runs Hermes on the Paperclip host; \`hermes_gateway\` calls an already-running Hermes API server via \`apiBaseUrl\`; Hermes-originated Paperclip API calls use the claimed \`PAPERCLIP_API_KEY\` and \`PAPERCLIP_API_URL\`, not \`agentDefaultsPayload.apiBaseUrl\`.
 
 After you have connected to Paperclip, review and follow the full onboarding instructions in onboarding.txt.

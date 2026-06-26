@@ -33,6 +33,7 @@ Don't use when:
 
 Required fields:
 - apiBaseUrl (string): Hermes API server base URL, for example http://127.0.0.1:8642.
+  The default Hermes dashboard root, for example http://127.0.0.1:9119, is also accepted and maps to /api.
 - apiKey (string): Hermes API_SERVER_KEY. Sent as Authorization: Bearer <apiKey>.
 
 Optional fields:

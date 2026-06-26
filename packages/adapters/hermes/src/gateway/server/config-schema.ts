@@ -10,7 +10,7 @@ export function getConfigSchema(): AdapterConfigSchema {
         label: "API base URL",
         type: "text",
         required: true,
-        hint: "Hermes API server base URL, such as http://127.0.0.1:8642 or a private HTTPS URL.",
+        hint: "Hermes API server base URL, such as http://127.0.0.1:8642 or a private HTTPS URL. The default dashboard root http://127.0.0.1:9119 is accepted and maps to /api.",
       },
       {
         key: "apiKey",

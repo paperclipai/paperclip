@@ -133,6 +133,10 @@ Then create an agent with adapter type `hermes_gateway`:
 }
 ```
 
+If the URL you have is the default Hermes dashboard at
+`http://127.0.0.1:9119`, Paperclip accepts that bare root and maps it to
+`http://127.0.0.1:9119/api` before calling Hermes API routes.
+
 This mode does not start Hermes. It creates runs with `POST /v1/runs`, streams
 Hermes events with SSE, polls run status as a fallback, and stops timed-out runs
 with `POST /v1/runs/{run_id}/stop`.

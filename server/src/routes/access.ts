@@ -290,6 +290,8 @@ type JoinDiagnostic = {
   hint?: string;
 };
 
+const DEFAULT_HERMES_DASHBOARD_PORT = "9119";
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -303,6 +305,15 @@ function isLoopbackHost(hostname: string): boolean {
     value === "127.0.0.1" ||
     /^127(?:\.\d{1,3}){3}$/.test(value)
   );
+}
+
+function normalizeHermesGatewayApiBaseUrl(url: URL): URL {
+  const normalized = new URL(url.toString());
+  const hasExplicitPath = normalized.pathname !== "" && normalized.pathname !== "/";
+  if (!hasExplicitPath && normalized.port === DEFAULT_HERMES_DASHBOARD_PORT) {
+    normalized.pathname = "/api";
+  }
+  return normalized;
 }
 
 function normalizeHostname(value: string | null | undefined): string | null {
@@ -703,12 +714,12 @@ export function normalizeAgentDefaultsForJoin(input: {
         code: "hermes_gateway_api_base_url_missing",
         level: "warn",
         message: "Hermes gateway apiBaseUrl is missing.",
-        hint: "Set agentDefaultsPayload.apiBaseUrl to the Hermes API server URL.",
+        hint: "Set agentDefaultsPayload.apiBaseUrl to the Hermes API server URL. The default dashboard root http://127.0.0.1:9119 is accepted and maps to /api.",
       });
       fatalErrors.push("agentDefaultsPayload.apiBaseUrl is required");
     } else {
       try {
-        const apiBaseUrl = new URL(rawApiBaseUrl);
+        const apiBaseUrl = normalizeHermesGatewayApiBaseUrl(new URL(rawApiBaseUrl));
         if (apiBaseUrl.protocol !== "http:" && apiBaseUrl.protocol !== "https:") {
           diagnostics.push({
             code: "hermes_gateway_api_base_url_protocol",
@@ -1695,7 +1706,7 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your API key. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token. Hermes Gateway agents must use adapterType='hermes_gateway', start Hermes with API_SERVER_ENABLED=true, API_SERVER_KEY, and `hermes gateway run --replace --accept-hooks`, then set agentDefaultsPayload.apiBaseUrl and agentDefaultsPayload.paperclipApiUrl.",
+        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your API key. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. OpenClaw Gateway agents must use adapterType='hermes_gateway', start Hermes with API_SERVER_ENABLED=true, API_SERVER_KEY, and `hermes gateway run --replace --accept-hooks`, then set agentDefaultsPayload.apiBaseUrl and agentDefaultsPayload.paperclipApiUrl. If you use the default Hermes dashboard root on port 9119, Paperclip maps it to /api automatically. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token.",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: null,
       requiredFields: {
@@ -1705,7 +1716,7 @@ function buildInviteOnboardingManifest(
           "Adapter type for this runtime. Use 'openclaw_gateway' only for OpenClaw Gateway agents. Use 'hermes_gateway' only for Hermes Gateway agents.",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Runtime-specific adapter config. OpenClaw Gateway agents must include url (ws:// or wss://) and headers.x-openclaw-token. Hermes Gateway agents must include apiBaseUrl, API_SERVER_KEY-backed auth, and paperclipApiUrl. Other runtimes should include the config their adapter expects."
+          "Runtime-specific adapter config. OpenClaw Gateway agents must include url (ws:// or wss://) and headers.x-openclaw-token. Hermes Gateway agents must include apiBaseUrl, API_SERVER_KEY-backed auth, and paperclipApiUrl. A default Hermes dashboard root such as http://127.0.0.1:9119 is accepted and maps to /api. Other runtimes should include the config their adapter expects."
       },
       registrationEndpoint: {
         method: "POST",
@@ -1860,6 +1871,7 @@ export function buildInviteOnboardingTextDocument(
     - Run: hermes gateway run --replace --accept-hooks
     - Default Hermes API server port: 8642.
     - Set agentDefaultsPayload.apiBaseUrl to the Hermes gateway URL Paperclip can reach.
+    - If you only have the default Hermes dashboard URL, http://127.0.0.1:9119 is accepted and maps to /api automatically.
     - Set agentDefaultsPayload.paperclipApiUrl to the Paperclip base URL Hermes can reach.
     - Use hermes_local when Paperclip should start Hermes on the Paperclip host.
     - Use hermes_gateway when Paperclip should call an already-running Hermes API server.
@@ -1879,7 +1891,8 @@ export function buildInviteOnboardingTextDocument(
     }
 
     Hermes Gateway network examples:
-    - Local loopback: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:8642" and agentDefaultsPayload.paperclipApiUrl = "http://127.0.0.1:3100".
+    - Local loopback API server: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:8642" and agentDefaultsPayload.paperclipApiUrl = "http://127.0.0.1:3100".
+    - Local loopback dashboard root: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:9119"; Paperclip maps it to "http://127.0.0.1:9119/api".
     - LAN/private network: use reachable private addresses, for example agentDefaultsPayload.apiBaseUrl = "http://192.168.1.25:8642" and agentDefaultsPayload.paperclipApiUrl = "http://192.168.1.10:3100".
     - Private overlay: use overlay DNS names, for example agentDefaultsPayload.apiBaseUrl = "http://hermes-host.tailnet-name.ts.net:8642" and agentDefaultsPayload.paperclipApiUrl = "http://paperclip-host.tailnet-name.ts.net:3100".
     - Docker: if Paperclip runs in Docker and Hermes runs on the host, use agentDefaultsPayload.apiBaseUrl = "http://host.docker.internal:8642"; if both run in Compose, use the Hermes service name.
