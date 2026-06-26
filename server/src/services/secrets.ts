@@ -1017,6 +1017,7 @@ export function secretService(db: Db) {
           operation: "adapter_config_secret.create_rollback",
         }).catch(() => false);
       }
+      await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
       await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
       throw error;
     }
@@ -2020,9 +2021,11 @@ export function secretService(db: Db) {
             operation: "create.prepare_rollback",
           });
           if (cleaned) {
+            await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
             await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
           }
         } else {
+          await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
           await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
         }
         throw error;
@@ -2065,9 +2068,11 @@ export function secretService(db: Db) {
             operation: "create.rollback",
           });
           if (cleaned) {
+            await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
             await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
           }
         } else {
+          await db.delete(companySecretVersions).where(eq(companySecretVersions.secretId, reservedSecret.id)).catch(() => undefined);
           await db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)).catch(() => undefined);
         }
         throw error;

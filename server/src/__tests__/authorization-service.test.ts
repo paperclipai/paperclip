@@ -1291,5 +1291,18 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       reason: "deny_scope",
     });
+
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:read",
+      resource: {
+        type: "agent",
+        companyId: company.id,
+        agentId: bridgeAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
   });
 });

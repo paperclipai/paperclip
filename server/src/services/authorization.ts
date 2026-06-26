@@ -931,7 +931,7 @@ export function authorizationService(db: Db) {
         : denyBridge("Task bridge key can only access assigned or bridge-created issues.");
     }
 
-    return null;
+    return denyBridge("Task bridge key cannot use this API action.");
   }
 
   async function assignmentTargetIsInCompany(resource: AuthorizationResource) {
