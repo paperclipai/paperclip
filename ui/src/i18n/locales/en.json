@@ -903,5 +903,40 @@
       "viewer": "Can view company work and follow along.",
       "admin": "Full company access, including membership management."
     }
+  },
+  "adapterManager": {
+    "toasts": {
+      "installed": "Adapter installed",
+      "reinstalled": "Adapter reinstalled",
+      "reloaded": "Adapter reloaded",
+      "removed": "Adapter removed",
+      "installFailed": "Install failed",
+      "overrideToggleFailed": "Override toggle failed",
+      "reinstallFailed": "Reinstall failed",
+      "reloadFailed": "Reload failed",
+      "removalFailed": "Removal failed",
+      "toggleFailed": "Toggle failed"
+    },
+    "text": {
+      "adapters": "Adapters",
+      "cancel": "Cancel",
+      "current": "Current",
+      "externalAdapters": "External Adapters",
+      "externalAlpha": "External adapters are alpha.",
+      "installExternal": "Install External Adapter",
+      "latestOnNpm": "Latest on npm",
+      "loadingAdapters": "Loading adapters...",
+      "noExternalInstalled": "No external adapters installed",
+      "package": "Package",
+      "packageName": "Package Name",
+      "pathToPackage": "Path to adapter package",
+      "reinstallAdapter": "Reinstall Adapter",
+      "removeAdapter": "Remove Adapter"
+    },
+    "tabs": {
+      "adapters": "Adapters",
+      "instanceSettings": "Instance settings",
+      "settings": "Settings"
+    }
   }
 }

@@ -903,5 +903,40 @@
       "viewer": "可查看公司工作并跟进。",
       "admin": "完全公司访问权限,包括成员管理。"
     }
+  },
+  "adapterManager": {
+    "toasts": {
+      "installed": "适配器已安装",
+      "reinstalled": "适配器已重装",
+      "reloaded": "适配器已重载",
+      "removed": "适配器已移除",
+      "installFailed": "安装失败",
+      "overrideToggleFailed": "覆盖切换失败",
+      "reinstallFailed": "重装失败",
+      "reloadFailed": "重载失败",
+      "removalFailed": "移除失败",
+      "toggleFailed": "切换失败"
+    },
+    "text": {
+      "adapters": "适配器",
+      "cancel": "取消",
+      "current": "当前",
+      "externalAdapters": "外部适配器",
+      "externalAlpha": "外部适配器为 Alpha 阶段。",
+      "installExternal": "安装外部适配器",
+      "latestOnNpm": "npm 最新版",
+      "loadingAdapters": "正在加载适配器……",
+      "noExternalInstalled": "未安装外部适配器",
+      "package": "包",
+      "packageName": "包名称",
+      "pathToPackage": "适配器包路径",
+      "reinstallAdapter": "重装适配器",
+      "removeAdapter": "移除适配器"
+    },
+    "tabs": {
+      "adapters": "适配器",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    }
   }
 }

@@ -903,5 +903,40 @@
       "viewer": "可檢視公司工作並跟進。",
       "admin": "完整公司存取權限,包括成員管理。"
     }
+  },
+  "adapterManager": {
+    "toasts": {
+      "installed": "介接器已安裝",
+      "reinstalled": "介接器已重裝",
+      "reloaded": "介接器已重載",
+      "removed": "介接器已移除",
+      "installFailed": "安裝失敗",
+      "overrideToggleFailed": "覆寫切換失敗",
+      "reinstallFailed": "重裝失敗",
+      "reloadFailed": "重載失敗",
+      "removalFailed": "移除失敗",
+      "toggleFailed": "切換失敗"
+    },
+    "text": {
+      "adapters": "介接器",
+      "cancel": "取消",
+      "current": "目前",
+      "externalAdapters": "外部介接器",
+      "externalAlpha": "外部介接器為 Alpha 階段。",
+      "installExternal": "安裝外部介接器",
+      "latestOnNpm": "npm 最新版",
+      "loadingAdapters": "正在載入介接器……",
+      "noExternalInstalled": "未安裝外部介接器",
+      "package": "包",
+      "packageName": "包名稱",
+      "pathToPackage": "介接器包路徑",
+      "reinstallAdapter": "重裝介接器",
+      "removeAdapter": "移除介接器"
+    },
+    "tabs": {
+      "adapters": "介接器",
+      "instanceSettings": "實例設定",
+      "settings": "設定"
+    }
   }
 }
