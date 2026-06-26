@@ -51,6 +51,15 @@ import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 
 const execFileAsync = promisify(execFile);
+
+// On Windows the npm launcher is `npm.cmd`, which `execFile` cannot spawn
+// without a shell (it is not a PE executable) — doing so throws
+// `spawn npm ENOENT`. Resolve the platform-correct binary and run it through
+// the shell only on Windows so `.cmd` scripts are launched correctly.
+const IS_WINDOWS = os.platform() === "win32";
+const NPM_BIN = IS_WINDOWS ? "npm.cmd" : "npm";
+const NPM_EXEC_OPTS = IS_WINDOWS ? { shell: true } : {};
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, "../../..");
 export const BUNDLED_LOCAL_PLUGIN_ROOT = path.join(REPO_ROOT, "packages", "plugins");
@@ -1171,9 +1180,9 @@ export function pluginLoader(
         // --ignore-scripts prevents preinstall/install/postinstall hooks from
         // executing arbitrary code on the host before manifest validation.
         await execFileAsync(
-          "npm",
+          NPM_BIN,
           ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
-          { timeout: 120_000 }, // 2 minute timeout for npm install
+          { timeout: 120_000, ...NPM_EXEC_OPTS }, // 2 minute timeout for npm install
         );
       } catch (err) {
         throw new Error(`npm install failed for ${spec}: ${String(err)}`);
@@ -1813,9 +1822,9 @@ export function pluginLoader(
       if (existsSync(packageJsonPath)) {
         try {
           await execFileAsync(
-            "npm",
+            NPM_BIN,
             ["uninstall", plugin.packageName, "--prefix", localPluginDir, "--ignore-scripts"],
-            { timeout: 120_000 },
+            { timeout: 120_000, ...NPM_EXEC_OPTS },
           );
         } catch (err) {
           log.warn(
