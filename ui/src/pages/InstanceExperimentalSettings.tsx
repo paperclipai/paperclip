@@ -244,6 +244,7 @@ export function InstanceExperimentalSettings() {
   const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
+  const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
@@ -497,6 +498,27 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableCloudSync: !enableCloudSync })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle cloud sync experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Server Info Debug View</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show a "Server" section in the account drawer with the current server restart time and running commit.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableServerInfoDebugView}
+            onCheckedChange={() =>
+              toggleMutation.mutate({
+                enableServerInfoDebugView: !enableServerInfoDebugView,
+              })
+            }
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle server info debug view experimental setting"
           />
         </div>
       </section>

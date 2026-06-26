@@ -919,6 +919,8 @@ export type {
   CloudUpstreamWarning,
 } from "./types/cloud-upstream.js";
 
+export type { ServerGitInfo, ServerInfoSnapshot } from "./types/server-info.js";
+
 export {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
