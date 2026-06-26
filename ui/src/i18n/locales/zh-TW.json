@@ -218,7 +218,8 @@
       "inbox": "選擇一家公司以檢視收件匣。",
       "costs": "選擇一家公司以檢視成本。",
       "skills": "選擇一家公司以管理技能。",
-      "secrets": "選擇一家公司以管理密鑰。"
+      "secrets": "選擇一家公司以管理密鑰。",
+      "workspace": "選擇一家公司以管理工作區。"
     },
     "sort": {
       "name": "名稱",
@@ -652,6 +653,48 @@
     "placeholders": {
       "searchAgents": "搜尋智慧代理……",
       "searchTeams": "搜尋團隊"
+    }
+  },
+  "executionWorkspace": {
+    "toasts": {
+      "runFailed": "排程运行失敗",
+      "started": "排程已启动"
+    },
+    "errors": {
+      "buildUpdate": "构建工作區更新失敗。",
+      "controlCommands": "控制工作區命令失敗。",
+      "loadRoutines": "載入排程失敗。",
+      "loadWorkspace": "載入工作區失敗",
+      "saveWorkspace": "儲存執行工作區失敗。",
+      "invalidJson": "JSON 格式無效。",
+      "startRun": "Paperclip 無法启动排程运行。"
+    },
+    "labels": {
+      "baseRef": "基礎引用",
+      "branch": "分支",
+      "branchName": "分支名稱",
+      "cleanup": "清理",
+      "cleanupCommand": "清理命令",
+      "derivedFrom": "衍生自",
+      "lastUsed": "上次使用",
+      "opened": "已開啟",
+      "project": "專案",
+      "projectWorkspace": "專案工作區",
+      "providerPathRef": "提供商路徑/引用",
+      "providerRef": "提供商引用",
+      "provisionCommand": "佈建命令",
+      "repoUrl": "倉庫 URL",
+      "sourceTask": "來源任务",
+      "teardownCommand": "拆除命令",
+      "workingDir": "工作目錄",
+      "workingDirectory": "工作目錄",
+      "workspaceCommandsJson": "工作區命令 JSON",
+      "workspaceId": "工作區 ID",
+      "workspaceName": "工作區名稱"
+    },
+    "placeholders": {
+      "workspaceName": "執行工作區名稱",
+      "paperclipWorkspace": "PAP-946-工作區"
     }
   }
 }

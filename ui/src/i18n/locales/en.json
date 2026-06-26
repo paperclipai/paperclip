@@ -192,7 +192,8 @@
       "inbox": "Select a company to view inbox.",
       "costs": "Select a company to view costs.",
       "skills": "Select a company to manage skills.",
-      "secrets": "Select a company to manage secrets."
+      "secrets": "Select a company to manage secrets.",
+      "workspace": "Select a company to manage execution workspaces."
     },
     "sort": {
       "name": "Name",
@@ -652,6 +653,48 @@
     "placeholders": {
       "searchAgents": "Search agents…",
       "searchTeams": "Search teams"
+    }
+  },
+  "executionWorkspace": {
+    "toasts": {
+      "runFailed": "Routine run failed",
+      "started": "Routine started"
+    },
+    "errors": {
+      "buildUpdate": "Failed to build workspace update.",
+      "controlCommands": "Failed to control workspace commands.",
+      "loadRoutines": "Failed to load routines.",
+      "loadWorkspace": "Failed to load workspace",
+      "saveWorkspace": "Failed to save execution workspace.",
+      "invalidJson": "Invalid JSON.",
+      "startRun": "Paperclip could not start the routine run."
+    },
+    "labels": {
+      "baseRef": "Base ref",
+      "branch": "Branch",
+      "branchName": "Branch name",
+      "cleanup": "Cleanup",
+      "cleanupCommand": "Cleanup command",
+      "derivedFrom": "Derived from",
+      "lastUsed": "Last used",
+      "opened": "Opened",
+      "project": "Project",
+      "projectWorkspace": "Project workspace",
+      "providerPathRef": "Provider path / ref",
+      "providerRef": "Provider ref",
+      "provisionCommand": "Provision command",
+      "repoUrl": "Repo URL",
+      "sourceTask": "Source task",
+      "teardownCommand": "Teardown command",
+      "workingDir": "Working dir",
+      "workingDirectory": "Working directory",
+      "workspaceCommandsJson": "Workspace commands JSON",
+      "workspaceId": "Workspace ID",
+      "workspaceName": "Workspace name"
+    },
+    "placeholders": {
+      "workspaceName": "Execution workspace name",
+      "paperclipWorkspace": "PAP-946-workspace"
     }
   }
 }
