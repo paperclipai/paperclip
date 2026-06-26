@@ -484,6 +484,72 @@ describeEmbeddedPostgres("pipelineService", () => {
     expect(events.map((event) => event.type)).toContain("blockers_resolved");
   });
 
+  it("emits blockers_resolved once for each fresh blocker set", async () => {
+    const { company, pipeline } = await seedPipeline();
+    const blocked = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "blocked-again",
+      title: "Blocked again",
+      actor: userActor,
+    });
+    const firstBlocker = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "first-blocker",
+      title: "First blocker",
+      actor: userActor,
+    });
+    const secondBlocker = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "second-blocker",
+      title: "Second blocker",
+      actor: userActor,
+    });
+    const workIssue = await seedLinkedIssue({
+      companyId: company.id,
+      caseId: blocked.case.id,
+      role: "work",
+      title: "Blocked work",
+    });
+
+    await svc.replaceBlockers({
+      companyId: company.id,
+      caseId: blocked.case.id,
+      blockedByCaseIds: [firstBlocker.case.id],
+      actor: userActor,
+    });
+    await svc.transitionCase({
+      companyId: company.id,
+      caseId: firstBlocker.case.id,
+      toStageKey: "done",
+      expectedVersion: 1,
+      actor: userActor,
+    });
+
+    await svc.replaceBlockers({
+      companyId: company.id,
+      caseId: blocked.case.id,
+      blockedByCaseIds: [secondBlocker.case.id],
+      actor: userActor,
+    });
+    await svc.transitionCase({
+      companyId: company.id,
+      caseId: secondBlocker.case.id,
+      toStageKey: "done",
+      expectedVersion: 1,
+      actor: userActor,
+    });
+
+    const events = await svc.listCaseEvents(company.id, blocked.case.id);
+    expect(events.filter((event) => event.type === "blockers_resolved")).toHaveLength(2);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, workIssue.id));
+    expect(comments).toHaveLength(2);
+    expect(comments.map((comment) => comment.body).join("\n")).toContain(firstBlocker.case.id);
+    expect(comments.map((comment) => comment.body).join("\n")).toContain(secondBlocker.case.id);
+  });
+
   it("keeps cancelled blockers unsatisfied until replaced", async () => {
     const { company, pipeline } = await seedPipeline();
     const blocked = await svc.ingestCase({

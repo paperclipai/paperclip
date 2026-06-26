@@ -1660,11 +1660,23 @@ async function computeCaseRollup(db: PipelineDb, companyId: string, caseId: stri
   return { total: descendants.length, done, cancelled, open, complete: open === 0 };
 }
 
-async function hasCaseEvent(db: PipelineDb, caseId: string, type: string) {
+async function hasBlockersResolvedForLatestBlockerSet(db: PipelineDb, caseId: string) {
+  const latestBlockersSet = await db
+    .select({ createdAt: pipelineCaseEvents.createdAt })
+    .from(pipelineCaseEvents)
+    .where(and(eq(pipelineCaseEvents.caseId, caseId), eq(pipelineCaseEvents.type, "blockers_set")))
+    .orderBy(desc(pipelineCaseEvents.createdAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
   const row = await db
     .select({ id: pipelineCaseEvents.id })
     .from(pipelineCaseEvents)
-    .where(and(eq(pipelineCaseEvents.caseId, caseId), eq(pipelineCaseEvents.type, type)))
+    .where(and(
+      eq(pipelineCaseEvents.caseId, caseId),
+      eq(pipelineCaseEvents.type, "blockers_resolved"),
+      latestBlockersSet ? sql`${pipelineCaseEvents.createdAt} > ${latestBlockersSet.createdAt.toISOString()}` : undefined,
+    ))
     .limit(1)
     .then((rows) => rows[0] ?? null);
   return Boolean(row);
@@ -1921,7 +1933,7 @@ async function handleBlockersResolved(db: PipelineDb, companyId: string, blocker
         eq(pipelineCaseBlockers.caseId, blocked.caseId),
         or(isNull(pipelineCases.terminalKind), ne(pipelineCases.terminalKind, "done")),
       ));
-    if ((count ?? 0) > 0 || await hasCaseEvent(db, blocked.caseId, "blockers_resolved")) continue;
+    if ((count ?? 0) > 0 || await hasBlockersResolvedForLatestBlockerSet(db, blocked.caseId)) continue;
     await writeCaseEvent(db, {
       companyId,
       caseId: blocked.caseId,
