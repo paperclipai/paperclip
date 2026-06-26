@@ -27,6 +27,18 @@ function normalizeBaseUrl(value: string): URL | null {
   }
 }
 
+function errorDetail(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error ? (err as { cause?: unknown }).cause : null;
+  if (!cause || typeof cause !== "object") return message;
+
+  const causeRecord = cause as { code?: unknown; message?: unknown };
+  const causeMessage = typeof causeRecord.message === "string" ? causeRecord.message : "";
+  const causeCode = typeof causeRecord.code === "string" ? causeRecord.code : "";
+  if (!causeMessage || causeMessage === message) return causeCode ? `${message} (${causeCode})` : message;
+  return causeCode ? `${message} (${causeCode}: ${causeMessage})` : `${message} (${causeMessage})`;
+}
+
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -104,17 +116,21 @@ export async function testEnvironment(
     });
     checks.push({
       code: response.ok ? "hermes_gateway_health_ok" : "hermes_gateway_health_failed",
-      level: response.ok ? "info" : "warn",
+      level: response.ok ? "info" : "error",
       message: response.ok
         ? "Hermes Gateway health endpoint is reachable."
         : `Hermes Gateway health endpoint returned HTTP ${response.status}.`,
+      hint: response.ok
+        ? undefined
+        : "Check apiBaseUrl, API_SERVER_KEY, and that the Hermes API server is reachable from Paperclip.",
     });
   } catch (err) {
     checks.push({
       code: "hermes_gateway_health_unreachable",
-      level: "warn",
+      level: "error",
       message: "Could not reach Hermes Gateway health endpoint.",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: errorDetail(err),
+      hint: "Check apiBaseUrl and make sure the Hermes API server is running where Paperclip can reach it.",
     });
   }
 

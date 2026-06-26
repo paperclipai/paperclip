@@ -323,13 +323,24 @@ function classifyHttpError(status: number): { code: string; family: AdapterExecu
   return { code: "hermes_gateway_protocol_error", family: null };
 }
 
+function fetchFailureMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error ? (err as { cause?: unknown }).cause : null;
+  if (!cause || typeof cause !== "object") return message;
+
+  const causeRecord = cause as { code?: unknown; message?: unknown };
+  const causeMessage = typeof causeRecord.message === "string" ? causeRecord.message : "";
+  const causeCode = typeof causeRecord.code === "string" ? causeRecord.code : "";
+  if (!causeMessage || causeMessage === message) return causeCode ? `${message} (${causeCode})` : message;
+  return causeCode ? `${message} (${causeCode}: ${causeMessage})` : `${message} (${causeMessage})`;
+}
+
 async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(input, init);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const fetchErr = new Error(`Hermes gateway request failed: ${message}`) as HermesHttpError;
+    const fetchErr = new Error(`Hermes gateway request failed: ${fetchFailureMessage(err)}`) as HermesHttpError;
     fetchErr.code = "hermes_gateway_connect_failed";
     throw fetchErr;
   }

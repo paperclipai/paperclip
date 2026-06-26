@@ -277,6 +277,24 @@ describe("execute", () => {
     expect(result.errorCode).toBe("hermes_gateway_auth_failed");
   });
 
+  it("includes network causes in connection failure messages", async () => {
+    const cause = Object.assign(new Error("getaddrinfo ENOTFOUND host.docker.internal"), { code: "ENOTFOUND" });
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw Object.assign(new Error("fetch failed"), { cause });
+    }));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://host.docker.internal:8642",
+      apiKey: "secret-key",
+      dangerouslyAllowInsecureRemoteHttp: true,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+    expect(result.errorMessage).toContain("ENOTFOUND");
+    expect(result.errorMessage).toContain("host.docker.internal");
+  });
+
   it("redacts echoed auth material from HTTP error payloads", async () => {
     vi.stubGlobal(
       "fetch",
@@ -395,6 +413,58 @@ describe("testEnvironment", () => {
       ]),
     );
     expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it("fails test environment checks when Hermes health is unreachable", async () => {
+    const cause = Object.assign(new Error("getaddrinfo ENOTFOUND host.docker.internal"), { code: "ENOTFOUND" });
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw Object.assign(new Error("fetch failed"), { cause });
+    }));
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "hermes_gateway",
+      config: {
+        apiBaseUrl: "http://host.docker.internal:8642",
+        apiKey: "secret-key",
+        dangerouslyAllowInsecureRemoteHttp: true,
+      },
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "hermes_gateway_health_unreachable",
+          level: "error",
+          detail: expect.stringContaining("ENOTFOUND"),
+        }),
+      ]),
+    );
+  });
+
+  it("fails test environment checks when Hermes health returns a non-ok status", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("bad key", { status: 401 })));
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "hermes_gateway",
+      config: {
+        apiBaseUrl: "http://127.0.0.1:8642",
+        apiKey: "wrong-key",
+      },
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "hermes_gateway_health_failed",
+          level: "error",
+          message: "Hermes Gateway health endpoint returned HTTP 401.",
+        }),
+      ]),
+    );
   });
 });
 
