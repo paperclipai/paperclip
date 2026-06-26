@@ -217,7 +217,8 @@
       "routines": "選擇一家公司以檢視排程。",
       "inbox": "選擇一家公司以檢視收件匣。",
       "costs": "選擇一家公司以檢視成本。",
-      "skills": "選擇一家公司以管理技能。"
+      "skills": "選擇一家公司以管理技能。",
+      "secrets": "選擇一家公司以管理密鑰。"
     },
     "sort": {
       "name": "名稱",
@@ -542,6 +543,67 @@
     "aria": {
       "paused": "已暫停",
       "pinnedRevision": "釘選源版本"
+    }
+  },
+  "secrets": {
+    "toasts": {
+      "defaultUpdateFailed": "預設更新失敗",
+      "defaultVaultSet": "預設保存庫已設定",
+      "deleteFailed": "刪除失敗",
+      "disableFailed": "停用失敗",
+      "healthChecked": "健康检查完成",
+      "healthCheckFailed": "健康检查失敗",
+      "providerVaultDisabled": "提供商保存庫已停用",
+      "providerVaultRemoved": "提供商保存庫已移除",
+      "removeFailed": "移除失敗",
+      "rotated": "已輪換",
+      "secretCreated": "密鑰已建立",
+      "secretDeleted": "密鑰已刪除",
+      "statusUpdateFailed": "狀態更新失敗"
+    },
+    "errors": {
+      "rotate": "輪換失敗",
+      "tryAgain": "重試"
+    },
+    "labels": {
+      "newSecret": "新建密鑰",
+      "address": "地址",
+      "awsRegion": "AWS 區域",
+      "created": "建立時間",
+      "custody": "託管",
+      "description": "描述",
+      "environmentTag": "環境標籤",
+      "kmsKeyId": "KMS 密鑰 ID",
+      "lastResolved": "上次解析",
+      "lastRotated": "上次輪換",
+      "latestVersion": "最新版本",
+      "location": "位置",
+      "mountPath": "掛載路徑",
+      "namespace": "命名空間",
+      "ownerTag": "擁有者標籤",
+      "projectId": "專案 ID",
+      "provider": "提供商",
+      "providerVault": "提供商保存庫",
+      "searchSecrets": "搜尋密鑰",
+      "secretNamePrefix": "密鑰名前綴",
+      "secretPathPrefix": "密鑰路徑前綴",
+      "updated": "更新時間",
+      "accessEvents": "存取事件",
+      "active": "活躍",
+      "allStatuses": "所有狀態",
+      "archived": "已封存",
+      "details": "詳情",
+      "disabled": "已停用",
+      "providerVaults": "提供商保存庫",
+      "secrets": "密鑰"
+    },
+    "placeholders": {
+      "openaiApiKey": "OPENAI_API_KEY",
+      "pasteNewValue": "貼上新值",
+      "productionLocalVault": "生產環境本地保存庫",
+      "searchByName": "按名称、键、引用搜尋",
+      "storedOnce": "仅存储一次,永不再次顯示",
+      "whatIsThisFor": "此密鑰用于什么?(不含值)"
     }
   }
 }

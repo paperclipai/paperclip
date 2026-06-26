@@ -191,7 +191,8 @@
       "routines": "Select a company to view routines.",
       "inbox": "Select a company to view inbox.",
       "costs": "Select a company to view costs.",
-      "skills": "Select a company to manage skills."
+      "skills": "Select a company to manage skills.",
+      "secrets": "Select a company to manage secrets."
     },
     "sort": {
       "name": "Name",
@@ -542,6 +543,67 @@
     "aria": {
       "paused": "Paused",
       "pinnedRevision": "Pinned source revision"
+    }
+  },
+  "secrets": {
+    "toasts": {
+      "defaultUpdateFailed": "Default update failed",
+      "defaultVaultSet": "Default vault set",
+      "deleteFailed": "Delete failed",
+      "disableFailed": "Disable failed",
+      "healthChecked": "Health checked",
+      "healthCheckFailed": "Health check failed",
+      "providerVaultDisabled": "Provider vault disabled",
+      "providerVaultRemoved": "Provider vault removed",
+      "removeFailed": "Remove failed",
+      "rotated": "Rotated",
+      "secretCreated": "Secret created",
+      "secretDeleted": "Secret deleted",
+      "statusUpdateFailed": "Status update failed"
+    },
+    "errors": {
+      "rotate": "Rotate failed",
+      "tryAgain": "Try again"
+    },
+    "labels": {
+      "newSecret": "New secret",
+      "address": "Address",
+      "awsRegion": "AWS region",
+      "created": "Created",
+      "custody": "Custody",
+      "description": "Description",
+      "environmentTag": "Environment tag",
+      "kmsKeyId": "KMS key id",
+      "lastResolved": "Last resolved",
+      "lastRotated": "Last rotated",
+      "latestVersion": "Latest version",
+      "location": "Location",
+      "mountPath": "Mount path",
+      "namespace": "Namespace",
+      "ownerTag": "Owner tag",
+      "projectId": "Project id",
+      "provider": "Provider",
+      "providerVault": "Provider vault",
+      "searchSecrets": "Search secrets",
+      "secretNamePrefix": "Secret name prefix",
+      "secretPathPrefix": "Secret path prefix",
+      "updated": "Updated",
+      "accessEvents": "Access events",
+      "active": "Active",
+      "allStatuses": "All statuses",
+      "archived": "Archived",
+      "details": "Details",
+      "disabled": "Disabled",
+      "providerVaults": "Provider vaults",
+      "secrets": "Secrets"
+    },
+    "placeholders": {
+      "openaiApiKey": "OPENAI_API_KEY",
+      "pasteNewValue": "Paste the new value",
+      "productionLocalVault": "Production local vault",
+      "searchByName": "Search by name, key, ref",
+      "storedOnce": "Stored once, never re-displayed",
+      "whatIsThisFor": "What is this secret used for? (no values)"
     }
   }
 }
