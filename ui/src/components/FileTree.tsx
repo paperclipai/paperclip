@@ -105,6 +105,7 @@ export function buildFileTree(
 }
 
 export function countFiles(nodes: FileTreeNode[]): number {
+  const { t } = useTranslation();
   let count = 0;
   for (const node of nodes) {
     if (node.kind === "file") count++;
@@ -165,6 +166,7 @@ function checkboxState(node: FileTreeNode, checkedFiles: Set<string>) {
 export type FrontmatterData = Record<string, string | string[]>;
 
 export function parseFrontmatter(content: string): { data: FrontmatterData; body: string } | null {
+  const { t } = useTranslation();
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return null;
 
@@ -258,6 +260,7 @@ export type FileTreeProps = {
 };
 
 export function FileTree({
+  const { t } = useTranslation();
   nodes,
   selectedFile,
   expandedDirs,

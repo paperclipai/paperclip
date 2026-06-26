@@ -7,10 +7,11 @@ interface FinanceKindCardProps {
 }
 
 export function FinanceKindCard({ rows }: FinanceKindCardProps) {
+  const { t } = useTranslation();
   return (
     <Card>
       <CardHeader className="px-4 pt-4 pb-1">
-        <CardTitle className="text-base">Financial event mix</CardTitle>
+        <CardTitle className="text-base">{t("financeKindCard.text.financialEventMix")}</CardTitle>
         <CardDescription>Account-level charges grouped by event kind.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2 px-4 pb-4 pt-3">

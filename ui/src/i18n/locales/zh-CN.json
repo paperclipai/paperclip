@@ -2041,11 +2041,11 @@
   },
   "issueFiltersPopover": {
     "text": {
-      "labels": "标签",
-      "liveRunsOnly": "仅实时运行",
-      "noAssignee": "无负责人",
-      "noCreatorsMatch": "无匹配创建人。",
-      "priority": "优先级"
+      "project": "项目",
+      "quickFilters": "快速筛选",
+      "status": "状态",
+      "visibility": "可见性",
+      "workspace": "工作区"
     }
   },
   "issuesList": {
@@ -2218,21 +2218,9 @@
     }
   },
   "scheduleEditor": {
-    "labelsJsx": {
-      "cronExpression": "Cron 表达式",
-      "scheduleFrequency": "调度频率"
-    },
-    "options": {
-      "custom": "自定义 (cron)",
-      "everyDay": "每天",
-      "everyHour": "每小时",
-      "everyMinute": "每分钟",
-      "monthly": "每月",
-      "weekdays": "工作日",
-      "weekly": "每周"
-    },
-    "placeholders": {
-      "chooseFrequency": "选择频率..."
+    "errors": {
+      "invalidCron": "Cron 字段必须使用有效数字、范围、列表、通配符或步长。",
+      "enterFive": "输入 5 字段 Cron 表达式。"
     }
   },
   "agentActionButtons": {
@@ -2325,17 +2313,13 @@
   },
   "trustPresetSection": {
     "text": {
-      "issue": "任务",
-      "project": "项目",
-      "rootIssue": "根任务",
-      "trust": "信任"
-    },
-    "labelsJsx": {
-      "allowedAgents": "允许的智能体",
-      "allowedSecrets": "允许的密钥",
-      "allowedTools": "允许的工具",
-      "boundaryType": "边界类型",
-      "eeFields": "EE 字段"
+      "rootIssue": "根问题",
+      "explicitIssues": "显式问题",
+      "preset": "预设",
+      "projects": "项目",
+      "promotionTarget": "晋升目标",
+      "rawOutput": "原始输出",
+      "trustPreset": "信任预设"
     }
   },
   "approvalPayload": {
@@ -2356,19 +2340,7 @@
   },
   "agentBubbleActionRow": {
     "text": {
-      "alwaysAllow": "始终允许",
-      "savePreference": "保存你的反馈分享偏好?",
-      "alwaysSavedLocally": "此投票始终仅在本地保存。",
-      "whatBetter": "哪些方面可以改进?"
-    },
-    "labelsJsx": {
-      "copyMessage": "复制消息",
-      "helpful": "有帮助",
-      "moreActions": "更多操作",
-      "needsWork": "需要改进"
-    },
-    "placeholders": {
-      "shortNote": "添加简短备注"
+      "savePreference": "保存你的反馈分享偏好"
     }
   },
   "activityCharts": {
@@ -2495,6 +2467,280 @@
       "owner": "所有者",
       "parentGoal": "父目标",
       "status": "状态"
+    }
+  },
+  "jsonSchemaForm": {
+    "text": {
+      "advancedOptions": "高级选项",
+      "removeItem": "移除项目",
+      "selectExistingSecret": "选择现有密钥",
+      "selectOption": "选择选项"
+    }
+  },
+  "sidebarProjects": {
+    "text": {
+      "alphabetical": "按字母排序",
+      "browseProjects": "浏览项目",
+      "projects": "项目",
+      "recent": "最近"
+    }
+  },
+  "agentConfigPrimitives": {
+    "text": {
+      "option": "选项",
+      "shift": "Shift",
+      "specifyPath": "手动指定路径"
+    }
+  },
+  "markdownBody": {
+    "toasts": {
+      "copyCode": "复制代码"
+    },
+    "errors": {
+      "renderMermaid": "渲染 Mermaid 图表失败。"
+    },
+    "text": {
+      "scrollableTable": "可滚动表格"
+    }
+  },
+  "outputFeedbackButtons": {
+    "text": {
+      "shortNote": "添加简短备注",
+      "alwaysAllow": "始终允许",
+      "savePreference": "保存你的反馈分享偏好"
+    }
+  },
+  "pathInstructionsModal": {
+    "text": {
+      "howTo": "如何获取完整路径",
+      "linux": "Linux",
+      "windows": "Windows"
+    }
+  },
+  "documentDiffModal": {
+    "text": {
+      "content": "内容",
+      "selectRevision": "选择历史版本"
+    }
+  },
+  "routineTriggerCard": {
+    "text": {
+      "label": "标签",
+      "schedule": "调度",
+      "signingMode": "签名模式"
+    }
+  },
+  "chatComposer": {
+    "text": {
+      "attachFiles": "附加文件",
+      "message": "消息……"
+    }
+  },
+  "cloudAccessGate": {
+    "errors": {
+      "loadAppState": "加载应用状态失败"
+    },
+    "text": {
+      "noCompanyAccess": "无公司访问权限"
+    }
+  },
+  "companySwitcher": {
+    "text": {
+      "companies": "公司",
+      "noCompanies": "无公司"
+    }
+  },
+  "devRestartBanner": {
+    "errors": {
+      "requestRestart": "请求重启失败"
+    },
+    "text": {
+      "restartRequired": "需要重启"
+    }
+  },
+  "documentAnnotationLayer": {
+    "aria": {
+      "openThread": "打开批注线程",
+      "selectionActions": "选择操作"
+    }
+  },
+  "fileTree": {
+    "labelsJsx": {
+      "description": "描述"
+    }
+  },
+  "frontDoor": {
+    "text": {
+      "addAgents": "向你的组织添加智能体",
+      "buildTeam": "建立新团队"
+    }
+  },
+  "issueReferenceActivitySummary": {
+    "text": {
+      "addedRefs": "添加的引用",
+      "removedRefs": "移除的引用"
+    }
+  },
+  "localeSwitcher": {
+    "text": {
+      "language": "语言"
+    }
+  },
+  "markdownEditor": {
+    "errors": {
+      "imageUpload": "图片上传失败"
+    }
+  },
+  "newGoalDialog": {
+    "text": {
+      "addDescription": "添加描述...",
+      "goalTitle": "目标标题"
+    }
+  },
+  "productivityReviewBadge": {
+    "text": {
+      "reviewOpen": "生产力审查已打开",
+      "underReview": "审查中"
+    }
+  },
+  "projectWorkspaceSummaryCard": {
+    "text": {
+      "branch": "分支",
+      "service": "服务"
+    }
+  },
+  "propertiesPanel": {
+    "text": {
+      "properties": "属性"
+    }
+  },
+  "providerQuotaCard": {
+    "text": {
+      "periodSpend": "周期支出",
+      "thisWeek": "本周"
+    }
+  },
+  "sidebarCompanyMenu": {
+    "text": {
+      "companySettings": "公司设置",
+      "noWorkspaces": "无工作区"
+    }
+  },
+  "reusableExecutionWorkspaceSelect": {
+    "text": {
+      "chooseWorkspace": "选择现有工作区"
+    }
+  },
+  "routeErrorBoundary": {
+    "text": {
+      "pageError": "此页面发生错误"
+    }
+  },
+  "scrollToBottom": {
+    "aria": {
+      "scrollToBottom": "滚动到底部"
+    }
+  },
+  "sidebarShell": {
+    "aria": {
+      "resizeSidebar": "调整侧边栏"
+    }
+  },
+  "sourceResolvedFoldBadge": {
+    "text": {
+      "watchdogFold": "源解析看门狗折叠"
+    }
+  },
+  "toastViewport": {
+    "aria": {
+      "dismiss": "忽略通知"
+    }
+  },
+  "worktreeBanner": {
+    "text": {
+      "worktree": "工作树"
+    }
+  },
+  "agentIconPicker": {
+    "text": {
+      "noIconsMatch": "无匹配图标",
+      "searchIcons": "搜索图标..."
+    }
+  },
+  "approvalCard": {
+    "text": {
+      "requestedBy": "请求人"
+    }
+  },
+  "billerSpendCard": {
+    "text": {
+      "periodSpend": "周期支出"
+    }
+  },
+  "blockedInboxView": {
+    "errors": {
+      "loadBlocked": "无法加载已阻塞标签页。"
+    }
+  },
+  "breadcrumbBar": {
+    "aria": {
+      "openSidebar": "打开侧边栏"
+    }
+  },
+  "financeKindCard": {
+    "text": {
+      "financialEventMix": "财务事件组合"
+    }
+  },
+  "financeTimelineCard": {
+    "text": {
+      "recentFinancialEvents": "最近财务事件"
+    }
+  },
+  "inlineEditor": {
+    "placeholders": {
+      "clickToEdit": "点击编辑..."
+    }
+  },
+  "issueAssignedBacklogNotice": {
+    "text": {
+      "parked": "已暂停"
+    }
+  },
+  "issueAttachmentsSection": {
+    "text": {
+      "attachments": "附件"
+    }
+  },
+  "issueMonitorActivityCard": {
+    "text": {
+      "monitorScheduled": "监控已调度"
+    }
+  },
+  "issuePlanDecompositionsSection": {
+    "text": {
+      "planDecomposition": "计划分解"
+    }
+  },
+  "issueRelatedWorkPanel": {
+    "text": {
+      "externalObjects": "外部对象",
+      "otherTasksHint": "其他当前指向此任务的任务。"
+    }
+  },
+  "issueSiblingNavigation": {
+    "text": {
+      "subTaskNavigation": "子任务导航"
+    }
+  },
+  "kanbanBoard": {
+    "text": {
+      "needsNextStep": "需要下一步"
+    }
+  },
+  "layout": {
+    "aria": {
+      "closeSidebar": "关闭侧边栏"
     }
   }
 }

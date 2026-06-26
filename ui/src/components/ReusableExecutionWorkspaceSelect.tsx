@@ -25,6 +25,7 @@ interface ReusableExecutionWorkspaceSelectProps<TWorkspace extends ReusableExecu
 }
 
 export function ReusableExecutionWorkspaceSelect<TWorkspace extends ReusableExecutionWorkspaceLike>({
+  const { t } = useTranslation();
   value,
   workspaces,
   onValueChange,

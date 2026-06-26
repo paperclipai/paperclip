@@ -36,6 +36,7 @@ interface ProviderQuotaCardProps {
 }
 
 export function ProviderQuotaCard({
+  const { t } = useTranslation();
   provider,
   rows,
   budgetMonthlyCents,

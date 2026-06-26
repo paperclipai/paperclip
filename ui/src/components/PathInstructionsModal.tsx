@@ -58,6 +58,7 @@ interface PathInstructionsModalProps {
 }
 
 export function PathInstructionsModal({
+  const { t } = useTranslation();
   open,
   onOpenChange,
 }: PathInstructionsModalProps) {
@@ -69,7 +70,7 @@ export function PathInstructionsModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-base">How to get a full path</DialogTitle>
+          <DialogTitle className="text-base">{t("pathInstructionsModal.text.howTo")}</DialogTitle>
           <DialogDescription>
             Paste the absolute path (e.g.{" "}
             <code className="text-xs bg-muted px-1 py-0.5 rounded">/Users/you/project</code>
@@ -124,6 +125,7 @@ export function PathInstructionsModal({
  * Drop-in replacement for the old showDirectoryPicker buttons.
  */
 export function ChoosePathButton({ className }: { className?: string }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>

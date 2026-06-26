@@ -202,6 +202,7 @@ function nativeHighlightKind(input: {
 }
 
 export function DocumentAnnotationLayer({
+  const { t } = useTranslation();
   containerRef,
   markdown,
   threads,
@@ -487,7 +488,7 @@ export function DocumentAnnotationLayer({
                 data-status={rect.status}
                 data-focused={isFocused || undefined}
                 data-hovered={isHovered || undefined}
-                aria-label="Open annotation thread"
+                aria-label={t("documentAnnotationLayer.aria.openThread")}
                 className={cn(
                   "paperclip-doc-annotation-hit-target pointer-events-auto absolute cursor-pointer rounded-none bg-transparent transition-colors",
                   // Tint the run on hover so it's obvious which highlight you're over.
@@ -534,7 +535,7 @@ export function DocumentAnnotationLayer({
             <div
               data-testid="document-annotation-selection-toolbar"
               role="toolbar"
-              aria-label="Selection actions"
+              aria-label={t("documentAnnotationLayer.aria.selectionActions")}
               className="paperclip-doc-annotation-selection-toolbar pointer-events-auto absolute z-10 flex items-center gap-1 rounded-md border border-border bg-popover px-1 py-1 shadow-md"
               style={{ top: toolbarPosition.top, left: toolbarPosition.left }}
               onMouseDown={(event) => event.preventDefault()}

@@ -71,6 +71,7 @@ export const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 /* ---- Primitive components ---- */
 
 export function HintIcon({ text }: { text: string }) {
+  const { t } = useTranslation();
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -86,6 +87,7 @@ export function HintIcon({ text }: { text: string }) {
 }
 
 export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  const { t } = useTranslation();
   return (
     <div>
       <div className="flex items-center gap-1.5 mb-1">
@@ -98,6 +100,7 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
 }
 
 export function ToggleField({
+  const { t } = useTranslation();
   label,
   hint,
   checked,
@@ -138,6 +141,7 @@ export function ToggleField({
 }
 
 export function ToggleWithNumber({
+  const { t } = useTranslation();
   label,
   hint,
   checked,
@@ -190,6 +194,7 @@ export function ToggleWithNumber({
 }
 
 export function CollapsibleSection({
+  const { t } = useTranslation();
   title,
   icon,
   open,
@@ -220,6 +225,7 @@ export function CollapsibleSection({
 }
 
 export function AutoExpandTextarea({
+  const { t } = useTranslation();
   value,
   onChange,
   onBlur,
@@ -264,6 +270,7 @@ export function AutoExpandTextarea({
  * Calls `onCommit` on blur (and optionally on every change if `immediate` is set).
  */
 export function DraftInput({
+  const { t } = useTranslation();
   value,
   onCommit,
   immediate,
@@ -298,6 +305,7 @@ export function DraftInput({
  * Auto-expanding textarea with draft state and blur-commit.
  */
 export function DraftTextarea({
+  const { t } = useTranslation();
   value,
   onCommit,
   immediate,
@@ -349,6 +357,7 @@ export function DraftTextarea({
  * Number input with draft state and blur-commit.
  */
 export function DraftNumberInput({
+  const { t } = useTranslation();
   value,
   onCommit,
   immediate,
@@ -386,6 +395,7 @@ export function DraftNumberInput({
  * type the path due to browser security limitations.
  */
 export function ChoosePathButton() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -399,7 +409,7 @@ export function ChoosePathButton() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
+            <DialogTitle>{t("agentConfigPrimitives.text.specifyPath")}</DialogTitle>
             <DialogDescription>
               Browser security blocks apps from reading full local paths via a file picker.
               Copy the absolute path and paste it into the input.
@@ -410,7 +420,7 @@ export function ChoosePathButton() {
               <p className="font-medium">macOS (Finder)</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
                 <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
+                <li>Hold <kbd>{t("agentConfigPrimitives.text.option")}</kbd> and right-click the folder.</li>
                 <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
                 <li>Paste the result into the path input.</li>
               </ol>
@@ -422,7 +432,7 @@ export function ChoosePathButton() {
               <p className="font-medium">Windows (File Explorer)</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
                 <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
+                <li>Hold <kbd>{t("agentConfigPrimitives.text.shift")}</kbd> and right-click the folder.</li>
                 <li>Click "Copy as path".</li>
                 <li>Paste the result into the path input.</li>
               </ol>
@@ -454,6 +464,7 @@ export function ChoosePathButton() {
  * Label + input rendered on the same line (inline layout for compact fields).
  */
 export function InlineField({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center gap-3">
       <div className="flex items-center gap-1.5 shrink-0">

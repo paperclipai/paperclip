@@ -40,6 +40,7 @@ const MENU_ACTION_DESCRIPTION = "Choose the interface language.";
  * inside the in-app account menu (menu-action).
  */
 export function LocaleSwitcher({ className, variant = "icon", onAfterSelect }: LocaleSwitcherProps) {
+  const { t } = useTranslation();
   const current = getLocale();
   const label = LOCALE_NATIVE_NAMES[current] ?? current;
 
@@ -70,7 +71,7 @@ export function LocaleSwitcher({ className, variant = "icon", onAfterSelect }: L
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
-          <DropdownMenuLabel>Language</DropdownMenuLabel>
+          <DropdownMenuLabel>{t("localeSwitcher.text.language")}</DropdownMenuLabel>
           <DropdownMenuSeparator />
           {supportedLocales.map((locale) => (
             <DropdownMenuItem
@@ -102,7 +103,7 @@ export function LocaleSwitcher({ className, variant = "icon", onAfterSelect }: L
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto">
-        <DropdownMenuLabel>Language</DropdownMenuLabel>
+        <DropdownMenuLabel>{t("localeSwitcher.text.language")}</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {supportedLocales.map((locale) => (
           <DropdownMenuItem

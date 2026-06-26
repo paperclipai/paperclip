@@ -2041,11 +2041,11 @@
   },
   "issueFiltersPopover": {
     "text": {
-      "labels": "Labels",
-      "liveRunsOnly": "Live runs only",
-      "noAssignee": "No assignee",
-      "noCreatorsMatch": "No creators match.",
-      "priority": "Priority"
+      "project": "Project",
+      "quickFilters": "Quick filters",
+      "status": "Status",
+      "visibility": "Visibility",
+      "workspace": "Workspace"
     }
   },
   "issuesList": {
@@ -2218,21 +2218,9 @@
     }
   },
   "scheduleEditor": {
-    "labelsJsx": {
-      "cronExpression": "Cron expression",
-      "scheduleFrequency": "Schedule frequency"
-    },
-    "options": {
-      "custom": "Custom (cron)",
-      "everyDay": "Every day",
-      "everyHour": "Every hour",
-      "everyMinute": "Every minute",
-      "monthly": "Monthly",
-      "weekdays": "Weekdays",
-      "weekly": "Weekly"
-    },
-    "placeholders": {
-      "chooseFrequency": "Choose frequency..."
+    "errors": {
+      "invalidCron": "Cron fields must use valid numbers, ranges, lists, wildcards, or steps.",
+      "enterFive": "Enter a 5-field cron expression."
     }
   },
   "agentActionButtons": {
@@ -2325,17 +2313,13 @@
   },
   "trustPresetSection": {
     "text": {
-      "issue": "Issue",
-      "project": "Project",
+      "explicitIssues": "Explicit issues",
+      "preset": "Preset",
+      "projects": "Projects",
+      "promotionTarget": "Promotion target",
+      "rawOutput": "Raw output",
       "rootIssue": "Root issue",
-      "trust": "Trust"
-    },
-    "labelsJsx": {
-      "allowedAgents": "Allowed agents",
-      "allowedSecrets": "Allowed secrets",
-      "allowedTools": "Allowed tools",
-      "boundaryType": "Boundary type",
-      "eeFields": "EE fields"
+      "trustPreset": "Trust preset"
     }
   },
   "approvalPayload": {
@@ -2356,19 +2340,7 @@
   },
   "agentBubbleActionRow": {
     "text": {
-      "alwaysAllow": "Always allow",
-      "savePreference": "Save your feedback sharing preference?",
-      "alwaysSavedLocally": "This vote is always saved locally.",
-      "whatBetter": "What could have been better?"
-    },
-    "labelsJsx": {
-      "copyMessage": "Copy message",
-      "helpful": "Helpful",
-      "moreActions": "More actions",
-      "needsWork": "Needs work"
-    },
-    "placeholders": {
-      "shortNote": "Add a short note"
+      "savePreference": "Save your feedback sharing preference"
     }
   },
   "activityCharts": {
@@ -2495,6 +2467,280 @@
       "owner": "Owner",
       "parentGoal": "Parent Goal",
       "status": "Status"
+    }
+  },
+  "jsonSchemaForm": {
+    "text": {
+      "advancedOptions": "Advanced options",
+      "removeItem": "Remove item",
+      "selectExistingSecret": "Select an existing secret",
+      "selectOption": "Select an option"
+    }
+  },
+  "sidebarProjects": {
+    "text": {
+      "alphabetical": "Alphabetical",
+      "browseProjects": "Browse projects",
+      "projects": "Projects",
+      "recent": "Recent"
+    }
+  },
+  "agentConfigPrimitives": {
+    "text": {
+      "option": "Option",
+      "shift": "Shift",
+      "specifyPath": "Specify path manually"
+    }
+  },
+  "markdownBody": {
+    "toasts": {
+      "copyCode": "Copy code"
+    },
+    "errors": {
+      "renderMermaid": "Failed to render Mermaid diagram."
+    },
+    "text": {
+      "scrollableTable": "Scrollable table"
+    }
+  },
+  "outputFeedbackButtons": {
+    "text": {
+      "shortNote": "Add a short note",
+      "alwaysAllow": "Always allow",
+      "savePreference": "Save your feedback sharing preference"
+    }
+  },
+  "pathInstructionsModal": {
+    "text": {
+      "howTo": "How to get a full path",
+      "linux": "Linux",
+      "windows": "Windows"
+    }
+  },
+  "documentDiffModal": {
+    "text": {
+      "content": "Content",
+      "selectRevision": "Select revision"
+    }
+  },
+  "routineTriggerCard": {
+    "text": {
+      "label": "Label",
+      "schedule": "Schedule",
+      "signingMode": "Signing mode"
+    }
+  },
+  "chatComposer": {
+    "text": {
+      "attachFiles": "Attach files",
+      "message": "Message…"
+    }
+  },
+  "cloudAccessGate": {
+    "errors": {
+      "loadAppState": "Failed to load app state"
+    },
+    "text": {
+      "noCompanyAccess": "No company access"
+    }
+  },
+  "companySwitcher": {
+    "text": {
+      "companies": "Companies",
+      "noCompanies": "No companies"
+    }
+  },
+  "devRestartBanner": {
+    "errors": {
+      "requestRestart": "Failed to request restart"
+    },
+    "text": {
+      "restartRequired": "Restart Required"
+    }
+  },
+  "documentAnnotationLayer": {
+    "aria": {
+      "openThread": "Open annotation thread",
+      "selectionActions": "Selection actions"
+    }
+  },
+  "fileTree": {
+    "labelsJsx": {
+      "description": "Description"
+    }
+  },
+  "frontDoor": {
+    "text": {
+      "addAgents": "Add agents to your org",
+      "buildTeam": "Build a new team"
+    }
+  },
+  "issueReferenceActivitySummary": {
+    "text": {
+      "addedRefs": "Added references",
+      "removedRefs": "Removed references"
+    }
+  },
+  "localeSwitcher": {
+    "text": {
+      "language": "Language"
+    }
+  },
+  "markdownEditor": {
+    "errors": {
+      "imageUpload": "Image upload failed"
+    }
+  },
+  "newGoalDialog": {
+    "text": {
+      "addDescription": "Add description...",
+      "goalTitle": "Goal title"
+    }
+  },
+  "productivityReviewBadge": {
+    "text": {
+      "reviewOpen": "Productivity review open",
+      "underReview": "Under review"
+    }
+  },
+  "projectWorkspaceSummaryCard": {
+    "text": {
+      "branch": "Branch",
+      "service": "Service"
+    }
+  },
+  "propertiesPanel": {
+    "text": {
+      "properties": "Properties"
+    }
+  },
+  "providerQuotaCard": {
+    "text": {
+      "periodSpend": "Period spend",
+      "thisWeek": "This week"
+    }
+  },
+  "sidebarCompanyMenu": {
+    "text": {
+      "companySettings": "Company settings",
+      "noWorkspaces": "No workspaces"
+    }
+  },
+  "reusableExecutionWorkspaceSelect": {
+    "text": {
+      "chooseWorkspace": "Choose an existing workspace"
+    }
+  },
+  "routeErrorBoundary": {
+    "text": {
+      "pageError": "This page hit an error"
+    }
+  },
+  "scrollToBottom": {
+    "aria": {
+      "scrollToBottom": "Scroll to bottom"
+    }
+  },
+  "sidebarShell": {
+    "aria": {
+      "resizeSidebar": "Resize sidebar"
+    }
+  },
+  "sourceResolvedFoldBadge": {
+    "text": {
+      "watchdogFold": "Source-resolved watchdog fold"
+    }
+  },
+  "toastViewport": {
+    "aria": {
+      "dismiss": "Dismiss notification"
+    }
+  },
+  "worktreeBanner": {
+    "text": {
+      "worktree": "Worktree"
+    }
+  },
+  "agentIconPicker": {
+    "text": {
+      "noIconsMatch": "No icons match",
+      "searchIcons": "Search icons..."
+    }
+  },
+  "approvalCard": {
+    "text": {
+      "requestedBy": "Requested by"
+    }
+  },
+  "billerSpendCard": {
+    "text": {
+      "periodSpend": "Period spend"
+    }
+  },
+  "blockedInboxView": {
+    "errors": {
+      "loadBlocked": "Couldn't load the Blocked tab."
+    }
+  },
+  "breadcrumbBar": {
+    "aria": {
+      "openSidebar": "Open sidebar"
+    }
+  },
+  "financeKindCard": {
+    "text": {
+      "financialEventMix": "Financial event mix"
+    }
+  },
+  "financeTimelineCard": {
+    "text": {
+      "recentFinancialEvents": "Recent financial events"
+    }
+  },
+  "inlineEditor": {
+    "placeholders": {
+      "clickToEdit": "Click to edit..."
+    }
+  },
+  "issueAssignedBacklogNotice": {
+    "text": {
+      "parked": "Parked"
+    }
+  },
+  "issueAttachmentsSection": {
+    "text": {
+      "attachments": "Attachments"
+    }
+  },
+  "issueMonitorActivityCard": {
+    "text": {
+      "monitorScheduled": "Monitor scheduled"
+    }
+  },
+  "issuePlanDecompositionsSection": {
+    "text": {
+      "planDecomposition": "Plan decomposition"
+    }
+  },
+  "issueRelatedWorkPanel": {
+    "text": {
+      "externalObjects": "External objects",
+      "otherTasksHint": "Other tasks that currently point at this task."
+    }
+  },
+  "issueSiblingNavigation": {
+    "text": {
+      "subTaskNavigation": "Sub-task navigation"
+    }
+  },
+  "kanbanBoard": {
+    "text": {
+      "needsNextStep": "Needs next step"
+    }
+  },
+  "layout": {
+    "aria": {
+      "closeSidebar": "Close sidebar"
     }
   }
 }

@@ -89,6 +89,7 @@ type SidebarShellProps = {
  * slide. Resizing the drag handle is likewise direct.
  */
 export function SidebarShell({
+  const { t } = useTranslation();
   children,
   open,
   collapsed = false,
@@ -218,7 +219,7 @@ export function SidebarShell({
         {canResize ? (
           <div
             role="separator"
-            aria-label="Resize sidebar"
+            aria-label={t("sidebarShell.aria.resizeSidebar")}
             aria-orientation="vertical"
             aria-valuemin={MIN_SIDEBAR_WIDTH}
             aria-valuemax={MAX_SIDEBAR_WIDTH}

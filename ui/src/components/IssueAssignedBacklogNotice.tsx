@@ -11,6 +11,7 @@ interface IssueAssignedBacklogNoticeProps {
 }
 
 export function IssueAssignedBacklogNotice({
+  const { t } = useTranslation();
   issueStatus,
   assigneeAgent,
   assigneeUserId,
@@ -32,7 +33,7 @@ export function IssueAssignedBacklogNotice({
         <Flag className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
         <div className="min-w-0 flex-1 space-y-1.5">
           <p className="leading-5">
-            <span className="font-medium">Parked</span> —{" "}
+            <span className="font-medium">{t("issueAssignedBacklogNotice.text.parked")}</span> —{" "}
             <span className="font-medium">{assigneeLabel}</span> will not be woken until status changes to{" "}
             <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">todo</code> or{" "}
             <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">in_progress</code>.

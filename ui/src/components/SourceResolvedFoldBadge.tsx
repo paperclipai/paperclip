@@ -9,6 +9,7 @@ export interface SourceResolvedFoldBadgeProps {
 }
 
 export function SourceResolvedFoldBadge({
+  const { t } = useTranslation();
   className,
   title = "System folded this run as a source-resolved false positive.",
   showIcon = true,

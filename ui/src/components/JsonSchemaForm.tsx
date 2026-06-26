@@ -115,6 +115,7 @@ export interface JsonSchemaFormProps {
 
 /** Resolve the primary type string from a schema node. */
 export function resolveType(schema: JsonSchemaNode): string {
+  const { t } = useTranslation();
   if (schema.enum) return "enum";
   if (schema.const !== undefined) return "const";
   if (schema.format === "secret-ref") return "secret-ref";
@@ -127,6 +128,7 @@ export function resolveType(schema: JsonSchemaNode): string {
 
 /** Human-readable label from schema title or property key. */
 export function labelFromKey(key: string, schema: JsonSchemaNode): string {
+  const { t } = useTranslation();
   if (schema.title) return schema.title;
   // Convert camelCase / snake_case to Title Case
   return key
@@ -144,6 +146,7 @@ export function labelFromKey(key: string, schema: JsonSchemaNode): string {
  * trip server-side "X must be greater than 0 when provided" style validators.
  */
 export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
+  const { t } = useTranslation();
   if (schema.default !== undefined) return schema.default;
 
   const type = resolveType(schema);
@@ -314,6 +317,7 @@ export function validateJsonSchemaForm(
 
 /** Public API for default values */
 export function getDefaultValues(schema: JsonSchemaNode): Record<string, unknown> {
+  const { t } = useTranslation();
   const result: Record<string, unknown> = {};
   const properties = schema.properties ?? {};
 
@@ -953,7 +957,7 @@ const ArrayField = React.memo(({
               }}
             >
               <Trash2 className="h-4 w-4" />
-              <span className="sr-only">Remove item</span>
+              <span className="sr-only">{t("jsonSchemaForm.text.removeItem")}</span>
             </Button>
           </div>
         ))}
@@ -1180,6 +1184,7 @@ FormField.displayName = "FormField";
  * Supports primitive types, enums, secrets, objects, and arrays with recursion.
  */
 export function JsonSchemaForm({
+  const { t } = useTranslation();
   schema,
   values,
   onChange,

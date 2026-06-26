@@ -1,4 +1,5 @@
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CopyText } from "./CopyText";
@@ -37,6 +38,7 @@ interface ProjectWorkspaceSummaryCardProps {
 }
 
 export function ProjectWorkspaceSummaryCard({
+  const { t } = useTranslation();
   projectRef,
   summary,
   runtimeActionKey,
@@ -149,7 +151,7 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Branch</div>
+                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{t("projectWorkspaceSummaryCard.text.branch")}</div>
                   <div className="flex items-start gap-2">
                     <CopyText
                       text={summary.branchName}
@@ -204,7 +206,7 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0">
-                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Service</div>
+                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{t("projectWorkspaceSummaryCard.text.service")}</div>
                   <a
                     href={summary.primaryServiceUrl}
                     target="_blank"

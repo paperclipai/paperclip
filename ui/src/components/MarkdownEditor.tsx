@@ -426,6 +426,7 @@ function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
 
 /** The human title of an issue mention — `name` minus its leading identifier. */
 export function issueMentionTitle(option: MentionOption): string {
+  const { t } = useTranslation();
   const name = option.name.trim();
   const identifier = option.issueIdentifier?.trim();
   if (identifier && name.toLowerCase().startsWith(identifier.toLowerCase())) {
@@ -543,6 +544,7 @@ export function findClosestAutocompleteAnchor(
 }
 
 export function placeCaretAfterMentionAnchor(target: HTMLAnchorElement): boolean {
+  const { t } = useTranslation();
   const selection = window.getSelection();
   if (!selection) return false;
 
@@ -770,7 +772,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
+            const message = err instanceof Error ? err.message : t("markdownEditor.errors.imageUpload");
             setUploadError(message);
             throw err;
           }

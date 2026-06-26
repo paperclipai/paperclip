@@ -27,6 +27,7 @@ export function productivityReviewTriggerLabel(
 }
 
 export function ProductivityReviewBadge({
+  const { t } = useTranslation();
   review,
   className,
   hideLabel = false,
@@ -52,12 +53,12 @@ export function ProductivityReviewBadge({
           aria-label={`Under review · productivity review ${reviewIdentifier} (${label})`}
         >
           <Eye className="h-3 w-3" aria-hidden />
-          {hideLabel ? null : <span>Under review</span>}
+          {hideLabel ? null : <span>{t("productivityReviewBadge.text.underReview")}</span>}
         </Link>
       </TooltipTrigger>
       <TooltipContent>
         <div className="space-y-1 text-xs">
-          <div className="font-semibold">Productivity review open</div>
+          <div className="font-semibold">{t("productivityReviewBadge.text.reviewOpen")}</div>
           <div>
             <span className="text-muted-foreground">Trigger:</span> {label}
           </div>

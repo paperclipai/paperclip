@@ -33,6 +33,7 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
  * surfaces read identically.
  */
 export function agentBubbleDateLabel(date: Date | string | undefined): string {
+  const { t } = useTranslation();
   if (!date) return "";
   const then = new Date(date).getTime();
   if (Date.now() - then < WEEK_MS) return timeAgo(date);
@@ -49,6 +50,7 @@ export function agentBubbleDateLabel(date: Date | string | undefined): string {
  * view-run on the task side).
  */
 export function AgentBubbleActionRow({
+  const { t } = useTranslation();
   copyText,
   dateLabel,
   dateTitle,
@@ -153,6 +155,7 @@ export function AgentBubbleActionRow({
  * thread and the conference room via {@link AgentBubbleActionRow}.
  */
 export function IssueChatFeedbackButtons({
+  const { t } = useTranslation();
   activeVote,
   sharingPreference = "prompt",
   termsUrl,
@@ -311,7 +314,7 @@ export function IssueChatFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
+            <DialogTitle>{t("agentBubbleActionRow.text.savePreference")}</DialogTitle>
             <DialogDescription>
               Choose whether voted AI outputs can be shared with Paperclip Labs. This
               answer becomes the default for future thumbs up and thumbs down votes.

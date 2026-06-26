@@ -43,6 +43,7 @@ interface BlockedInboxViewProps {
 const BLOCKED_LIST_LIMIT = 200;
 
 export function BlockedInboxView({
+  const { t } = useTranslation();
   companyId,
   searchQuery,
   agentNameById,
@@ -136,7 +137,7 @@ export function BlockedInboxView({
 
   if (error) {
     const message =
-      error instanceof Error ? error.message : "Couldn't load the Blocked tab.";
+      error instanceof Error ? error.message : t("blockedInboxView.errors.loadBlocked");
     return (
       <div
         data-testid="blocked-inbox-error"

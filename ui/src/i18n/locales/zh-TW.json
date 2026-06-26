@@ -2041,11 +2041,11 @@
   },
   "issueFiltersPopover": {
     "text": {
-      "labels": "標籤",
-      "liveRunsOnly": "僅即時執行",
-      "noAssignee": "無負責人",
-      "noCreatorsMatch": "無符合建立者。",
-      "priority": "優先級"
+      "project": "專案",
+      "quickFilters": "快速篩選",
+      "status": "狀態",
+      "visibility": "可見性",
+      "workspace": "工作區"
     }
   },
   "issuesList": {
@@ -2218,21 +2218,9 @@
     }
   },
   "scheduleEditor": {
-    "labelsJsx": {
-      "cronExpression": "Cron 運算式",
-      "scheduleFrequency": "排程頻率"
-    },
-    "options": {
-      "custom": "自訂 (cron)",
-      "everyDay": "每天",
-      "everyHour": "每小時",
-      "everyMinute": "每分鐘",
-      "monthly": "每月",
-      "weekdays": "工作日",
-      "weekly": "每週"
-    },
-    "placeholders": {
-      "chooseFrequency": "選擇頻率..."
+    "errors": {
+      "invalidCron": "Cron 欄位必須使用有效數字、範圍、清單、萬用字元或步長。",
+      "enterFive": "輸入 5 欄位 Cron 運算式。"
     }
   },
   "agentActionButtons": {
@@ -2325,17 +2313,13 @@
   },
   "trustPresetSection": {
     "text": {
-      "issue": "工作",
-      "project": "專案",
       "rootIssue": "根工作",
-      "trust": "信任"
-    },
-    "labelsJsx": {
-      "allowedAgents": "允許的智慧代理",
-      "allowedSecrets": "允許的密鑰",
-      "allowedTools": "允許的工具",
-      "boundaryType": "邊界類型",
-      "eeFields": "EE 欄位"
+      "explicitIssues": "明確工作",
+      "preset": "預設",
+      "projects": "專案",
+      "promotionTarget": "晉升目標",
+      "rawOutput": "原始輸出",
+      "trustPreset": "信任預設"
     }
   },
   "approvalPayload": {
@@ -2356,19 +2340,7 @@
   },
   "agentBubbleActionRow": {
     "text": {
-      "alwaysAllow": "始終允許",
-      "savePreference": "儲存你的回饋分享偏好?",
-      "alwaysSavedLocally": "此投票始終僅在本機儲存。",
-      "whatBetter": "哪些方面可以改進?"
-    },
-    "labelsJsx": {
-      "copyMessage": "複製訊息",
-      "helpful": "有幫助",
-      "moreActions": "更多操作",
-      "needsWork": "需要改進"
-    },
-    "placeholders": {
-      "shortNote": "新增簡短備註"
+      "savePreference": "儲存你的回饋分享偏好"
     }
   },
   "activityCharts": {
@@ -2495,6 +2467,280 @@
       "owner": "擁有者",
       "parentGoal": "父目標",
       "status": "狀態"
+    }
+  },
+  "jsonSchemaForm": {
+    "text": {
+      "advancedOptions": "進階選項",
+      "removeItem": "移除項目",
+      "selectExistingSecret": "選擇現有密鑰",
+      "selectOption": "選擇選項"
+    }
+  },
+  "sidebarProjects": {
+    "text": {
+      "alphabetical": "按字母排序",
+      "browseProjects": "瀏覽專案",
+      "projects": "專案",
+      "recent": "最近"
+    }
+  },
+  "agentConfigPrimitives": {
+    "text": {
+      "option": "選項",
+      "shift": "Shift",
+      "specifyPath": "手動指定路徑"
+    }
+  },
+  "markdownBody": {
+    "toasts": {
+      "copyCode": "複製程式碼"
+    },
+    "errors": {
+      "renderMermaid": "渲染 Mermaid 圖表失敗。"
+    },
+    "text": {
+      "scrollableTable": "可捲動表格"
+    }
+  },
+  "outputFeedbackButtons": {
+    "text": {
+      "shortNote": "新增簡短備註",
+      "alwaysAllow": "始終允許",
+      "savePreference": "儲存你的回饋分享偏好"
+    }
+  },
+  "pathInstructionsModal": {
+    "text": {
+      "howTo": "如何取得完整路徑",
+      "linux": "Linux",
+      "windows": "Windows"
+    }
+  },
+  "documentDiffModal": {
+    "text": {
+      "content": "內容",
+      "selectRevision": "選擇歷史版本"
+    }
+  },
+  "routineTriggerCard": {
+    "text": {
+      "label": "標籤",
+      "schedule": "排程",
+      "signingMode": "簽署模式"
+    }
+  },
+  "chatComposer": {
+    "text": {
+      "attachFiles": "附加檔案",
+      "message": "訊息……"
+    }
+  },
+  "cloudAccessGate": {
+    "errors": {
+      "loadAppState": "載入應用程式狀態失敗"
+    },
+    "text": {
+      "noCompanyAccess": "無公司存取權限"
+    }
+  },
+  "companySwitcher": {
+    "text": {
+      "companies": "公司",
+      "noCompanies": "無公司"
+    }
+  },
+  "devRestartBanner": {
+    "errors": {
+      "requestRestart": "請求重啟失敗"
+    },
+    "text": {
+      "restartRequired": "需要重啟"
+    }
+  },
+  "documentAnnotationLayer": {
+    "aria": {
+      "openThread": "開啟註解執行緒",
+      "selectionActions": "選擇操作"
+    }
+  },
+  "fileTree": {
+    "labelsJsx": {
+      "description": "描述"
+    }
+  },
+  "frontDoor": {
+    "text": {
+      "addAgents": "為你的組織新增智慧代理",
+      "buildTeam": "建立新團隊"
+    }
+  },
+  "issueReferenceActivitySummary": {
+    "text": {
+      "addedRefs": "新增的引用",
+      "removedRefs": "移除的引用"
+    }
+  },
+  "localeSwitcher": {
+    "text": {
+      "language": "語言"
+    }
+  },
+  "markdownEditor": {
+    "errors": {
+      "imageUpload": "圖片上傳失敗"
+    }
+  },
+  "newGoalDialog": {
+    "text": {
+      "addDescription": "新增描述...",
+      "goalTitle": "目標標題"
+    }
+  },
+  "productivityReviewBadge": {
+    "text": {
+      "reviewOpen": "生產力審查已開啟",
+      "underReview": "審查中"
+    }
+  },
+  "projectWorkspaceSummaryCard": {
+    "text": {
+      "branch": "分支",
+      "service": "服務"
+    }
+  },
+  "propertiesPanel": {
+    "text": {
+      "properties": "屬性"
+    }
+  },
+  "providerQuotaCard": {
+    "text": {
+      "periodSpend": "週期支出",
+      "thisWeek": "本週"
+    }
+  },
+  "sidebarCompanyMenu": {
+    "text": {
+      "companySettings": "公司設定",
+      "noWorkspaces": "無工作區"
+    }
+  },
+  "reusableExecutionWorkspaceSelect": {
+    "text": {
+      "chooseWorkspace": "選擇現有工作區"
+    }
+  },
+  "routeErrorBoundary": {
+    "text": {
+      "pageError": "此頁面發生錯誤"
+    }
+  },
+  "scrollToBottom": {
+    "aria": {
+      "scrollToBottom": "捲動到底部"
+    }
+  },
+  "sidebarShell": {
+    "aria": {
+      "resizeSidebar": "調整側邊欄"
+    }
+  },
+  "sourceResolvedFoldBadge": {
+    "text": {
+      "watchdogFold": "來源解析看門狗摺疊"
+    }
+  },
+  "toastViewport": {
+    "aria": {
+      "dismiss": "忽略通知"
+    }
+  },
+  "worktreeBanner": {
+    "text": {
+      "worktree": "工作樹"
+    }
+  },
+  "agentIconPicker": {
+    "text": {
+      "noIconsMatch": "無符合圖示",
+      "searchIcons": "搜尋圖示..."
+    }
+  },
+  "approvalCard": {
+    "text": {
+      "requestedBy": "請求者"
+    }
+  },
+  "billerSpendCard": {
+    "text": {
+      "periodSpend": "週期支出"
+    }
+  },
+  "blockedInboxView": {
+    "errors": {
+      "loadBlocked": "無法載入已阻塞分頁。"
+    }
+  },
+  "breadcrumbBar": {
+    "aria": {
+      "openSidebar": "開啟側邊欄"
+    }
+  },
+  "financeKindCard": {
+    "text": {
+      "financialEventMix": "財務事件組合"
+    }
+  },
+  "financeTimelineCard": {
+    "text": {
+      "recentFinancialEvents": "最近財務事件"
+    }
+  },
+  "inlineEditor": {
+    "placeholders": {
+      "clickToEdit": "點擊編輯..."
+    }
+  },
+  "issueAssignedBacklogNotice": {
+    "text": {
+      "parked": "已暫停"
+    }
+  },
+  "issueAttachmentsSection": {
+    "text": {
+      "attachments": "附件"
+    }
+  },
+  "issueMonitorActivityCard": {
+    "text": {
+      "monitorScheduled": "監控已排程"
+    }
+  },
+  "issuePlanDecompositionsSection": {
+    "text": {
+      "planDecomposition": "計畫分解"
+    }
+  },
+  "issueRelatedWorkPanel": {
+    "text": {
+      "externalObjects": "外部物件",
+      "otherTasksHint": "其他目前指向此工作的工作。"
+    }
+  },
+  "issueSiblingNavigation": {
+    "text": {
+      "subTaskNavigation": "子工作導覽"
+    }
+  },
+  "kanbanBoard": {
+    "text": {
+      "needsNextStep": "需要下一步"
+    }
+  },
+  "layout": {
+    "aria": {
+      "closeSidebar": "關閉側邊欄"
     }
   }
 }

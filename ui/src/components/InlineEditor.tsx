@@ -32,6 +32,7 @@ const markdownPad = "px-1";
 const AUTOSAVE_DEBOUNCE_MS = 900;
 
 export function queueContainedBlurCommit(container: HTMLDivElement, onCommit: () => void) {
+  const { t } = useTranslation();
   let frameId = requestAnimationFrame(() => {
     frameId = requestAnimationFrame(() => {
       frameId = 0;
@@ -49,6 +50,7 @@ export function queueContainedBlurCommit(container: HTMLDivElement, onCommit: ()
 }
 
 export function InlineEditor({
+  const { t } = useTranslation();
   value,
   onSave,
   as: Tag = "span",

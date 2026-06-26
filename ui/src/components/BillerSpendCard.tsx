@@ -13,6 +13,7 @@ interface BillerSpendCardProps {
 }
 
 export function BillerSpendCard({
+  const { t } = useTranslation();
   row,
   weekSpendCents,
   budgetMonthlyCents,

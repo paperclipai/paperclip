@@ -6,6 +6,7 @@ interface FrontDoorProps {
 }
 
 export function FrontDoor({ onChoose }: FrontDoorProps) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] px-8">
       <div className="text-center mb-10">
@@ -30,7 +31,7 @@ export function FrontDoor({ onChoose }: FrontDoorProps) {
             <Rocket className="h-6 w-6" />
           </div>
           <div>
-            <h3 className="font-semibold text-sm">Build a new team</h3>
+            <h3 className="font-semibold text-sm">{t("frontDoor.text.buildTeam")}</h3>
             <p className="text-xs text-muted-foreground mt-1">
               Begin with a mission, bring on a lead agent, and grow a team of agents to do the work.
             </p>
@@ -49,7 +50,7 @@ export function FrontDoor({ onChoose }: FrontDoorProps) {
             <Zap className="h-6 w-6" />
           </div>
           <div>
-            <h3 className="font-semibold text-sm">Add agents to your org</h3>
+            <h3 className="font-semibold text-sm">{t("frontDoor.text.addAgents")}</h3>
             <p className="text-xs text-muted-foreground mt-1">
               Bring AI agents into your existing team or workflows.
             </p>

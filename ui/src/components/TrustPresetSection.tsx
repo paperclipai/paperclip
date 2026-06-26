@@ -51,6 +51,7 @@ const BOUNDARY_TARGET_LABELS: Record<LowTrustBoundaryTargetType, string> = {
 };
 
 export function TrustPresetSection({
+  const { t } = useTranslation();
   permissions,
   onChange,
   disabled,

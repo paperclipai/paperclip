@@ -46,6 +46,7 @@ function hasOption(options: Array<{ value: string }>, value: string): boolean {
 }
 
 export function parseCronToPreset(cron: string): {
+  const { t } = useTranslation();
   preset: SchedulePreset;
   hour: string;
   minute: string;
@@ -101,6 +102,7 @@ export function parseCronToPreset(cron: string): {
 }
 
 export function buildCron(preset: SchedulePreset, hour: string, minute: string, dayOfWeek: string, dayOfMonth: string): string {
+  const { t } = useTranslation();
   switch (preset) {
     case "every_minute":
       return "* * * * *";
@@ -153,6 +155,7 @@ function ordinalSuffix(n: number): string {
 export { describeSchedule };
 
 export function getScheduleCronValidation(cron: string): {
+  const { t } = useTranslation();
   valid: boolean;
   message: string;
   nextFires: Date[];
@@ -192,6 +195,7 @@ export function getScheduleCronValidation(cron: string): {
 }
 
 export function ScheduleEditor({
+  const { t } = useTranslation();
   value,
   onChange,
   onValidityChange,
