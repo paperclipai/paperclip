@@ -35,6 +35,7 @@ HERMES_GATEWAY_SESSION_KEY_STRATEGY="${HERMES_GATEWAY_SESSION_KEY_STRATEGY:-issu
 HERMES_GATEWAY_TIMEOUT_SEC="${HERMES_GATEWAY_TIMEOUT_SEC:-180}"
 PAPERCLIP_API_URL_FOR_HERMES="${PAPERCLIP_API_URL_FOR_HERMES:-}"
 GATEWAY_PROBE_TIMEOUT_SEC="${GATEWAY_PROBE_TIMEOUT_SEC:-4}"
+HERMES_JOIN_OUTPUT_FILE="${HERMES_JOIN_OUTPUT_FILE:-}"
 
 AUTH_HEADERS=()
 if [[ -n "${PAPERCLIP_AUTH_HEADER:-}" ]]; then
@@ -355,3 +356,28 @@ log "agentId=${CREATED_AGENT_ID}"
 log "keyId=${KEY_ID}"
 log "hermesGatewayApiKeySha256=$(hash_prefix "$HERMES_GATEWAY_API_KEY") len=${#HERMES_GATEWAY_API_KEY}"
 log "agentApiKeySha256=$(hash_prefix "$AGENT_API_KEY") len=${#AGENT_API_KEY}"
+
+if [[ -n "$HERMES_JOIN_OUTPUT_FILE" ]]; then
+  mkdir -p "$(dirname "$HERMES_JOIN_OUTPUT_FILE")"
+  jq -nc \
+    --arg companyId "$COMPANY_ID" \
+    --arg inviteId "$INVITE_ID" \
+    --arg joinRequestId "$JOIN_REQUEST_ID" \
+    --arg agentId "$CREATED_AGENT_ID" \
+    --arg keyId "$KEY_ID" \
+    --arg agentApiKey "$AGENT_API_KEY" \
+    --arg hermesGatewayApiKeySha256 "$(hash_prefix "$HERMES_GATEWAY_API_KEY")" \
+    --arg agentApiKeySha256 "$(hash_prefix "$AGENT_API_KEY")" \
+    '{
+      companyId: $companyId,
+      inviteId: $inviteId,
+      joinRequestId: $joinRequestId,
+      agentId: $agentId,
+      keyId: $keyId,
+      agentApiKey: $agentApiKey,
+      hermesGatewayApiKeySha256: $hermesGatewayApiKeySha256,
+      agentApiKeySha256: $agentApiKeySha256
+    }' > "$HERMES_JOIN_OUTPUT_FILE"
+  chmod 600 "$HERMES_JOIN_OUTPUT_FILE"
+  log "wrote join metadata to ${HERMES_JOIN_OUTPUT_FILE} (contains secret material; chmod 600)"
+fi
