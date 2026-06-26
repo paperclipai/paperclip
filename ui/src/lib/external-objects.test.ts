@@ -103,6 +103,7 @@ describe("external-objects helpers", () => {
     expect(externalObjectProviderLabel("hubspot_marketing")).toBe("Hubspot Marketing");
     expect(externalObjectProviderLabel(null)).toBe("External");
     expect(externalObjectTypeLabel("workflow_run")).toBe("workflow run");
+    expect(externalObjectTypeLabel("url_link")).toBe("URL");
     expect(externalObjectTypeLabel(null)).toBe("object");
   });
 

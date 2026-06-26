@@ -287,9 +287,8 @@ function resolveRunningIssueRun(
   activeRun: ActiveRunForIssue | null | undefined,
   liveRuns: readonly LiveRunForIssue[] | undefined,
 ) {
-  return activeRun?.status === "running"
-    ? activeRun
-    : (liveRuns ?? []).find((run) => run.status === "running") ?? null;
+  const runningLiveRun = (liveRuns ?? []).find((run) => run.status === "running") ?? null;
+  return runningLiveRun ?? (activeRun?.status === "running" ? activeRun : null);
 }
 
 function dedupeLiveRunsById(liveRuns: readonly LiveRunForIssue[]) {
@@ -301,17 +300,28 @@ function dedupeLiveRunsById(liveRuns: readonly LiveRunForIssue[]) {
   });
 }
 
-function readIssueRunStateFromCache(queryClient: QueryClient, issueId: string) {
+function readIssueRunStateFromCache(
+  queryClient: QueryClient,
+  issueId: string,
+  issue: Pick<Issue, "executionRunId"> | null | undefined,
+) {
   const liveRuns = queryClient.getQueryData<LiveRunForIssue[]>(
     queryKeys.issues.liveRuns(issueId),
   );
   const activeRun = queryClient.getQueryData<ActiveRunForIssue | null>(
     queryKeys.issues.activeRun(issueId),
   );
+  const activeRunIsLive = Boolean(
+    activeRun && liveRuns?.some((run) => run.id === activeRun.id),
+  );
+  const activeRunMatchesIssueLock = Boolean(
+    activeRun && issue?.executionRunId && activeRun.id === issue.executionRunId,
+  );
+  const resolvedActiveRun = activeRunIsLive || activeRunMatchesIssueLock ? activeRun : null;
   return {
     liveRuns,
-    activeRun,
-    runningIssueRun: resolveRunningIssueRun(activeRun, liveRuns),
+    activeRun: resolvedActiveRun,
+    runningIssueRun: resolveRunningIssueRun(resolvedActiveRun, liveRuns),
   };
 }
 
@@ -2192,7 +2202,7 @@ export function IssueDetail() {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
 
       const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
-      const queuedComment = !interrupt ? readIssueRunStateFromCache(queryClient, issueId!).runningIssueRun : null;
+      const queuedComment = !interrupt ? readIssueRunStateFromCache(queryClient, issueId!, issue).runningIssueRun : null;
       const optimisticComment = issue
         ? createOptimisticIssueComment({
             companyId: issue.companyId,
@@ -2418,7 +2428,7 @@ export function IssueDetail() {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
 
       const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
-      const queuedComment = !interrupt ? readIssueRunStateFromCache(queryClient, issueId!).runningIssueRun : null;
+      const queuedComment = !interrupt ? readIssueRunStateFromCache(queryClient, issueId!, issue).runningIssueRun : null;
       const optimisticComment = issue
         ? createOptimisticIssueComment({
             companyId: issue.companyId,

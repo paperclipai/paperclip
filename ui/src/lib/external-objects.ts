@@ -170,6 +170,7 @@ const OBJECT_TYPE_LABELS: Record<string, string> = {
   workflow_run: "workflow run",
   ticket: "ticket",
   lead: "lead",
+  url_link: "URL",
 };
 
 export function externalObjectTypeLabel(objectType: string | null | undefined): string {
