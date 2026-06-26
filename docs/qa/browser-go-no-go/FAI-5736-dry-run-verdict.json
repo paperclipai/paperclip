@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "qaIssueId": "FAI-5736",
+  "featureIssueIds": [
+    "FAI-5734"
+  ],
+  "environment": {
+    "name": "local",
+    "baseUrl": "http://127.0.0.1:3100",
+    "commit": "bf0952453fc1af3d37e86e53686b52782777969b"
+  },
+  "browserContext": {
+    "tool": "scripts/qa-browser-bridge.mjs",
+    "isolated": true,
+    "profileRef": ".paperclip/qa-browser/profile-3320",
+    "viewport": {
+      "width": 1440,
+      "height": 1000
+    }
+  },
+  "journeys": [
+    {
+      "id": "paperclip-dashboard-load",
+      "name": "Load Paperclip dashboard from seeded QA browser context",
+      "required": true,
+      "status": "pass",
+      "steps": [
+        "Navigate to /FAI/dashboard.",
+        "Wait for the dashboard heading.",
+        "Capture a viewport screenshot and extracted body text."
+      ],
+      "assertions": [
+        {
+          "description": "The dashboard shell renders visible navigation and dashboard content for a human reviewer.",
+          "result": "pass",
+          "observed": "Heading 'DASHBOARD' was present after deterministic h1 wait."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "ref": "screenshots/qa-browser/FAI-5736-dashboard.png",
+          "sha256": "f6fb754bb067f475a2fc6ed82d323c218af6ce7aa3e4f13d0d8d26db62bda953",
+          "description": "Viewport screenshot after dashboard heading wait."
+        },
+        {
+          "kind": "dom",
+          "ref": "docs/qa/browser-go-no-go/FAI-5736-dashboard-dom.txt",
+          "sha256": "7277e0484de463fb4e86954d02ef82883e101660f930298c241907df2daac500",
+          "description": "Extracted body text after dashboard heading wait."
+        }
+      ],
+      "retryCount": 0,
+      "quarantine": null
+    }
+  ],
+  "overallVerdict": "go",
+  "approver": {
+    "type": "agent",
+    "id": "7d4d0562-48dd-40be-8ad2-f9b3d8fa6899",
+    "name": "QA Engineer"
+  },
+  "generatedAt": "2026-06-23T09:46:50.2182901Z"
+}

@@ -1,0 +1,236 @@
+Skip to Main Content
+F
+FAIRSQUARE TECHNOLOGY
+New Task
+Dashboard
+6 live
+Inbox
+97
+WORK
+Tasks
+Routines
+Goals
+Artifacts
+PROJECTS
+Onboarding
+Product
+RatiqMultiModal.io
+Sales
+OnDemand LinkedIn
+Web Design
+Pricing Strategies
+AGENTS
+CEO
+1 live
+DevOps Engineer
+2 live
+Founding Engineer
+QA Engineer
+3 live
+Sales Manager
+SecurityEngineer
+WebDesignEngineer
+Graphic Designer
+COMPANY
+Org
+Skills
+Costs
+Activity
+Settings
+BO
+Board
+DASHBOARD
+AGENTS
+CE
+CEO
+Live now
+CE
+CEO
+RUNNING
+Working
+for 2 minutes
+· called 6 tools
+Tool
+2m ago
+QE
+QA Engineer
+Live now
+FAI-5737 - Pilot: advisory Browser GO/NO-GO on 1-2 UI features
+QE
+QA Engineer
+RUNNING
+Queued...
+8m ago
+QE
+QA Engineer
+Live now
+FAI-5731 - QA Headless Testing In The Browser
+QE
+QA Engineer
+RUNNING
+Queued...
+19m ago
+DE
+DevOps Engineer
+Live now
+DE
+DevOps Engineer
+RUNNING
+Queued...
+26m ago
+2 more active/recent runs
+
+8
+
+Agents Enabled
+
+3 running, 0 paused, 0 errors
+
+1
+
+Tasks In Progress
+
+210 open, 13 blocked
+
+$0.00
+
+Month Spend
+
+Unlimited budget
+
+56
+
+Pending Approvals
+
+Awaiting board review
+Run Activity
+Last 14 days
+6/10
+6/16
+6/23
+Tasks by Priority
+Last 14 days
+6/10
+6/16
+6/23
+Critical
+High
+Medium
+Low
+Tasks by Status
+Last 14 days
+6/10
+6/16
+6/23
+In Review
+Done
+Blocked
+Cancelled
+Success Rate
+Last 14 days
+6/10
+6/16
+6/23
+RECENT ACTIVITY
+CE
+
+CEO environment lease acquired
+
+2m ago
+SM
+
+Sales Manager environment lease released
+
+5m ago
+SM
+
+Sales Manager environment lease acquired
+
+7m ago
+QE
+
+QA Engineer environment lease acquired
+
+8m ago
+QE
+
+QA Engineer environment lease released
+
+8m ago
+QE
+
+QA Engineer commented on
+
+8m ago
+Added references
+FAI-5737
+QE
+
+QA Engineer changed status from in progress to done on
+
+8m ago
+QE
+
+QA Engineer issue work product created
+
+12m ago
+QE
+
+QA Engineer attached file to
+
+12m ago
+QE
+
+QA Engineer issue work product created
+
+12m ago
+RECENT TASKS
+Post approved Wed Jun 25 LinkedIn post: P2+P1 automation numbers (Hormozi)
+FAI-5729
+SM
+Sales Manager
+1h ago
+Draft & approve post: Mon Jun 23 - P1 freight desk problem (P2 reset)
+FAI-5726
+SM
+Sales Manager
+1h ago
+Post approved comments from [Comment Batch] 2026-06-23
+FAI-5723
+SM
+Sales Manager
+3h ago
+Post approved comment: Craig Fuller - DOT selects SONAR
+FAI-5597
+SM
+Sales Manager
+19h ago
+[Action Needed] 6 LinkedIn comment batches awaiting approval (Jun 17–20)
+FAI-5696
+20h ago
+Re-probe Live SeaRates Auto-Rates after vendor quota restoration
+FAI-5568
+DE
+DevOps Engineer
+21h ago
+Fix clarification next-iteration send lock after reply
+FAI-528
+FE
+Founding Engineer
+21h ago
+Post approved reply: Vitali Marychenka - workaround economy
+FAI-510
+SM
+Sales Manager
+21h ago
+DevOps Engineer Spinning Without Results
+FAI-417
+21h ago
+Post approved reply: Shaheer 4th exchange — Hormuz thread
+FAI-335
+SM
+Sales Manager
+21h ago
+Command Palette
+
+Search for a command to run...

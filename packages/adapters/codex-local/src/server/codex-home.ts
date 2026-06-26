@@ -189,7 +189,7 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   await fs.mkdir(home, { recursive: true });
   const target = path.join(home, "auth.json");
   await fs.rm(target, { force: true });
-  await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+  await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600, flag: "wx" });
 }
 
 /**

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-06-04T19:57:14.020Z",
+  "generatedAt": "2026-06-23T09:48:04.979Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -179,6 +179,54 @@
         }
       ],
       "contentHash": "sha256:0bd9a9fdc656d529e3f97c00cd504dcf72d3a4fecb8b0504ca2fe3e00d63287f"
+    },
+    {
+      "id": "paperclipai:bundled:quality:browser-go-no-go",
+      "key": "paperclipai/bundled/quality/browser-go-no-go",
+      "kind": "bundled",
+      "category": "quality",
+      "slug": "browser-go-no-go",
+      "name": "browser-go-no-go",
+      "description": "Run a deterministic Paperclip Browser GO/NO-GO review for UI-visible work. Use when QA must launch the isolated browser context, exercise user journeys, capture screenshot/DOM evidence, classify each journey pass/fail/quarantined, and emit a machine-readable verdict record for Security or release handoff.",
+      "path": "catalog/bundled/quality/browser-go-no-go",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "qa",
+        "engineer",
+        "security"
+      ],
+      "requires": [],
+      "tags": [
+        "qa",
+        "browser",
+        "go-no-go",
+        "evidence",
+        "verdict"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4598,
+          "sha256": "784e746e5fed81295878384340b82743942915965f03db8733bd06a06ef02cbd"
+        },
+        {
+          "path": "references/verdict-example.json",
+          "kind": "reference",
+          "sizeBytes": 1636,
+          "sha256": "1ff1bcf2844e8ff725d43fd6936c46b92cb68e96bbd53728c66a74abe02fedb4"
+        },
+        {
+          "path": "references/verdict-schema.json",
+          "kind": "reference",
+          "sizeBytes": 5256,
+          "sha256": "b7201da45d9077d625d536dddfe518bdde3ead44152658998507f221fd3776ac"
+        }
+      ],
+      "contentHash": "sha256:4c7906e66c5b632439864a9b01906cfa30ddcb529c4a031ca2b39c31c316682e"
     },
     {
       "id": "paperclipai:bundled:quality:qa-acceptance",

@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "qaIssueId": "FAI-5735",
+  "featureIssueIds": [
+    "FAI-5734"
+  ],
+  "environment": {
+    "name": "local",
+    "baseUrl": "http://127.0.0.1:3100/FAI",
+    "commit": "791ca538a"
+  },
+  "browserContext": {
+    "tool": "scripts/qa-browser-bridge.mjs / Playwright isolated persistent context",
+    "isolated": true,
+    "profileRef": ".paperclip/qa-browser/profile-FAI-5735-final",
+    "viewport": {
+      "width": 1440,
+      "height": 1000
+    }
+  },
+  "journeys": [
+    {
+      "id": "dashboard-load",
+      "name": "Load Paperclip company dashboard shell",
+      "required": true,
+      "status": "pass",
+      "steps": [
+        "Navigate to /FAI/dashboard on the app base URL.",
+        "Wait deterministically for Dashboard, Agents, and FAI-5731 visible text.",
+        "Capture a full-page screenshot and extract visible document body text."
+      ],
+      "assertions": [
+        {
+          "description": "The Dashboard page is visible to a human reviewer.",
+          "result": "pass",
+          "observed": "Playwright text=Dashboard resolved before screenshot."
+        },
+        {
+          "description": "The dashboard content includes company activity and agents.",
+          "result": "pass",
+          "observed": "Playwright selectors for Agents and FAI-5731 resolved before screenshot."
+        },
+        {
+          "description": "The DOM text evidence is from a valid company route.",
+          "result": "pass",
+          "observed": "Extracted body text length: 2773; text did not include Company not found."
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "ref": "screenshots/qa-browser/FAI-5735-dashboard.png",
+          "sha256": "ac5729945bf707f4a91491a4d4ab3b90a8164608013d887955edde23808bcb88",
+          "description": "Full-page screenshot after company dashboard shell load."
+        },
+        {
+          "kind": "dom",
+          "ref": "docs/qa/browser-go-no-go/FAI-5735-dashboard-dom.txt",
+          "sha256": "ad147514833ecd9889ec4d051db7b3837da97b1f9d4c9f40e0fd3203b5f64b28",
+          "description": "Extracted visible body text after company dashboard shell load."
+        }
+      ],
+      "retryCount": 1,
+      "quarantine": null
+    }
+  ],
+  "overallVerdict": "go",
+  "approver": {
+    "type": "agent",
+    "id": "7d4d0562-48dd-40be-8ad2-f9b3d8fa6899",
+    "name": "QA Engineer"
+  },
+  "generatedAt": "2026-06-23T10:07:03.583Z"
+}

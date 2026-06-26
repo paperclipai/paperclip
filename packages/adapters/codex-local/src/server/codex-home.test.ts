@@ -9,6 +9,7 @@ import {
   prepareManagedCodexHome,
   reconcileManagedCodexHome,
   seedManagedCodexHome,
+  writeApiKeyAuthJson,
 } from "./codex-home.js";
 
 describe("codex managed home", () => {
@@ -315,6 +316,36 @@ describe("seedManagedCodexHome", () => {
       const written = JSON.parse(await fs.readFile(path.join(agentHome, "auth.json"), "utf8"));
       expect(written).toEqual({ OPENAI_API_KEY: "sk-test-123" });
     } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails instead of following a raced-in auth.json symlink during API-key writes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-apikey-race-"));
+    try {
+      const agentHome = path.join(root, "agent-home");
+      const authPath = path.join(agentHome, "auth.json");
+      const outsideAuth = path.join(root, "outside-auth.json");
+
+      await fs.mkdir(agentHome, { recursive: true });
+      await fs.writeFile(authPath, '{"OPENAI_API_KEY":"old"}', "utf8");
+      await fs.writeFile(outsideAuth, '{"OPENAI_API_KEY":"outside"}', "utf8");
+
+      const originalRm = fs.rm.bind(fs);
+      vi.spyOn(fs, "rm").mockImplementationOnce(async (target, options) => {
+        await originalRm(target, options);
+        await fs.symlink(outsideAuth, authPath);
+      });
+
+      await expect(writeApiKeyAuthJson(agentHome, "sk-test-123")).rejects.toMatchObject({
+        code: "EEXIST",
+      });
+      expect((await fs.lstat(authPath)).isSymbolicLink()).toBe(true);
+      expect(JSON.parse(await fs.readFile(outsideAuth, "utf8"))).toEqual({
+        OPENAI_API_KEY: "outside",
+      });
+    } finally {
+      vi.restoreAllMocks();
       await fs.rm(root, { recursive: true, force: true });
     }
   });
