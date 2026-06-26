@@ -64,3 +64,12 @@ tests/release-smoke/playwright-report/
 
 # Build artifacts — never commit; the Dockerfile vendor stage rebuilds these from source
 vendor/*.tgz
+
+# graphify knowledge-graph: commit graph.json/manifest/report; ignore local/viz/cache/cost
+**/graphify-out/cost.json
+**/graphify-out/.graphify_python
+**/graphify-out/.graphify_root
+**/graphify-out/graph.html
+**/graphify-out/cache/
+**/graphify-out/memory/
+**/graphify-out/20*/
