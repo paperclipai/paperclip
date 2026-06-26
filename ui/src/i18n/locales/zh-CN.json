@@ -213,7 +213,8 @@
       "agents": "选择一家公司以查看智能体。",
       "goals": "选择一家公司以查看目标。",
       "activity": "选择一家公司以查看活动。",
-      "projects": "选择一家公司以查看项目。"
+      "projects": "选择一家公司以查看项目。",
+      "routines": "选择一家公司以查看例程。"
     },
     "sort": {
       "name": "名称",
@@ -221,7 +222,9 @@
       "created": "创建时间",
       "targetDate": "目标日期",
       "asc": "升序",
-      "desc": "降序"
+      "desc": "降序",
+      "lastRun": "上次运行",
+      "title": "标题"
     }
   },
   "agents": {
@@ -327,5 +330,25 @@
     "unknownError": "未知错误",
     "serverError": "服务器返回 {{status}}。",
     "requestFailed": "请求失败。"
+  },
+  "routines": {
+    "created": "例程已创建",
+    "createdAddTrigger": "添加首个触发器即可将其变为实时工作流。",
+    "createdDraft": "草稿已保存。启用自动化前请添加默认智能体。",
+    "updateFailed": "更新例程失败",
+    "updateFailedBody": "Paperclip 无法更新该例程。",
+    "runFailed": "例程运行失败",
+    "runFailedBody": "Paperclip 无法启动该例程运行。",
+    "recentRuns": "最近运行",
+    "needAgent": "启用例程自动化前请设置默认智能体。",
+    "groupBy": {
+      "project": "项目",
+      "agent": "智能体",
+      "none": "无"
+    },
+    "placeholders": {
+      "title": "例程标题",
+      "assignee": "负责人"
+    }
   }
 }

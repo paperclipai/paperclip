@@ -187,7 +187,8 @@
       "agents": "Select a company to view agents.",
       "goals": "Select a company to view goals.",
       "activity": "Select a company to view activity.",
-      "projects": "Select a company to view projects."
+      "projects": "Select a company to view projects.",
+      "routines": "Select a company to view routines."
     },
     "sort": {
       "name": "Name",
@@ -195,7 +196,9 @@
       "created": "Created",
       "targetDate": "Target date",
       "asc": "Asc",
-      "desc": "Desc"
+      "desc": "Desc",
+      "lastRun": "Last run",
+      "title": "Title"
     }
   },
   "agents": {
@@ -327,5 +330,25 @@
     "unknownError": "Unknown error",
     "serverError": "The server returned {{status}}.",
     "requestFailed": "The request failed."
+  },
+  "routines": {
+    "created": "Routine created",
+    "createdAddTrigger": "Add the first trigger to turn it into a live workflow.",
+    "createdDraft": "Draft saved. Add a default agent before enabling automation.",
+    "updateFailed": "Failed to update routine",
+    "updateFailedBody": "Paperclip could not update the routine.",
+    "runFailed": "Routine run failed",
+    "runFailedBody": "Paperclip could not start the routine run.",
+    "recentRuns": "Recent Runs",
+    "needAgent": "Set a default agent before enabling routine automation.",
+    "groupBy": {
+      "project": "Project",
+      "agent": "Agent",
+      "none": "None"
+    },
+    "placeholders": {
+      "title": "Routine title",
+      "assignee": "Assignee"
+    }
   }
 }

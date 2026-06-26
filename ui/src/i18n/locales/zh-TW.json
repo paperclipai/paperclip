@@ -213,7 +213,8 @@
       "agents": "選擇一家公司以檢視智慧代理。",
       "goals": "選擇一家公司以檢視目標。",
       "activity": "選擇一家公司以檢視活動。",
-      "projects": "選擇一家公司以檢視專案。"
+      "projects": "選擇一家公司以檢視專案。",
+      "routines": "選擇一家公司以檢視排程。"
     },
     "sort": {
       "name": "名稱",
@@ -221,7 +222,9 @@
       "created": "建立時間",
       "targetDate": "目標日期",
       "asc": "升序",
-      "desc": "降序"
+      "desc": "降序",
+      "lastRun": "上次執行",
+      "title": "標題"
     }
   },
   "agents": {
@@ -327,5 +330,25 @@
     "unknownError": "未知錯誤",
     "serverError": "伺服器傳回 {{status}}。",
     "requestFailed": "請求失敗。"
+  },
+  "routines": {
+    "created": "排程已建立",
+    "createdAddTrigger": "新增首個觸發器即可將其變為即時工作流程。",
+    "createdDraft": "草稿已儲存。啟用自動化前請新增預設智慧代理。",
+    "updateFailed": "更新排程失敗",
+    "updateFailedBody": "Paperclip 無法更新該排程。",
+    "runFailed": "排程執行失敗",
+    "runFailedBody": "Paperclip 無法啟動該排程執行。",
+    "recentRuns": "最近執行",
+    "needAgent": "啟用排程自動化前請設定預設智慧代理。",
+    "groupBy": {
+      "project": "專案",
+      "agent": "智慧代理",
+      "none": "無"
+    },
+    "placeholders": {
+      "title": "排程標題",
+      "assignee": "負責人"
+    }
   }
 }
