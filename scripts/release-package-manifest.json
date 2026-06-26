@@ -47,7 +47,7 @@
   {
     "dir": "packages/adapters/hermes-gateway",
     "name": "@paperclipai/adapter-hermes-gateway",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/opencode-local",
