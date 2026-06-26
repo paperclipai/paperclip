@@ -56,12 +56,15 @@ vi.mock("./IssueWorkspaceCard", async () => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
+async function settleEffects() {
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function flushUi(callback: () => void) {
+  flushSync(callback);
+  await settleEffects();
 }
 
 function createProject(): Project {
@@ -188,7 +191,7 @@ async function renderRoutineRunDialog(container: HTMLDivElement, props: {
   const queryClient = createQueryClient();
   const onSubmit = props.onSubmit ?? vi.fn();
 
-  await act(async () => {
+  await flushUi(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
         <RoutineRunVariablesDialog
@@ -204,9 +207,6 @@ async function renderRoutineRunDialog(container: HTMLDivElement, props: {
         />
       </QueryClientProvider>,
     );
-    await Promise.resolve();
-    await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   return { root, onSubmit };
@@ -254,7 +254,7 @@ describe("RoutineRunVariablesDialog", () => {
       },
     });
 
-    await act(async () => {
+    await flushUi(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <RoutineRunVariablesDialog
@@ -271,9 +271,6 @@ describe("RoutineRunVariablesDialog", () => {
           />
         </QueryClientProvider>,
       );
-      await Promise.resolve();
-      await Promise.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     expect(issueWorkspaceDraftCalls).toBeLessThanOrEqual(2);
@@ -281,7 +278,7 @@ describe("RoutineRunVariablesDialog", () => {
     expect(document.body.textContent).not.toContain("Search agents...");
     expect(document.body.textContent).not.toContain("Search projects...");
 
-    await act(async () => {
+    await flushUi(() => {
       root.unmount();
     });
   });
@@ -296,7 +293,7 @@ describe("RoutineRunVariablesDialog", () => {
       },
     });
 
-    await act(async () => {
+    await flushUi(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <RoutineRunVariablesDialog
@@ -322,9 +319,6 @@ describe("RoutineRunVariablesDialog", () => {
           />
         </QueryClientProvider>,
       );
-      await Promise.resolve();
-      await Promise.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     const dialogContent = Array.from(document.body.querySelectorAll("div")).find((element) =>
@@ -349,7 +343,7 @@ describe("RoutineRunVariablesDialog", () => {
     expect(footer?.contains(formScrollRegion ?? null)).toBe(false);
     expect(footer?.textContent).toContain("Run routine");
 
-    await act(async () => {
+    await flushUi(() => {
       root.unmount();
     });
   });
@@ -371,7 +365,7 @@ describe("RoutineRunVariablesDialog", () => {
       },
     });
 
-    await act(async () => {
+    await flushUi(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <RoutineRunVariablesDialog
@@ -397,15 +391,10 @@ describe("RoutineRunVariablesDialog", () => {
           />
         </QueryClientProvider>,
       );
-      await Promise.resolve();
-      await Promise.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     for (let i = 0; i < 10 && !document.querySelector('[data-testid="workspace-card"]'); i += 1) {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
+      await settleEffects();
     }
 
     const branchInput = Array.from(document.querySelectorAll("input"))
@@ -417,7 +406,7 @@ describe("RoutineRunVariablesDialog", () => {
       .find((button) => button.textContent === "Run routine");
     expect(runButton).toBeTruthy();
 
-    await act(async () => {
+    await flushUi(() => {
       runButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
@@ -432,7 +421,7 @@ describe("RoutineRunVariablesDialog", () => {
       executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
 
-    await act(async () => {
+    await flushUi(() => {
       root.unmount();
     });
   });
@@ -455,7 +444,7 @@ describe("RoutineRunVariablesDialog", () => {
       },
     });
 
-    await act(async () => {
+    await flushUi(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <RoutineRunVariablesDialog
@@ -473,15 +462,10 @@ describe("RoutineRunVariablesDialog", () => {
           />
         </QueryClientProvider>,
       );
-      await Promise.resolve();
-      await Promise.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     for (let i = 0; i < 10 && latestWorkspaceIssue === null; i += 1) {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
+      await settleEffects();
     }
 
     expect(latestWorkspaceIssue).toMatchObject({
@@ -491,7 +475,7 @@ describe("RoutineRunVariablesDialog", () => {
       projectWorkspaceId: workspace.projectWorkspaceId,
     });
 
-    await act(async () => {
+    await flushUi(() => {
       root.unmount();
     });
   });
@@ -522,7 +506,7 @@ describe("RoutineRunVariablesDialog", () => {
     expect(dateInputs).toHaveLength(2);
     expect(dateInputs.map((input) => input.value)).toEqual(["2026-06-26", "2026-07-01"]);
 
-    await act(async () => {
+    await flushUi(() => {
       root.unmount();
     });
   });
@@ -564,15 +548,14 @@ describe("RoutineRunVariablesDialog", () => {
     expect(document.body.textContent).toContain("Missing: startDate, Release on");
 
     const dateInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="date"]'));
-    await act(async () => {
+    await flushUi(() => {
       setInputValue(dateInputs[0]!, "2026-07-04");
       setInputValue(dateInputs[1]!, "2026-08-01");
-      await Promise.resolve();
     });
 
     expect(runButton?.disabled).toBe(false);
 
-    await act(async () => {
+    await flushUi(() => {
       runButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
@@ -585,7 +568,7 @@ describe("RoutineRunVariablesDialog", () => {
       projectId: null,
     });
 
-    await act(async () => {
+    await flushUi(() => {
       root.unmount();
     });
   });
