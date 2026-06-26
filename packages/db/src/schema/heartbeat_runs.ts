@@ -1,3 +1,5 @@
+import { sql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -54,6 +56,55 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    // Detoast mirror columns: scalar projections from `context_snapshot` and
+    // `result_json` so list queries don't have to detoast the full JSONB blob
+    // to read a few fields. Populated by PostgreSQL on every INSERT/UPDATE.
+    // See packages/db/src/migrations/0124_heartbeat_runs_detoast_generated_columns.sql
+    // for the matching DDL.
+    // NB: the `(): SQL => sql\`...\`` thunk is needed because Drizzle 0.45.2
+    // evaluates the expression eagerly, but `heartbeatRuns` is not yet
+    // assigned at the point these column definitions are evaluated. The
+    // explicit `SQL` return type breaks the inference cycle (the same trick
+    // is used by `retryOfRunId` above for `(): AnyPgColumn => heartbeatRuns.id`).
+    contextIssueId: uuid("context_issue_id").generatedAlwaysAs(
+      (): SQL => sql`(${heartbeatRuns.contextSnapshot} ->> 'issueId')::uuid`,
+    ),
+    contextTaskId: uuid("context_task_id").generatedAlwaysAs(
+      (): SQL => sql`(${heartbeatRuns.contextSnapshot} ->> 'taskId')::uuid`,
+    ),
+    contextTaskKey: text("context_task_key").generatedAlwaysAs(
+      (): SQL => sql`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`,
+    ),
+    contextCommentId: uuid("context_comment_id").generatedAlwaysAs(
+      (): SQL => sql`(${heartbeatRuns.contextSnapshot} ->> 'commentId')::uuid`,
+    ),
+    contextWakeCommentId: uuid("context_wake_comment_id").generatedAlwaysAs(
+      (): SQL => sql`(${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId')::uuid`,
+    ),
+    contextWakeReason: text("context_wake_reason").generatedAlwaysAs(
+      (): SQL => sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`,
+    ),
+    contextWakeSource: text("context_wake_source").generatedAlwaysAs(
+      (): SQL => sql`${heartbeatRuns.contextSnapshot} ->> 'wakeSource'`,
+    ),
+    contextWakeTriggerDetail: text("context_wake_trigger_detail").generatedAlwaysAs(
+      (): SQL => sql`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`,
+    ),
+    resultSummary: text("result_summary").generatedAlwaysAs(
+      (): SQL => sql`${heartbeatRuns.resultJson} ->> 'summary'`,
+    ),
+    resultResult: text("result_result").generatedAlwaysAs(
+      (): SQL => sql`${heartbeatRuns.resultJson} ->> 'result'`,
+    ),
+    resultMessage: text("result_message").generatedAlwaysAs(
+      (): SQL => sql`${heartbeatRuns.resultJson} ->> 'message'`,
+    ),
+    resultError: text("result_error").generatedAlwaysAs(
+      (): SQL => sql`${heartbeatRuns.resultJson} ->> 'error'`,
+    ),
+    resultCostUsd: text("result_cost_usd").generatedAlwaysAs(
+      (): SQL => sql`${heartbeatRuns.resultJson} ->> 'cost_usd'`,
+    ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -78,5 +129,8 @@ export const heartbeatRuns = pgTable(
       table.status,
       table.processStartedAt,
     ),
+    contextIssueIdIdx: index("heartbeat_runs_context_issue_id_idx")
+      .on(table.contextIssueId)
+      .where(sql`${table.contextIssueId} IS NOT NULL`),
   }),
 );
