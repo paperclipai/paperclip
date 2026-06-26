@@ -46,6 +46,7 @@ import {
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
+  isUuidLike,
   pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
@@ -544,6 +545,7 @@ export function routineService(
   });
 
   async function getRoutineById(id: string) {
+    if (!isUuidLike(id)) return null;
     return db
       .select()
       .from(routines)
@@ -609,6 +611,7 @@ export function routineService(
   }
 
   async function getTriggerById(id: string) {
+    if (!isUuidLike(id)) return null;
     return db
       .select()
       .from(routineTriggers)

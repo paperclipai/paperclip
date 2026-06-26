@@ -8,6 +8,13 @@ import { assertAuthenticated, assertBoard, assertCompanyAccess } from "./authz.j
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 
+function parseIsoDate(raw: unknown): Date | undefined | null {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || raw.trim().length === 0) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 const createActivitySchema = z.object({
   actorType: z.enum(["agent", "user", "system", "plugin"]).optional().default("system"),
   actorId: z.string().min(1),
@@ -77,12 +84,38 @@ export function activityRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyScopeReadAllowed(req, res, companyId))) return;
 
+    const rawLimit = req.query.limit;
+    let limit: number | undefined;
+    if (typeof rawLimit === "string" && rawLimit.length > 0) {
+      const parsed = Number(rawLimit);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        res
+          .status(400)
+          .json({ error: "limit must be a positive integer" });
+        return;
+      }
+      limit = parsed;
+    }
+
+    const since = parseIsoDate(req.query.since);
+    if (since === null) {
+      res.status(400).json({ error: "since must be a valid ISO 8601 timestamp" });
+      return;
+    }
+    const until = parseIsoDate(req.query.until);
+    if (until === null) {
+      res.status(400).json({ error: "until must be a valid ISO 8601 timestamp" });
+      return;
+    }
+
     const filters = {
       companyId,
       agentId: req.query.agentId as string | undefined,
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
-      limit: normalizeActivityLimit(Number(req.query.limit)),
+      limit: normalizeActivityLimit(limit),
+      since: since ?? undefined,
+      until: until ?? undefined,
     };
     const result = await svc.list(filters);
     res.json(result);

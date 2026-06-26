@@ -198,4 +198,118 @@ describe.sequential("activity routes", () => {
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
     expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
   });
+
+  describe("GET /api/companies/:companyId/activity pagination + window (ZERA-526/527)", () => {
+    it("applies the service-side default when no limit is provided", async () => {
+      mockActivityService.list.mockResolvedValue([]);
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/activity"),
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockActivityService.list).toHaveBeenCalledTimes(1);
+      const filters = mockActivityService.list.mock.calls[0][0];
+      expect(filters).toMatchObject({ companyId: "company-1", limit: 100 });
+      expect(filters.since).toBeUndefined();
+      expect(filters.until).toBeUndefined();
+    });
+
+    it("rejects a non-integer or non-positive limit with 400", async () => {
+      const app = await createApp();
+      const cases = ["abc", "0", "-1", "1.5"];
+      for (const value of cases) {
+        const res = await requestApp(app, (baseUrl) =>
+          request(baseUrl).get(`/api/companies/company-1/activity?limit=${value}`),
+        );
+        expect(res.status).toBe(400);
+      }
+      expect(mockActivityService.list).not.toHaveBeenCalled();
+    });
+
+    it("forwards a valid since timestamp as a Date", async () => {
+      mockActivityService.list.mockResolvedValue([]);
+      const app = await createApp();
+      const since = "2026-05-01T00:00:00.000Z";
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(
+          `/api/companies/company-1/activity?since=${encodeURIComponent(since)}`,
+        ),
+      );
+
+      expect(res.status).toBe(200);
+      const filters = mockActivityService.list.mock.calls[0][0];
+      expect(filters.since).toBeInstanceOf(Date);
+      expect(filters.since.toISOString()).toBe(since);
+    });
+
+    it("forwards a valid until timestamp as a Date", async () => {
+      mockActivityService.list.mockResolvedValue([]);
+      const app = await createApp();
+      const until = "2026-05-06T00:00:00.000Z";
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(
+          `/api/companies/company-1/activity?until=${encodeURIComponent(until)}`,
+        ),
+      );
+
+      expect(res.status).toBe(200);
+      const filters = mockActivityService.list.mock.calls[0][0];
+      expect(filters.until).toBeInstanceOf(Date);
+      expect(filters.until.toISOString()).toBe(until);
+    });
+
+    it("rejects malformed since/until with 400", async () => {
+      const app = await createApp();
+      const sinceRes = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/activity?since=not-a-date"),
+      );
+      expect(sinceRes.status).toBe(400);
+
+      const untilRes = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/activity?until=also-not-a-date"),
+      );
+      expect(untilRes.status).toBe(400);
+
+      expect(mockActivityService.list).not.toHaveBeenCalled();
+    });
+
+    it("composes limit clamp with since/until window", async () => {
+      mockActivityService.list.mockResolvedValue([]);
+      const app = await createApp();
+      const since = "2026-05-01T00:00:00.000Z";
+      const until = "2026-05-06T00:00:00.000Z";
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(
+          `/api/companies/company-1/activity?limit=10&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`,
+        ),
+      );
+
+      expect(res.status).toBe(200);
+      const filters = mockActivityService.list.mock.calls[0][0];
+      expect(filters).toMatchObject({ companyId: "company-1", limit: 10 });
+      expect(filters.since).toBeInstanceOf(Date);
+      expect(filters.since.toISOString()).toBe(since);
+      expect(filters.until).toBeInstanceOf(Date);
+      expect(filters.until.toISOString()).toBe(until);
+    });
+
+    it("preserves existing agentId / entityType filters", async () => {
+      mockActivityService.list.mockResolvedValue([]);
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/activity?agentId=agent-x&entityType=issue&limit=10",
+        ),
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockActivityService.list.mock.calls[0][0]).toMatchObject({
+        companyId: "company-1",
+        agentId: "agent-x",
+        entityType: "issue",
+        limit: 10,
+      });
+    });
+  });
 });

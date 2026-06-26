@@ -11,6 +11,7 @@ import {
   MODEL_PROFILE_KEYS,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
+  isUuidLike,
   type BillingType,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
@@ -12170,7 +12171,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     },
 
-    getRun,
+    getRun: async (runId: string, opts?: { unsafeFullResultJson?: boolean }) => {
+      if (!isUuidLike(runId)) return null;
+      return getRun(runId, opts);
+    },
 
     decorateActiveRunStatus: decorateHeartbeatRunRuntimeStatus,
     recordRuntimeProgress: recordCurrentHeartbeatRunRuntimeProgress,
