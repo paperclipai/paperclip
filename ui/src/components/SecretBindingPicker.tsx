@@ -68,6 +68,7 @@ export function SecretBindingPicker({
   disabled,
   statusFilter = ["active"],
 }: SecretBindingPickerProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const [createOpen, setCreateOpen] = useState(false);
@@ -114,7 +115,7 @@ export function SecretBindingPicker({
       setCreateError(null);
     },
     onError: (error) => {
-      setCreateError(error instanceof Error ? error.message : "Failed to create secret");
+      setCreateError(error instanceof Error ? error.message : t("secretBindingPicker.errors.createFailed"));
     },
   });
 
@@ -181,7 +182,7 @@ export function SecretBindingPicker({
               onChange({ ...value, version: next });
             }}
             disabled={disabled || !value || !selectedSecret}
-            aria-label="Version"
+            aria-label={t("secretBindingPicker.labelsJsx.version")}
           >
             <option value={VERSION_LATEST}>latest</option>
             {selectedSecret
@@ -203,7 +204,7 @@ export function SecretBindingPicker({
           size="sm"
           onClick={() => setCreateOpen(true)}
           disabled={disabled || !selectedCompanyId}
-          aria-label="Create secret"
+          aria-label={t("secretBindingPicker.labelsJsx.create")}
         >
           <Plus className="h-3.5 w-3.5" />
         </Button>
@@ -226,21 +227,21 @@ export function SecretBindingPicker({
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Create new secret</DialogTitle>
+            <DialogTitle>{t("secretBindingPicker.text.createNew")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <label className="text-xs font-medium text-foreground/80" htmlFor="secret-name">Name</label>
+              <label className="text-xs font-medium text-foreground/80" htmlFor="secret-name">{t("secretBindingPicker.text.name")}</label>
               <Input
                 id="secret-name"
                 value={createName}
                 onChange={(event) => setCreateName(event.target.value)}
-                placeholder="OPENAI_API_KEY"
+                placeholder={t("secretBindingPicker.placeholders.openaiApiKey")}
                 autoFocus
               />
             </div>
             <div>
-              <label className="text-xs font-medium text-foreground/80" htmlFor="secret-value">Value</label>
+              <label className="text-xs font-medium text-foreground/80" htmlFor="secret-value">{t("secretBindingPicker.text.value")}</label>
               <Textarea
                 id="secret-value"
                 value={createValue}
@@ -254,18 +255,18 @@ export function SecretBindingPicker({
               </p>
             </div>
             <div>
-              <label className="text-xs font-medium text-foreground/80" htmlFor="secret-description">Description</label>
+              <label className="text-xs font-medium text-foreground/80" htmlFor="secret-description">{t("secretBindingPicker.text.description")}</label>
               <Input
                 id="secret-description"
                 value={createDescription}
                 onChange={(event) => setCreateDescription(event.target.value)}
-                placeholder="Optional notes (no values)"
+                placeholder={t("secretBindingPicker.placeholders.notes")}
               />
             </div>
             {createError ? <p className="text-xs text-destructive">{createError}</p> : null}
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
+            <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>{t("secretBindingPicker.text.cancel")}</Button>
             <Button
               type="button"
               onClick={() => createMutation.mutate()}

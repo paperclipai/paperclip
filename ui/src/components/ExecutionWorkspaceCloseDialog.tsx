@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { Loader2 } from "lucide-react";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useToastActions } from "../context/ToastContext";
@@ -43,6 +44,7 @@ export function ExecutionWorkspaceCloseDialog({
   onOpenChange,
   onClosed,
 }: ExecutionWorkspaceCloseDialogProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const actionLabel = currentStatus === "cleanup_failed" ? "Retry close" : "Close workspace";
@@ -68,8 +70,8 @@ export function ExecutionWorkspaceCloseDialog({
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to close workspace",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: t("executionWorkspaceClose.toasts.closeFailed"),
+        body: error instanceof Error ? error.message : t("executionWorkspaceClose.errors.unknown"),
         tone: "error",
       });
     },
@@ -105,7 +107,7 @@ export function ExecutionWorkspaceCloseDialog({
           </div>
         ) : readinessQuery.error ? (
           <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-            {readinessQuery.error instanceof Error ? readinessQuery.error.message : "Failed to inspect workspace close readiness."}
+            {readinessQuery.error instanceof Error ? readinessQuery.error.message : t("executionWorkspaceClose.errors.inspectFailed")}
           </div>
         ) : readiness ? (
           <div className="space-y-4">
@@ -130,7 +132,7 @@ export function ExecutionWorkspaceCloseDialog({
 
             {blockingIssues.length > 0 ? (
               <section className="space-y-2">
-                <h3 className="text-sm font-medium">Blocking tasks</h3>
+                <h3 className="text-sm font-medium">{t("executionWorkspaceClose.text.blockingTasks")}</h3>
                 <div className="space-y-2">
                   {blockingIssues.map((issue) => (
                     <div key={issue.id} className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm">
@@ -148,7 +150,7 @@ export function ExecutionWorkspaceCloseDialog({
 
             {readiness.blockingReasons.length > 0 ? (
               <section className="space-y-2">
-                <h3 className="text-sm font-medium">Blocking reasons</h3>
+                <h3 className="text-sm font-medium">{t("executionWorkspaceClose.text.blockingReasons")}</h3>
                 <ul className="space-y-2 text-sm text-muted-foreground">
                   {readiness.blockingReasons.map((reason) => (
                     <li key={reason} className="break-words rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-destructive">
@@ -178,11 +180,11 @@ export function ExecutionWorkspaceCloseDialog({
                 <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm">
                   <div className="grid gap-2 sm:grid-cols-2">
                     <div>
-                      <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Branch</div>
+                      <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">{t("executionWorkspaceClose.text.branch")}</div>
                       <div className="font-mono text-xs">{readiness.git.branchName ?? "Unknown"}</div>
                     </div>
                     <div>
-                      <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Base ref</div>
+                      <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">{t("executionWorkspaceClose.text.baseRef")}</div>
                       <div className="font-mono text-xs">{readiness.git.baseRef ?? "Not set"}</div>
                     </div>
                     <div>
@@ -228,7 +230,7 @@ export function ExecutionWorkspaceCloseDialog({
 
             {readiness.runtimeServices.length > 0 ? (
               <section className="space-y-2">
-                <h3 className="text-sm font-medium">Attached runtime services</h3>
+                <h3 className="text-sm font-medium">{t("executionWorkspaceClose.text.attachedServices")}</h3>
                 <div className="space-y-2">
                   {readiness.runtimeServices.map((service) => (
                     <div key={service.id} className="rounded-xl border border-border bg-background px-4 py-3 text-sm">

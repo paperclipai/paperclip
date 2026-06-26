@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { useNavigate } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Pause,
@@ -73,7 +74,7 @@ export function PauseResumeButton({
     return (
       <Button variant="outline" size={size} onClick={onResume} disabled={disabled}>
         <Play className="h-3.5 w-3.5 sm:mr-1" />
-        <span className="hidden sm:inline">Resume</span>
+        <span className="hidden sm:inline">{t("agentActionButtons.text.resume")}</span>
       </Button>
     );
   }
@@ -81,7 +82,7 @@ export function PauseResumeButton({
   return (
     <Button variant="outline" size={size} onClick={onPause} disabled={disabled}>
       <Pause className="h-3.5 w-3.5 sm:mr-1" />
-      <span className="hidden sm:inline">Pause</span>
+      <span className="hidden sm:inline">{t("agentActionButtons.text.pause")}</span>
     </Button>
   );
 }
@@ -102,10 +103,10 @@ export function ClearErrorButton({
       onClick={onClick}
       disabled={disabled}
       className="border-destructive/60 text-destructive hover:bg-destructive/10 hover:text-destructive dark:border-destructive/50"
-      aria-label="Clear error and return agent to idle"
+      aria-label={t("agentActionButtons.aria.clearError")}
     >
       <CheckCircle2 className="h-3.5 w-3.5 sm:mr-1" />
-      <span className="hidden sm:inline">Clear error</span>
+      <span className="hidden sm:inline">{t("agentActionButtons.text.clearError")}</span>
     </Button>
   );
 }
@@ -194,7 +195,7 @@ export function AgentActionButtons({
       if (onActionError) {
         onActionError(message);
       } else {
-        pushToast({ title: "Action failed", body: message, tone: "error" });
+        pushToast({ title: t("agentActionButtons.toasts.actionFailed"), body: message, tone: "error" });
       }
     },
     [onActionError, pushToast],
@@ -231,7 +232,7 @@ export function AgentActionButtons({
       }
     },
     onError: (err) => {
-      reportError(err instanceof Error ? err.message : "Action failed");
+      reportError(err instanceof Error ? err.message : t("agentActionButtons.errors.actionFailed"));
     },
   });
 
@@ -257,13 +258,13 @@ export function AgentActionButtons({
       if (resolvedCompanyId) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
       }
-      pushToast({ title: "Agent duplicated", body: createdAgent.name, tone: "success" });
+      pushToast({ title: t("agentActionButtons.toasts.agentDuplicated"), body: createdAgent.name, tone: "success" });
       navigate(`/agents/${agentRouteRef(createdAgent)}/dashboard`);
     },
     onError: (err) => {
-      const message = err instanceof Error ? err.message : "Failed to duplicate agent";
+      const message = err instanceof Error ? err.message : t("agentActionButtons.errors.duplicateFailed");
       onActionError?.(message);
-      pushToast({ title: "Could not duplicate agent", body: message, tone: "error" });
+      pushToast({ title: t("agentActionButtons.toasts.duplicateFailed"), body: message, tone: "error" });
     },
   });
 
@@ -284,7 +285,7 @@ export function AgentActionButtons({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(agent.id) });
     },
     onError: (err) => {
-      reportError(err instanceof Error ? err.message : "Failed to reset session");
+      reportError(err instanceof Error ? err.message : t("agentActionButtons.errors.resetFailed"));
     },
   });
 

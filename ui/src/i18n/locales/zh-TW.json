@@ -2219,5 +2219,135 @@
       "projectDefault": "專案預設",
       "reuseExisting": "複用現有工作區"
     }
+  },
+  "scheduleEditor": {
+    "labelsJsx": {
+      "cronExpression": "Cron 運算式",
+      "scheduleFrequency": "排程頻率"
+    },
+    "options": {
+      "custom": "自訂 (cron)",
+      "everyDay": "每天",
+      "everyHour": "每小時"
+    }
+  },
+  "agentActionButtons": {
+    "toasts": {
+      "actionFailed": "操作失敗",
+      "agentDuplicated": "智慧代理已複製",
+      "duplicateFailed": "無法複製智慧代理"
+    },
+    "errors": {
+      "actionFailed": "操作失敗",
+      "duplicateFailed": "複製智慧代理失敗",
+      "resetFailed": "重設工作階段失敗"
+    },
+    "text": {
+      "clearError": "清除錯誤",
+      "pause": "暫停",
+      "resume": "恢復"
+    },
+    "aria": {
+      "clearError": "清除錯誤並將智慧代理返回閒置",
+      "runNow": "立即執行"
+    }
+  },
+  "routineVariablesEditor": {
+    "text": {
+      "defaultOption": "預設選項",
+      "defaultValue": "預設值",
+      "description": "描述",
+      "example": "範例",
+      "false": "否"
+    },
+    "aria": {
+      "showHelp": "顯示變數說明"
+    },
+    "placeholders": {
+      "noDefault": "無預設值"
+    }
+  },
+  "artifactsPanel": {
+    "text": {
+      "artifacts": "產物",
+      "docEmpty": "文件為空。",
+      "docUnavailable": "文件尚無法使用。",
+      "needsReview": "此文件需要你的審查。"
+    },
+    "status": {
+      "changesRequested": "請求修改",
+      "completed": "已完成",
+      "failed": "失敗",
+      "forReview": "待審查",
+      "inProgress": "進行中"
+    }
+  },
+  "executionWorkspaceClose": {
+    "toasts": {
+      "closeFailed": "關閉工作區失敗"
+    },
+    "errors": {
+      "inspectFailed": "檢查工作區關閉準備狀態失敗。",
+      "unknown": "未知錯誤"
+    },
+    "text": {
+      "attachedServices": "已附加的執行階段服務",
+      "baseRef": "基線引用",
+      "blockingReasons": "阻塞原因",
+      "blockingTasks": "阻塞工作",
+      "branch": "分支"
+    }
+  },
+  "secretBindingPicker": {
+    "errors": {
+      "createFailed": "建立密鑰失敗"
+    },
+    "text": {
+      "cancel": "取消",
+      "createNew": "新建密鑰",
+      "description": "描述",
+      "name": "名稱",
+      "value": "值"
+    },
+    "labelsJsx": {
+      "create": "建立密鑰",
+      "secret": "密鑰",
+      "version": "版本"
+    },
+    "placeholders": {
+      "openaiApiKey": "OPENAI_API_KEY",
+      "notes": "可選備註(不含值)"
+    }
+  },
+  "trustPresetSection": {
+    "text": {
+      "issue": "工作",
+      "project": "專案",
+      "rootIssue": "根工作",
+      "trust": "信任"
+    },
+    "labelsJsx": {
+      "allowedAgents": "允許的智慧代理",
+      "allowedSecrets": "允許的密鑰",
+      "allowedTools": "允許的工具",
+      "boundaryType": "邊界類型",
+      "eeFields": "EE 欄位"
+    }
+  },
+  "approvalPayload": {
+    "text": {
+      "adapter": "介接器",
+      "capabilities": "能力",
+      "name": "名稱",
+      "onApproval": "審批時",
+      "risks": "風險"
+    },
+    "labelsJsx": {
+      "icon": "圖示",
+      "metric": "指標",
+      "role": "角色",
+      "scope": "範圍",
+      "title": "標題"
+    }
   }
 }

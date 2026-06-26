@@ -8,12 +8,12 @@ export type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "week
 
 const PRESETS: { value: SchedulePreset; label: string }[] = [
   { value: "every_minute", label: "Every minute" },
-  { value: "every_hour", label: "Every hour" },
-  { value: "every_day", label: "Every day" },
+  { value: "every_hour", label: t("scheduleEditor.status.everyHour") },
+  { value: "every_day", label: t("scheduleEditor.status.everyDay") },
   { value: "weekdays", label: "Weekdays" },
   { value: "weekly", label: "Weekly" },
   { value: "monthly", label: "Monthly" },
-  { value: "custom", label: "Custom (cron)" },
+  { value: "custom", label: t("scheduleEditor.status.custom") },
 ];
 
 const HOURS = Array.from({ length: 24 }, (_, i) => ({
@@ -247,7 +247,7 @@ export function ScheduleEditor({
   return (
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
-        <SelectTrigger className="w-full" aria-label="Schedule frequency">
+        <SelectTrigger className="w-full" aria-label={t("scheduleEditor.labelsJsx.scheduleFrequency")}>
           <SelectValue placeholder="Choose frequency..." />
         </SelectTrigger>
         <SelectContent>
@@ -271,7 +271,7 @@ export function ScheduleEditor({
               }
             }}
             placeholder="0 10 * * *"
-            aria-label="Cron expression"
+            aria-label={t("scheduleEditor.labelsJsx.cronExpression")}
             aria-invalid={!customValidation.valid}
             className="font-mono text-sm"
           />

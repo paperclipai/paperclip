@@ -2219,5 +2219,135 @@
       "projectDefault": "项目默认",
       "reuseExisting": "复用现有工作区"
     }
+  },
+  "scheduleEditor": {
+    "labelsJsx": {
+      "cronExpression": "Cron 表达式",
+      "scheduleFrequency": "调度频率"
+    },
+    "options": {
+      "custom": "自定义 (cron)",
+      "everyDay": "每天",
+      "everyHour": "每小时"
+    }
+  },
+  "agentActionButtons": {
+    "toasts": {
+      "actionFailed": "操作失败",
+      "agentDuplicated": "智能体已复制",
+      "duplicateFailed": "无法复制智能体"
+    },
+    "errors": {
+      "actionFailed": "操作失败",
+      "duplicateFailed": "复制智能体失败",
+      "resetFailed": "重置会话失败"
+    },
+    "text": {
+      "clearError": "清除错误",
+      "pause": "暂停",
+      "resume": "恢复"
+    },
+    "aria": {
+      "clearError": "清除错误并将智能体返回空闲",
+      "runNow": "立即运行"
+    }
+  },
+  "routineVariablesEditor": {
+    "text": {
+      "defaultOption": "默认选项",
+      "defaultValue": "默认值",
+      "description": "描述",
+      "example": "示例",
+      "false": "否"
+    },
+    "aria": {
+      "showHelp": "显示变量帮助"
+    },
+    "placeholders": {
+      "noDefault": "无默认值"
+    }
+  },
+  "artifactsPanel": {
+    "text": {
+      "artifacts": "产物",
+      "docEmpty": "文档为空。",
+      "docUnavailable": "文档尚不可用。",
+      "needsReview": "此文档需要你的审查。"
+    },
+    "status": {
+      "changesRequested": "请求修改",
+      "completed": "已完成",
+      "failed": "失败",
+      "forReview": "待审查",
+      "inProgress": "进行中"
+    }
+  },
+  "executionWorkspaceClose": {
+    "toasts": {
+      "closeFailed": "关闭工作区失败"
+    },
+    "errors": {
+      "inspectFailed": "检查工作区关闭准备状态失败。",
+      "unknown": "未知错误"
+    },
+    "text": {
+      "attachedServices": "已附加的运行时服务",
+      "baseRef": "基线引用",
+      "blockingReasons": "阻塞原因",
+      "blockingTasks": "阻塞任务",
+      "branch": "分支"
+    }
+  },
+  "secretBindingPicker": {
+    "errors": {
+      "createFailed": "创建密钥失败"
+    },
+    "text": {
+      "cancel": "取消",
+      "createNew": "新建密钥",
+      "description": "描述",
+      "name": "名称",
+      "value": "值"
+    },
+    "labelsJsx": {
+      "create": "创建密钥",
+      "secret": "密钥",
+      "version": "版本"
+    },
+    "placeholders": {
+      "openaiApiKey": "OPENAI_API_KEY",
+      "notes": "可选备注(不含值)"
+    }
+  },
+  "trustPresetSection": {
+    "text": {
+      "issue": "任务",
+      "project": "项目",
+      "rootIssue": "根任务",
+      "trust": "信任"
+    },
+    "labelsJsx": {
+      "allowedAgents": "允许的智能体",
+      "allowedSecrets": "允许的密钥",
+      "allowedTools": "允许的工具",
+      "boundaryType": "边界类型",
+      "eeFields": "EE 字段"
+    }
+  },
+  "approvalPayload": {
+    "text": {
+      "adapter": "适配器",
+      "capabilities": "能力",
+      "name": "名称",
+      "onApproval": "审批时",
+      "risks": "风险"
+    },
+    "labelsJsx": {
+      "icon": "图标",
+      "metric": "指标",
+      "role": "角色",
+      "scope": "范围",
+      "title": "标题"
+    }
   }
 }

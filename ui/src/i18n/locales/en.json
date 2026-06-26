@@ -2219,5 +2219,135 @@
       "projectDefault": "Project default",
       "reuseExisting": "Reuse existing workspace"
     }
+  },
+  "scheduleEditor": {
+    "labelsJsx": {
+      "cronExpression": "Cron expression",
+      "scheduleFrequency": "Schedule frequency"
+    },
+    "options": {
+      "custom": "Custom (cron)",
+      "everyDay": "Every day",
+      "everyHour": "Every hour"
+    }
+  },
+  "agentActionButtons": {
+    "toasts": {
+      "actionFailed": "Action failed",
+      "agentDuplicated": "Agent duplicated",
+      "duplicateFailed": "Could not duplicate agent"
+    },
+    "errors": {
+      "actionFailed": "Action failed",
+      "duplicateFailed": "Failed to duplicate agent",
+      "resetFailed": "Failed to reset session"
+    },
+    "text": {
+      "clearError": "Clear error",
+      "pause": "Pause",
+      "resume": "Resume"
+    },
+    "aria": {
+      "clearError": "Clear error and return agent to idle",
+      "runNow": "Run now"
+    }
+  },
+  "routineVariablesEditor": {
+    "text": {
+      "defaultOption": "Default option",
+      "defaultValue": "Default value",
+      "description": "Description",
+      "example": "Example",
+      "false": "False"
+    },
+    "aria": {
+      "showHelp": "Show variable help"
+    },
+    "placeholders": {
+      "noDefault": "No default"
+    }
+  },
+  "artifactsPanel": {
+    "text": {
+      "artifacts": "Artifacts",
+      "docEmpty": "Document is empty.",
+      "docUnavailable": "Document not available yet.",
+      "needsReview": "This document needs your review."
+    },
+    "status": {
+      "changesRequested": "Changes Requested",
+      "completed": "Completed",
+      "failed": "Failed",
+      "forReview": "For Review",
+      "inProgress": "In Progress"
+    }
+  },
+  "executionWorkspaceClose": {
+    "toasts": {
+      "closeFailed": "Failed to close workspace"
+    },
+    "errors": {
+      "inspectFailed": "Failed to inspect workspace close readiness.",
+      "unknown": "Unknown error"
+    },
+    "text": {
+      "attachedServices": "Attached runtime services",
+      "baseRef": "Base ref",
+      "blockingReasons": "Blocking reasons",
+      "blockingTasks": "Blocking tasks",
+      "branch": "Branch"
+    }
+  },
+  "secretBindingPicker": {
+    "errors": {
+      "createFailed": "Failed to create secret"
+    },
+    "text": {
+      "cancel": "Cancel",
+      "createNew": "Create new secret",
+      "description": "Description",
+      "name": "Name",
+      "value": "Value"
+    },
+    "labelsJsx": {
+      "create": "Create secret",
+      "secret": "Secret",
+      "version": "Version"
+    },
+    "placeholders": {
+      "openaiApiKey": "OPENAI_API_KEY",
+      "notes": "Optional notes (no values)"
+    }
+  },
+  "trustPresetSection": {
+    "text": {
+      "issue": "Issue",
+      "project": "Project",
+      "rootIssue": "Root issue",
+      "trust": "Trust"
+    },
+    "labelsJsx": {
+      "allowedAgents": "Allowed agents",
+      "allowedSecrets": "Allowed secrets",
+      "allowedTools": "Allowed tools",
+      "boundaryType": "Boundary type",
+      "eeFields": "EE fields"
+    }
+  },
+  "approvalPayload": {
+    "text": {
+      "adapter": "Adapter",
+      "capabilities": "Capabilities",
+      "name": "Name",
+      "onApproval": "On approval",
+      "risks": "Risks"
+    },
+    "labelsJsx": {
+      "icon": "Icon",
+      "metric": "Metric",
+      "role": "Role",
+      "scope": "Scope",
+      "title": "Title"
+    }
   }
 }

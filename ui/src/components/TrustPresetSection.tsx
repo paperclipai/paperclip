@@ -104,7 +104,7 @@ export function TrustPresetSection({
 
   return (
     <div>
-      <h3 className="mb-3 text-sm font-medium">Trust</h3>
+      <h3 className="mb-3 text-sm font-medium">{t("trustPresetSection.text.trust")}</h3>
       <div className="rounded-lg border border-border p-4 space-y-3">
         <Field label="Trust preset" hint="Choose how broadly this agent can read and act on Paperclip work objects.">
           <select
@@ -149,16 +149,16 @@ export function TrustPresetSection({
               {boundaryEditable ? (
                 <div className="rounded-md border border-border/70 bg-background/70 p-3 text-foreground space-y-3">
                   <div className="grid gap-3 sm:grid-cols-[minmax(0,0.75fr)_minmax(0,1fr)]">
-                    <Field label="Boundary type">
+                    <Field label={t("trustPresetSection.labelsJsx.boundaryType")}>
                       <select
                         className={inputClass}
                         value={targetType}
                         onChange={(event) => setTargetType(event.target.value as LowTrustBoundaryTargetType)}
                         disabled={disabled}
                       >
-                        <option value="project">Project</option>
-                        <option value="root_issue">Root issue</option>
-                        <option value="issue">Issue</option>
+                        <option value="project">{t("trustPresetSection.text.project")}</option>
+                        <option value="root_issue">{t("trustPresetSection.text.rootIssue")}</option>
+                        <option value="issue">{t("trustPresetSection.text.issue")}</option>
                       </select>
                     </Field>
                     <Field label={BOUNDARY_TARGET_LABELS[targetType]}>
@@ -231,12 +231,12 @@ export function TrustPresetSection({
                   <PolicyRow label="Projects" value={formatCount(boundary?.projectIds, "project", "projects")} />
                   <PolicyRow label="Root issue" value={boundary?.rootIssueId ? boundary.rootIssueId.slice(0, 8) : "-"} />
                   <PolicyRow label="Explicit issues" value={formatCount(boundary?.issueIds, "issue", "issues")} />
-                  <PolicyRow label="Allowed agents" value={formatCount(boundary?.allowedAgentIds, "agent", "agents")} />
-                  <PolicyRow label="Allowed tools" value={boundary?.allowedToolClasses?.join(" · ") || "-"} />
-                  <PolicyRow label="Allowed secrets" value={formatCount(boundary?.allowedSecretBindingIds, "binding", "bindings")} />
+                  <PolicyRow label={t("trustPresetSection.labelsJsx.allowedAgents")} value={formatCount(boundary?.allowedAgentIds, "agent", "agents")} />
+                  <PolicyRow label={t("trustPresetSection.labelsJsx.allowedTools")} value={boundary?.allowedToolClasses?.join(" · ") || "-"} />
+                  <PolicyRow label={t("trustPresetSection.labelsJsx.allowedSecrets")} value={formatCount(boundary?.allowedSecretBindingIds, "binding", "bindings")} />
                   <PolicyRow label="Promotion target" value={boundary?.outputPromotionTarget?.issueId?.slice(0, 8) ?? "-"} />
                   <PolicyRow
-                    label="EE fields"
+                    label={t("trustPresetSection.labelsJsx.eeFields")}
                     value={Object.keys(policy ?? {}).some((key) => !["trustPreset", "reviewPreset", "trustBoundary"].includes(key))
                       ? "Custom advanced policy fields preserved"
                       : "-"}
