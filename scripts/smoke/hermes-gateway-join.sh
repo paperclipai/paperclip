@@ -48,6 +48,8 @@ fi
 
 RESPONSE_CODE=""
 RESPONSE_BODY=""
+CLAIM_SECRET=""
+AGENT_API_KEY=""
 
 hash_prefix() {
   local value="$1"
