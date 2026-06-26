@@ -1471,6 +1471,9 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   const provisionCommand = asString(input.workspace.config?.provisionCommand, "").trim();
 
   if (strategy !== "git_worktree") {
+    if (!await directoryExists(cwd)) {
+      return null;
+    }
     return realized;
   }
   const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);

@@ -903,6 +903,8 @@ export function mergeExecutionWorkspaceMetadataForPersistence(input: {
   createdByRuntime: boolean;
   configSnapshot: Record<string, unknown> | null;
   shouldReuseExisting: boolean;
+  shouldRefreshConfigSnapshot?: boolean;
+  workspaceConfigMetadata?: EffectiveRunWorkspaceConfigMetadata | null;
   baseRef: string | null | undefined;
   baseRefSha: string | null | undefined;
 }) {
@@ -923,7 +925,17 @@ export function mergeExecutionWorkspaceMetadataForPersistence(input: {
     };
   }
 
-  if (input.shouldReuseExisting || !input.configSnapshot) {
+  if (input.workspaceConfigMetadata) {
+    base[WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY] = {
+      version: input.workspaceConfigMetadata.version,
+      workspaceHash: input.workspaceConfigMetadata.fingerprint,
+      categories: input.workspaceConfigMetadata.categories,
+      categoryFingerprints: input.workspaceConfigMetadata.categoryFingerprints,
+      lastEvaluatedAt: input.workspaceConfigMetadata.evaluatedAt,
+    };
+  }
+
+  if ((input.shouldReuseExisting && !input.shouldRefreshConfigSnapshot) || !input.configSnapshot) {
     return base;
   }
 
@@ -934,35 +946,6 @@ export function stripWorkspaceRuntimeFromExecutionRunConfig(config: Record<strin
   const nextConfig = { ...config };
   delete nextConfig.workspaceRuntime;
   return nextConfig;
-}
-
-export function buildRealizedExecutionWorkspaceFromPersisted(input: {
-  base: ExecutionWorkspaceInput;
-  workspace: ExecutionWorkspace;
-}): RealizedExecutionWorkspace | null {
-  const cwd = readNonEmptyString(input.workspace.cwd) ?? readNonEmptyString(input.workspace.providerRef);
-  if (!cwd) {
-    return null;
-  }
-
-  const strategy = input.workspace.strategyType === "git_worktree" ? "git_worktree" : "project_primary";
-  const baseRefSnapshot = parseObject(input.workspace.metadata?.baseRefSnapshot);
-  const baseRefSha = typeof baseRefSnapshot.resolvedSha === "string" ? baseRefSnapshot.resolvedSha : null;
-  return {
-    baseCwd: input.base.baseCwd,
-    source: input.workspace.mode === "shared_workspace" ? "project_primary" : "task_session",
-    projectId: input.workspace.projectId ?? input.base.projectId,
-    workspaceId: input.workspace.projectWorkspaceId ?? input.base.workspaceId,
-    repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
-    repoRef: input.workspace.baseRef ?? input.base.repoRef,
-    strategy,
-    cwd,
-    branchName: input.workspace.branchName ?? null,
-    worktreePath: strategy === "git_worktree" ? (readNonEmptyString(input.workspace.providerRef) ?? cwd) : null,
-    warnings: [],
-    created: false,
-    baseRefSha,
-  };
 }
 
 function buildExecutionWorkspaceConfigSnapshot(
@@ -2472,6 +2455,7 @@ const PAPERCLIP_SESSION_METADATA_KEYS = new Set([
   SESSION_CONFIG_CATEGORIES_KEY,
   SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY,
 ]);
+const WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY = "configFingerprint";
 const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES = [
   "adapter",
   "adapterConfig",
@@ -2485,8 +2469,19 @@ const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES = [
   "secrets",
   "runtimeSkills",
 ] as const;
+const EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES = [
+  "mode",
+  "projectWorkspace",
+  "strategy",
+  "repo",
+  "lifecycleCommands",
+  "runtimeServices",
+  "environment",
+  "realization",
+] as const;
 
 type EffectiveRunSessionConfigCategory = (typeof EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES)[number];
+type EffectiveRunWorkspaceConfigCategory = (typeof EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES)[number];
 
 type EffectiveRunSessionConfigMetadata = {
   version: typeof EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION;
@@ -2504,6 +2499,29 @@ type TaskSessionConfigFreshnessDecision = {
   nextFingerprint: string | null;
 };
 
+export type EffectiveRunWorkspaceConfigMetadata = {
+  version: typeof EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION;
+  fingerprint: string;
+  categories: EffectiveRunWorkspaceConfigCategory[];
+  categoryFingerprints: Record<EffectiveRunWorkspaceConfigCategory, string>;
+  fingerprints: EffectiveRunConfigFingerprints;
+  evaluatedAt: string;
+};
+
+type WorkspaceConfigFreshnessDecisionAction = "create" | "reuse" | "refresh" | "replace";
+
+type ExecutionWorkspaceConfigFreshnessDecision = {
+  action: WorkspaceConfigFreshnessDecisionAction;
+  shouldReuseExisting: boolean;
+  shouldRefreshConfigSnapshot: boolean;
+  reasons: string[];
+  changedCategories: EffectiveRunWorkspaceConfigCategory[];
+  storedFingerprint: string | null;
+  inferredFingerprint: string | null;
+  nextFingerprint: string | null;
+  storedFingerprintPresent: boolean;
+};
+
 const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORY_LABELS: Record<EffectiveRunSessionConfigCategory, string> = {
   adapter: "adapter",
   adapterConfig: "adapter config",
@@ -2517,6 +2535,24 @@ const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORY_LABELS: Record<EffectiveRunSessionCo
   secrets: "secrets",
   runtimeSkills: "runtime skills",
 };
+const EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORY_LABELS: Record<EffectiveRunWorkspaceConfigCategory, string> = {
+  mode: "workspace mode",
+  projectWorkspace: "project workspace",
+  strategy: "workspace strategy",
+  repo: "repo/base ref",
+  lifecycleCommands: "workspace lifecycle commands",
+  runtimeServices: "runtime services",
+  environment: "environment",
+  realization: "workspace realization",
+};
+const WORKSPACE_REPLACEMENT_CONFIG_CATEGORIES = new Set<EffectiveRunWorkspaceConfigCategory>([
+  "mode",
+  "projectWorkspace",
+  "strategy",
+  "repo",
+  "environment",
+  "realization",
+]);
 
 function parseStoredConfigCategoryFingerprints(value: unknown) {
   const parsed = parseObject(value);
@@ -2570,6 +2606,56 @@ function changedEffectiveRunSessionConfigCategories(input: {
     (category) => input.previous[category] !== input.next[category],
   );
   return changed.length > 0 ? changed : [...EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES];
+}
+
+function parseStoredWorkspaceConfigCategoryFingerprints(value: unknown) {
+  const parsed = parseObject(value);
+  const out: Partial<Record<EffectiveRunWorkspaceConfigCategory, string>> = {};
+  for (const category of EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES) {
+    const fingerprint = readNonEmptyString(parsed[category]);
+    if (fingerprint) out[category] = fingerprint;
+  }
+  return out;
+}
+
+function readWorkspaceConfigCategoriesFromMetadata(value: unknown) {
+  const rawCategories = Array.isArray(value) ? value : [];
+  return rawCategories.filter(
+    (category): category is EffectiveRunWorkspaceConfigCategory =>
+      typeof category === "string" &&
+      (EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES as readonly string[]).includes(category),
+  );
+}
+
+function readWorkspaceConfigFingerprintFromMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  const raw = parseObject(metadata?.[WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY]);
+  const fingerprint = readNonEmptyString(raw.workspaceHash) ?? readNonEmptyString(raw.fingerprint);
+  const version = asNumber(raw.version, 0);
+  if (!fingerprint || version <= 0) return null;
+  return {
+    fingerprint,
+    version,
+    categories: readWorkspaceConfigCategoriesFromMetadata(raw.categories),
+    categoryFingerprints: parseStoredWorkspaceConfigCategoryFingerprints(raw.categoryFingerprints),
+  };
+}
+
+function describeEffectiveRunWorkspaceConfigCategories(
+  categories: readonly EffectiveRunWorkspaceConfigCategory[],
+) {
+  return categories.map((category) => EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORY_LABELS[category]).join(", ");
+}
+
+function changedEffectiveRunWorkspaceConfigCategories(input: {
+  previous: Partial<Record<EffectiveRunWorkspaceConfigCategory, string>>;
+  next: Record<EffectiveRunWorkspaceConfigCategory, string>;
+}) {
+  const changed = EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES.filter(
+    (category) => input.previous[category] !== input.next[category],
+  );
+  return changed.length > 0 ? changed : [...EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES];
 }
 
 function sanitizeSecretManifestForConfigFingerprint(
@@ -2716,6 +2802,223 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     categories: [...EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES],
     categoryFingerprints,
     fingerprints,
+  };
+}
+
+function buildWorkspaceConfigCategoryValues(input: {
+  mode: unknown;
+  projectId: unknown;
+  projectWorkspaceId: unknown;
+  strategyType: unknown;
+  workspaceStrategy: unknown;
+  repoUrl: unknown;
+  repoRef: unknown;
+  branchName: unknown;
+  configSnapshot: Partial<ExecutionWorkspaceConfig> | null;
+  environment: unknown;
+  realization: unknown;
+}) {
+  const snapshot = input.configSnapshot ?? {};
+  return {
+    mode: {
+      mode: input.mode ?? null,
+    },
+    projectWorkspace: {
+      projectId: input.projectId ?? null,
+      projectWorkspaceId: input.projectWorkspaceId ?? null,
+    },
+    strategy: {
+      strategyType: input.strategyType ?? null,
+      workspaceStrategy: input.workspaceStrategy ?? null,
+    },
+    repo: {
+      repoUrl: input.repoUrl ?? null,
+      repoRef: input.repoRef ?? null,
+      branchName: input.branchName ?? null,
+    },
+    lifecycleCommands: {
+      provisionCommand: snapshot.provisionCommand ?? null,
+      teardownCommand: snapshot.teardownCommand ?? null,
+      cleanupCommand: snapshot.cleanupCommand ?? null,
+    },
+    runtimeServices: {
+      workspaceRuntime: snapshot.workspaceRuntime ?? null,
+      desiredState: snapshot.desiredState ?? null,
+      serviceStates: snapshot.serviceStates ?? null,
+    },
+    environment: input.environment ?? null,
+    realization: input.realization ?? null,
+  } satisfies Record<EffectiveRunWorkspaceConfigCategory, unknown>;
+}
+
+export function buildEffectiveRunWorkspaceConfigMetadata(input: {
+  mode: unknown;
+  projectId: unknown;
+  projectWorkspaceId: unknown;
+  strategyType: unknown;
+  workspaceStrategy: unknown;
+  repoUrl: unknown;
+  repoRef: unknown;
+  branchName?: unknown;
+  configSnapshot: Partial<ExecutionWorkspaceConfig> | null;
+  environment: unknown;
+  realization: unknown;
+  secretManifest?: readonly EffectiveRunConfigSecretManifestEntry[];
+  evaluatedAt?: string | Date | null;
+}): EffectiveRunWorkspaceConfigMetadata {
+  const secretManifest = input.secretManifest ?? [];
+  const categoryValues = buildWorkspaceConfigCategoryValues({
+    mode: input.mode,
+    projectId: input.projectId,
+    projectWorkspaceId: input.projectWorkspaceId,
+    strategyType: input.strategyType,
+    workspaceStrategy: input.workspaceStrategy,
+    repoUrl: input.repoUrl,
+    repoRef: input.repoRef,
+    branchName: input.branchName ?? null,
+    configSnapshot: input.configSnapshot,
+    environment: input.environment,
+    realization: input.realization,
+  });
+  const fingerprints = createEffectiveRunConfigFingerprints({
+    workspace: categoryValues,
+    secretManifest,
+  });
+  const categoryFingerprints = Object.fromEntries(
+    EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES.map((category) => [
+      category,
+      createEffectiveRunConfigFingerprints({
+        workspace: { [category]: categoryValues[category] },
+        secretManifest,
+      }).workspaceFingerprint.fingerprint,
+    ]),
+  ) as Record<EffectiveRunWorkspaceConfigCategory, string>;
+  const evaluatedAt = input.evaluatedAt instanceof Date
+    ? input.evaluatedAt.toISOString()
+    : readNonEmptyString(input.evaluatedAt) ?? new Date().toISOString();
+  return {
+    version: EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
+    fingerprint: fingerprints.workspaceFingerprint.fingerprint,
+    categories: [...EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES],
+    categoryFingerprints,
+    fingerprints,
+    evaluatedAt,
+  };
+}
+
+export function resolveExecutionWorkspaceConfigFreshness(input: {
+  hasExistingWorkspace: boolean;
+  existingWorkspaceMetadata: Record<string, unknown> | null | undefined;
+  inferredMetadata?: EffectiveRunWorkspaceConfigMetadata | null;
+  nextMetadata: EffectiveRunWorkspaceConfigMetadata | null;
+}): ExecutionWorkspaceConfigFreshnessDecision {
+  if (!input.hasExistingWorkspace) {
+    return {
+      action: "create",
+      shouldReuseExisting: false,
+      shouldRefreshConfigSnapshot: false,
+      reasons: [],
+      changedCategories: [],
+      storedFingerprint: null,
+      inferredFingerprint: null,
+      nextFingerprint: input.nextMetadata?.fingerprint ?? null,
+      storedFingerprintPresent: false,
+    };
+  }
+
+  const stored = readWorkspaceConfigFingerprintFromMetadata(input.existingWorkspaceMetadata);
+  const previous = stored
+    ? {
+        version: stored.version,
+        fingerprint: stored.fingerprint,
+        categoryFingerprints: stored.categoryFingerprints,
+      }
+    : input.inferredMetadata
+      ? {
+          version: input.inferredMetadata.version,
+          fingerprint: input.inferredMetadata.fingerprint,
+          categoryFingerprints: input.inferredMetadata.categoryFingerprints,
+        }
+      : null;
+
+  if (!input.nextMetadata) {
+    return {
+      action: "reuse",
+      shouldReuseExisting: true,
+      shouldRefreshConfigSnapshot: false,
+      reasons: [],
+      changedCategories: [],
+      storedFingerprint: stored?.fingerprint ?? null,
+      inferredFingerprint: stored ? null : input.inferredMetadata?.fingerprint ?? null,
+      nextFingerprint: null,
+      storedFingerprintPresent: Boolean(stored),
+    };
+  }
+
+  if (!previous) {
+    return {
+      action: "replace",
+      shouldReuseExisting: false,
+      shouldRefreshConfigSnapshot: false,
+      reasons: ["execution workspace configuration fingerprint metadata is missing"],
+      changedCategories: [...input.nextMetadata.categories],
+      storedFingerprint: null,
+      inferredFingerprint: null,
+      nextFingerprint: input.nextMetadata.fingerprint,
+      storedFingerprintPresent: false,
+    };
+  }
+
+  if (previous.version !== input.nextMetadata.version) {
+    return {
+      action: "replace",
+      shouldReuseExisting: false,
+      shouldRefreshConfigSnapshot: false,
+      reasons: [
+        `execution workspace configuration fingerprint version changed from ${previous.version} to ${input.nextMetadata.version}`,
+      ],
+      changedCategories: [...input.nextMetadata.categories],
+      storedFingerprint: stored?.fingerprint ?? null,
+      inferredFingerprint: stored ? null : input.inferredMetadata?.fingerprint ?? null,
+      nextFingerprint: input.nextMetadata.fingerprint,
+      storedFingerprintPresent: Boolean(stored),
+    };
+  }
+
+  if (previous.fingerprint === input.nextMetadata.fingerprint) {
+    return {
+      action: "reuse",
+      shouldReuseExisting: true,
+      shouldRefreshConfigSnapshot: !stored,
+      reasons: stored ? [] : ["execution workspace configuration fingerprint metadata is missing"],
+      changedCategories: [],
+      storedFingerprint: stored?.fingerprint ?? null,
+      inferredFingerprint: stored ? null : input.inferredMetadata?.fingerprint ?? null,
+      nextFingerprint: input.nextMetadata.fingerprint,
+      storedFingerprintPresent: Boolean(stored),
+    };
+  }
+
+  const changedCategories = changedEffectiveRunWorkspaceConfigCategories({
+    previous: previous.categoryFingerprints,
+    next: input.nextMetadata.categoryFingerprints,
+  });
+  const replacementRequired = changedCategories.some((category) =>
+    WORKSPACE_REPLACEMENT_CONFIG_CATEGORIES.has(category)
+  );
+  const action: WorkspaceConfigFreshnessDecisionAction = replacementRequired ? "replace" : "refresh";
+  return {
+    action,
+    shouldReuseExisting: action !== "replace",
+    shouldRefreshConfigSnapshot: action === "refresh",
+    reasons: [
+      `execution workspace configuration changed: ${describeEffectiveRunWorkspaceConfigCategories(changedCategories)}`,
+    ],
+    changedCategories,
+    storedFingerprint: stored?.fingerprint ?? null,
+    inferredFingerprint: stored ? null : input.inferredMetadata?.fingerprint ?? null,
+    nextFingerprint: input.nextMetadata.fingerprint,
+    storedFingerprintPresent: Boolean(stored),
   };
 }
 
@@ -9070,19 +9373,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
       localDefaultEnvironmentId: localEnvironment.id,
     });
-    const shouldReuseExisting = requestedShouldReuseExisting;
-    const reusableExecutionWorkspaceConfig = shouldReuseExisting
-      ? requestedReusableExecutionWorkspaceConfig
-      : null;
-    const persistedExecutionWorkspaceMode = shouldReuseExisting && existingExecutionWorkspace
-      ? issueExecutionWorkspaceModeForPersistedWorkspace(existingExecutionWorkspace.mode)
-      : null;
     const effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode> =
-      persistedExecutionWorkspaceMode === "isolated_workspace" ||
-      persistedExecutionWorkspaceMode === "operator_branch" ||
-      persistedExecutionWorkspaceMode === "agent_default"
-        ? persistedExecutionWorkspaceMode
-        : requestedExecutionWorkspaceMode;
+      requestedExecutionWorkspaceMode;
     const executionPolicy = { executionMode: (await instanceSettings.getGeneral()).executionMode };
     let selectedEnvironmentId = environmentResolution.environmentId;
     if (isExecutionForcedToKubernetes(executionPolicy)) {
@@ -9149,19 +9441,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       selectedEnvironmentId = kubernetesEnvironment.id;
     }
-    const workspaceManagedConfig = shouldReuseExisting
-      ? { ...config }
-      : buildExecutionWorkspaceAdapterConfig({
-          agentConfig: config,
-          projectPolicy: projectExecutionWorkspacePolicy,
-          issueSettings: issueExecutionWorkspaceSettings,
-          mode: requestedExecutionWorkspaceMode,
-          legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
-        });
-    const persistedWorkspaceManagedConfig = applyPersistedExecutionWorkspaceConfig({
-      config: workspaceManagedConfig,
-      workspaceConfig: reusableExecutionWorkspaceConfig,
-      mode: effectiveExecutionWorkspaceMode,
+    const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: config,
+      projectPolicy: projectExecutionWorkspacePolicy,
+      issueSettings: issueExecutionWorkspaceSettings,
+      mode: requestedExecutionWorkspaceMode,
+      legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
     let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
     let profileResolutionFallbackReason: string | null = null;
@@ -9195,7 +9480,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       delete context.paperclipModelProfile;
     }
     const mergedConfig = mergeModelProfileAdapterConfig({
-      baseConfig: persistedWorkspaceManagedConfig,
+      baseConfig: workspaceManagedConfig,
       modelProfile: modelProfileApplication,
       issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
     });
@@ -9277,7 +9562,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : projectContext?.updatedAt ?? null,
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
-        reusableExecutionWorkspaceConfig,
+        reusableExecutionWorkspaceConfig: requestedReusableExecutionWorkspaceConfig,
         existingExecutionWorkspace: existingExecutionWorkspace
           ? {
               id: existingExecutionWorkspace.id,
@@ -9374,15 +9659,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ),
     });
     const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
-      config: runtimeConfig,
+      config: mergedConfig,
       trustPreset,
       selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
-    });
-    const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
-      companyId: agent.companyId,
-      heartbeatRunId: run.id,
-      executionWorkspaceId: existingExecutionWorkspace?.id ?? null,
-      issueId,
     });
     const executionWorkspaceBase = {
       baseCwd: resolvedWorkspace.cwd,
@@ -9392,6 +9671,88 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoUrl: resolvedWorkspace.repoUrl,
       repoRef: resolvedWorkspace.repoRef,
     } satisfies ExecutionWorkspaceInput;
+    const workspaceStrategyForFingerprint = parseObject(hostExecutionWorkspaceConfig.workspaceStrategy);
+    const workspaceStrategyFingerprintValue =
+      Object.keys(workspaceStrategyForFingerprint).length > 0 ? workspaceStrategyForFingerprint : null;
+    const latestWorkspaceStrategyType =
+      readNonEmptyString(workspaceStrategyForFingerprint.type) ??
+      (requestedExecutionWorkspaceMode === "agent_default"
+        ? "adapter_managed"
+        : requestedExecutionWorkspaceMode === "isolated_workspace" ||
+            requestedExecutionWorkspaceMode === "operator_branch"
+          ? "git_worktree"
+          : "project_primary");
+    const selectedEnvironmentConfigForFingerprint = parseObject(selectedEnvironmentForConfig?.config);
+    const workspaceEnvironmentFingerprint = selectedEnvironmentForConfig
+      ? {
+          selectionSource: environmentResolution.source,
+          selectedEnvironmentId,
+          driver: selectedEnvironmentForConfig.driver,
+          provider: readNonEmptyString(selectedEnvironmentConfigForFingerprint.provider),
+          config: selectedEnvironmentForConfig.config,
+          configRevisionAt: selectedEnvironmentForConfig.updatedAt instanceof Date
+            ? selectedEnvironmentForConfig.updatedAt.toISOString()
+            : selectedEnvironmentForConfig.updatedAt ?? null,
+          executionPolicy,
+        }
+      : null;
+    const workspaceRealizationFingerprint = {
+      environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
+      environmentProvider: readNonEmptyString(selectedEnvironmentConfigForFingerprint.provider),
+      trustPreset: trustPreset.kind,
+      lowTrustSandboxDriver: lowTrustPreflightEnvironmentDriver,
+    };
+    const latestWorkspaceConfigMetadata = buildEffectiveRunWorkspaceConfigMetadata({
+      mode: requestedExecutionWorkspaceMode,
+      projectId: executionWorkspaceBase.projectId,
+      projectWorkspaceId: executionWorkspaceBase.workspaceId,
+      strategyType: latestWorkspaceStrategyType,
+      workspaceStrategy: workspaceStrategyFingerprintValue,
+      repoUrl: executionWorkspaceBase.repoUrl,
+      repoRef: readNonEmptyString(workspaceStrategyForFingerprint.baseRef) ?? executionWorkspaceBase.repoRef,
+      configSnapshot,
+      environment: workspaceEnvironmentFingerprint,
+      realization: workspaceRealizationFingerprint,
+      secretManifest,
+    });
+    const inferredExistingWorkspaceConfigMetadata = existingExecutionWorkspace
+      ? buildEffectiveRunWorkspaceConfigMetadata({
+          mode: issueExecutionWorkspaceModeForPersistedWorkspace(existingExecutionWorkspace.mode),
+          projectId: existingExecutionWorkspace.projectId,
+          projectWorkspaceId: existingExecutionWorkspace.projectWorkspaceId,
+          strategyType: existingExecutionWorkspace.strategyType,
+          workspaceStrategy: workspaceStrategyFingerprintValue
+            ? {
+                ...workspaceStrategyFingerprintValue,
+                type: existingExecutionWorkspace.strategyType,
+                ...(existingExecutionWorkspace.baseRef
+                  ? { baseRef: existingExecutionWorkspace.baseRef }
+                  : {}),
+              }
+            : { type: existingExecutionWorkspace.strategyType },
+          repoUrl: existingExecutionWorkspace.repoUrl,
+          repoRef: existingExecutionWorkspace.baseRef,
+          configSnapshot: existingExecutionWorkspace.config,
+          environment: workspaceEnvironmentFingerprint,
+          realization: workspaceRealizationFingerprint,
+          secretManifest,
+          evaluatedAt: latestWorkspaceConfigMetadata.evaluatedAt,
+        })
+      : null;
+    const workspaceConfigFreshness = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: requestedShouldReuseExisting && Boolean(existingExecutionWorkspace),
+      existingWorkspaceMetadata: existingExecutionWorkspace?.metadata ?? null,
+      inferredMetadata: inferredExistingWorkspaceConfigMetadata,
+      nextMetadata: latestWorkspaceConfigMetadata,
+    });
+    const shouldReuseExisting = requestedShouldReuseExisting && workspaceConfigFreshness.shouldReuseExisting;
+    const shouldRefreshWorkspaceConfigSnapshot = shouldReuseExisting && workspaceConfigFreshness.shouldRefreshConfigSnapshot;
+    const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
+      companyId: agent.companyId,
+      heartbeatRunId: run.id,
+      executionWorkspaceId: shouldReuseExisting ? existingExecutionWorkspace?.id ?? null : null,
+      issueId,
+    });
     const reusedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
       ? await ensurePersistedExecutionWorkspaceAvailable({
           base: executionWorkspaceBase,
@@ -9408,7 +9769,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             metadata: existingExecutionWorkspace.metadata as Record<string, unknown> | null,
             config: {
               provisionCommand:
-                existingExecutionWorkspace.config?.provisionCommand
+                configSnapshot?.provisionCommand
+                ?? existingExecutionWorkspace.config?.provisionCommand
                 ?? projectExecutionWorkspacePolicy?.workspaceStrategy?.provisionCommand
                 ?? null,
             },
@@ -9420,31 +9782,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: agent.companyId,
           },
           recorder: workspaceOperationRecorder,
-        }) ?? buildRealizedExecutionWorkspaceFromPersisted({
-          base: executionWorkspaceBase,
-          workspace: existingExecutionWorkspace,
         })
       : null;
     const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
-          base: executionWorkspaceBase,
-          config: hostExecutionWorkspaceConfig,
-          issue: issueRef,
-          agent: {
-            id: agent.id,
-            name: agent.name,
-            companyId: agent.companyId,
-          },
-          recorder: workspaceOperationRecorder,
-        });
+      base: executionWorkspaceBase,
+      config: hostExecutionWorkspaceConfig,
+      issue: issueRef,
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        companyId: agent.companyId,
+      },
+      recorder: workspaceOperationRecorder,
+    });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
     const nextExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
-      existingMetadata: existingExecutionWorkspace?.metadata ?? null,
+      existingMetadata: shouldReuseExisting ? existingExecutionWorkspace?.metadata ?? null : null,
       source: executionWorkspace.source,
       createdByRuntime: executionWorkspace.created,
       configSnapshot,
       shouldReuseExisting,
+      shouldRefreshConfigSnapshot: shouldRefreshWorkspaceConfigSnapshot,
+      workspaceConfigMetadata: latestWorkspaceConfigMetadata,
       baseRef: executionWorkspace.repoRef,
       baseRefSha: executionWorkspace.baseRefSha ?? null,
     });
@@ -9680,6 +10041,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...resolvedWorkspace.warnings,
       ...executionWorkspace.warnings,
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
+      ...(requestedShouldReuseExisting && workspaceConfigFreshness.reasons.length > 0
+        ? [
+            `Execution workspace reuse freshness action "${workspaceConfigFreshness.action}" because ${workspaceConfigFreshness.reasons.join("; ")}.`,
+          ]
+        : []),
       ...(resetTaskSession && sessionResetReason
         ? [
             taskKey
@@ -9708,7 +10074,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     const runtimeServiceIntents = (() => {
-      const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
+      const runtimeConfig = parseObject(hostExecutionWorkspaceConfig.workspaceRuntime);
       return Array.isArray(runtimeConfig.services)
         ? runtimeConfig.services.filter(
             (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
@@ -9795,6 +10161,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         storedFingerprintPresent: Boolean(sessionConfigFreshness.storedFingerprint),
         nextFingerprint: sessionConfigFreshness.nextFingerprint,
       },
+      workspace: {
+        fingerprintVersion: latestWorkspaceConfigMetadata.version,
+        categories: latestWorkspaceConfigMetadata.categories,
+        action: workspaceConfigFreshness.action,
+        changedCategories: workspaceConfigFreshness.changedCategories,
+        reasons: workspaceConfigFreshness.reasons,
+        reuseRequested: requestedShouldReuseExisting,
+        workspaceReused: Boolean(reusedExecutionWorkspace),
+        configSnapshotRefreshed: shouldRefreshWorkspaceConfigSnapshot,
+        storedFingerprintPresent: workspaceConfigFreshness.storedFingerprintPresent,
+        storedFingerprint: workspaceConfigFreshness.storedFingerprint,
+        inferredFingerprint: workspaceConfigFreshness.inferredFingerprint,
+        nextFingerprint: workspaceConfigFreshness.nextFingerprint,
+        previousWorkspaceId: existingExecutionWorkspace?.id ?? null,
+        activeWorkspaceId: persistedExecutionWorkspace?.id ?? null,
+      },
     };
 
     let seq = 1;
@@ -9805,10 +10187,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let lastOutputFlushAt: Date | null = run.lastOutputAt ?? null;
     const outputProgressState: {
       pending: {
-      at: Date;
-      seq: number;
-      stream: "stdout" | "stderr";
-      bytes: number;
+        at: Date;
+        seq: number;
+        stream: "stdout" | "stderr";
+        bytes: number;
       } | null;
     } = { pending: null };
     let persistedLogBytes = Number(run.logBytes ?? 0);
@@ -10015,7 +10397,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issue: issueRef,
         workspace: executionWorkspace,
         executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
-        config: effectiveResolvedConfig,
+        config: hostExecutionWorkspaceConfig,
         adapterEnv,
         onLog,
       });

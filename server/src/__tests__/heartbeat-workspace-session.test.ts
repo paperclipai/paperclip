@@ -11,9 +11,9 @@ import {
   applyPersistedExecutionWorkspaceConfig,
   assertGitSensitiveAdapterWorkspaceValid,
   assertPushCapabilityCheckoutValid,
-  buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   buildEffectiveRunSessionConfigMetadata,
+  buildEffectiveRunWorkspaceConfigMetadata,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
@@ -22,6 +22,7 @@ import {
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveExecutionWorkspaceConfigFreshness,
   resolveNextSessionState,
   resolveTaskSessionConfigFreshness,
   requiresPushCapabilityPreflight,
@@ -815,48 +816,204 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
   });
 });
 
-describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
-  it("reuses the persisted execution workspace path instead of deriving a new worktree", () => {
-    const result = buildRealizedExecutionWorkspaceFromPersisted({
-      base: buildResolvedWorkspace({
-        cwd: "/tmp/project-primary",
-        repoRef: "main",
-      }),
-      workspace: {
-        id: "execution-workspace-1",
-        companyId: "company-1",
-        projectId: "project-1",
-        projectWorkspaceId: "workspace-1",
-        sourceIssueId: "issue-1",
-        mode: "isolated_workspace",
-        strategyType: "git_worktree",
-        name: "PAP-880-thumbs-capture-for-evals-feature",
-        status: "active",
-        cwd: "/tmp/reused-worktree",
-        repoUrl: "https://example.com/paperclip.git",
-        baseRef: "main",
-        branchName: "PAP-880-thumbs-capture-for-evals-feature",
-        providerType: "git_worktree",
-        providerRef: "/tmp/reused-worktree",
-        derivedFromExecutionWorkspaceId: null,
-        lastUsedAt: new Date(),
-        openedAt: new Date(),
-        closedAt: null,
-        cleanupEligibleAt: null,
-        cleanupReason: null,
-        config: null,
-        metadata: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+type WorkspaceConfigMetadata = ReturnType<typeof buildEffectiveRunWorkspaceConfigMetadata>;
+
+function buildWorkspaceConfigMetadata(
+  overrides: Partial<Parameters<typeof buildEffectiveRunWorkspaceConfigMetadata>[0]> = {},
+) {
+  return buildEffectiveRunWorkspaceConfigMetadata({
+    mode: "isolated_workspace",
+    projectId: "project-1",
+    projectWorkspaceId: "workspace-1",
+    strategyType: "git_worktree",
+    workspaceStrategy: {
+      type: "git_worktree",
+      baseRef: "origin/main",
+      branchTemplate: "{{issue.identifier}}-{{slug}}",
+      worktreeParentDir: ".paperclip/worktrees",
+    },
+    repoUrl: "https://github.com/example/repo.git",
+    repoRef: "origin/main",
+    configSnapshot: {
+      provisionCommand: "pnpm install",
+      teardownCommand: "pnpm stop",
+      cleanupCommand: "pnpm clean",
+      desiredState: "running",
+      serviceStates: { "0": "running" },
+      workspaceRuntime: {
+        services: [{ name: "web", command: "pnpm dev", port: 3100 }],
+      },
+    },
+    environment: {
+      selectedEnvironmentId: "environment-1",
+      driver: "local",
+      config: { provider: "local" },
+    },
+    realization: {
+      environmentDriver: "local",
+      environmentProvider: "local",
+    },
+    evaluatedAt: "2026-06-26T00:00:00.000Z",
+    ...overrides,
+  });
+}
+
+function persistedWorkspaceConfigFingerprint(metadata: WorkspaceConfigMetadata) {
+  return {
+    configFingerprint: {
+      version: metadata.version,
+      workspaceHash: metadata.fingerprint,
+      categories: metadata.categories,
+      categoryFingerprints: metadata.categoryFingerprints,
+      lastEvaluatedAt: metadata.evaluatedAt,
+    },
+  };
+}
+
+describe("effective run execution workspace config freshness", () => {
+  it("reuses an existing workspace when the stored workspace fingerprint is unchanged", () => {
+    const metadata = buildWorkspaceConfigMetadata();
+
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(metadata),
+      nextMetadata: metadata,
+    });
+
+    expect(decision).toMatchObject({
+      action: "reuse",
+      shouldReuseExisting: true,
+      shouldRefreshConfigSnapshot: false,
+      changedCategories: [],
+      storedFingerprintPresent: true,
+    });
+  });
+
+  it("refreshes metadata and config for runtime-service-only drift without replacing the workspace", () => {
+    const base = buildWorkspaceConfigMetadata();
+    const next = buildWorkspaceConfigMetadata({
+      configSnapshot: {
+        provisionCommand: "pnpm install",
+        teardownCommand: "pnpm stop",
+        cleanupCommand: "pnpm clean",
+        desiredState: "running",
+        serviceStates: { "0": "running" },
+        workspaceRuntime: {
+          services: [{ name: "web", command: "pnpm dev -- --host 0.0.0.0", port: 3200 }],
+        },
       },
     });
 
-    expect(result.created).toBe(false);
-    expect(result.strategy).toBe("git_worktree");
-    expect(result.cwd).toBe("/tmp/reused-worktree");
-    expect(result.worktreePath).toBe("/tmp/reused-worktree");
-    expect(result.branchName).toBe("PAP-880-thumbs-capture-for-evals-feature");
-    expect(result.source).toBe("task_session");
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(base),
+      nextMetadata: next,
+    });
+
+    expect(decision).toMatchObject({
+      action: "refresh",
+      shouldReuseExisting: true,
+      shouldRefreshConfigSnapshot: true,
+      changedCategories: ["runtimeServices"],
+    });
+
+    const metadata = mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: {
+        config: {
+          workspaceRuntime: { services: [{ name: "web", command: "pnpm dev", port: 3100 }] },
+        },
+        ...persistedWorkspaceConfigFingerprint(base),
+      },
+      source: "task_session",
+      createdByRuntime: false,
+      configSnapshot: {
+        workspaceRuntime: {
+          services: [{ name: "web", command: "pnpm dev -- --host 0.0.0.0", port: 3200 }],
+        },
+        desiredState: "running",
+        serviceStates: { "0": "running" },
+      },
+      shouldReuseExisting: true,
+      shouldRefreshConfigSnapshot: true,
+      workspaceConfigMetadata: next,
+      baseRef: "origin/main",
+      baseRefSha: "abc123",
+    });
+
+    expect(metadata?.config).toMatchObject({
+      workspaceRuntime: {
+        services: [{ name: "web", command: "pnpm dev -- --host 0.0.0.0", port: 3200 }],
+      },
+    });
+    expect(metadata?.configFingerprint).toMatchObject({
+      workspaceHash: next.fingerprint,
+      categories: next.categories,
+    });
+  });
+
+  it.each([
+    {
+      name: "mode",
+      category: "mode",
+      next: buildWorkspaceConfigMetadata({ mode: "shared_workspace" }),
+    },
+    {
+      name: "workspace strategy",
+      category: "strategy",
+      next: buildWorkspaceConfigMetadata({
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "origin/main",
+          branchTemplate: "custom-{{issue.identifier}}",
+          worktreeParentDir: ".paperclip/worktrees",
+        },
+      }),
+    },
+    {
+      name: "project workspace",
+      category: "projectWorkspace",
+      next: buildWorkspaceConfigMetadata({ projectWorkspaceId: "workspace-2" }),
+    },
+    {
+      name: "base ref",
+      category: "repo",
+      next: buildWorkspaceConfigMetadata({
+        repoRef: "origin/release",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "origin/release",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          worktreeParentDir: ".paperclip/worktrees",
+        },
+      }),
+    },
+    {
+      name: "environment realization",
+      category: "environment",
+      next: buildWorkspaceConfigMetadata({
+        environment: {
+          selectedEnvironmentId: "environment-2",
+          driver: "sandbox",
+          config: { provider: "daytona" },
+        },
+        realization: {
+          environmentDriver: "sandbox",
+          environmentProvider: "daytona",
+        },
+      }),
+    },
+  ] as const)("replaces the workspace when $name changes", ({ category, next }) => {
+    const base = buildWorkspaceConfigMetadata();
+
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(base),
+      nextMetadata: next,
+    });
+
+    expect(decision.action).toBe("replace");
+    expect(decision.shouldReuseExisting).toBe(false);
+    expect(decision.changedCategories).toContain(category);
   });
 });
 
