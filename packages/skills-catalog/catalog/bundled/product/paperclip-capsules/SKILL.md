@@ -95,5 +95,5 @@ For code changes, include targeted checks that exercise the edited surface. For 
 
 - `references/individual-status-capsules.md` - product app capsules, heartbeat status capsules, palette caveats, and reduced-motion rules.
 - `references/hero-capsule-bank.md` - canonical hero-bank geometry, palette, grain, wave, crop, and rendering checklist.
-- `references/generator-workflows.md` - website generator, external graphic-generator, and seeded identicon/profile-pill workflows.
+- `references/generator-workflows.md` - website generator and external graphic-generator workflows.
 - `references/identicon-prototyper.md` - deterministic profile-pill variants, color schemes, dither algorithms, density behavior, motion, export/share controls, and recommended combinations.

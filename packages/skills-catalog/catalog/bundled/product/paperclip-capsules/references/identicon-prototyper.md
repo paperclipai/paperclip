@@ -1,10 +1,10 @@
 # Identicon Prototyper
 
-Use this reference when generating or reviewing deterministic Paperclip capsule identicons/profile pills. Source of truth:
+Use this reference when generating or reviewing deterministic Paperclip capsule identicons/profile pills. Prototype source paths, when the Paperclip content repository is available:
 
-- `/srv/paperclip/home/paperclipai/paperclip-content/design/PAP-11825/paperclip-capsule-identicon-prototyper/README.md`
-- `src/identicon.ts`
-- `src/App.tsx`
+- `paperclip-content/design/PAP-11825/paperclip-capsule-identicon-prototyper/README.md`
+- `paperclip-content/design/PAP-11825/paperclip-capsule-identicon-prototyper/src/identicon.ts`
+- `paperclip-content/design/PAP-11825/paperclip-capsule-identicon-prototyper/src/App.tsx`
 
 These are individual agent marks. They do not replace product UI status capsules or the canonical hero capsule bank.
 
