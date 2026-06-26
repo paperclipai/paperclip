@@ -117,7 +117,7 @@ Default local/agent test path:
 pnpm test
 ```
 
-This is the cheap default and only runs the Vitest suite. Browser suites stay opt-in:
+This is the cheap default. Outside of No Mistakes worktrees, it runs the standard server test runner. Inside No Mistakes validation worktrees (where the working directory path contains `.no-mistakes`), it conditionally runs only the focused Done status transition guard route tests (`server/src/__tests__/issue-done-guard-routes.test.ts`) to speed up verification. To run the full stable server suite regardless of the worktree path, use `pnpm test:run`. Browser suites stay opt-in:
 
 ```sh
 pnpm test:e2e

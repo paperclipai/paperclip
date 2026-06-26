@@ -97,7 +97,7 @@ catalog skill's files into your company library and stamps provenance metadata (
 catalog key, content hash, and package version) so the Store can later tell you when the
 upstream catalog skill has changed.
 
-- API: `POST /companies/:companyId/skills/install-catalog`
+- API: `POST /api/companies/:companyId/skills/install-catalog`
 - Re-installing an already-installed catalog skill updates it in place rather than
   creating a duplicate.
 
@@ -113,7 +113,7 @@ Paste a source and Paperclip fetches and imports it. Accepted forms include:
 A repo can contain many skills; the importer discovers every `SKILL.md` under the path
 (optionally filtered to a single `--skill` slug).
 
-- API: `POST /companies/:companyId/skills/import`
+- API: `POST /api/companies/:companyId/skills/import`
 
 ### Create a local skill
 
@@ -121,7 +121,7 @@ Author a skill directly in the company library without any external source. This
 "new skill" path — you provide the name, description, and markdown body and it's stored
 as a `local_path` / managed-local skill.
 
-- API: `POST /companies/:companyId/skills`
+- API: `POST /api/companies/:companyId/skills`
 
 ### Scan a project workspace
 
@@ -130,7 +130,7 @@ Agents and projects often already keep skills on disk under conventional folders
 The project scan walks a workspace, finds those `SKILL.md` directories, and offers to
 import them into the company library, reporting any conflicts or skips.
 
-- API: `POST /companies/:companyId/skills/scan-projects`
+- API: `POST /api/companies/:companyId/skills/scan-projects`
 
 ## Living with installed skills
 
@@ -143,8 +143,8 @@ Each skill keeps a revision history. Saving a new version snapshots the full fil
 inventory (with content) and bumps the revision number, so you can review history and
 roll back.
 
-- List: `GET /companies/:companyId/skills/:skillId/versions`
-- Create: `POST /companies/:companyId/skills/:skillId/versions`
+- List: `GET /api/companies/:companyId/skills/:skillId/versions`
+- Create: `POST /api/companies/:companyId/skills/:skillId/versions`
 
 ### Updates, drift, and reset
 
@@ -153,11 +153,11 @@ The **update status** endpoint compares your installed copy against the latest u
 and reports whether an update is available, whether *you* have locally modified the skill
 (drift), and any hold reason that should block an automatic update.
 
-- Check: `GET /companies/:companyId/skills/:skillId/update-status`
-- Install the upstream update: `POST /companies/:companyId/skills/:skillId/install-update`
+- Check: `GET /api/companies/:companyId/skills/:skillId/update-status`
+- Install the upstream update: `POST /api/companies/:companyId/skills/:skillId/install-update`
   (with `force` to override local drift)
 - Discard local changes and return to the pristine origin:
-  `POST /companies/:companyId/skills/:skillId/reset`
+  `POST /api/companies/:companyId/skills/:skillId/reset`
 
 ### Audit
 
@@ -165,7 +165,7 @@ A skill can be audited to compare its installed content hash against its recorde
 hash and flag tampering or unexpected drift. The audit returns a verdict and a set of
 codes that the Store surfaces as a health signal.
 
-- API: `POST /companies/:companyId/skills/:skillId/audit`
+- API: `POST /api/companies/:companyId/skills/:skillId/audit`
 
 ### Fork
 
@@ -174,7 +174,7 @@ new name, slug, and sharing scope). The fork records what it was forked from, an
 original's `forkCount` increments. Use this to customize a catalog or community skill
 without losing the ability to see the upstream it came from.
 
-- API: `POST /companies/:companyId/skills/:skillId/fork`
+- API: `POST /api/companies/:companyId/skills/:skillId/fork`
 
 ### Stars and comments
 
@@ -182,8 +182,8 @@ Skills are social objects inside the Store. Members can **star** a skill (a per-
 toggle that drives the `starCount`) and leave threaded **comments** for discussion and
 review.
 
-- Star / unstar: `POST` / `DELETE /companies/:companyId/skills/:skillId/star`
-- Comments: `GET` / `POST /companies/:companyId/skills/:skillId/comments`,
+- Star / unstar: `POST` / `DELETE /api/companies/:companyId/skills/:skillId/star`
+- Comments: `GET` / `POST /api/companies/:companyId/skills/:skillId/comments`,
   plus `PATCH` and `DELETE` for editing and removing.
 
 ## Sharing scope
@@ -218,30 +218,31 @@ All endpoints are under the company-skills router.
 
 **Catalog (read-only)**
 
-- `GET /skills/catalog` — list the bundled catalog
-- `GET /skills/catalog/:catalogId` — one catalog skill
-- `GET /skills/catalog/:catalogId/files` — its file inventory + content
+- `GET /api/skills/catalog` — list the bundled catalog
+- `GET /api/skills/catalog/:catalogId` — one catalog skill
+- `GET /api/skills/catalog/:catalogId/files` — its file inventory + content
 
 **Company library**
 
-- `GET /companies/:companyId/skills` — list (supports `q`, `sort`, `categories`, `scope`)
-- `GET /companies/:companyId/skills/categories` — category counts
-- `GET /companies/:companyId/skills/:skillId` — detail
-- `GET /companies/:companyId/skills/:skillId/files` — file inventory + content
-- `POST /companies/:companyId/skills` — create a local skill
-- `PATCH /companies/:companyId/skills/:skillId` — edit metadata / sharing scope
-- `DELETE /companies/:companyId/skills/:skillId` — remove from the library
-- `POST /companies/:companyId/skills/install-catalog` — install a catalog skill
-- `POST /companies/:companyId/skills/import` — import from GitHub / skills.sh / URL
-- `POST /companies/:companyId/skills/scan-projects` — scan workspaces for skills
-- `POST /companies/:companyId/skills/:skillId/fork` — fork a skill
-- `POST /companies/:companyId/skills/:skillId/versions` · `GET …/versions` · `GET …/versions/:versionId`
-- `GET /companies/:companyId/skills/:skillId/update-status`
-- `POST /companies/:companyId/skills/:skillId/install-update`
-- `POST /companies/:companyId/skills/:skillId/reset`
-- `POST /companies/:companyId/skills/:skillId/audit`
-- `POST` / `DELETE /companies/:companyId/skills/:skillId/star`
-- `GET` / `POST /companies/:companyId/skills/:skillId/comments` · `PATCH` / `DELETE …/comments/:commentId`
+- `GET /api/companies/:companyId/skills` — list (supports `q`, `sort`, `categories`, `scope`)
+- `GET /api/companies/:companyId/skills/categories` — category counts
+- `GET /api/companies/:companyId/skills/:skillId` — detail
+- `GET /api/companies/:companyId/skills/:skillId/files` — file inventory + content
+- `PATCH /api/companies/:companyId/skills/:skillId/files` — update a skill file's content
+- `POST /api/companies/:companyId/skills` — create a local skill
+- `PATCH /api/companies/:companyId/skills/:skillId` — edit metadata / sharing scope
+- `DELETE /api/companies/:companyId/skills/:skillId` — remove from the library
+- `POST /api/companies/:companyId/skills/install-catalog` — install a catalog skill
+- `POST /api/companies/:companyId/skills/import` — import from GitHub / skills.sh / URL
+- `POST /api/companies/:companyId/skills/scan-projects` — scan workspaces for skills
+- `POST /api/companies/:companyId/skills/:skillId/fork` — fork a skill
+- `POST /api/companies/:companyId/skills/:skillId/versions` · `GET …/versions` · `GET …/versions/:versionId`
+- `GET /api/companies/:companyId/skills/:skillId/update-status`
+- `POST /api/companies/:companyId/skills/:skillId/install-update`
+- `POST /api/companies/:companyId/skills/:skillId/reset`
+- `POST /api/companies/:companyId/skills/:skillId/audit`
+- `POST` / `DELETE /api/companies/:companyId/skills/:skillId/star`
+- `GET` / `POST /api/companies/:companyId/skills/:skillId/comments` · `PATCH` / `DELETE …/comments/:commentId`
 
 All mutating endpoints require permission to manage the company's skills and are recorded
 in the company activity log.

@@ -22,6 +22,22 @@ Configure Novita from `Instance Settings -> Environments`, not from the plugin's
 - When you save an environment, Paperclip stores pasted API keys as company secrets.
 - `NOVITA_API_KEY` remains an optional host-level fallback when an environment omits the key.
 
+### Configuration Fields
+
+When defining a Novita sandbox environment, the following configuration fields are supported:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `domain` | string | Optional Novita domain URL. |
+| `apiKey` | secret-ref | Optional Novita API key secret reference. If omitted, falls back to `NOVITA_API_KEY` from the environment. |
+| `template` | string | Optional sandbox template identifier to run. |
+| `requestedCwd` | string | Optional custom working directory inside the sandbox. |
+| `timeoutMs` | number | Optional maximum sandbox lifetime in milliseconds. |
+| `requestTimeoutMs` | number | Optional API request timeout in milliseconds. |
+| `secure` | boolean | Set to `true` to use secure (HTTPS/WSS) connections. |
+| `autoPause` | boolean | Set to `true` to pause the sandbox when idle. |
+| `reuseLease` | boolean | Set to `true` to reuse an active sandbox lease. |
+
 ## Local development
 
 ```bash

@@ -34,7 +34,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - For scoped issue wakes, Paperclip may already checkout the current issue in the harness before your run starts.
 - Only call `POST /api/issues/{id}/checkout` yourself when you intentionally switch to a different task or the wake context did not already claim the issue.
 - Never retry a 409 -- that task belongs to someone else.
-- Do the work. Update status and comment when done.
+- Do the work. Update status and comment when done (note that projects subject to Done Transition rules, like Dark Factory, require a linked merged PR and No Mistakes gate proof or an approved user waiver comment before transitioning to `done`).
 
 Status quick guide:
 
@@ -42,7 +42,7 @@ Status quick guide:
 - `in_progress`: actively owned work. Agents should reach this by checkout, not by manually flipping status.
 - `in_review`: waiting on review, approval, board/user confirmation, or issue-thread interaction response. Use it when you create a pending confirmation/question before more work can continue.
 - `blocked`: cannot move until something specific changes. Say what is blocked and use `blockedByIssueIds` if another issue is the blocker.
-- `done`: finished.
+- `done`: finished (guarded projects require merged PR + No Mistakes validation).
 - `cancelled`: intentionally dropped.
 
 ## 6. Delegation

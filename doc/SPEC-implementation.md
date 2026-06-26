@@ -162,6 +162,7 @@ Invariant: every business record belongs to exactly one company.
 - `spent_monthly_cents` int not null default 0
 - pause fields: `pause_reason`, `paused_at`
 - `permissions` jsonb not null default `{}`
+- `error_reason` text null
 - `last_heartbeat_at` timestamptz null
 - `metadata` jsonb null
 
@@ -450,6 +451,27 @@ The current implementation includes additional V1-control-plane tables beyond th
 - Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, `routines`, `routine_revisions`, `routine_triggers`, and `routine_runs`.
 - Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
 
+## 7.17 Instance-scoped Environments
+
+Instance-scoped environments represent the execution environments (such as Local, SSH, Sandbox, or Plugin-based runners) configured for the entire Paperclip instance:
+- `environments` table:
+  - `id` uuid pk
+  - `name` text not null
+  - `description` text null
+  - `driver` text not null (e.g. `local`, `ssh`, `sandbox`, `plugin`)
+  - `status` text not null
+  - `config` jsonb not null default '{}'
+  - `env_vars` jsonb not null default '{}' (stores environment-level variables)
+  - Note: `company_id` was removed to make environments instance-scoped instead of company-scoped.
+- `instance_settings` table:
+  - `default_environment_id` uuid fk `environments.id` null
+  
+Merge Precedence Order (from lowest to highest):
+1. Environment env vars
+2. Agent adapter env vars
+3. Project env vars
+4. Routine env vars
+
 ## 8. State Machines
 
 ## 8.1 Agent Status
@@ -491,6 +513,36 @@ V1 non-terminal liveness rule:
 - explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
+
+### 8.2.1 Done Transition Guard (Dark Factory Projects)
+
+To prevent code-changing or remediation issues from being completed without proper verification and pull requests, projects identified as "Dark Factory" projects (e.g., project ID `c4525f28-55d1-4378-864c-aec26d51fc37` or projects whose name contains "dark factory") enforce a strict Done Transition Guard when an issue's status is updated to `done`.
+
+#### Validation Rules
+For any issue in a Dark Factory project:
+0. **Runs Directory Available**: The factory runs directory (configured via `DARK_FACTORY_RUN_DIR` or `FACTORY_RUNS_DIR`) must exist and be accessible by the server. If this directory is missing or inaccessible, the Done transition is blocked.
+1. **Pull Request Required**: A linked implementation PR (either via comment containing a pull request URL or as a linked work product) is mandatory for all code-changing or remediation tasks.
+2. **PR Merged Status**: The linked PR must be successfully merged in GitHub (verified via `gh pr view`).
+3. **No Mistakes Gate Pass**: The merged PR's head commit must have a verified "No Mistakes" gate pass. This can be met by either:
+   - A verified `PASS` verdict in the gate file referenced by `gates.no_mistakes.path` in the `run-manifest.json` (path-resolved relative to the latest run directory). The referenced gate JSON must contain `verdict: "PASS"` and a matching head SHA under `details.headAfter` or `details.head` matching the PR's head commit SHA.
+   - A human-authored issue comment containing `no mistakes pass`, `no_mistakes_pass`, or `gate_result:no_mistakes` with `PASS` along with the matching head SHA.
+
+#### Exceptions and Bypasses
+The PR and No Mistakes requirements are bypassed in the following scenarios:
+1. **Approved Waiver**: A comment by a human user containing `approved waiver` or `waiver approved` (must be under 100 characters).
+2. **QA or Report-Only Container**: Tasks that are purely for QA or reporting and do not involve code changes are identified by:
+   - Having the `evidence-record` or `finding-record` label.
+   - An issue title or description matching QA/audit/report-only keywords (e.g., `qa`, `audit`, `report-only`) AND not matching remediation keywords (e.g., `fix`, `remediat`, `resolve`, `patch`, etc.).
+   - A human-authored comment explicitly stating bypass keywords (e.g., `not new implementation`, `evidence record`, etc., and must be under 100 characters).
+   - Note: Issues containing active plans (`plan` document), Foreman runs, or agent comments indicating a fix is complete are treated as completed fixes and **cannot** bypass the Done Guard as QA containers.
+3. **True Review/Recovery Tasks**: Tasks with a review or recovery origin kind (specifically `issue_productivity_review`, `harness_liveness_escalation`, `stranded_issue_recovery`, or `stale_active_run_evaluation`) are bypassed, provided they have a manager (user-authored) disposition comment recorded on the issue.
+4. **Manifest-Driven Bypass**: Tasks where the latest run manifest has `taskRoute.prBacked === false` or `workOrder.gates.pr === false` are bypassed from PR and No Mistakes requirements.
+
+#### Agent Restrictions
+To ensure the integrity of the Done Guard:
+- Agents are not authorized to mutate critical issue fields such as `projectId`, `goalId`, `parentId`, or `labelIds`.
+- Agents are blocked from setting QA/finding/evidence keywords (e.g., `qa`, `audit`, `finding`, `evidence`, etc.) in the issue title or description to prevent self-bypassing the Done Guard.
+- Agent comments are excluded from being treated as waivers or gate fallbacks.
 
 ## 8.3 Approval Status
 
@@ -605,7 +657,7 @@ Within the watched subtree, a watchdog run may perform only mutations that resto
 - reopen `done` or `cancelled` included issues only with explicit resume metadata and an audit comment when evidence shows the stopped disposition is wrong or incomplete
 - add, replace, or clear blockers on included issues when the blocker target is in the same company and the change makes the waiting path more accurate
 - set or refresh a one-shot monitor on an included issue when the current assignee owns the future check
-- accept or reject eligible task-level plan confirmations as defined below
+- accept or reject eligible task-level plan confirmations as defined below (Note: Interaction resolution is currently restricted to human users; agent-driven watchdog runs attempting to resolve interactions will receive a `403 Forbidden` response in this release).
 - update the reusable watchdog issue itself to `done`, `in_review`, or `blocked` with the evidence for the watchdog decision
 
 Every watchdog-triggered mutation must write activity with the watchdog id, source issue id, watchdog issue id when present, run id, and stop fingerprint. Mutations still use the normal status-transition, blocker, assignment, budget, and company-boundary guards.
@@ -614,7 +666,7 @@ Every watchdog-triggered mutation must write activity with the watchdog id, sour
 
 A task watchdog must not:
 
-- mutate issues outside the watched subtree, except for comments or newly created follow-up issues that are children of included subtree issues
+- mutate issues outside the watched subtree, except for comments, newly created follow-up issues that are children of included subtree issues, or creating watchdog-discovered product/platform bug follow-up issues outside the watched subtree via the `watchdogDiscovery` field (using origin kind `task_watchdog_product_bug`)
 - mutate company, project, goal, agent, auth, API key, budget, secret, environment, plugin, or deployment settings
 - approve or reject rows in the `approvals` table, including hiring, CEO strategy, spend, budget override, or `request_board_approval` decisions
 - resolve execution-policy decisions unless the watchdog agent is the typed participant under that policy outside of its watchdog capacity
@@ -628,7 +680,9 @@ When the safe next action needs one of these disallowed mutations, the watchdog 
 
 ### Interaction resolution
 
-The initial V1 watchdog resolver may resolve exactly one interaction family: `request_confirmation` interactions that are eligible task-level plan confirmations. The watchdog may accept a coherent eligible plan or reject/request changes with a reason. It may not resolve `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`, linked approvals, board approvals, or ad hoc document comments.
+(Note: Interaction resolution is currently restricted to human users; agent-driven watchdog runs attempting to resolve interactions will receive a `403 Forbidden` response in this release).
+
+The watchdog may not resolve plan confirmations, `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`, linked approvals, board approvals, or ad hoc document comments.
 
 A plan confirmation is eligible only when all of these are true:
 
@@ -649,7 +703,7 @@ Implementation, security, UI, and QA work for task watchdogs must prove these co
 - server tests deny cross-company watched issues, watchdog agents, watchdog issues, blockers, interactions, and assignment targets
 - server tests deny paused, terminated, pending-approval, budget-blocked, or otherwise uninvokable watchdog agents
 - watchdog-scoped mutations can touch only the watched subtree and the reusable watchdog issue, with activity records for each mutation
-- interaction tests prove only eligible `request_confirmation` plan confirmations are accepted or rejected, and all other interaction kinds remain unavailable to watchdogs
+- interaction tests prove all interaction resolution attempts by watchdog agents are denied with `403`, and all interaction kinds remain unavailable to watchdogs
 - plan-confirmation tests cover stale document revisions, missing purpose markers, outside-subtree targets, governed actions, newer user comments, and explicit human/CTO/Security reservations
 - scheduler tests prove live runs, queued wakes, and scheduled retries suppress watchdog wakeups, while terminal, cancelled, blocked, and review leaves are still verified when the subtree has no live path
 - tests prove `task_watchdog` origin issues and descendants are excluded from scans so watchdogs do not trigger themselves
@@ -658,7 +712,7 @@ Implementation, security, UI, and QA work for task watchdogs must prove these co
 - prompt/context tests prove custom instructions are appended after non-overridable safety constraints and cannot expand authority
 - QA validates a full create/edit/remove/run/reuse flow with screenshots for UI changes
 
-No unresolved policy decision blocks implementation once CTO and Security accept this contract. Deliberately deferred and disallowed for the first implementation: resolving interaction kinds beyond eligible plan confirmations, letting watchdogs cancel active runs, approving board/governance actions, mutating outside the watched subtree, or allowing watchdog agents to modify their own watchdog configuration. Any expansion requires a new product/security review.
+No unresolved policy decision blocks implementation once CTO and Security accept this contract. Deliberately deferred and disallowed for the first implementation: resolving plan confirmations or any other interaction kinds, letting watchdogs cancel active runs, approving board/governance actions, mutating outside the watched subtree, or allowing watchdog agents to modify their own watchdog configuration. Any expansion requires a new product/security review.
 
 ## 10. API Contract (REST)
 
@@ -715,6 +769,9 @@ All endpoints are under `/api` and return JSON.
 - `GET /issues/:issueId/attachments`
 - `GET /attachments/:attachmentId/content`
 - `DELETE /attachments/:attachmentId`
+- `GET /issues/:issueId/watchdog`
+- `PUT /issues/:issueId/watchdog`
+- `DELETE /issues/:issueId/watchdog`
 
 ### 10.4.1 Atomic Checkout Contract
 

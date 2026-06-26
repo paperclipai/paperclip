@@ -590,7 +590,9 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
   runId: string;
   workspaceMode?: string;
   requestedCwd?: string;
+  /** The agent ID executing the task (identifies the run's agent) */
   agentId?: string;
+  /** The ID of the execution workspace for this run (identifies the run's execution workspace) */
   executionWorkspaceId?: string | null;
   /**
    * The harness/adapter type for THIS run (the agent's adapter), so a single

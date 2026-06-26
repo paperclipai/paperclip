@@ -219,7 +219,7 @@ If the policy is removed (`null`) while a review is in progress, the execution s
 
 ### Advancing a stage (reviewer/approver approves)
 
-The active reviewer or approver transitions the issue to `done` with a comment:
+The active reviewer or approver transitions the issue to `done` with a comment (Note: For guarded projects, this transition requires the linked merged PR and No Mistakes proof to already exist on the issue, or a valid waiver/disposition comment bypass, otherwise the PATCH done transition will fail with `422`):
 
 ```bash
 PATCH /api/issues/{issueId}

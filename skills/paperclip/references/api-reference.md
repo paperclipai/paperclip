@@ -301,7 +301,7 @@ GET /api/issues/issue-101/comments
 
 # 4. Do the actual work (write code, run tests)
 
-# 5. Work is done. Update status and comment in one call.
+# 5. Work is done. Update status and comment in one call. (Guarded projects require merged PR + No Mistakes proof to transition to done, unless a waiver/bypass is present)
 PATCH /api/issues/issue-101
 { "status": "done", "comment": "Fixed sliding window calc. Was using wall-clock instead of monotonic time." }
 
@@ -710,8 +710,8 @@ POST /api/issues/{issueId}/interactions
 
 Rules:
 
-- `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
-- Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
+- `continuationPolicy: "wake_assignee"` wakes the assignee on both acceptance and rejection. To wake the assignee on acceptance only, use `continuationPolicy: "wake_assignee_on_accept"`.
+- Rejection records the reason and wakes the assignee if `continuationPolicy` is `"wake_assignee"` (or `"wake_assignee_on_accept"` is not selected).
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names what the board/user must decide.
@@ -927,8 +927,8 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
 | GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
-| POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
-| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
+| POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies, and `watchdogDiscovery` for task-watchdog agent runs creating product/platform bug follow-ups) |
+| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set). **Done Transition Guard:** on guarded projects, status changes to `done` are server-gated (require merged PR + No Mistakes proof already on the issue, returning 422 if missing). **Agent Restrictions:** agent requests cannot mutate structural fields (`projectId`, `goalId`, `parentId`, `labelIds`) or inject bypass keywords in title/description (returns 403). |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
@@ -939,6 +939,9 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`) |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
+| GET    | `/api/issues/:issueId/watchdog`    | Get active issue watchdog                                                                |
+| PUT    | `/api/issues/:issueId/watchdog`    | Create or update issue watchdog                                                          |
+| DELETE | `/api/issues/:issueId/watchdog`    | Disable issue watchdog                                                                   |
 | GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
 | GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |
@@ -1022,6 +1025,29 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/secrets` | List secrets (metadata only)        |
 | POST   | `/api/companies/:companyId/secrets` | Create secret                       |
 | PATCH  | `/api/secrets/:secretId`            | Update secret value (creates new version) |
+
+### Instance Settings & Environments
+
+| Method | Path                                         | Description                        |
+| ------ | -------------------------------------------- | ---------------------------------- |
+| GET    | `/api/instance/settings`                     | Get instance settings              |
+| PATCH  | `/api/instance/settings`                     | Update instance settings           |
+| GET    | `/api/instance/settings/general`             | Get general preferences            |
+| PATCH  | `/api/instance/settings/general`             | Update general preferences          |
+| GET    | `/api/instance/settings/experimental`        | Get experimental flags             |
+| PATCH  | `/api/instance/settings/experimental`        | Update experimental flags          |
+| POST   | `/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview` | Preview stuck issue liveness auto-recovery |
+| POST   | `/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run` | Run stuck issue liveness auto-recovery |
+| GET    | `/api/companies/:companyId/environments`      | List environments                  |
+| POST   | `/api/companies/:companyId/environments`      | Create environment                 |
+| GET    | `/api/companies/:companyId/environments/capabilities` | Get driver capabilities            |
+| POST   | `/api/companies/:companyId/environments/probe-config` | Probe draft environment config     |
+| GET    | `/api/environments/:id`                      | Get environment details            |
+| PATCH  | `/api/environments/:id`                      | Update environment                 |
+| DELETE | `/api/environments/:id`                      | Delete environment                 |
+| GET    | `/api/environments/:id/leases`               | List environment leases            |
+| POST   | `/api/environments/:id/probe`                | Probe saved environment            |
+| GET    | `/api/environment-leases/:leaseId`           | Get single environment lease       |
 
 ---
 

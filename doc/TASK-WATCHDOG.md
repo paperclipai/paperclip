@@ -61,6 +61,9 @@ A single watched issue holds **at most one active watchdog**. Re-assigning the a
 
 ### From the UI
 
+> **Prerequisite:**
+> The watchdog UI elements in the New Issue dialog and Issue Properties panel are only visible if `enableTaskWatchdogs` is enabled under `Instance Settings > Experimental` (or `enableTaskWatchdogs: true` in the instance settings DB table).
+
 Two surfaces edit the watchdog:
 
 - **New issue dialog** — the three-dot menu reveals a **Watchdog** row. Pick an agent and (optionally) type instructions. The chip in the dialog footer shows the chosen agent and a snippet of the instructions. The watchdog is created together with the issue.
@@ -74,7 +77,9 @@ PUT    /api/issues/:issueId/watchdog   { "agentId": "...", "instructions": "..."
 DELETE /api/issues/:issueId/watchdog
 ```
 
-`PUT` is upsert. `DELETE` disables the row (it is not hard-deleted; the table keeps the history for audit). All three routes require write access to the watched issue and produce activity records (`issue.watchdog_created`, `issue.watchdog_updated`, `issue.watchdog_removed`) with the run id and actor.
+`PUT` is upsert. `DELETE` disables the row (it is not hard-deleted; the table keeps the history for audit).
+- **GET**: Requires read access to the watched issue; does not log activity.
+- **PUT / DELETE**: Require write access to the watched issue and produce activity records (`issue.watchdog_created`, `issue.watchdog_updated`, `issue.watchdog_removed`) with the run id and actor.
 
 ---
 
@@ -101,12 +106,12 @@ On wake, the watchdog agent reads a fixed default mandate plus your custom instr
 
 - Treat every stopped leaf as a **claim** that must be verified against comments, documents, work products, screenshots, tests, blockers, and review state. Do not accept "I could not" or "waiting for approval" as automatically valid.
 - Leave genuinely-complete leaves alone, with a short note on what was checked.
-- If a leaf is not genuinely complete, restore a live path: reopen the issue, reassign, comment actionable instructions, create a follow-up child issue inside the watched subtree, or accept an eligible task-level plan confirmation.
+- If a leaf is not genuinely complete, restore a live path: reopen the issue, reassign, comment actionable instructions, create a follow-up child issue inside the watched subtree, or accept an eligible task-level plan confirmation (Note: resolving plan confirmations is currently a planned feature and not supported for agent-driven watchdogs in this release due to security constraints; the agent will receive a 403 Forbidden).
 - If the blocker is real, leave a valid waiting disposition that names the unblock owner and the next action.
 
 The mandate also enforces safety constraints that custom instructions **cannot override**:
 
-- Stay inside the watched subtree. No cross-company mutations, no mutations outside the watched issue and its non-watchdog descendants.
+- Stay inside the watched subtree. No cross-company mutations, no mutations outside the watched issue and its non-watchdog descendants, except for creating watchdog-discovered product or platform bug follow-up issues outside the watched subtree through the guarded `watchdogDiscovery` create-issue path.
 - No impersonating board-only approvals, accepting spend or hiring decisions, accepting security-sensitive interactions, or bypassing execution-policy stages that require a typed reviewer or approver.
 - No creating another watchdog for the watched subtree. No waking itself. Exactly one reusable review task per watched issue.
 - Custom instructions can narrow focus or veto specific shortcuts. They cannot grant authority the server does not already give the watchdog.
@@ -133,7 +138,7 @@ Every watchdog-originated mutation is gated by a server-side scope check derived
 
 - mutations on issues outside the watched subtree (parent-chain walk, depth-limited)
 - mutations on issues whose company id does not match the watchdog's company
-- attempts to resolve interactions other than eligible task-level `request_confirmation` plan confirmations (see SPEC §9.9 for eligibility)
+- attempts to resolve interactions (all interaction resolution, including plan confirmations, is board-only/unsupported for watchdog agents in this release due to security constraints; the agent will receive a 403 Forbidden)
 - changes to the watchdog configuration itself (a watchdog cannot edit its own row or create another watchdog)
 - direct edits to active-run output or execution-policy decisions that require a typed participant
 

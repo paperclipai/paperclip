@@ -64,17 +64,25 @@ docker run --name paperclip \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
-  -e OPENAI_API_KEY=sk-... \
   -e ANTHROPIC_API_KEY=sk-... \
   -e GEMINI_API_KEY=... \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
   paperclip-local
 ```
 
-Each adapter reads its provider's standard credentials — for example `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (Codex), and `GEMINI_API_KEY` or `GOOGLE_API_KEY` (Gemini). OpenCode is multi-provider and uses whichever provider key you supply.
+Each adapter reads its provider's standard credentials. Note that for security and company boundary isolation, new/updated `codex_local` agents block host-level `OPENAI_API_KEY` inheritance; operators should configure `OPENAI_API_KEY` directly on the agent's adapter environment or seed the managed Codex home. Other adapters (like `claude_local` or `opencode_local`) will still inherit host-level variables such as `ANTHROPIC_API_KEY` when supplied to the container.
 
 > **Gemini key restrictions:** Google requires Gemini API keys to be *restricted* to the Gemini API (scoped in the Google Cloud console); unrestricted keys are blocked and `gemini_local` runs will fail with an auth error. Create a restricted key, or authenticate with `gemini auth login` (OAuth) and persist `~/.gemini` via the data volume so the credential survives container restarts.
 
 The image sets `GEMINI_SANDBOX=false` so the Gemini CLI does not try to launch its own (Docker-in-Docker) sandbox inside the container. The `gemini_local` adapter already passes `--sandbox=none` per run, so this env var only matters if you invoke `gemini` manually inside the container; override it if you have nested-container support and want CLI-level sandboxing.
 
 Without API keys, the app runs normally — adapter environment checks will surface missing prerequisites.
+
+## Done Transition Guard Wiring
+
+For containerized installs managing guarded projects (such as Dark Factory projects), the Paperclip server enforces Done Transition Guard rules. To enable this in Docker:
+1. **Factory Runs Mount:** Mount the host's factory runs directory (e.g., `/Users/samuelimini/.openclaw/workspace/tools/paperclip-data/factory-runs`) into the container, and set the `DARK_FACTORY_RUN_DIR` (or `FACTORY_RUNS_DIR`) environment variable to point to it inside the container.
+2. **GitHub CLI Auth:** The Done Transition Guard uses the `gh` CLI to verify pull request merge status. Ensure that the `gh` CLI is authenticated and that the credentials (usually in `~/.config/gh`) are mapped or inherited, so the container's `gh` command has access to the linked repositories.
+
+Without these, Done transitions for guarded tasks will fail with `422 Unprocessable Entity` because the server cannot read run manifests or verify PR merge state.
+

@@ -12,7 +12,7 @@ POST /api/issues/{issueId}/comments
 { "body": "## Update\n\nCompleted JWT signing.\n\n- Added RS256 support\n- Tests passing\n- Still need refresh token logic" }
 ```
 
-You can also add a comment when updating an issue:
+You can also add a comment when updating an issue (Note: For guarded projects, required Done Guard evidence such as PR links or waiver comments must be posted *before* the PATCH update; including them only in the final transition `comment` field will fail as validation runs before the comment is saved):
 
 ```
 PATCH /api/issues/{issueId}

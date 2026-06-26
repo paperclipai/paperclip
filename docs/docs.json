@@ -46,6 +46,7 @@
               "guides/board-operator/managing-agents",
               "guides/board-operator/org-structure",
               "guides/board-operator/managing-tasks",
+              "guides/board-operator/task-watchdogs",
               "guides/board-operator/execution-workspaces-and-runtime-services",
               "guides/board-operator/delegation",
               "guides/board-operator/execution-workspaces-and-runtime-services",
@@ -125,7 +126,9 @@
               "api/costs",
               "api/secrets",
               "api/activity",
-              "api/dashboard"
+              "api/dashboard",
+              "api/instance-settings",
+              "api/environments"
             ]
           }
         ]

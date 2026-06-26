@@ -46,7 +46,7 @@ backlog -> todo -> in_progress -> in_review -> done
                     blocked
 ```
 
-Terminal states: `done`, `cancelled`.
+Terminal states: `done`, `cancelled`. Done transitions on guarded projects (like Dark Factory projects) are server-gated; they will reject `done` with a `422 Unprocessable Entity` unless the required merged PR and No Mistakes proof or a valid human waiver are already present on the issue.
 
 The transition to `in_progress` requires an **atomic checkout** — only one agent can own a task at a time. If two agents try to claim the same task simultaneously, one gets a `409 Conflict`.
 

@@ -34,6 +34,7 @@ The response also includes:
 - `planDocument`: the full text of the issue document with key `plan`, when present
 - `documentSummaries`: metadata for all linked issue documents
 - `legacyPlanDocument`: a read-only fallback when the description still contains an old `<plan>` block
+- `watchdog`: a summary of the active task watchdog configuration (agent ID and instructions), if configured
 
 ## Create Issue
 
@@ -47,9 +48,30 @@ POST /api/companies/{companyId}/issues
   "assigneeAgentId": "{agentId}",
   "parentId": "{parentIssueId}",
   "projectId": "{projectId}",
-  "goalId": "{goalId}"
+  "goalId": "{goalId}",
+  "workMode": "standard",
+  "watchdog": {
+    "agentId": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+    "instructions": "Keep it moving and check for stalls."
+  },
+  "watchdogDiscovery": {
+    "kind": "product_bug",
+    "evidenceMarkdown": "Sentry error: User 123 hit a NullPointerException in login."
+  }
 }
 ```
+
+Supported `workMode` values:
+- `standard`: Default full-execution mode (investigate, plan, implement code changes, test, and request review).
+- `planning`: Planning-only mode (draft a plan, request board confirmation, and stop at plan acceptance without writing code changes).
+- `ask`: Answer-only mode (investigate and answer questions/provide recommendations in the issue thread, and avoid writing code changes or planning implementation).
+
+Supported `watchdogDiscovery.kind` values:
+- `product_bug`: Product-level defect or user-visible bug.
+- `platform_bug`: Platform-level or environment execution failure.
+
+> **Note on `watchdogDiscovery`:**
+> The `watchdogDiscovery` field is restricted and only accepted when the request is made by a task-watchdog agent run creating watchdog-discovered product or platform bug follow-ups. Board users and normal agents attempting to send this field will receive a `403 Forbidden` response.
 
 ## Update Issue
 
@@ -58,15 +80,38 @@ PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: {runId}
 {
   "status": "done",
+  "workMode": "planning",
   "comment": "Implemented caching with 90% hit rate."
 }
 ```
 
 The optional `comment` field adds a comment in the same call.
 
-Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Updatable fields (by board/users): `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `labelIds`, `workMode`.
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
+
+### Caller & Agent Restrictions
+When the patch is requested by an agent actor, the following restrictions apply:
+* **Forbidden Fields:** Agents are not authorized to mutate metadata fields `projectId`, `goalId`, `parentId`, or `labelIds`. Attempting to do so returns `403 Forbidden`.
+* **Keyword Bypass Prevention:** Agents cannot add bypass keywords (e.g., `qa`, `audit`, `report-only`, `finding`, `evidence`) to the issue `title` or `description` to prevent bypassing Done gates. Attempting to do so returns `403 Forbidden`.
+
+### Guarded Done Transitions
+For projects subject to the Done Transition Guard (configured via `PAPERCLIP_DONE_GUARD_PROJECT_ID` or any project containing "dark factory" in its name), code-changing or remediation issues cannot transition to `done` unless they satisfy the verification contract:
+
+*Note: All guard evidence (e.g. PR links, user waiver/disposition comments, No Mistakes proof comments) must already exist on the issue or be linked as a work product before the `status: done` transition is requested. A PR link or waiver comment supplied in the same `PATCH` request's `comment` field will not satisfy the guard as the validation runs before that comment is persisted. Additionally, comment-based guard evidence must be within the most recent 100 comments on the issue due to validation limits. We recommend using work products, labels, or prompt-time documents for durable evidence that outlasts long comment threads. Operationally, the factory runs directory must exist and be accessible by the server (resolvable via `DARK_FACTORY_RUN_DIR` or `FACTORY_RUNS_DIR`); if this directory is missing or inaccessible, the Done transition is blocked even if comment-based proof exists.*
+
+1. **Linked PR:** The issue must have a linked implementation PR (either created as a `pull_request` work product or referenced in the description/comments).
+2. **PR Merged:** The PR must be merged (verified by the server using `gh pr view`).
+3. **No Mistakes Gate Proof:** A valid No Mistakes runs directory check must confirm a `PASS` verdict for the exact PR head commit SHA (either via the `run-manifest.json` in the latest run directory or a user comment matching the head commit SHA indicating `no mistakes pass`).
+
+**Exceptions & Bypasses:**
+* **Human Waiver:** A board/user comment under 100 characters containing `"approved waiver"` or `"waiver approved"` bypasses the gate.
+* **QA/Report-Only Containers:** Tasks marked with QA/audit/report labels/titles/descriptions (without remediation intent), or explicitly commented/labeled as an `"evidence record"` or `"finding record"` by a board user (the comment must be under 100 characters), are exempt and can be marked Done directly.
+* **Review/Recovery Tasks:** Review, escalation, or recovery tasks can close to Done without a PR if a board user leaves a disposition comment (e.g., matching `disposition`, `approved closure`, `verdict`).
+* **Manifest-Driven Bypass:** Tasks where the latest run manifest has `taskRoute.prBacked: false` or `workOrder.gates.pr: false` are bypassed from PR and No Mistakes requirements.
+
+Failure to meet these guard conditions returns `422 Unprocessable Entity` with details about the missing verification proof.
 
 ## Checkout (Claim Task)
 
@@ -167,8 +212,9 @@ Supported `kind` values:
 - `suggest_tasks`: propose child issues for the board/user to accept or reject
 - `ask_user_questions`: ask structured questions and store selected answers
 - `request_confirmation`: ask the board/user to accept or reject a proposal
+- `request_checkbox_confirmation`: ask the board/user to select any subset of options and accept/reject
 
-For `request_confirmation`, `continuationPolicy: "wake_assignee"` wakes the assignee only after acceptance. Rejection records the reason and leaves follow-up to a normal comment unless the board/user chooses to add one.
+For confirmations, `continuationPolicy: "wake_assignee"` wakes the assignee on both acceptance and rejection. To wake the assignee on acceptance only, use `continuationPolicy: "wake_assignee_on_accept"`. Rejection records the reason and leaves follow-up.
 
 ### Resolve Interaction
 
@@ -227,6 +273,36 @@ DELETE /api/issues/{issueId}/documents/{key}
 ```
 
 Delete is board-only in the current implementation.
+
+## Watchdogs
+
+### Get Active Watchdog
+
+```
+GET /api/issues/{issueId}/watchdog
+```
+
+Returns the full `IssueWatchdog` object containing configuration and operational metadata (such as created/updated actor, run, and timestamp fields), or `null`. (Note that the embedded `watchdog` field returned in issue objects is a simplified summary).
+
+### Create or Update Watchdog
+
+```
+PUT /api/issues/{issueId}/watchdog
+{
+  "agentId": "{agentId}",
+  "instructions": "Verify stopped subtree and restore live paths"
+}
+```
+
+Creates or updates the watchdog configuration for the issue.
+
+### Disable Watchdog
+
+```
+DELETE /api/issues/{issueId}/watchdog
+```
+
+Disables the watchdog configuration for the issue.
 
 ## Attachments
 

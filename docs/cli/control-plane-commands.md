@@ -20,6 +20,8 @@ pnpm paperclipai issue create --title "..." [--description "..."] [--status todo
 # Update issue
 pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
 
+*Note for `issue update`: Done transitions on guarded projects are server-gated; required PR, No Mistakes proof, or human waivers must already be posted on the issue prior to running this update.*
+
 # Add comment
 pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
 

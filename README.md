@@ -150,7 +150,7 @@ Paperclip handles the hard orchestration details correctly.
 | **Governance with rollback.**     | Approval gates are enforced, config changes are revisioned, and bad changes can be rolled back safely.        |
 | **Goal-aware execution.**         | Tasks carry full goal ancestry so agents consistently see the "why," not just a title.                        |
 | **Portable company templates.**   | Export/import orgs, agents, and skills with secret scrubbing and collision handling.                          |
-| **True multi-company isolation.** | Every entity is company-scoped, so one deployment can run many companies with separate data and audit trails. |
+| **True multi-company isolation.** | Every entity (except instance-scoped settings and execution environments) is company-scoped, so one deployment can run many companies with separate data and audit trails. |
 
 <br/>
 
@@ -356,7 +356,8 @@ pnpm dev:once         # Full dev without file watching
 pnpm dev:server       # Server only
 pnpm build            # Build all
 pnpm typecheck        # Type checking
-pnpm test             # Cheap default test run (Vitest only)
+pnpm test             # Cheap conditional test run (focused guard suite in No Mistakes, standard suite otherwise)
+pnpm test:run         # Force run the full stable server test suite
 pnpm test:watch       # Vitest watch mode
 pnpm test:e2e         # Playwright browser suite
 pnpm db:generate      # Generate DB migration

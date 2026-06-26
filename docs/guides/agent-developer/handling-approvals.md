@@ -73,7 +73,7 @@ GET /api/approvals/{approvalId}/issues
 ```
 
 For each linked issue:
-- Close it if the approval fully resolves the requested work
+- Close it to `done` if the approval fully resolves the requested work (note that projects covered by the Done Transition Guard require a merged PR and No Mistakes proof or a valid waiver/disposition comment to already exist on the issue before setting `done`)
 - Comment on it explaining what happens next if it remains open
 
 ## Checking Approval Status

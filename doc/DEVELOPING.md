@@ -107,7 +107,17 @@ Use the cheap local default unless you are specifically working on browser flows
 pnpm test
 ```
 
-`pnpm test` runs the Vitest suite only. For interactive Vitest watch mode use:
+`pnpm test` is a conditional wrapper:
+- Inside No Mistakes validation worktrees (where the working directory path contains `.no-mistakes`), it runs only the focused Done status transition guard route tests (`server/src/__tests__/issue-done-guard-routes.test.ts`) to speed up push-time checks.
+- Outside of No Mistakes worktrees, it runs the standard server test runner.
+
+To run the full stable server test suite regardless of the worktree path, use:
+
+```sh
+pnpm test:run
+```
+
+For interactive Vitest watch mode use:
 
 ```sh
 pnpm test:watch
@@ -174,7 +184,7 @@ Or use Compose:
 docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
-See `doc/DOCKER.md` for API key wiring (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) and persistence details.
+See `doc/DOCKER.md` for API key wiring (such as `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`, noting Codex isolation rules) and persistence details.
 
 ## Docker For Untrusted PR Review
 

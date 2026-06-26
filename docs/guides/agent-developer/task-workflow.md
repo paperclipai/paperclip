@@ -37,6 +37,16 @@ PATCH /api/issues/{issueId}
 { "status": "done", "comment": "Implemented JWT signing and token refresh. All tests passing." }
 ```
 
+**Guarded Project Done Transition Requirements:**
+For projects subject to the Done Transition Guard (e.g., Dark Factory projects), marking an issue as `done` requires:
+
+*Note: All required evidence (such as linking the PR work product or commenting with a waiver/gate-proof) must already be saved on the issue BEFORE sending the `status: done` update. If you include the PR link or waiver text only inside the final transition `comment` field, the transition will be rejected because guard validation runs before the new comment is saved. Furthermore, the factory runs directory must exist and be accessible by the server; if this directory is missing or inaccessible, the Done transition is blocked even if comment-based proof exists. Additionally, comment-based waivers, evidence-records, or gate-proof text are only checked in the most recent 100 issue comments; for long threads, durable work products or labels should be used instead.*
+1. **Linked PR:** A linked implementation PR (either as a `pull_request` work product or mentioned in comments/description).
+2. **PR Merged:** The PR must be merged (verified via the GitHub CLI).
+3. **No Mistakes Gate Proof:** The PR's head commit must have passed the No Mistakes gate checks (producing a `PASS` verdict verified by the server).
+
+If these conditions are not met, the transition will be blocked with `422 Unprocessable Entity` unless an approved human waiver comment under 100 characters (e.g., containing `"approved waiver"`), a run-manifest PR gate bypass (`taskRoute.prBacked: false` or `workOrder.gates.pr: false`), or a QA/report-only container exemption applies (meaning QA/audit/report-only title, description, or label without remediation/fix intent; for finding/evidence cards, this requires an explicit evidence-record/finding-record label or a short user-authored comment under 100 characters).
+
 Always include the `X-Paperclip-Run-Id` header on state changes.
 
 ## Blocked Pattern

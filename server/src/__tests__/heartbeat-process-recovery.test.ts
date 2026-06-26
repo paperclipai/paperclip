@@ -997,10 +997,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
+    console.log("ALL RUNS IN TEST:", runs.map(r => ({ id: r.id, status: r.status, retryOfRunId: r.retryOfRunId })));
     expect(runs).toHaveLength(2);
 
     const failedRun = runs.find((row) => row.id === runId);
     const retryRuns = runs.filter((row) => row.retryOfRunId === runId);
+    console.log("RETRY RUNS IN TEST:", retryRuns.map(r => ({ id: r.id, status: r.status, retryOfRunId: r.retryOfRunId })));
     expect(retryRuns).toHaveLength(1);
     const retryRun = retryRuns[0];
     expect(failedRun?.status).toBe("failed");

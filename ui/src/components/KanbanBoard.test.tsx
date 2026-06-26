@@ -195,4 +195,24 @@ describe("KanbanBoard", () => {
     expect(resolveKanbanTargetStatus("issue-blocked-2", issues)).toBe("blocked");
     expect(resolveKanbanTargetStatus("missing", issues)).toBeNull();
   });
+
+  it("keeps empty non-collapsed columns at the normal width", () => {
+    const { container } = renderBoard({
+      issues: [],
+    });
+
+    expect(container.textContent).toContain("Backlog");
+    expect(container.textContent).toContain("Todo");
+    expect(container.textContent).toContain("In Progress");
+    expect(container.textContent).toContain("In Review");
+    expect(container.textContent).toContain("Done");
+    expect(container.textContent).toContain("Blocked");
+
+    const columns = container.querySelectorAll(".w-\\[260px\\]");
+    expect(columns.length).toBeGreaterThan(0);
+    columns.forEach((col) => {
+      expect(col.className).toContain("min-w-[260px]");
+      expect(col.className).toContain("w-[260px]");
+    });
+  });
 });

@@ -1368,11 +1368,12 @@ registry.registerPath({
   path: "/api/issues/{id}",
   tags: ["issues"],
   summary: "Update an issue",
+  description: "Updates issue fields. Note: Agents are forbidden from mutating structural fields (projectId, goalId, parentId, labelIds) or adding QA/finding bypass keywords to the title/description (returns 403). Transitions to 'done' on Dark Factory projects return 422 unless a merged implementation PR and matching No Mistakes proof are present or a human waiver is recorded.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateIssueSchema.partial()),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -2484,7 +2485,7 @@ registry.registerPath({
   tags: ["instance"],
   summary: "Update instance settings",
   request: { body: jsonBody(patchInstanceSettingsSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -2501,7 +2502,7 @@ registry.registerPath({
   tags: ["instance"],
   summary: "Update general instance settings",
   request: { body: jsonBody(patchInstanceGeneralSettingsSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -2518,7 +2519,7 @@ registry.registerPath({
   tags: ["instance"],
   summary: "Update experimental instance settings",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
@@ -3360,7 +3361,8 @@ registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/environments",
   tags: ["environments"],
-  summary: "List environments for a company",
+  summary: "List instance environments (company scope alias)",
+  description: "Retrieve environments available on this instance using the company scope route alias.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -3383,7 +3385,7 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createEnvironmentSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -3420,9 +3422,10 @@ registry.registerPath({
   summary: "Update an environment",
   request: {
     params: z.object({ id: z.string() }),
+    query: z.object({ companyId: z.string().optional() }),
     body: jsonBody(updateEnvironmentSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -3431,7 +3434,7 @@ registry.registerPath({
   tags: ["environments"],
   summary: "Delete an environment",
   request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -3439,8 +3442,11 @@ registry.registerPath({
   path: "/api/environments/{id}/probe",
   tags: ["environments"],
   summary: "Probe an environment",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ companyId: z.string().optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -3452,7 +3458,7 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     body: jsonBody(probeEnvironmentConfigSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Adapters (full) ──────────────────────────────────────────────────────────

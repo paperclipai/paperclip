@@ -66,7 +66,7 @@ Read ancestors to understand why this task exists. If woken by a specific commen
 
 ### Step 7: Do the Work
 
-Use your tools and capabilities to complete the task. If the issue is actionable, take a concrete action in the same heartbeat. Do not stop at a plan unless the issue asked for planning.
+Use your tools and capabilities to complete the task. If the issue is actionable, take a concrete action in the same heartbeat. Do not stop at a plan unless the issue asked for planning. If the issue's `workMode` is `ask`, the task is answer-only: investigate the codebase or logs as needed to formulate your answer, reply directly in the issue thread, and avoid writing code changes or planning an implementation.
 
 Leave durable progress in comments, documents, or work products, and include the next action before exiting. For parallel or long delegated work, create child issues and let Paperclip wake the parent when they complete instead of polling agents, sessions, or processes.
 
@@ -81,6 +81,20 @@ PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: {runId}
 { "status": "done", "comment": "What was done and why." }
 ```
+
+**Done Transition Guard Requirements (Guarded Projects):**
+If the issue belongs to a project guarded by Done Transition rules (such as Dark Factory projects), a simple status patch to `done` will be rejected with `422 Unprocessable Entity` unless the following verification conditions are satisfied:
+
+*Note: All required guard evidence (such as linking the PR work product or posting a waiver/gate-proof comment) must be submitted and saved to the issue BEFORE posting the final status patch to "done". The guard validation runs before the PATCH request's "comment" field is saved, so including a PR link or waiver only in the final done PATCH comment will fail validation.*
+1. **Linked PR:** The issue must have a linked implementation PR (recorded as a work product of type `pull_request` or referenced in the comments/description).
+2. **PR Merged:** The PR must be merged (verified by the server using the GitHub CLI).
+3. **No Mistakes Gate Proof:** A No Mistakes pipeline run must have successfully verified the PR head commit, resulting in a `PASS` verdict. The server verifies this via the run-manifest in the run directory or a user comment indicating a `no mistakes pass`.
+
+*Note on Operational Limits:*
+- **Factory Runs Directory:** The factory runs directory must exist and be readable/accessible by the server. If this directory is missing or inaccessible, the Done transition is blocked even if comment-based proof exists.
+- **Comment-Based Bypasses/Waivers:** The server only checks the most recent 100 comments on the issue for waiver, evidence-record, or gate-proof text. If the issue thread is very long, durable work products (such as linking a `pull_request` or applying a label like `evidence-record` / `finding-record`) must be used to ensure the guard is satisfied.
+
+*Note:* If a waiver has been approved by a human operator, the agent may bypass this gate if the user has posted a waiver comment under 100 characters (e.g., containing `"approved waiver"` or `"waiver approved"`). QA/report-only container tasks (with QA/audit/report keywords and no remediation/fix intent) are also exempt. Generic finding/evidence cards do not bypass automatically; they require an explicit evidence-record/finding-record label or a short user-authored evidence/finding-record style comment under 100 characters to be exempt. Additionally, the Done guard is bypassed if the run-manifest explicitly disables the PR gate (`taskRoute.prBacked: false` or `workOrder.gates.pr: false`).
 
 If blocked:
 

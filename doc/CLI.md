@@ -160,6 +160,8 @@ pnpm paperclipai issue get <issue-id-or-identifier>
 pnpm paperclipai issue create --company-id <company-id> --title "..." [--description "..."] [--status todo] [--priority high]
 pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
 pnpm paperclipai issue delete <issue-id> --yes
+
+*Note: Transitioning to status 'done' on guarded/Dark Factory projects requires a pre-existing linked merged PR and No Mistakes proof or human waiver/disposition.*
 pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
 pnpm paperclipai issue comments <issue-id> [--limit 50]
 pnpm paperclipai issue comment:get <issue-id> <comment-id>
@@ -644,6 +646,14 @@ pnpm paperclipai admin user company-access <user-id>
 pnpm paperclipai admin user company-access:update <user-id> --payload-json '{...}'
 ```
 
+CLI auth login facilitates user authentication via browser or headless/browser-suppressed mode:
+
+```sh
+pnpm paperclipai auth login [--no-browser]
+```
+
+When `--no-browser` is specified (or `PAPERCLIP_NO_BROWSER` is set in the environment), the login command suppresses opening a local browser and instead prints the authentication URL directly for manual entry. `PAPERCLIP_PUBLIC_URL` is used to formulate the callback/redirection targets.
+
 CLI auth challenge endpoints are also exposed for tooling that needs the raw challenge lifecycle:
 
 ```sh
@@ -852,8 +862,11 @@ Local Paperclip data lives under the selected instance root. `PAPERCLIP_HOME` ch
         │   └── master.key                        # local_encrypted master key
         ├── workspaces/                           # default agent workspaces
         ├── projects/                             # project execution workspaces
-        ├── companies/                            # per-company adapter homes (e.g. codex-home)
-        └── codex-home/                           # per-instance codex home (when not company-scoped)
+        └── companies/
+            └── <company-id>/
+                └── agents/
+                    └── <agent-id>/
+                        └── codex-home/           # isolated, per-agent codex home (shares/host inheritance blocked)
 ```
 
 Default paths for the canonical install:

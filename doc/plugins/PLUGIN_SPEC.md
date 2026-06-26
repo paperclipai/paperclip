@@ -633,6 +633,61 @@ The host provides:
 
 The worker executes the tool and returns a typed result (string content, structured data, or error).
 
+### 13.11 `environmentValidateConfig`
+
+Validates driver-specific configuration parameters for a plugin-hosted environment.
+
+The host provides:
+- driver name
+- config object to validate
+- envVars object
+
+The worker returns validation status (ok, warnings, errors).
+
+### 13.12 `environmentProbe`
+
+Tests the connection, credentials, and health of a configured plugin-hosted environment.
+
+The worker returns probe results (verdict, message, details).
+
+### 13.13 `environmentAcquireLease`
+
+Acquires a lease on the environment driver before starting an agent heartbeat run.
+
+The host provides:
+- `companyId`: company context
+- `environmentId`: the environment ID
+- `runId`: the heartbeat run ID
+- `workspaceMode`: workspace mode
+- `requestedCwd`: requested working directory
+- `agentId`: the agent ID that is executing the task (identifies the run's agent)
+- `executionWorkspaceId`: the ID of the execution workspace for this run (identifies the run's execution workspace)
+- `adapterType`: the agent's adapter type
+
+The worker creates/reserves the lease state and returns lease info (provider lease ID, metadata, expiration).
+
+### 13.14 `environmentResumeLease`
+
+Reconnects to a previously acquired environment lease.
+
+The worker returns updated lease status.
+
+### 13.15 `environmentReleaseLease`
+
+Releases an environment lease after a run finishes successfully or fails.
+
+### 13.16 `environmentDestroyLease`
+
+Force-destroys environment lease state and associated provider resources.
+
+### 13.17 `environmentRealizeWorkspace`
+
+Materializes/realizes the run workspace directory inside the sandbox environment.
+
+### 13.18 `environmentExecute`
+
+Executes a command inside the sandbox environment.
+
 ## 14. SDK Surface
 
 Plugins do not talk to the DB directly.

@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { promises as fsPromises } from "node:fs";
+import { resolve, dirname, isAbsolute, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -1727,6 +1732,259 @@ export function issueRoutes(
         "scheduled_issue_monitor",
       ],
     });
+  }
+
+  const execFileAsync = promisify(execFile);
+
+  async function assertPrAndNoMistakesForDone(
+    issueId: string,
+    existing: any,
+    updateFields: Record<string, any>
+  ) {
+    const nextProjectId = updateFields.projectId !== undefined ? updateFields.projectId : existing.projectId;
+    if (!nextProjectId) {
+      return;
+    }
+
+    const configProjectId = process.env.PAPERCLIP_DONE_GUARD_PROJECT_ID || "c4525f28-55d1-4378-864c-aec26d51fc37";
+    const doneGuardProjectIds = new Set(configProjectId.split(",").map(id => id.trim()).filter(Boolean));
+
+    let isDoneGuardProject = doneGuardProjectIds.has(nextProjectId);
+    if (!isDoneGuardProject) {
+      const project = await projectsSvc.getById(nextProjectId);
+      if (project && project.name?.toLowerCase().includes("dark factory")) {
+        isDoneGuardProject = true;
+      }
+    }
+
+    if (!isDoneGuardProject) {
+      return;
+    }
+
+    const comments = await svc.listComments(issueId, { limit: 100 });
+    const docs = await documentsSvc.listIssueDocuments(issueId);
+    const labelNames = (existing.labels || []).map((l: any) => l.name);
+
+    const hasPlan = docs.some((d: any) => d.key === "plan");
+
+    const runsDir = process.env.DARK_FACTORY_RUN_DIR
+      ? resolve(process.env.DARK_FACTORY_RUN_DIR)
+      : (process.env.FACTORY_RUNS_DIR
+          ? resolve(process.env.FACTORY_RUNS_DIR)
+          : resolve(dirname(fileURLToPath(import.meta.url)), "../../../../paperclip-data/factory-runs"));
+    let hasForemanRun = false;
+    let latestRunManifest: any = null;
+    let latestRunDir: string | null = null;
+    if (existing.identifier) {
+      const runsDirExists = await fsPromises.access(runsDir).then(() => true).catch(() => false);
+      if (runsDirExists) {
+        try {
+          const files = await fsPromises.readdir(runsDir);
+          const manifestPaths = files
+            .filter((name) => name.startsWith(`${existing.identifier}-`))
+            .map((name) => resolve(runsDir, name));
+
+          const list = [];
+          for (const dir of manifestPaths) {
+            const manifestPath = resolve(dir, "run-manifest.json");
+            const hasManifest = await fsPromises.access(manifestPath).then(() => true).catch(() => false);
+            if (hasManifest) {
+              try {
+                const content = await fsPromises.readFile(manifestPath, "utf8");
+                const manifest = JSON.parse(content);
+                const timeStr = manifest.updatedAt || manifest.createdAt || "1970-01-01T00:00:00.000Z";
+                list.push({ dir, manifest, time: new Date(timeStr).getTime() });
+              } catch {}
+            }
+          }
+          list.sort((a: any, b: any) => b.time - a.time);
+          if (list.length > 0) {
+            hasForemanRun = true;
+            latestRunManifest = list[0].manifest;
+            latestRunDir = list[0].dir;
+          }
+        } catch {}
+      }
+    }
+
+    const workProducts = await workProductsSvc.listForIssue(issueId);
+    const prProducts = workProducts.filter((wp: any) => wp.type === "pull_request" || wp.url?.includes("/pull/"));
+
+    const prCandidates = new Set<string>();
+    for (const wp of prProducts) {
+      if (wp.url) {
+        prCandidates.add(wp.url);
+      }
+    }
+
+    const text = [
+      existing.description || "",
+      ...comments.map((c: any) => c.body || "")
+    ].join("\n");
+    const prRegex = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g;
+    let match;
+    while ((match = prRegex.exec(text)) !== null) {
+      prCandidates.add(match[0]);
+    }
+
+    const isQaTitleOrDesc = /qa\b|audit|report-only/i.test(existing.title || "") ||
+      /qa\b|audit|report-only/i.test(existing.description || "");
+    const isQaLabel = labelNames.some((name: string) => /qa|audit|report/i.test(name));
+
+    const isFindingCard = labelNames.some((name: string) => /finding|evidence/i.test(name)) ||
+      /\b(finding|evidence)\b/i.test(existing.title || "") ||
+      /\b(finding|evidence)\b/i.test(existing.description || "");
+
+    const remediationIntentPattern = /\b(fix(?:e[sd]|ing)?|remediat\w*|resolv(?:e[sd]?|ing)|patch(?:e[sd]|ing)?|bug(?:fix)?|broken|repair(?:e[sd]|ing)?|implement(?:ed|ing|ation)?)\b/i;
+    const isRemediationTitleOrDesc = remediationIntentPattern.test(existing.title || "") ||
+      remediationIntentPattern.test(existing.description || "");
+
+    const hasEvidenceRecordLabel = labelNames.some((name: string) => /evidence-record|finding-record/i.test(name));
+    const hasEvidenceRecordComment = comments.some((c: any) =>
+      c.authorType === "user" &&
+      (c.body || "").length < 100 &&
+      /\b(evidence record|finding record|completed qa finding record|not new implementation|no implementation is approved|remediation is not approved)\b/i.test(c.body || "")
+    );
+    const isExplicitEvidenceRecord = hasEvidenceRecordLabel || hasEvidenceRecordComment;
+
+    const hasAgentFixComment = comments.some((c: any) =>
+      c.authorType === "agent" &&
+      /\b(fixed|implemented|remediated|completed the fix|fix is complete)\b/i.test(c.body || "")
+    );
+
+    const isCompletedFix = (hasPlan || hasForemanRun || hasAgentFixComment) && !isExplicitEvidenceRecord;
+
+    const managerDispositionPattern = /\b(disposition(?:ed)?|decision|verdict|false positive|no action (?:needed|required)|approved (?:to close|closure|done)|manager approved|closed as|dismissed as|reassigned to)\b/i;
+    const hasManagerDispositionComment = comments.some((c: any) =>
+      c.authorType === "user" &&
+      managerDispositionPattern.test(c.body || "")
+    );
+
+    const reviewOrRecoveryOriginKinds = new Set([
+      "issue_productivity_review",
+      "harness_liveness_escalation",
+      "stranded_issue_recovery",
+      "stale_active_run_evaluation",
+    ]);
+    const isReviewOrRecoveryTask = !!(existing.originKind && reviewOrRecoveryOriginKinds.has(existing.originKind));
+
+    let isQaOrReportOnly = false;
+    if (isReviewOrRecoveryTask && hasManagerDispositionComment) {
+      isQaOrReportOnly = true;
+    } else if (!isCompletedFix) {
+      if (isExplicitEvidenceRecord) {
+        isQaOrReportOnly = true;
+      } else if (isFindingCard) {
+        // Finding cards must be explicitly labelled/commented as evidence records to be bypassed
+      } else if ((isQaTitleOrDesc || isQaLabel) && !isRemediationTitleOrDesc) {
+        isQaOrReportOnly = true;
+      }
+    }
+
+    if (isQaOrReportOnly) {
+      return;
+    }
+
+    const hasWaiver = comments.some((c: any) =>
+      c.authorType === "user" &&
+      (c.body || "").length < 100 &&
+      /approved waiver|waiver approved/i.test(c.body || "")
+    );
+    if (hasWaiver) {
+      return;
+    }
+
+    const runsDirExists = await fsPromises.access(runsDir).then(() => true).catch(() => false);
+    if (!runsDirExists) {
+      throw unprocessable("Factory runs directory is unavailable. Done status transition is blocked.");
+    }
+
+    const prRequired = latestRunManifest ? (latestRunManifest.taskRoute?.prBacked !== false && latestRunManifest.workOrder?.gates?.pr !== false) : true;
+    if (!prRequired) {
+      return;
+    }
+
+    if (prCandidates.size === 0) {
+      throw unprocessable("Linked implementation PR/work product is required for code-changing or remediation tasks.");
+    }
+
+    let lastError: HttpError | null = null;
+    let passed = false;
+
+    const candidatesArray = Array.from(prCandidates).slice(0, 5);
+    for (const prUrl of candidatesArray) {
+      let headSha: string | null = null;
+      let prMerged = false;
+      try {
+        const { stdout } = await execFileAsync(
+          "gh",
+          ["pr", "view", prUrl, "--json", "state,mergedAt,headRefOid"],
+          { timeout: 15000 }
+        );
+        const prData = JSON.parse(stdout);
+        headSha = prData.headRefOid || null;
+        prMerged = prData.state === "MERGED" || !!prData.mergedAt;
+      } catch (err: any) {
+        console.error(`Error viewing PR ${prUrl}:`, err);
+        lastError = unprocessable(`Failed to verify pull request status via GitHub CLI: ${err.message || err}`);
+        continue;
+      }
+
+      if (!prMerged) {
+        lastError = unprocessable("Linked implementation PR must be merged before transitioning to done.");
+        continue;
+      }
+
+      if (!headSha && latestRunManifest) {
+        headSha = latestRunManifest.repo?.headSha || latestRunManifest.repo?.head_sha || null;
+      }
+
+      let hasNoMistakesPass = false;
+      if (headSha && latestRunManifest) {
+        const gatePath = latestRunManifest.gates?.no_mistakes?.path;
+        if (gatePath && latestRunDir) {
+          const resolvedGatePath = resolve(latestRunDir, gatePath);
+          const normalizedRunDir = resolve(latestRunDir);
+          const rel = relative(normalizedRunDir, resolvedGatePath);
+          const isInside = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+          if (isInside) {
+            const gatePathExists = await fsPromises.access(resolvedGatePath).then(() => true).catch(() => false);
+            if (gatePathExists) {
+              try {
+                const gateContent = await fsPromises.readFile(resolvedGatePath, "utf8");
+                const gate = JSON.parse(gateContent);
+                const gateHead = gate.details?.headAfter || gate.details?.head || null;
+                if (gate.verdict === "PASS" && gateHead === headSha) {
+                  hasNoMistakesPass = true;
+                }
+              } catch {}
+            }
+          }
+        }
+      }
+
+      if (!hasNoMistakesPass && headSha) {
+        hasNoMistakesPass = comments.some((c: any) =>
+          c.body?.includes(headSha!) &&
+          c.authorType === "user" &&
+          (c.body?.toLowerCase().includes("no mistakes pass") ||
+           c.body?.toLowerCase().includes("no_mistakes_pass") ||
+           c.body?.toLowerCase().includes("gate_result:no_mistakes") && c.body?.includes("PASS"))
+        );
+      }
+
+      if (!hasNoMistakesPass) {
+        lastError = unprocessable(`No Mistakes gate proof is missing or does not match the PR head commit ${headSha || "(unknown)"}.`);
+        continue;
+      }
+
+      passed = true;
+      break;
+    }
+
+    if (!passed) {
+      throw lastError || unprocessable("No Mistakes gate proof is missing or does not match.");
+    }
   }
 
   async function logExpiredRequestConfirmations(input: {
@@ -5637,6 +5895,29 @@ export function issueRoutes(
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (req.actor.type === "agent") {
+      const forbiddenFields = ["projectId", "goalId", "parentId", "labelIds"];
+      const attemptedFields = forbiddenFields.filter((field) => req.body[field] !== undefined);
+      if (attemptedFields.length > 0) {
+        res.status(403).json({
+          error: `Agents are not authorized to mutate the following issue fields: ${attemptedFields.join(", ")}`,
+        });
+        return;
+      }
+      const bypassKeywords = /qa\b|audit|report-only|finding|evidence/i;
+      if (req.body.title && bypassKeywords.test(req.body.title)) {
+        res.status(403).json({
+          error: "Agents are not authorized to set QA/finding/evidence keywords in the issue title",
+        });
+        return;
+      }
+      if (req.body.description && bypassKeywords.test(req.body.description)) {
+        res.status(403).json({
+          error: "Agents are not authorized to set QA/finding/evidence keywords in the issue description",
+        });
+        return;
+      }
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -5899,6 +6180,19 @@ export function issueRoutes(
       updateFields,
       actorType: req.actor.type,
     });
+
+    const nextStatus = typeof updateFields.status === "string" ? updateFields.status : existing.status;
+    if (nextStatus === "done" && existing.status !== "done") {
+      try {
+        await assertPrAndNoMistakesForDone(id, existing, updateFields);
+      } catch (err: any) {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+    }
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
@@ -7700,7 +7994,7 @@ export function issueRoutes(
 
       const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
       const commentOptions = {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        authorType: actor.actorType === "agent" ? "agent" : (req.body.authorType ?? "user"),
         presentation: req.body.presentation ?? null,
         metadata: req.body.metadata ?? null,
         sourceTrust,
@@ -7784,7 +8078,7 @@ export function issueRoutes(
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
       }, {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        authorType: actor.actorType === "agent" ? "agent" : (req.body.authorType ?? "user"),
         presentation: req.body.presentation ?? null,
         metadata: req.body.metadata ?? null,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),

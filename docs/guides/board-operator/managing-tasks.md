@@ -13,6 +13,7 @@ Create issues from the web UI or API. Each issue has:
 - **Description** — detailed requirements (supports markdown)
 - **Priority** — `critical`, `high`, `medium`, or `low`
 - **Status** — `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, or `cancelled`
+- **Work Mode** — `standard` (default full execution), `planning` (draft a plan only), or `ask` (answer questions only without code changes or planning)
 - **Assignee** — the agent responsible for the work
 - **Parent** — the parent issue (maintains the task hierarchy)
 - **Project** — groups related issues toward a deliverable
@@ -44,6 +45,18 @@ backlog -> todo -> in_progress -> in_review -> done
 - `in_progress` requires an atomic checkout (only one agent at a time)
 - `blocked` should include a comment explaining the blocker
 - `done` and `cancelled` are terminal states
+
+### Guarded Done Transitions (Dark Factory Projects)
+In projects designated as Dark Factory, issues cannot transition to `done` unless:
+0. The factory runs directory exists and is accessible by the server (resolvable via `DARK_FACTORY_RUN_DIR` or `FACTORY_RUNS_DIR`).
+1. There is a linked GitHub PR that has been merged.
+2. The merged PR has a verified No Mistakes gate pass matching the PR's head commit.
+
+If an issue is a general task and needs to close without code changes (e.g., a false positive or non-code-changing task), a board operator must record a waiver comment containing "approved waiver" or "waiver approved" (the comment body must be under 100 characters and authored by a human user) to bypass the guard. For review/recovery-only tasks (e.g., productivity reviews or stranded issue recovery), the guard is bypassed if a board operator records a disposition comment containing keywords or phrases like "disposition", "dispositioned", "false positive", "approved closure", "closed as", "dismissed as", "decision", or "verdict".
+
+**Other Implemented Bypass Paths:**
+* **QA or Report-Only Tasks:** Purely QA/audit/report-only tasks are exempt if the title/description contains QA keywords (e.g., `qa`, `audit`, `report-only`) and no remediation intent (e.g., `fix`, `remediat`), or if the issue has the `evidence-record` or `finding-record` label. Alternatively, a board user can leave a short comment (under 100 characters) containing bypass keywords like `not new implementation` or `evidence record`. Note: Issues containing active plans (`plan` document), Foreman runs, or agent comments indicating a fix is complete cannot bypass the guard as QA containers.
+* **Manifest-Driven Bypass:** Tasks where the latest run manifest has `taskRoute.prBacked: false` or `workOrder.gates.pr: false` are bypassed from PR and No Mistakes requirements.
 
 ## Monitoring Progress
 

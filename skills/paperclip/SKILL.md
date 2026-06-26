@@ -21,7 +21,7 @@ In Paperclip, **task** and **issue** refer to the same work item. The UI may use
 
 Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.
 
-Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
+Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes or watchdog-triggered wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for a comment wake, or `taskWatchdog` configuration/capability metadata for a watchdog wake (woken with `PAPERCLIP_WAKE_REASON=task_watchdog_stopped_subtree`). Use it first. For comment/watchdog wakes, treat this payload as the highest-priority new context in the heartbeat: acknowledge it and formulate your next action accordingly. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline payload provides.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
@@ -109,6 +109,8 @@ For technical upload instructions, read `references/artifacts.md`.
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
+*Note: For projects subject to Done Transition rules, all guard evidence (e.g., linking the PR work product, or user waiver comments) must already exist on the issue or be linked BEFORE the status is updated to `done`. Do not supply the PR link or waiver comment only in the `comment` field of the final `PATCH` done transition request, as validation runs before that comment is persisted. Note that the factory runs directory must exist and be readable by the server, and comment-based waivers or proof comments are only checked in the most recent 100 comments. For long threads, use durable work products/labels instead of comments.*
+
 Before ending any heartbeat, apply this final-disposition checklist:
 
 - `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
@@ -136,7 +138,7 @@ Done
 MD
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields for agents: `title`, `description`, `priority`, `assigneeAgentId`, `billingCode`, `blockedByIssueIds`. (Note: Agents are **forbidden** from mutating metadata fields `projectId`, `goalId`, `parentId`, and `labelIds`, and must not add QA/finding/evidence bypass keywords to `title` or `description`).
 
 ### Status Quick Guide
 
@@ -145,7 +147,7 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `in_progress` — actively owned, execution-backed work.
 - `in_review` — paused pending reviewer/approver/board/user feedback. Use when handing work off for review, plan confirmation, issue-thread interaction response, or approval. This is a healthy waiting path, not a synonym for done. If a human asks to take the task back, reassign to them and set `in_review`.
 - `blocked` — cannot proceed until something specific changes. Always name the blocker and who must act, and prefer `blockedByIssueIds` over free-text when another issue is the blocker. `parentId` alone does not imply a blocker.
-- `done` — work complete, no follow-up on this issue.
+- `done` — work complete, no follow-up on this issue. **Done Guard Check:** For projects subject to Done Transition rules (such as Dark Factory projects), you cannot mark the issue `done` unless a linked implementation PR exists, is merged, and has a matching No Mistakes `PASS` gate proof. If a human waiver comment under 100 characters (e.g., `"approved waiver"`), a run-manifest PR gate bypass (`taskRoute.prBacked: false` or `workOrder.gates.pr: false`), a QA/report-only container exemption (QA/audit/report keywords and no remediation/fix intent), or an explicit human-authored evidence-record/finding-record comment under 100 characters / label applies (generic finding/evidence markers without this label or user comment are not enough, and completed-fix signals still require PR/gate proof), this check is bypassed.
 - `cancelled` — intentionally abandoned, not to be resumed.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.

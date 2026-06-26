@@ -39,6 +39,8 @@ docker run --name paperclip \
 
 Open: `http://localhost:3100`
 
+*Note: If you are managing guarded projects (like Dark Factory), the Done Transition Guard requires mounting the factory runs directory and providing GitHub CLI authentication. Mount the host's factory runs directory using `-v /host/path/to/factory-runs:/runs` and set `-e DARK_FACTORY_RUN_DIR=/runs` (or `FACTORY_RUNS_DIR`), and ensure the container user has authenticated `gh` CLI credentials mapped or inherited.*
+
 Data persistence:
 
 - Embedded PostgreSQL data
@@ -75,7 +77,7 @@ PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=../data/pc \
 
 If you change host port or use a non-local domain, set `PAPERCLIP_PUBLIC_URL` to the external URL you will use in browser/auth flows.
 
-Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
+Pass credentials (such as `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`) to enable local adapter runs. Note that for security and company boundary isolation, new/updated `codex_local` agents block host-level `OPENAI_API_KEY` inheritance; operators should configure `OPENAI_API_KEY` directly on the agent's adapter environment or seed the managed Codex home, rather than passing it to the container.
 
 ### Full stack (with PostgreSQL)
 
@@ -138,21 +140,22 @@ The image pre-installs:
 - `claude` (Anthropic Claude Code CLI)
 - `codex` (OpenAI Codex CLI)
 
-If you want local adapter runs inside the container, pass API keys when starting the container:
+If you want local adapter runs inside the container, pass credentials (such as `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`) when starting the container:
 
 ```sh
 docker run --name paperclip \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
-  -e OPENAI_API_KEY=... \
   -e ANTHROPIC_API_KEY=... \
+  -e GEMINI_API_KEY=... \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
   paperclip-local
 ```
 
 Notes:
 
+- **Codex Isolation:** Note that for security and company boundary isolation, new/updated `codex_local` agents block host-level `OPENAI_API_KEY` inheritance; operators should configure `OPENAI_API_KEY` directly on the agent's adapter environment or seed the managed Codex home, rather than passing it to the container.
 - Without API keys, the app still runs normally.
 - Adapter environment checks in Paperclip will surface missing auth/CLI prerequisites.
 

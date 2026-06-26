@@ -97,6 +97,7 @@ function installStorybookApiFixtures() {
       return Response.json({
         enableIsolatedWorkspaces: true,
         autoRestartDevServerWhenIdle: false,
+        enableTaskWatchdogs: true,
       });
     }
 

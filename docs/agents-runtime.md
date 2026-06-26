@@ -48,7 +48,7 @@ External plugin adapters (install via the adapter manager or API):
 
 - `droid_local`: runs your local Factory Droid CLI (`@henkey/droid-paperclip-adapter`)
 
-For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
+For local CLI adapters (`claude_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine. (Note: `codex_local` is an exception; it blocks host-level `OPENAI_API_KEY` inheritance and runs inside an isolated per-agent `CODEX_HOME` directory, so configure its credentials directly on the agent's adapter environment or seed its managed Codex home).
 
 ## 3.2 Runtime behavior
 
@@ -59,6 +59,8 @@ In agent runtime settings, configure heartbeat policy:
 - `wakeOnAssignment`: wake when assigned work
 - `wakeOnOnDemand`: allow ping-style on-demand wakeups
 - `wakeOnAutomation`: allow system automation wakeups
+- `maxDailyRuns` (or `maxHeartbeatsPerDay`): maximum number of heartbeat runs allowed per UTC day. If reached, scheduled and automated heartbeats are skipped or cancelled before adapter execution.
+- `maxDailyCostCents` (or `maxCostCentsPerDay`): maximum cost budget (in cents) allowed per UTC day. If the accumulated daily run cost exceeds this limit, heartbeats are skipped/cancelled.
 
 ## 3.3 Working directory and execution limits
 

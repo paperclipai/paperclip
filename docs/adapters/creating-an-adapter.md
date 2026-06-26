@@ -115,6 +115,10 @@ interface AdapterExecutionResult {
   signal: string | null;
   timedOut: boolean;
   errorMessage?: string | null;
+  errorCode?: string | null;
+  errorFamily?: "transient_upstream" | "model_refusal" | null;
+  retryNotBefore?: string | null;
+  errorMeta?: Record<string, unknown> | null;
   usage?: { inputTokens: number; outputTokens: number };
   sessionParams?: Record<string, unknown> | null;  // persist across heartbeats
   sessionDisplayId?: string | null;

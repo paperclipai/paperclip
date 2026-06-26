@@ -44,7 +44,7 @@ For each issue, classify into exactly one of:
 3. **Reassign** — the assignee is not the right specialty. Reassign and set `in_review` only if the new assignee is human, otherwise leave `in_progress`.
 4. **Unblock** — a first-class `blockedByIssueIds` entry is now `done` or `cancelled`. If `cancelled`, replace or remove it from `blockedByIssueIds`. The blockers-resolved wake will fire automatically when all are `done`.
 5. **Escalate** — the issue needs board, CTO, or user input. Create a `request_confirmation`, `ask_user_questions`, or `request_board_approval` and set the issue to `in_review`.
-6. **Close** — work is complete, duplicate, or no longer relevant. Set `done` or `cancelled` with a one-line reason.
+6. **Close** — work is complete, duplicate, or no longer relevant. Set `done` or `cancelled` with a one-line reason. (Note: Done transitions on guarded projects are server-gated; check for a linked merged PR and No Mistakes proof or use the human waiver/disposition path before setting `done`).
 
 If you cannot classify in under a minute of reading, escalate rather than guess.
 
