@@ -43,4 +43,3 @@ export const sessionCodec: AdapterSessionCodec = {
     return readString(params.hermesSessionId) ?? readString(params.sessionKey) ?? readString(params.hermesRunId);
   },
 };
-

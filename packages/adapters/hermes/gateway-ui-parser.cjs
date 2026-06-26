@@ -47,4 +47,3 @@ function parseStdoutLine(line, ts) {
 }
 
 module.exports = { parseStdoutLine };
-

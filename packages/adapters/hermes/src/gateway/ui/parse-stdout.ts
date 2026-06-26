@@ -45,4 +45,3 @@ export function parseHermesGatewayStdoutLine(line: string, ts: string): Transcri
 
   return [{ kind: "stdout", ts, text: line }];
 }
-
