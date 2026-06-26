@@ -4225,6 +4225,38 @@ registerCurrentRoute({
   summary: "Revoke a board API key",
 });
 
+registerCurrentRoute({
+  method: "get",
+  path: "/api/outbox",
+  tags: ["cross-company-messages"],
+  summary: "List cross-company messages sent by the current company",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/outbox",
+  tags: ["cross-company-messages"],
+  summary: "Enqueue a cross-company message (idempotent; requires Idempotency-Key header)",
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/inbox",
+  tags: ["cross-company-messages"],
+  summary: "List cross-company messages for the current company (replays unacked messages)",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/inbox/{messageId}/ack",
+  tags: ["cross-company-messages"],
+  summary: "Acknowledge a received cross-company message",
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
 for (const route of [
   ["get", "/api/companies/import/jobs/{jobId}", "Get company import job status"],
   ["get", "/api/companies/{companyId}/search", "Search company data"],
