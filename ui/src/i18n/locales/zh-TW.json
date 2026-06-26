@@ -1784,5 +1784,133 @@
       "selectAgent": "選擇智慧代理",
       "watchdogWhat": "智慧代理應重新檢查什麼?"
     }
+  },
+  "issueChatThread": {
+    "toasts": {
+      "copyFailed": "複製失敗"
+    },
+    "errors": {
+      "copyMessage": "無法複製訊息",
+      "copySystemNotice": "無法複製系統通知",
+      "copySystemNoticeLink": "無法複製系統通知連結",
+      "copyText": "無法複製文字",
+      "uploadFailed": "上傳失敗"
+    },
+    "text": {
+      "alwaysAllow": "始終允許",
+      "assignee": "負責人",
+      "rendererError": "聊天渲染器遇到內部狀態錯誤。",
+      "commentDeleted": "評論已刪除",
+      "deleteComment": "刪除評論?",
+      "dropToUpload": "拖放以上傳",
+      "noAdditionalDetails": "無其他詳情。",
+      "noAssignee": "未選擇負責人",
+      "noMessageContent": "無訊息內容。",
+      "savePreference": "儲存你的回饋分享偏好?"
+    },
+    "labelsJsx": {
+      "copy": "複製",
+      "copyLinkSystemNotice": "複製系統通知連結",
+      "copyMessage": "複製訊息",
+      "copySystemNotice": "複製系統通知",
+      "deleteComment": "刪除評論",
+      "helpful": "有幫助",
+      "legacyRecovery": "舊版復原任務",
+      "moreActions": "更多操作",
+      "needsWork": "需要改進"
+    },
+    "placeholders": {
+      "shortNote": "新增簡短備註"
+    }
+  },
+  "newIssueDialog": {
+    "errors": {
+      "createFailed": "建立任務失敗,請重試。"
+    },
+    "text": {
+      "approver": "審批人",
+      "assignee": "負責人",
+      "attachments": "附件",
+      "backlog": "待辦",
+      "documents": "文件",
+      "executionWorkspace": "執行工作區",
+      "inProgress": "進行中",
+      "instructions": "指令",
+      "model": "模型",
+      "modelLane": "模型通道"
+    },
+    "labelsJsx": {
+      "lowTrustReview": "低信任審查智慧代理",
+      "modelLane": "模型通道"
+    },
+    "descriptions": {
+      "executable": "可執行——將喚醒負責人",
+      "parked": "已暫停——不會喚醒負責人"
+    },
+    "labelsObj": {
+      "backlog": "待辦",
+      "critical": "關鍵",
+      "default": "預設",
+      "done": "完成",
+      "high": "高",
+      "inProgress": "進行中"
+    }
+  },
+  "agentConfigForm": {
+    "errors": {
+      "envTestFailed": "環境測試失敗",
+      "refreshAdapterModels": "重新整理介接器模型失敗。"
+    },
+    "text": {
+      "adapter": "介接器",
+      "cheapModel": "廉價模型",
+      "comingSoon": "即將推出",
+      "environment": "環境",
+      "identity": "身分",
+      "primaryModel": "主要模型",
+      "unsavedChanges": "有未儲存的變更",
+      "useManualModel": "使用手動模型"
+    },
+    "labelsJsx": {
+      "adapterType": "介接器類型",
+      "bootstrapPrompt": "引導提示(舊版)",
+      "capabilities": "能力",
+      "command": "命令",
+      "continuationAttempts": "續接嘗試次數",
+      "continuationDelay": "續接延遲(秒)",
+      "continueAfterMaxTurn": "最大回合後繼續",
+      "cooldown": "冷卻時間(秒)",
+      "defaultEnvironment": "預設環境",
+      "envOverride": "環境覆寫",
+      "envVars": "環境變數",
+      "extraArgs": "額外參數(逗號分隔)",
+      "heartbeatInterval": "按間隔心跳",
+      "interruptGrace": "中斷寬限期(秒)",
+      "maxConcurrent": "最大並行執行",
+      "model": "模型",
+      "name": "名稱",
+      "promptTemplate": "提示範本",
+      "reportsTo": "報告給",
+      "thinkingEffort": "思考力度",
+      "timeout": "逾時(秒)",
+      "title": "標題",
+      "wakeOnDemand": "按需喚醒",
+      "workingDir": "工作目錄(已棄用)"
+    },
+    "labelsObj": {
+      "auto": "自動",
+      "cheapModel": "廉價模型",
+      "high": "高",
+      "medium": "中",
+      "minimal": "最小",
+      "plan": "計畫",
+      "primaryModel": "主要模型",
+      "xHigh": "極高"
+    },
+    "placeholders": {
+      "agentName": "智慧代理名稱",
+      "agentDesc": "描述此智慧代理能做什麼……",
+      "initialPrompt": "首次執行的可選初始設定提示"
+    }
   }
 }

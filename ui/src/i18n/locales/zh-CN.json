@@ -1784,5 +1784,133 @@
       "selectAgent": "选择智能体",
       "watchdogWhat": "智能体应重新检查什么?"
     }
+  },
+  "issueChatThread": {
+    "toasts": {
+      "copyFailed": "复制失败"
+    },
+    "errors": {
+      "copyMessage": "无法复制消息",
+      "copySystemNotice": "无法复制系统通知",
+      "copySystemNoticeLink": "无法复制系统通知链接",
+      "copyText": "无法复制文本",
+      "uploadFailed": "上传失败"
+    },
+    "text": {
+      "alwaysAllow": "始终允许",
+      "assignee": "负责人",
+      "rendererError": "聊天渲染器遇到内部状态错误。",
+      "commentDeleted": "评论已删除",
+      "deleteComment": "删除评论?",
+      "dropToUpload": "拖放以上传",
+      "noAdditionalDetails": "无其他详情。",
+      "noAssignee": "未选择负责人",
+      "noMessageContent": "无消息内容。",
+      "savePreference": "保存你的反馈分享偏好?"
+    },
+    "labelsJsx": {
+      "copy": "复制",
+      "copyLinkSystemNotice": "复制系统通知链接",
+      "copyMessage": "复制消息",
+      "copySystemNotice": "复制系统通知",
+      "deleteComment": "删除评论",
+      "helpful": "有帮助",
+      "legacyRecovery": "旧版恢复任务",
+      "moreActions": "更多操作",
+      "needsWork": "需要改进"
+    },
+    "placeholders": {
+      "shortNote": "添加简短备注"
+    }
+  },
+  "newIssueDialog": {
+    "errors": {
+      "createFailed": "创建任务失败,请重试。"
+    },
+    "text": {
+      "approver": "审批人",
+      "assignee": "负责人",
+      "attachments": "附件",
+      "backlog": "待办",
+      "documents": "文档",
+      "executionWorkspace": "执行工作区",
+      "inProgress": "进行中",
+      "instructions": "指令",
+      "model": "模型",
+      "modelLane": "模型通道"
+    },
+    "labelsJsx": {
+      "lowTrustReview": "低信任审查智能体",
+      "modelLane": "模型通道"
+    },
+    "descriptions": {
+      "executable": "可执行——将唤醒负责人",
+      "parked": "已暂停——不会唤醒负责人"
+    },
+    "labelsObj": {
+      "backlog": "待办",
+      "critical": "关键",
+      "default": "默认",
+      "done": "完成",
+      "high": "高",
+      "inProgress": "进行中"
+    }
+  },
+  "agentConfigForm": {
+    "errors": {
+      "envTestFailed": "环境测试失败",
+      "refreshAdapterModels": "刷新适配器模型失败。"
+    },
+    "text": {
+      "adapter": "适配器",
+      "cheapModel": "廉价模型",
+      "comingSoon": "即将推出",
+      "environment": "环境",
+      "identity": "身份",
+      "primaryModel": "主模型",
+      "unsavedChanges": "有未保存的更改",
+      "useManualModel": "使用手动模型"
+    },
+    "labelsJsx": {
+      "adapterType": "适配器类型",
+      "bootstrapPrompt": "引导提示(旧版)",
+      "capabilities": "能力",
+      "command": "命令",
+      "continuationAttempts": "续接尝试次数",
+      "continuationDelay": "续接延迟(秒)",
+      "continueAfterMaxTurn": "最大回合后继续",
+      "cooldown": "冷却时间(秒)",
+      "defaultEnvironment": "默认环境",
+      "envOverride": "环境覆盖",
+      "envVars": "环境变量",
+      "extraArgs": "额外参数(逗号分隔)",
+      "heartbeatInterval": "按间隔心跳",
+      "interruptGrace": "中断宽限期(秒)",
+      "maxConcurrent": "最大并发运行",
+      "model": "模型",
+      "name": "名称",
+      "promptTemplate": "提示模板",
+      "reportsTo": "报告给",
+      "thinkingEffort": "思考力度",
+      "timeout": "超时(秒)",
+      "title": "标题",
+      "wakeOnDemand": "按需唤醒",
+      "workingDir": "工作目录(已弃用)"
+    },
+    "labelsObj": {
+      "auto": "自动",
+      "cheapModel": "廉价模型",
+      "high": "高",
+      "medium": "中",
+      "minimal": "最小",
+      "plan": "计划",
+      "primaryModel": "主模型",
+      "xHigh": "极高"
+    },
+    "placeholders": {
+      "agentName": "智能体名称",
+      "agentDesc": "描述此智能体能做什么……",
+      "initialPrompt": "首次运行的可选初始设置提示"
+    }
   }
 }

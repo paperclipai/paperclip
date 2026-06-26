@@ -1784,5 +1784,133 @@
       "selectAgent": "Select agent",
       "watchdogWhat": "What should the agent re-check?"
     }
+  },
+  "issueChatThread": {
+    "toasts": {
+      "copyFailed": "Copy failed"
+    },
+    "errors": {
+      "copyMessage": "Unable to copy message",
+      "copySystemNotice": "Unable to copy system notice",
+      "copySystemNoticeLink": "Unable to copy system notice link",
+      "copyText": "Unable to copy text",
+      "uploadFailed": "Upload failed"
+    },
+    "text": {
+      "alwaysAllow": "Always allow",
+      "assignee": "Assignee",
+      "rendererError": "Chat renderer hit an internal state error.",
+      "commentDeleted": "Comment deleted",
+      "deleteComment": "Delete comment?",
+      "dropToUpload": "Drop to upload",
+      "noAdditionalDetails": "No additional details.",
+      "noAssignee": "No assignee selected",
+      "noMessageContent": "No message content.",
+      "savePreference": "Save your feedback sharing preference?"
+    },
+    "labelsJsx": {
+      "copy": "Copy",
+      "copyLinkSystemNotice": "Copy link to system notice",
+      "copyMessage": "Copy message",
+      "copySystemNotice": "Copy system notice",
+      "deleteComment": "Delete comment",
+      "helpful": "Helpful",
+      "legacyRecovery": "Legacy recovery task",
+      "moreActions": "More actions",
+      "needsWork": "Needs work"
+    },
+    "placeholders": {
+      "shortNote": "Add a short note"
+    }
+  },
+  "newIssueDialog": {
+    "errors": {
+      "createFailed": "Failed to create task. Try again."
+    },
+    "text": {
+      "approver": "Approver",
+      "assignee": "Assignee",
+      "attachments": "Attachments",
+      "backlog": "Backlog",
+      "documents": "Documents",
+      "executionWorkspace": "Execution workspace",
+      "inProgress": "In Progress",
+      "instructions": "Instructions",
+      "model": "Model",
+      "modelLane": "Model lane"
+    },
+    "labelsJsx": {
+      "lowTrustReview": "Low-trust review agent",
+      "modelLane": "Model lane"
+    },
+    "descriptions": {
+      "executable": "Executable — assignee will be woken",
+      "parked": "Parked — assignee will not be woken"
+    },
+    "labelsObj": {
+      "backlog": "Backlog",
+      "critical": "Critical",
+      "default": "Default",
+      "done": "Done",
+      "high": "High",
+      "inProgress": "In Progress"
+    }
+  },
+  "agentConfigForm": {
+    "errors": {
+      "envTestFailed": "Environment test failed",
+      "refreshAdapterModels": "Failed to refresh adapter models."
+    },
+    "text": {
+      "adapter": "Adapter",
+      "cheapModel": "Cheap model",
+      "comingSoon": "Coming soon",
+      "environment": "Environment",
+      "identity": "Identity",
+      "primaryModel": "Primary model",
+      "unsavedChanges": "Unsaved changes",
+      "useManualModel": "Use manual model"
+    },
+    "labelsJsx": {
+      "adapterType": "Adapter type",
+      "bootstrapPrompt": "Bootstrap prompt (legacy)",
+      "capabilities": "Capabilities",
+      "command": "Command",
+      "continuationAttempts": "Continuation attempts",
+      "continuationDelay": "Continuation delay (sec)",
+      "continueAfterMaxTurn": "Continue after max-turn stop",
+      "cooldown": "Cooldown (sec)",
+      "defaultEnvironment": "Default environment",
+      "envOverride": "Environment override",
+      "envVars": "Environment variables",
+      "extraArgs": "Extra args (comma-separated)",
+      "heartbeatInterval": "Heartbeat on interval",
+      "interruptGrace": "Interrupt grace period (sec)",
+      "maxConcurrent": "Max concurrent runs",
+      "model": "Model",
+      "name": "Name",
+      "promptTemplate": "Prompt Template",
+      "reportsTo": "Reports to",
+      "thinkingEffort": "Thinking effort",
+      "timeout": "Timeout (sec)",
+      "title": "Title",
+      "wakeOnDemand": "Wake on demand",
+      "workingDir": "Working directory (deprecated)"
+    },
+    "labelsObj": {
+      "auto": "Auto",
+      "cheapModel": "Cheap model",
+      "high": "High",
+      "medium": "Medium",
+      "minimal": "Minimal",
+      "plan": "Plan",
+      "primaryModel": "Primary model",
+      "xHigh": "X-High"
+    },
+    "placeholders": {
+      "agentName": "Agent name",
+      "agentDesc": "Describe what this agent can do...",
+      "initialPrompt": "Optional initial setup prompt for the first run"
+    }
   }
 }
