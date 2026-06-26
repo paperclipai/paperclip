@@ -18,6 +18,7 @@ export interface Company {
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
   brandColor: string | null;
+  triageParentIssueId: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;
   createdAt: Date;

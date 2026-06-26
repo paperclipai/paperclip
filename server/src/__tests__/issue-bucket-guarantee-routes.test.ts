@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, issues } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -38,7 +38,7 @@ describeEmbeddedPostgres("issue bucket guarantee routes (FUS-765)", () => {
     await tempDb?.cleanup();
   });
 
-  function createApp(companyId: string, agentId: string) {
+  function createApp(companyId: string, agentId: string, runId: string) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -46,7 +46,7 @@ describeEmbeddedPostgres("issue bucket guarantee routes (FUS-765)", () => {
         type: "agent",
         agentId,
         companyId,
-        runId: randomUUID(),
+        runId,
         source: "agent_key",
       };
       next();
@@ -54,6 +54,17 @@ describeEmbeddedPostgres("issue bucket guarantee routes (FUS-765)", () => {
     app.use("/api", issueRoutes(db, {} as any));
     app.use(errorHandler);
     return app;
+  }
+
+  // The agent issue-create/patch path records activity against the actor's
+  // heartbeat run, which is an FK into heartbeat_runs. Seed a real run so the
+  // route hits its happy path instead of a foreign-key violation.
+  async function createRun(companyId: string, agentId: string) {
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({ companyId, agentId, status: "running", contextSnapshot: {} })
+      .returning();
+    return run!;
   }
 
   async function createCompany(triageParentIssueId: string | null = null) {
@@ -104,13 +115,14 @@ describeEmbeddedPostgres("issue bucket guarantee routes (FUS-765)", () => {
   it("auto-files an agent-created orphan under the configured triage bucket", async () => {
     const company = await createCompany();
     const ceo = await createAgent(company.id, "ceo");
+    const run = await createRun(company.id, ceo.id);
     const triageBucket = await createIssue(company.id);
     await db
       .update(companies)
       .set({ triageParentIssueId: triageBucket.id })
       .where(eq(companies.id, company.id));
 
-    const res = await request(createApp(company.id, ceo.id))
+    const res = await request(createApp(company.id, ceo.id, run.id))
       .post(`/api/companies/${company.id}/issues`)
       .send({ title: "Orphan task" });
 
@@ -121,6 +133,7 @@ describeEmbeddedPostgres("issue bucket guarantee routes (FUS-765)", () => {
   it("ignores a triage-bucket setting that points at a non-top-level issue", async () => {
     const company = await createCompany();
     const ceo = await createAgent(company.id, "ceo");
+    const run = await createRun(company.id, ceo.id);
     const topBucket = await createIssue(company.id);
     const childIssue = await createIssue(company.id, { parentId: topBucket.id });
     // Stale/misconfigured: the setting points at a child, not a top-level bucket.
@@ -129,7 +142,7 @@ describeEmbeddedPostgres("issue bucket guarantee routes (FUS-765)", () => {
       .set({ triageParentIssueId: childIssue.id })
       .where(eq(companies.id, company.id));
 
-    const res = await request(createApp(company.id, ceo.id))
+    const res = await request(createApp(company.id, ceo.id, run.id))
       .post(`/api/companies/${company.id}/issues`)
       .send({ title: "Should stay top-level" });
 
@@ -140,8 +153,9 @@ describeEmbeddedPostgres("issue bucket guarantee routes (FUS-765)", () => {
   it("leaves a top-level issue orphaned when no triage bucket is configured", async () => {
     const company = await createCompany();
     const ceo = await createAgent(company.id, "ceo");
+    const run = await createRun(company.id, ceo.id);
 
-    const res = await request(createApp(company.id, ceo.id))
+    const res = await request(createApp(company.id, ceo.id, run.id))
       .post(`/api/companies/${company.id}/issues`)
       .send({ title: "Still top-level" });
 
@@ -152,11 +166,12 @@ describeEmbeddedPostgres("issue bucket guarantee routes (FUS-765)", () => {
   it("lets a CEO re-parent an agent-owned issue but not otherwise mutate it", async () => {
     const company = await createCompany();
     const ceo = await createAgent(company.id, "ceo");
+    const run = await createRun(company.id, ceo.id);
     const worker = await createAgent(company.id, "engineer");
     const bucket = await createIssue(company.id);
     const orphan = await createIssue(company.id, { assigneeAgentId: worker.id });
 
-    const app = createApp(company.id, ceo.id);
+    const app = createApp(company.id, ceo.id, run.id);
 
     // A content edit on another agent's issue is still rejected.
     const blockedEdit = await request(app)
