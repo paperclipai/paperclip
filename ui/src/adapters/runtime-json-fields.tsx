@@ -54,6 +54,7 @@ type JsonFieldProps = Pick<
 >;
 
 export function RuntimeServicesJsonField({
+  const { t } = useTranslation();
   isCreate,
   values,
   set,
@@ -74,7 +75,7 @@ export function RuntimeServicesJsonField({
   const value = isCreate ? values?.runtimeServicesJson ?? "" : draft;
 
   return (
-    <Field label="Runtime services JSON" hint={help.runtimeServicesJson}>
+    <Field label={t("runtimeJsonFields.labelsJsx.runtimeServices")} hint={help.runtimeServicesJson}>
       <textarea
         className={`${inputClass} min-h-[148px]`}
         value={value}
@@ -90,6 +91,7 @@ export function RuntimeServicesJsonField({
 }
 
 export function PayloadTemplateJsonField({
+  const { t } = useTranslation();
   isCreate,
   values,
   set,
@@ -106,7 +108,7 @@ export function PayloadTemplateJsonField({
   const value = isCreate ? values?.payloadTemplateJson ?? "" : draft;
 
   return (
-    <Field label="Payload template JSON" hint={help.payloadTemplateJson}>
+    <Field label={t("runtimeJsonFields.labelsJsx.payloadTemplate")} hint={help.payloadTemplateJson}>
       <textarea
         className={`${inputClass} min-h-[132px]`}
         value={value}

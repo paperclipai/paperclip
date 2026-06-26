@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { Link, Navigate, useParams } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -23,6 +24,7 @@ import { NotFoundPage } from "./NotFound";
  * @see doc/plugins/PLUGIN_SPEC.md §24.4 — Company-Context Plugin Page
  */
 export function PluginPage() {
+  const { t } = useTranslation();
   const params = useParams<{
     companyPrefix?: string;
     pluginId?: string;
@@ -119,7 +121,7 @@ export function PluginPage() {
       return;
     }
     setBreadcrumbs([
-      { label: "Plugins", href: "/company/settings/instance/plugins" },
+      { label: t("pluginPage.tabs.plugins"), href: "/company/settings/instance/plugins" },
       { label: pageSlot.pluginDisplayName },
     ]);
   }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive]);
@@ -130,7 +132,7 @@ export function PluginPage() {
     }
     return (
       <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">Select a company to view this page.</p>
+        <p className="text-sm text-muted-foreground">{t("pluginPage.text.selectCompany")}</p>
       </div>
     );
   }

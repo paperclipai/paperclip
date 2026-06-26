@@ -19,6 +19,7 @@ function deriveInitials(name: string) {
 }
 
 export function ProfileSettings() {
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -35,9 +36,9 @@ export function ProfileSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
-      { label: "Profile" },
+      { label: t("profileSettings.tabs.settings"), href: "/company/settings" },
+      { label: t("profileSettings.tabs.instanceSettings"), href: "/company/settings/instance/general" },
+      { label: t("profileSettings.tabs.profile") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -79,7 +80,7 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update profile.");
+      setActionError(error instanceof Error ? error.message : t("profileSettings.errors.update"));
     },
   });
 
@@ -102,7 +103,7 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to upload avatar.");
+      setActionError(error instanceof Error ? error.message : t("profileSettings.errors.uploadAvatar"));
     },
   });
 
@@ -114,18 +115,18 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to remove avatar.");
+      setActionError(error instanceof Error ? error.message : t("profileSettings.errors.removeAvatar"));
     },
   });
 
   if (sessionQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading profile...</div>;
+    return <div className="text-sm text-muted-foreground">{t("profileSettings.text.loadingProfile")}</div>;
   }
 
   if (sessionQuery.error || !sessionQuery.data) {
     return (
       <div className="text-sm text-destructive">
-        {sessionQuery.error instanceof Error ? sessionQuery.error.message : "Failed to load profile."}
+        {sessionQuery.error instanceof Error ? sessionQuery.error.message : t("profileSettings.errors.load")}
       </div>
     );
   }
@@ -143,7 +144,7 @@ export function ProfileSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <UserRoundPen className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Profile</h1>
+          <h1 className="text-lg font-semibold">{t("profileSettings.text.profile")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
           Control how your account appears in the sidebar and other board surfaces.
@@ -235,13 +236,13 @@ export function ProfileSettings() {
           }}
         >
           <div className="space-y-2">
-            <Label htmlFor="profile-name">Display name</Label>
+            <Label htmlFor="profile-name">{t("profileSettings.text.displayName")}</Label>
             <Input
               id="profile-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
               maxLength={120}
-              placeholder="Board"
+              placeholder={t("profileSettings.placeholders.board")}
             />
             <p className="text-xs text-muted-foreground">
               Shown in the sidebar account footer and comment author surfaces.
@@ -249,7 +250,7 @@ export function ProfileSettings() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="profile-email">Email</Label>
+            <Label htmlFor="profile-email">{t("profileSettings.text.email")}</Label>
             <Input
               id="profile-email"
               value={sessionQuery.data.user.email ?? ""}

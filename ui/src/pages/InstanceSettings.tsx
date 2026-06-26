@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Clock3, ExternalLink, Settings } from "lucide-react";
 import type { InstanceSchedulerHeartbeatAgent } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -27,15 +28,16 @@ function buildAgentHref(agent: InstanceSchedulerHeartbeatAgent) {
 }
 
 export function InstanceSettings() {
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
-      { label: "Heartbeats" },
+      { label: t("instanceSettings.tabs.settings"), href: "/company/settings" },
+      { label: t("instanceSettings.tabs.instanceSettings"), href: "/company/settings/instance/general" },
+      { label: t("instanceSettings.tabs.heartbeats") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -74,7 +76,7 @@ export function InstanceSettings() {
       ]);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update heartbeat.");
+      setActionError(error instanceof Error ? error.message : t("instanceSettings.errors.updateHeartbeat"));
     },
   });
 
@@ -104,7 +106,7 @@ export function InstanceSettings() {
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failures.length > 0) {
         const firstError = failures[0]?.reason;
-        const detail = firstError instanceof Error ? firstError.message : "Unknown error";
+        const detail = firstError instanceof Error ? firstError.message : t("instanceSettings.errors.unknown");
         throw new Error(
           failures.length === 1
             ? `Failed to disable 1 timer heartbeat: ${detail}`
@@ -127,7 +129,7 @@ export function InstanceSettings() {
       ]);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to disable all heartbeats.");
+      setActionError(error instanceof Error ? error.message : t("instanceSettings.errors.disableAll"));
     },
   });
 
@@ -151,7 +153,7 @@ export function InstanceSettings() {
   }, [agents]);
 
   if (heartbeatsQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading scheduler heartbeats...</div>;
+    return <div className="text-sm text-muted-foreground">{t("instanceSettings.text.loadingHeartbeats")}</div>;
   }
 
   if (heartbeatsQuery.error) {
@@ -169,7 +171,7 @@ export function InstanceSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <Settings className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Scheduler Heartbeats</h1>
+          <h1 className="text-lg font-semibold">{t("instanceSettings.text.heartbeats")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
           Agents with a timer heartbeat enabled across all of your companies.

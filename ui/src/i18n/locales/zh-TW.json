@@ -2739,5 +2739,123 @@
     "aria": {
       "closeSidebar": "關閉側邊欄"
     }
+  },
+  "instanceSettings": {
+    "errors": {
+      "disableAll": "停用所有心跳失敗。",
+      "updateHeartbeat": "更新心跳失敗。",
+      "unknown": "未知錯誤"
+    },
+    "text": {
+      "loadingHeartbeats": "正在載入排程器心跳...",
+      "heartbeats": "排程器心跳"
+    },
+    "tabs": {
+      "heartbeats": "心跳",
+      "instanceSettings": "實例設定",
+      "settings": "設定"
+    }
+  },
+  "issueChatLongThreadPerf": {
+    "text": {
+      "baselineMetrics": "基線指標",
+      "fixtureShape": "固定資料形狀",
+      "issueDocuments": "工作文件"
+    },
+    "labelsJsx": {
+      "fixtureRows": "固定資料行數",
+      "latestDuration": "最近耗時",
+      "markdownRows": "Markdown 行數",
+      "maxDuration": "最大耗時",
+      "mountDuration": "掛載耗時",
+      "profilerCommits": "分析器提交",
+      "totalDuration": "總耗時"
+    }
+  },
+  "joinRequestQueue": {
+    "toasts": {
+      "approved": "加入請求已核准",
+      "rejected": "加入請求已拒絕"
+    },
+    "text": {
+      "agent": "智慧代理",
+      "approved": "已核准",
+      "human": "人類",
+      "inviteContext": "邀請上下文",
+      "queue": "加入請求佇列",
+      "pending": "待審批",
+      "rejected": "已拒絕",
+      "requestDetails": "請求詳情",
+      "requestType": "請求類型",
+      "selectCompany": "選擇一家公司以審查加入請求。",
+      "status": "狀態"
+    },
+    "tabs": {
+      "inbox": "收件匣",
+      "joinRequests": "加入請求"
+    }
+  },
+  "myIssues": {
+    "tabs": {
+      "myTasks": "我的工作"
+    }
+  },
+  "notFound": {
+    "text": {
+      "goHome": "返回首頁"
+    },
+    "tabs": {
+      "notFound": "未找到"
+    }
+  },
+  "org": {
+    "tabs": {
+      "orgChart": "組織架構"
+    }
+  },
+  "pluginPage": {
+    "text": {
+      "selectCompany": "選擇一家公司以檢視此頁面。"
+    },
+    "tabs": {
+      "plugins": "外掛"
+    }
+  },
+  "profileSettings": {
+    "errors": {
+      "load": "載入個人資料失敗。",
+      "removeAvatar": "刪除頭像失敗。",
+      "update": "更新個人資料失敗。",
+      "uploadAvatar": "上傳頭像失敗。"
+    },
+    "text": {
+      "displayName": "顯示名稱",
+      "email": "電子郵件",
+      "loadingProfile": "正在載入個人資料...",
+      "profile": "個人資料"
+    },
+    "tabs": {
+      "instanceSettings": "實例設定",
+      "profile": "個人資料",
+      "settings": "設定"
+    },
+    "placeholders": {
+      "board": "委員會"
+    }
+  },
+  "workspaces": {
+    "text": {
+      "noActivity": "暫無工作區活動。",
+      "workspaces": "工作區"
+    },
+    "tabs": {
+      "workspaces": "工作區"
+    }
+  },
+  "runtimeJsonFields": {
+    "labelsJsx": {
+      "payloadTemplate": "酬載樣板 JSON",
+      "runtimeServices": "執行階段服務 JSON"
+    }
   }
 }

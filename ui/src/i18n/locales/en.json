@@ -2739,5 +2739,123 @@
     "aria": {
       "closeSidebar": "Close sidebar"
     }
+  },
+  "instanceSettings": {
+    "errors": {
+      "disableAll": "Failed to disable all heartbeats.",
+      "updateHeartbeat": "Failed to update heartbeat.",
+      "unknown": "Unknown error"
+    },
+    "text": {
+      "loadingHeartbeats": "Loading scheduler heartbeats...",
+      "heartbeats": "Scheduler Heartbeats"
+    },
+    "tabs": {
+      "heartbeats": "Heartbeats",
+      "instanceSettings": "Instance settings",
+      "settings": "Settings"
+    }
+  },
+  "issueChatLongThreadPerf": {
+    "text": {
+      "baselineMetrics": "Baseline metrics",
+      "fixtureShape": "Fixture shape",
+      "issueDocuments": "Issue documents"
+    },
+    "labelsJsx": {
+      "fixtureRows": "Fixture rows",
+      "latestDuration": "Latest duration",
+      "markdownRows": "Markdown rows",
+      "maxDuration": "Max duration",
+      "mountDuration": "Mount duration",
+      "profilerCommits": "Profiler commits",
+      "totalDuration": "Total duration"
+    }
+  },
+  "joinRequestQueue": {
+    "toasts": {
+      "approved": "Join request approved",
+      "rejected": "Join request rejected"
+    },
+    "text": {
+      "agent": "Agent",
+      "approved": "Approved",
+      "human": "Human",
+      "inviteContext": "Invite context",
+      "queue": "Join Request Queue",
+      "pending": "Pending approval",
+      "rejected": "Rejected",
+      "requestDetails": "Request details",
+      "requestType": "Request type",
+      "selectCompany": "Select a company to review join requests.",
+      "status": "Status"
+    },
+    "tabs": {
+      "inbox": "Inbox",
+      "joinRequests": "Join Requests"
+    }
+  },
+  "myIssues": {
+    "tabs": {
+      "myTasks": "My Tasks"
+    }
+  },
+  "notFound": {
+    "text": {
+      "goHome": "Go home"
+    },
+    "tabs": {
+      "notFound": "Not Found"
+    }
+  },
+  "org": {
+    "tabs": {
+      "orgChart": "Org Chart"
+    }
+  },
+  "pluginPage": {
+    "text": {
+      "selectCompany": "Select a company to view this page."
+    },
+    "tabs": {
+      "plugins": "Plugins"
+    }
+  },
+  "profileSettings": {
+    "errors": {
+      "load": "Failed to load profile.",
+      "removeAvatar": "Failed to remove avatar.",
+      "update": "Failed to update profile.",
+      "uploadAvatar": "Failed to upload avatar."
+    },
+    "text": {
+      "displayName": "Display name",
+      "email": "Email",
+      "loadingProfile": "Loading profile...",
+      "profile": "Profile"
+    },
+    "tabs": {
+      "instanceSettings": "Instance settings",
+      "profile": "Profile",
+      "settings": "Settings"
+    },
+    "placeholders": {
+      "board": "Board"
+    }
+  },
+  "workspaces": {
+    "text": {
+      "noActivity": "No workspace activity yet.",
+      "workspaces": "Workspaces"
+    },
+    "tabs": {
+      "workspaces": "Workspaces"
+    }
+  },
+  "runtimeJsonFields": {
+    "labelsJsx": {
+      "payloadTemplate": "Payload template JSON",
+      "runtimeServices": "Runtime services JSON"
+    }
   }
 }

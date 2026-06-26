@@ -2739,5 +2739,123 @@
     "aria": {
       "closeSidebar": "关闭侧边栏"
     }
+  },
+  "instanceSettings": {
+    "errors": {
+      "disableAll": "禁用所有心跳失败。",
+      "updateHeartbeat": "更新心跳失败。",
+      "unknown": "未知错误"
+    },
+    "text": {
+      "loadingHeartbeats": "正在加载调度器心跳...",
+      "heartbeats": "调度器心跳"
+    },
+    "tabs": {
+      "heartbeats": "心跳",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    }
+  },
+  "issueChatLongThreadPerf": {
+    "text": {
+      "baselineMetrics": "基线指标",
+      "fixtureShape": "固定数据形状",
+      "issueDocuments": "问题文档"
+    },
+    "labelsJsx": {
+      "fixtureRows": "固定数据行数",
+      "latestDuration": "最近耗时",
+      "markdownRows": "Markdown 行数",
+      "maxDuration": "最大耗时",
+      "mountDuration": "挂载耗时",
+      "profilerCommits": "分析器提交",
+      "totalDuration": "总耗时"
+    }
+  },
+  "joinRequestQueue": {
+    "toasts": {
+      "approved": "加入请求已批准",
+      "rejected": "加入请求已拒绝"
+    },
+    "text": {
+      "agent": "智能体",
+      "approved": "已批准",
+      "human": "人类",
+      "inviteContext": "邀请上下文",
+      "queue": "加入请求队列",
+      "pending": "待审批",
+      "rejected": "已拒绝",
+      "requestDetails": "请求详情",
+      "requestType": "请求类型",
+      "selectCompany": "选择一家公司以审查加入请求。",
+      "status": "状态"
+    },
+    "tabs": {
+      "inbox": "收件箱",
+      "joinRequests": "加入请求"
+    }
+  },
+  "myIssues": {
+    "tabs": {
+      "myTasks": "我的任务"
+    }
+  },
+  "notFound": {
+    "text": {
+      "goHome": "返回首页"
+    },
+    "tabs": {
+      "notFound": "未找到"
+    }
+  },
+  "org": {
+    "tabs": {
+      "orgChart": "组织架构"
+    }
+  },
+  "pluginPage": {
+    "text": {
+      "selectCompany": "选择一家公司以查看此页面。"
+    },
+    "tabs": {
+      "plugins": "插件"
+    }
+  },
+  "profileSettings": {
+    "errors": {
+      "load": "加载个人资料失败。",
+      "removeAvatar": "删除头像失败。",
+      "update": "更新个人资料失败。",
+      "uploadAvatar": "上传头像失败。"
+    },
+    "text": {
+      "displayName": "显示名称",
+      "email": "邮箱",
+      "loadingProfile": "正在加载个人资料...",
+      "profile": "个人资料"
+    },
+    "tabs": {
+      "instanceSettings": "实例设置",
+      "profile": "个人资料",
+      "settings": "设置"
+    },
+    "placeholders": {
+      "board": "委员会"
+    }
+  },
+  "workspaces": {
+    "text": {
+      "noActivity": "暂无工作区活动。",
+      "workspaces": "工作区"
+    },
+    "tabs": {
+      "workspaces": "工作区"
+    }
+  },
+  "runtimeJsonFields": {
+    "labelsJsx": {
+      "payloadTemplate": "负载模板 JSON",
+      "runtimeServices": "运行时服务 JSON"
+    }
   }
 }

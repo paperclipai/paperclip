@@ -13,11 +13,12 @@ import { formatDate } from "../lib/utils";
 import { ListTodo } from "lucide-react";
 
 export function MyIssues() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "My Tasks" }]);
+    setBreadcrumbs([{ label: t("myIssues.tabs.myTasks") }]);
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({

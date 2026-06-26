@@ -11,6 +11,7 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function JoinRequestQueue() {
+  const { t } = useTranslation();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -21,8 +22,8 @@ export function JoinRequestQueue() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Inbox", href: "/inbox" },
-      { label: "Join Requests" },
+      { label: t("joinRequestQueue.tabs.inbox"), href: "/inbox" },
+      { label: t("joinRequestQueue.tabs.joinRequests") },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
@@ -43,7 +44,7 @@ export function JoinRequestQueue() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(selectedCompanyId!, `${status}:${requestType}`) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.companyMembers(selectedCompanyId!) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!) });
-      pushToast({ title: "Join request approved", tone: "success" });
+      pushToast({ title: t("joinRequestQueue.toasts.approved"), tone: "success" });
     },
   });
 
@@ -51,12 +52,12 @@ export function JoinRequestQueue() {
     mutationFn: (requestId: string) => accessApi.rejectJoinRequest(selectedCompanyId!, requestId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(selectedCompanyId!, `${status}:${requestType}`) });
-      pushToast({ title: "Join request rejected", tone: "success" });
+      pushToast({ title: t("joinRequestQueue.toasts.rejected"), tone: "success" });
     },
   });
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to review join requests.</div>;
+    return <div className="text-sm text-muted-foreground">{t("joinRequestQueue.text.selectCompany")}</div>;
   }
 
   if (requestsQuery.isLoading) {
@@ -78,7 +79,7 @@ export function JoinRequestQueue() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <UserPlus2 className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Join Request Queue</h1>
+          <h1 className="text-lg font-semibold">{t("joinRequestQueue.text.queue")}</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
           Review human and agent join requests outside the mixed inbox feed. This queue uses the same approval mutations as the inline inbox cards.
@@ -87,7 +88,7 @@ export function JoinRequestQueue() {
 
       <div className="flex flex-wrap gap-3 rounded-xl border border-border bg-card p-4">
         <label className="space-y-2 text-sm">
-          <span className="font-medium">Status</span>
+          <span className="font-medium">{t("joinRequestQueue.text.status")}</span>
           <select
             className="rounded-md border border-border bg-background px-3 py-2"
             value={status}
@@ -95,13 +96,13 @@ export function JoinRequestQueue() {
               setStatus(event.target.value as "pending_approval" | "approved" | "rejected")
             }
           >
-            <option value="pending_approval">Pending approval</option>
-            <option value="approved">Approved</option>
-            <option value="rejected">Rejected</option>
+            <option value="pending_approval">{t("joinRequestQueue.text.pending")}</option>
+            <option value="approved">{t("joinRequestQueue.text.approved")}</option>
+            <option value="rejected">{t("joinRequestQueue.text.rejected")}</option>
           </select>
         </label>
         <label className="space-y-2 text-sm">
-          <span className="font-medium">Request type</span>
+          <span className="font-medium">{t("joinRequestQueue.text.requestType")}</span>
           <select
             className="rounded-md border border-border bg-background px-3 py-2"
             value={requestType}
@@ -110,8 +111,8 @@ export function JoinRequestQueue() {
             }
           >
             <option value="all">All</option>
-            <option value="human">Human</option>
-            <option value="agent">Agent</option>
+            <option value="human">{t("joinRequestQueue.text.human")}</option>
+            <option value="agent">{t("joinRequestQueue.text.agent")}</option>
           </select>
         </label>
       </div>
@@ -168,7 +169,7 @@ export function JoinRequestQueue() {
 
               <div className="mt-4 grid gap-3 text-sm text-muted-foreground md:grid-cols-2">
                 <div className="rounded-lg border border-border bg-background px-3 py-2">
-                  <div className="text-xs font-medium uppercase tracking-wide">Invite context</div>
+                  <div className="text-xs font-medium uppercase tracking-wide">{t("joinRequestQueue.text.inviteContext")}</div>
                   <div className="mt-2">
                     {request.invite
                       ? `${request.invite.allowedJoinTypes} join invite${request.invite.humanRole ? ` • default role ${request.invite.humanRole}` : ""}`
@@ -179,7 +180,7 @@ export function JoinRequestQueue() {
                   ) : null}
                 </div>
                 <div className="rounded-lg border border-border bg-background px-3 py-2">
-                  <div className="text-xs font-medium uppercase tracking-wide">Request details</div>
+                  <div className="text-xs font-medium uppercase tracking-wide">{t("joinRequestQueue.text.requestDetails")}</div>
                   <div className="mt-2">Submitted {new Date(request.createdAt).toLocaleString()}</div>
                   <div>Source IP {request.requestIp}</div>
                   {request.requestType === "agent" && request.capabilities ? <div>{request.capabilities}</div> : null}
