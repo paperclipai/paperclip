@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   companies,
@@ -1058,6 +1059,121 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("assignee changed");
     expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("wakes the new assignee after cancelling a stale run for an assignee change (TWX-1047)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId,
+      name: "ReplacementCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      // Mirrors the reported case: heartbeat timer disabled, wakeOnDemand on —
+      // so a missed assignment wake would leave the issue idle indefinitely.
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned task that must wake the new owner",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: replacementAgentId,
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    // The replacement agent must get its own run that actually executes.
+    await waitForCondition(async () => {
+      const replacementRuns = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, replacementAgentId));
+      return replacementRuns.some((r) => r.status === "succeeded");
+    });
+
+    const [staleRun] = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    const replacementRuns = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, replacementAgentId));
+    const wakeEnqueued = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.reassignment_wake_enqueued"));
+
+    expect(staleRun?.status).toBe("cancelled");
+    expect(staleRun?.errorCode).toBe("issue_assignee_changed");
+    expect(replacementRuns.length).toBeGreaterThan(0);
+    const replacementRunId = replacementRuns[0]!.id;
+    expect(replacementRuns[0]!.status).toBe("succeeded");
+    expect(countExecuteCallsForRun(replacementRunId)).toBe(1);
+    expect(wakeEnqueued.length).toBe(1);
+  });
+
+  it("logs an assignmentWakeSkipped reason when a reassigned issue has no agent assignee (TWX-1047)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
+    const issueId = randomUUID();
+    // Unassigned (assigneeAgentId null) but the queued run still references the
+    // original agent — the run is stale and must not silently disappear.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned to nobody",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const [run] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      return run?.status === "cancelled";
+    });
+
+    const skipped = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.reassignment_wake_skipped"));
+    const enqueued = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.reassignment_wake_enqueued"));
+
+    expect(enqueued.length).toBe(0);
+    expect(skipped.length).toBe(1);
+    expect(skipped[0]?.details).toMatchObject({
+      assignmentWakeSkipped: true,
+      assignmentWakeSkipReason: "no_agent_assignee",
+    });
   });
 
   it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {

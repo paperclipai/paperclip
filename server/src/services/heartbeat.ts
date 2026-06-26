@@ -8053,7 +8053,167 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: staleness.details,
     });
 
+    // The cancellation message above promises "the new owner will be woken
+    // instead" — make that true. The mutation route that reassigned the issue
+    // is supposed to enqueue the new assignee's wake, but it can be missed
+    // (e.g. an executionStage wake shadowed the assignment wake, or the wake
+    // got dropped by a guard). When that happens the new owner is never woken
+    // and, if it has heartbeat disabled + wakeOnDemand enabled, the issue idles
+    // forever (TWX-1047). Reconcile here: wake the current assignee, or log an
+    // explicit assignmentWakeSkipped reason so the gap is observable.
+    if (staleness.errorCode === "issue_assignee_changed") {
+      await wakeReassignedAssigneeAfterStaleCancel(cancelled, issueId);
+    }
+
     return cancelled;
+  }
+
+  // TWX-1047: ensure a reassigned, non-terminal, unblocked issue's new agent
+  // assignee is actually woken after its predecessor's stale queued run is
+  // cancelled. Idempotent and self-contained: it never double-wakes when the
+  // mutation route already enqueued a wake, and it never throws into the
+  // cancellation path.
+  async function wakeReassignedAssigneeAfterStaleCancel(
+    cancelledRun: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+  ) {
+    const logAssignmentWakeSkipped = async (
+      reason: string,
+      details: Record<string, unknown> = {},
+    ) => {
+      await logActivity(db, {
+        companyId: cancelledRun.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: cancelledRun.agentId,
+        runId: cancelledRun.id,
+        action: "issue.reassignment_wake_skipped",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          assignmentWakeSkipped: true,
+          assignmentWakeSkipReason: reason,
+          cancelledRunId: cancelledRun.id,
+          previousAssigneeAgentId: cancelledRun.agentId,
+          ...details,
+        },
+      });
+    };
+
+    try {
+      const issue = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, cancelledRun.companyId)))
+        .then((rows) => rows[0] ?? null);
+
+      if (!issue) {
+        await logAssignmentWakeSkipped("issue_not_found");
+        return;
+      }
+      const newAssigneeAgentId = issue.assigneeAgentId;
+      if (!newAssigneeAgentId) {
+        await logAssignmentWakeSkipped("no_agent_assignee", { status: issue.status });
+        return;
+      }
+      if (newAssigneeAgentId === cancelledRun.agentId) {
+        // Assignee flipped back before we got here — nothing to reconcile.
+        await logAssignmentWakeSkipped("assignee_unchanged", { status: issue.status });
+        return;
+      }
+      // Only todo/in_progress issues are actionable for a fresh assignment wake.
+      // Terminal/backlog/in_review issues have their own lifecycle paths.
+      if (issue.status !== "todo" && issue.status !== "in_progress") {
+        await logAssignmentWakeSkipped(`status_${issue.status}`, { status: issue.status });
+        return;
+      }
+
+      // Don't double-wake: if the new assignee already has an open run or a
+      // pending/deferred wake for this issue (e.g. the mutation route enqueued
+      // one), leave it alone — that path will run it.
+      const existingOpenRun = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, cancelledRun.companyId),
+            eq(heartbeatRuns.agentId, newAssigneeAgentId),
+            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingOpenRun) {
+        await logAssignmentWakeSkipped("wake_already_pending", { existingRunId: existingOpenRun.id });
+        return;
+      }
+      const existingPendingWake = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, cancelledRun.companyId),
+            eq(agentWakeupRequests.agentId, newAssigneeAgentId),
+            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingPendingWake) {
+        await logAssignmentWakeSkipped("wake_already_pending", { existingWakeupRequestId: existingPendingWake.id });
+        return;
+      }
+
+      // enqueueWakeup applies the remaining guards (blockers, budget,
+      // invokability, execution lock). It returns null / writes a skipped
+      // request for those — that's the explicit skip the issue asks for.
+      await enqueueWakeup(newAssigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_reassigned_wake",
+        idempotencyKey: `reassignment-wake:${issueId}:${newAssigneeAgentId}:${cancelledRun.id}`,
+        payload: {
+          issueId,
+          mutation: "reassignment",
+          previousAssigneeAgentId: cancelledRun.agentId,
+        },
+        requestedByActorType: "system",
+        requestedByActorId: "system",
+        contextSnapshot: {
+          issueId,
+          source: "issue.reassignment_stale_cancel",
+          wakeReason: "issue_reassigned",
+          previousAssigneeAgentId: cancelledRun.agentId,
+        },
+      });
+
+      await logActivity(db, {
+        companyId: cancelledRun.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: newAssigneeAgentId,
+        runId: null,
+        action: "issue.reassignment_wake_enqueued",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          previousAssigneeAgentId: cancelledRun.agentId,
+          cancelledRunId: cancelledRun.id,
+          status: issue.status,
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        { err, issueId, previousAssigneeAgentId: cancelledRun.agentId },
+        "failed to wake reassigned assignee after stale-cancel",
+      );
+    }
   }
 
   function truncateAgentErrorReason(reason: string | null | undefined): string | null {
