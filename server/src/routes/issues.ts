@@ -1932,7 +1932,7 @@ export function issueRoutes(
     return false;
   }
 
-  async function assertAgentIssueCommentAllowed(
+  async function assertIssueCommentAllowed(
     req: Request,
     res: Response,
     issue: {
@@ -1945,10 +1945,21 @@ export function issueRoutes(
       assigneeUserId: string | null;
     },
   ) {
-    if (req.actor.type !== "agent") return true;
+    if (req.actor.type !== "agent") {
+      const boundaryDecision = await decideIssueAccess(req, issue, "issue:comment");
+      if (!boundaryDecision.allowed) {
+        res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+        return false;
+      }
+      return boundaryDecision;
+    }
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    if (req.actor.companyId !== issue.companyId) {
+      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
     }
     const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
@@ -3268,7 +3279,6 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const wakeCommentId =
@@ -3414,7 +3424,6 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const [
       { project, goal },
@@ -3495,7 +3504,6 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     res.json(await taskWatchdogsSvc.getActiveForIssue(issue.companyId, issue.id));
   });
@@ -7522,8 +7530,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
-    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
+    const commentAccessDecision = await assertIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
@@ -8194,7 +8201,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const attachments = await svc.listAttachments(issueId);
     res.json(attachments.map(withContentPath));
   });
@@ -8202,7 +8209,6 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {
     const companyId = req.params.companyId as string;
     const issueId = req.params.issueId as string;
-    assertCompanyAccess(req, companyId);
     const issue = await svc.getById(issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -8212,7 +8218,11 @@ export function issueRoutes(
       res.status(422).json({ error: "Issue does not belong to company" });
       return;
     }
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (req.actor.type === "agent") {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    } else if (!(await assertIssueCommentAllowed(req, res, issue))) {
+      return;
+    }
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
 
     const company = await companiesSvc.getById(companyId);
@@ -8298,7 +8308,12 @@ export function issueRoutes(
       res.status(404).json({ error: "Attachment not found" });
       return;
     }
-    assertCompanyAccess(req, attachment.companyId);
+    const issue = await svc.getById(attachment.issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(
