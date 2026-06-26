@@ -1992,6 +1992,38 @@ export function resolveHeartbeatPolicyForRuntimeConfig(runtimeConfigValue: unkno
   };
 }
 
+/**
+ * Decide whether the heartbeat cooldown should suppress a wakeup.
+ *
+ * The cooldown is an anti-thrash guard for the periodic *timer* self-wake loop.
+ * It must NOT apply to externally-triggered demand wakes (PR opened/review/
+ * @mention; any source other than "timer"): a demand wake skipped on cooldown
+ * is terminal — agent_wakeup_requests has no defer/schedule column, so the
+ * skip is never re-dispatched — which silently drops discrete work. A PR opened
+ * while the agent is within the cooldown of an unrelated run would otherwise
+ * never be reviewed (PEN-825 / BLO-9089). Demand backpressure is already
+ * provided by event coalescing (idempotencyKey), maxConcurrentRuns, and the
+ * issue-execution lock; the cooldown is not the mechanism for it.
+ *
+ * Pure (injectable `now`) so the gate logic is unit-testable without a DB.
+ */
+export function isHeartbeatCooldownActive(args: {
+  source: string;
+  cooldownSec: number;
+  lastHeartbeatAt: Date | string | number | null | undefined;
+  now?: number;
+}): { active: boolean; remainingSec: number } {
+  const { source, cooldownSec, lastHeartbeatAt } = args;
+  // Only the periodic timer loop is throttled; demand wakes always pass through.
+  if (source !== "timer") return { active: false, remainingSec: 0 };
+  if (!(cooldownSec > 0) || lastHeartbeatAt == null) return { active: false, remainingSec: 0 };
+  const now = args.now ?? Date.now();
+  const elapsedMs = now - new Date(lastHeartbeatAt).getTime();
+  const cooldownMs = cooldownSec * 1000;
+  if (elapsedMs >= cooldownMs) return { active: false, remainingSec: 0 };
+  return { active: true, remainingSec: Math.ceil((cooldownMs - elapsedMs) / 1000) };
+}
+
 interface WakeupOptions {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -13830,18 +13862,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
     }
-    if (policy.cooldownSec > 0 && agent.lastHeartbeatAt) {
-      const elapsedMs = Date.now() - new Date(agent.lastHeartbeatAt).getTime();
-      const cooldownMs = policy.cooldownSec * 1000;
-      if (elapsedMs < cooldownMs) {
-        const remainingSec = Math.ceil((cooldownMs - elapsedMs) / 1000);
-        await writeSkippedRequest("heartbeat.cooldown.active");
-        logger.debug(
-          { agentId, source, cooldownSec: policy.cooldownSec, cooldownRemainingSec: remainingSec, preset: policy.preset },
-          "Wakeup skipped due to heartbeat cooldown",
-        );
-        return null;
-      }
+    const cooldown = isHeartbeatCooldownActive({
+      source,
+      cooldownSec: policy.cooldownSec,
+      lastHeartbeatAt: agent.lastHeartbeatAt,
+    });
+    if (cooldown.active) {
+      await writeSkippedRequest("heartbeat.cooldown.active");
+      logger.debug(
+        { agentId, source, cooldownSec: policy.cooldownSec, cooldownRemainingSec: cooldown.remainingSec, preset: policy.preset },
+        "Wakeup skipped due to heartbeat cooldown",
+      );
+      return null;
     }
 
     // Heartbeat ccrotate-awareness: for adapters routed through ccrotate
