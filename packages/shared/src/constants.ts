@@ -1001,6 +1001,10 @@ export const PLUGIN_UI_SLOT_TYPES = [
 ] as const;
 export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
 
+export const WORKSPACE_OVERVIEW_DEFAULT_LIMIT = 50;
+export const WORKSPACE_OVERVIEW_MAX_LIMIT = 100;
+export const WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT = 4;
+
 /**
  * Reserved company-scoped route segments that plugin page routes may not claim.
  *
@@ -1022,6 +1026,7 @@ export const PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS = [
   "costs",
   "activity",
   "inbox",
+  "workspaces",
   "design-guide",
   "tests",
 ] as const;

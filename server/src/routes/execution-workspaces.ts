@@ -6,6 +6,7 @@ import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
   updateExecutionWorkspaceSchema,
+  workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
@@ -81,6 +82,24 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       ? await svc.listSummaries(companyId, filters)
       : await svc.list(companyId, filters);
     res.json(workspaces);
+  });
+
+  router.get("/companies/:companyId/workspace-overview", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, companyId))) return;
+
+    const parsed = workspaceOverviewQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        error: "Invalid workspace overview query",
+        details: parsed.error.flatten(),
+      });
+      return;
+    }
+
+    const overview = await svc.listOverview(companyId, parsed.data);
+    res.json(overview);
   });
 
   router.get("/execution-workspaces/:id", async (req, res) => {

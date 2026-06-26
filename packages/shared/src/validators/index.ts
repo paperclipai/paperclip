@@ -389,6 +389,7 @@ export {
 export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
+  workspaceOverviewQuerySchema,
   executionWorkspaceStatusSchema,
   executionWorkspaceCloseActionKindSchema,
   executionWorkspaceCloseActionSchema,
@@ -397,6 +398,7 @@ export {
   executionWorkspaceCloseReadinessSchema,
   executionWorkspaceCloseReadinessStateSchema,
   type UpdateExecutionWorkspace,
+  type WorkspaceOverviewQuery,
 } from "./execution-workspace.js";
 
 export {
