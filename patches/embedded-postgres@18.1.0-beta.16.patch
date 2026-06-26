@@ -28,3 +28,31 @@ diff --git a/dist/index.js b/dist/index.js
                  // Connect to stderr, as that is where the messages get sent
                  (_a = this.process.stderr) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
                      // Parse the data as a string and log it
+@@ -192,10 +192,11 @@
+             if (!this.process) {
+                 return;
+             }
++            const { pg_ctl } = yield bin;
+             // Kill the existing postgres process
+             yield new Promise((resolve) => {
+                 var _a, _b, _c;
+                 // Register a handler for when the process finally exists
+                 (_a = this.process) === null || _a === void 0 ? void 0 : _a.on('exit', resolve);
+                 // GUARD: Check if we're on Windows, since Windows doesn't support SIGINT
+                 if (platform() === 'win32') {
+@@ -203,8 +204,13 @@
+                     if (!((_b = this.process) === null || _b === void 0 ? void 0 : _b.pid)) {
+                         throw new Error('Could not find process PID');
+                     }
+-                    // Actually kill the process using the Windows taskkill command
+-                    spawn('taskkill', ['/pid', this.process.pid.toString(), '/f', '/t']);
++                    if (pg_ctl) {
++                        spawn(pg_ctl, ['stop', '-D', this.options.databaseDir, '-m', 'fast']);
++                    }
++                    else {
++                        // Actually kill the process using the Windows taskkill command
++                        spawn('taskkill', ['/pid', this.process.pid.toString(), '/f', '/t']);
++                    }
+                 }
+                 else {
+                     // If on a sane OS, simply kill using SIGINT

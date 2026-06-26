@@ -217,6 +217,7 @@ let child: ReturnType<typeof spawn> | null = null;
 let childExitPromise: Promise<{ code: number; signal: NodeJS.Signals | null }> | null = null;
 let scanTimer: ReturnType<typeof setInterval> | null = null;
 let autoRestartTimer: ReturnType<typeof setInterval> | null = null;
+let rl: ReturnType<typeof createInterface> | null = null;
 
 function toError(error: unknown, context = "Dev runner command failed") {
   if (error instanceof Error) return error;
@@ -553,7 +554,7 @@ async function startServerChild() {
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env, shell: process.platform === "win32" },
+    { stdio: ["ignore", "inherit", "inherit"], env, shell: process.platform === "win32" },
   );
 
   childExitPromise = new Promise((resolve, reject) => {
@@ -633,6 +634,32 @@ async function maybeAutoRestartChild() {
 }
 
 function installDevIntervals() {
+  if (stdin.isTTY) {
+    try {
+      // using the statically imported createInterface from top of the file
+      rl = createInterface({
+        input: stdin,
+        output: process.stdout,
+        terminal: true
+      });
+      rl.on("SIGINT", () => {
+        console.log(`\n[paperclip] shutting down gracefully...\n`);
+        void shutdown("SIGINT", 0);
+      });
+      rl.on("line", (line) => {
+        if (line.trim().toLowerCase() === "q") {
+          console.log(`\n[paperclip] shutting down gracefully...\n`);
+          void shutdown("SIGINT", 0);
+        }
+      });
+      console.log("[paperclip] press 'q' and ENTER to shutdown gracefully");
+    } catch (err) {
+      console.warn("[paperclip] failed to initialize readline:", err instanceof Error ? err.message : err);
+    }
+  } else {
+    console.log("[paperclip] non-interactive terminal detected, 'q' shortcut disabled");
+  }
+
   if (mode !== "dev") return;
 
   scanTimer = setInterval(() => {
@@ -652,9 +679,13 @@ function clearDevIntervals() {
     clearInterval(autoRestartTimer);
     autoRestartTimer = null;
   }
+  if (rl) {
+    rl.close();
+    rl = null;
+  }
 }
 
-async function shutdown(signal: NodeJS.Signals) {
+async function shutdown(signal: NodeJS.Signals, explicitExitCode?: number) {
   if (shuttingDown) return;
   shuttingDown = true;
   clearDevIntervals();
@@ -667,8 +698,24 @@ async function shutdown(signal: NodeJS.Signals) {
   }
 
   childExitWasExpected = true;
-  child.kill(signal);
+
+  if (process.platform === "win32") {
+    // On Windows, signals are unreliable for child processes.
+    // Forcefully kill the process tree to prevent terminal hanging.
+    console.log("[paperclip] killing process tree...");
+    if (child.pid) {
+      spawn("taskkill", ["/pid", child.pid.toString(), "/f", "/t"], { stdio: "ignore" });
+    }
+    // Always fall back to child.kill() so waitForChildExit() can still resolve if taskkill fails silently.
+    child.kill(signal);
+  } else {
+    child.kill(signal);
+  }
+
   const exit = await waitForChildExit();
+  if (typeof explicitExitCode === "number") {
+    process.exit(explicitExitCode);
+  }
   if (exit.signal) {
     exitForSignal(exit.signal);
     return;

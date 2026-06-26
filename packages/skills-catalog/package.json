@@ -42,11 +42,11 @@
   ],
   "scripts": {
     "build": "pnpm run build:manifest && tsc -p tsconfig.json",
-    "build:manifest": "node ../../cli/node_modules/tsx/dist/cli.mjs scripts/build-catalog-manifest.ts",
+    "build:manifest": "pnpm --filter @paperclipai/server exec tsx ../packages/skills-catalog/scripts/build-catalog-manifest.ts",
     "clean": "rm -rf dist",
     "test": "pnpm -w exec vitest run --root packages/skills-catalog --config vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "validate": "node ../../cli/node_modules/tsx/dist/cli.mjs scripts/validate-catalog.ts"
+    "validate": "pnpm --filter @paperclipai/server exec tsx ../packages/skills-catalog/scripts/validate-catalog.ts"
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*"
