@@ -213,6 +213,11 @@ describe("normalizeAgentDefaultsForJoin (hermes_gateway)", () => {
     expect(normalized.diagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          code: "hermes_gateway_dashboard_root_mapped",
+          level: "info",
+          hint: expect.stringContaining("/api/v1/runs"),
+        }),
+        expect.objectContaining({
           code: "hermes_gateway_api_base_url_configured",
           message: "Hermes gateway endpoint set to http://127.0.0.1:9119/api",
         }),

@@ -316,6 +316,11 @@ function normalizeHermesGatewayApiBaseUrl(url: URL): URL {
   return normalized;
 }
 
+function isDefaultHermesDashboardRoot(url: URL): boolean {
+  const hasExplicitPath = url.pathname !== "" && url.pathname !== "/";
+  return !hasExplicitPath && url.port === DEFAULT_HERMES_DASHBOARD_PORT;
+}
+
 function normalizeHostname(value: string | null | undefined): string | null {
   if (!value) return null;
   const trimmed = value.trim();
@@ -719,7 +724,9 @@ export function normalizeAgentDefaultsForJoin(input: {
       fatalErrors.push("agentDefaultsPayload.apiBaseUrl is required");
     } else {
       try {
-        const apiBaseUrl = normalizeHermesGatewayApiBaseUrl(new URL(rawApiBaseUrl));
+        const rawParsedApiBaseUrl = new URL(rawApiBaseUrl);
+        const mappedDefaultDashboardRoot = isDefaultHermesDashboardRoot(rawParsedApiBaseUrl);
+        const apiBaseUrl = normalizeHermesGatewayApiBaseUrl(rawParsedApiBaseUrl);
         if (apiBaseUrl.protocol !== "http:" && apiBaseUrl.protocol !== "https:") {
           diagnostics.push({
             code: "hermes_gateway_api_base_url_protocol",
@@ -743,6 +750,14 @@ export function normalizeAgentDefaultsForJoin(input: {
           );
         } else {
           normalized.apiBaseUrl = apiBaseUrl.toString();
+          if (mappedDefaultDashboardRoot) {
+            diagnostics.push({
+              code: "hermes_gateway_dashboard_root_mapped",
+              level: "info",
+              message: `Default Hermes dashboard root mapped to API base ${apiBaseUrl.toString()}`,
+              hint: "Hermes dashboard and /chat routes are browser UI routes. Paperclip gateway calls use /api/health and /api/v1/runs.",
+            });
+          }
           if (apiBaseUrl.protocol === "http:" && !isLoopbackHost(apiBaseUrl.hostname)) {
             diagnostics.push({
               code: "hermes_gateway_plain_http_remote_unsafe_allowed",
@@ -1706,7 +1721,7 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your API key. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. OpenClaw Gateway agents must use adapterType='hermes_gateway', start Hermes with API_SERVER_ENABLED=true, API_SERVER_KEY, and `hermes gateway run --replace --accept-hooks`, then set agentDefaultsPayload.apiBaseUrl and agentDefaultsPayload.paperclipApiUrl. If you use the default Hermes dashboard root on port 9119, Paperclip maps it to /api automatically. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token.",
+        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your API key. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. Hermes Gateway agents must use adapterType='hermes_gateway', start Hermes with API_SERVER_ENABLED=true, API_SERVER_KEY, and `hermes gateway run --replace --accept-hooks`, then set agentDefaultsPayload.apiBaseUrl and agentDefaultsPayload.paperclipApiUrl. If you use the default Hermes dashboard root on port 9119, Paperclip maps it to /api automatically; /chat is browser UI, not the API base. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token.",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: null,
       requiredFields: {
@@ -1872,6 +1887,7 @@ export function buildInviteOnboardingTextDocument(
     - Default Hermes API server port: 8642.
     - Set agentDefaultsPayload.apiBaseUrl to the Hermes gateway URL Paperclip can reach.
     - If you only have the default Hermes dashboard URL, http://127.0.0.1:9119 is accepted and maps to /api automatically.
+    - Watch out: /chat and the dashboard root are browser UI routes. Paperclip tests /api/health and starts runs with /api/v1/runs when the dashboard root is used.
     - Set agentDefaultsPayload.paperclipApiUrl to the Paperclip base URL Hermes can reach.
     - Use hermes_local when Paperclip should start Hermes on the Paperclip host.
     - Use hermes_gateway when Paperclip should call an already-running Hermes API server.

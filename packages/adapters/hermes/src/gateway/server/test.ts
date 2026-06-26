@@ -19,12 +19,16 @@ function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentT
 
 const DEFAULT_HERMES_DASHBOARD_PORT = "9119";
 
+function isDefaultDashboardRoot(url: URL): boolean {
+  const hasExplicitPath = url.pathname !== "" && url.pathname !== "/";
+  return !hasExplicitPath && url.port === DEFAULT_HERMES_DASHBOARD_PORT;
+}
+
 function normalizeBaseUrl(value: string): URL | null {
   try {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    const hasExplicitPath = url.pathname !== "" && url.pathname !== "/";
-    if (!hasExplicitPath && url.port === DEFAULT_HERMES_DASHBOARD_PORT) {
+    if (isDefaultDashboardRoot(url)) {
       url.pathname = "/api";
     }
     return url;
@@ -67,6 +71,7 @@ export async function testEnvironment(
   }
 
   const parsed = apiBaseUrl ? normalizeBaseUrl(apiBaseUrl) : null;
+  const mappedDefaultDashboardRoot = Boolean(parsed && isDefaultDashboardRoot(new URL(apiBaseUrl)));
   if (apiBaseUrl && !parsed) {
     checks.push({
       code: "hermes_gateway_api_base_url_invalid",
@@ -81,6 +86,15 @@ export async function testEnvironment(
       level: "error",
       message: "Hermes Gateway requires apiKey.",
       hint: "Set Hermes API_SERVER_KEY and copy the same value into adapterConfig.apiKey.",
+    });
+  }
+
+  if (parsed && mappedDefaultDashboardRoot) {
+    checks.push({
+      code: "hermes_gateway_dashboard_root_mapped",
+      level: "info",
+      message: `Default Hermes dashboard root mapped to API base ${parsed.toString()}.`,
+      hint: "Hermes dashboard routes such as /chat are browser UI routes. Paperclip gateway calls use /api/health and /api/v1/runs.",
     });
   }
 

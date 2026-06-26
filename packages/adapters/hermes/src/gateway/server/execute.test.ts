@@ -518,6 +518,16 @@ describe("testEnvironment", () => {
     });
 
     expect(result.status).toBe("pass");
+    expect(result.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "hermes_gateway_dashboard_root_mapped",
+          level: "info",
+          message: "Default Hermes dashboard root mapped to API base http://127.0.0.1:9119/api.",
+          hint: expect.stringContaining("/api/v1/runs"),
+        }),
+      ]),
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:9119/api/health",
       expect.objectContaining({ method: "GET" }),

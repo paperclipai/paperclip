@@ -22,6 +22,7 @@ Hermes gateway process setup:
 - Start Hermes with: hermes gateway run --replace --accept-hooks
 - Default Hermes API server port: 8642.
 - Default Hermes dashboard port: 9119. If Paperclip is configured with a bare dashboard root such as http://127.0.0.1:9119, it maps the base URL to /api automatically.
+- Watch out: /chat and the dashboard root are browser UI routes. Paperclip tests /api/health and starts runs with /api/v1/runs when the dashboard root is used.
 
 Join request minimum:
 {
