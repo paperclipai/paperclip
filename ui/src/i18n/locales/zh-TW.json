@@ -1445,5 +1445,88 @@
     "placeholders": {
       "workspaceName": "工作区名称"
     }
+  },
+  "pluginManager": {
+    "toasts": {
+      "disableFailed": "停用外掛失敗",
+      "enableFailed": "啟用外掛失敗",
+      "installFailed": "安裝外掛失敗",
+      "uninstallFailed": "解除安裝外掛失敗",
+      "disabled": "外掛已停用",
+      "enabled": "外掛已啟用",
+      "installed": "外掛安裝成功",
+      "uninstalled": "外掛解除安裝成功"
+    },
+    "text": {
+      "available": "可用外掛",
+      "building": "正在建構外掛……",
+      "bundled": "已捆綁",
+      "cancel": "取消",
+      "errorDetails": "錯誤詳情",
+      "loadBundledFailed": "載入捆綁外掛失敗。",
+      "loadFailed": "載入外掛失敗。",
+      "fullErrorOutput": "完整錯誤輸出",
+      "installedPlugins": "已安裝外掛",
+      "installPlugin": "安裝外掛",
+      "loadingBundled": "正在載入捆綁外掛……",
+      "loading": "正在載入外掛……",
+      "noneInstalled": "未安裝外掛",
+      "notInstalled": "未安裝",
+      "pluginError": "外掛錯誤",
+      "pluginManager": "外掛管理器",
+      "pluginsAlpha": "外掛為 Alpha 階段。",
+      "uninstallPlugin": "解除安裝外掛"
+    },
+    "tabs": {
+      "instanceSettings": "實例設定",
+      "plugins": "外掛",
+      "settings": "設定"
+    }
+  },
+  "systemNoticeUxLab": {
+    "toasts": {
+      "recoveryOwner": "復原負責人",
+      "runEvidence": "執行證據",
+      "handoffMissing": "成功執行交接缺少處置"
+    },
+    "text": {
+      "accessibility": "可存取性",
+      "component": "元件",
+      "details": "詳情",
+      "handoffEngineering": "交接給工程團隊",
+      "issueChatUserMessage": "問題聊天使用者訊息",
+      "legacyFallback": "舊版回退",
+      "normalizedCause": "標準化原因:執行已完成但無處置",
+      "recoveryOwner": "復原負責人:CTO",
+      "routing": "路由至問題聊天執行緒",
+      "successfulRunHandoffCallout": "成功執行交接評論標註",
+      "handoffMissing": "成功執行交接缺失",
+      "suggestedAction": "建議操作:重新分配給復原智慧代理"
+    },
+    "labelsJsx": {
+      "systemAlert": "系統提醒",
+      "owner": "負責人",
+      "paperclip": "Paperclip",
+      "recoveryIssue": "復原問題",
+      "sourceRun": "來源執行"
+    }
+  },
+  "newAgent": {
+    "errors": {
+      "create": "建立智慧代理失敗。"
+    },
+    "text": {
+      "companySkills": "公司技能",
+      "newAgent": "新建智慧代理",
+      "defaultNameHint": "這將是 CEO"
+    },
+    "tabs": {
+      "agents": "智慧代理",
+      "newAgent": "新建智慧代理"
+    },
+    "placeholders": {
+      "agentName": "智慧代理名稱",
+      "title": "職位(如工程副總裁)"
+    }
   }
 }

@@ -1445,5 +1445,88 @@
     "placeholders": {
       "workspaceName": "工作区名称"
     }
+  },
+  "pluginManager": {
+    "toasts": {
+      "disableFailed": "禁用插件失败",
+      "enableFailed": "启用插件失败",
+      "installFailed": "安装插件失败",
+      "uninstallFailed": "卸载插件失败",
+      "disabled": "插件已禁用",
+      "enabled": "插件已启用",
+      "installed": "插件安装成功",
+      "uninstalled": "插件卸载成功"
+    },
+    "text": {
+      "available": "可用插件",
+      "building": "正在构建插件……",
+      "bundled": "已捆绑",
+      "cancel": "取消",
+      "errorDetails": "错误详情",
+      "loadBundledFailed": "加载捆绑插件失败。",
+      "loadFailed": "加载插件失败。",
+      "fullErrorOutput": "完整错误输出",
+      "installedPlugins": "已安装插件",
+      "installPlugin": "安装插件",
+      "loadingBundled": "正在加载捆绑插件……",
+      "loading": "正在加载插件……",
+      "noneInstalled": "未安装插件",
+      "notInstalled": "未安装",
+      "pluginError": "插件错误",
+      "pluginManager": "插件管理器",
+      "pluginsAlpha": "插件为 Alpha 阶段。",
+      "uninstallPlugin": "卸载插件"
+    },
+    "tabs": {
+      "instanceSettings": "实例设置",
+      "plugins": "插件",
+      "settings": "设置"
+    }
+  },
+  "systemNoticeUxLab": {
+    "toasts": {
+      "recoveryOwner": "恢复负责人",
+      "runEvidence": "运行证据",
+      "handoffMissing": "成功运行交接缺少处置"
+    },
+    "text": {
+      "accessibility": "可访问性",
+      "component": "组件",
+      "details": "详情",
+      "handoffEngineering": "交接给工程团队",
+      "issueChatUserMessage": "问题聊天用户消息",
+      "legacyFallback": "旧版回退",
+      "normalizedCause": "标准化原因:运行已完成但无处置",
+      "recoveryOwner": "恢复负责人:CTO",
+      "routing": "路由至问题聊天线程",
+      "successfulRunHandoffCallout": "成功运行交接评论标注",
+      "handoffMissing": "成功运行交接缺失",
+      "suggestedAction": "建议操作:重新分配给恢复智能体"
+    },
+    "labelsJsx": {
+      "systemAlert": "系统提醒",
+      "owner": "负责人",
+      "paperclip": "Paperclip",
+      "recoveryIssue": "恢复问题",
+      "sourceRun": "来源运行"
+    }
+  },
+  "newAgent": {
+    "errors": {
+      "create": "创建智能体失败。"
+    },
+    "text": {
+      "companySkills": "公司技能",
+      "newAgent": "新建智能体",
+      "defaultNameHint": "这将是 CEO"
+    },
+    "tabs": {
+      "agents": "智能体",
+      "newAgent": "新建智能体"
+    },
+    "placeholders": {
+      "agentName": "智能体名称",
+      "title": "职位(如工程副总裁)"
+    }
   }
 }

@@ -1445,5 +1445,88 @@
     "placeholders": {
       "workspaceName": "Workspace name"
     }
+  },
+  "pluginManager": {
+    "toasts": {
+      "disableFailed": "Failed to disable plugin",
+      "enableFailed": "Failed to enable plugin",
+      "installFailed": "Failed to install plugin",
+      "uninstallFailed": "Failed to uninstall plugin",
+      "disabled": "Plugin disabled",
+      "enabled": "Plugin enabled",
+      "installed": "Plugin installed successfully",
+      "uninstalled": "Plugin uninstalled successfully"
+    },
+    "text": {
+      "available": "Available Plugins",
+      "building": "Building plugin...",
+      "bundled": "Bundled",
+      "cancel": "Cancel",
+      "errorDetails": "Error Details",
+      "loadBundledFailed": "Failed to load bundled plugins.",
+      "loadFailed": "Failed to load plugins.",
+      "fullErrorOutput": "Full error output",
+      "installedPlugins": "Installed Plugins",
+      "installPlugin": "Install Plugin",
+      "loadingBundled": "Loading bundled plugins...",
+      "loading": "Loading plugins...",
+      "noneInstalled": "No plugins installed",
+      "notInstalled": "Not installed",
+      "pluginError": "Plugin error",
+      "pluginManager": "Plugin Manager",
+      "pluginsAlpha": "Plugins are alpha.",
+      "uninstallPlugin": "Uninstall Plugin"
+    },
+    "tabs": {
+      "instanceSettings": "Instance settings",
+      "plugins": "Plugins",
+      "settings": "Settings"
+    }
+  },
+  "systemNoticeUxLab": {
+    "toasts": {
+      "recoveryOwner": "Recovery owner",
+      "runEvidence": "Run evidence",
+      "handoffMissing": "Successful run handoff missing disposition"
+    },
+    "text": {
+      "accessibility": "Accessibility",
+      "component": "Component",
+      "details": "Details",
+      "handoffEngineering": "Handoff to engineering",
+      "issueChatUserMessage": "IssueChatUserMessage",
+      "legacyFallback": "Legacy fallback",
+      "normalizedCause": "Normalized cause: Run completed without disposition",
+      "recoveryOwner": "Recovery owner: CTO",
+      "routing": "Routing in IssueChatThread",
+      "successfulRunHandoffCallout": "SuccessfulRunHandoffCommentCallout",
+      "handoffMissing": "Successful run handoff missing",
+      "suggestedAction": "Suggested action: Reassign to recovery agent"
+    },
+    "labelsJsx": {
+      "systemAlert": "System alert",
+      "owner": "Owner",
+      "paperclip": "Paperclip",
+      "recoveryIssue": "Recovery issue",
+      "sourceRun": "Source run"
+    }
+  },
+  "newAgent": {
+    "errors": {
+      "create": "Failed to create agent"
+    },
+    "text": {
+      "companySkills": "Company skills",
+      "newAgent": "New Agent",
+      "defaultNameHint": "This will be the CEO"
+    },
+    "tabs": {
+      "agents": "Agents",
+      "newAgent": "New Agent"
+    },
+    "placeholders": {
+      "agentName": "Agent name",
+      "title": "Title (e.g. VP of Engineering)"
+    }
   }
 }
