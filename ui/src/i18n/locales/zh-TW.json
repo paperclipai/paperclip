@@ -1238,5 +1238,212 @@
       "instanceSettings": "實例設定",
       "settings": "設定"
     }
+  },
+  "inviteUxLab": {
+    "text": {
+      "acceptCompanyInvite": "接受公司邀请",
+      "action": "操作",
+      "adapterType": "适配器类型",
+      "agentName": "智慧代理名称",
+      "approvalPage": "审批页面",
+      "capabilities": "能力",
+      "chooseRole": "选择角色",
+      "claimSecret": "领取密钥",
+      "claudeCode": "Claude Code",
+      "codex": "Codex",
+      "created": "创建时间",
+      "createInvite": "创建邀请",
+      "cursor": "Cursor",
+      "email": "邮箱",
+      "emptyHistory": "空历史状态",
+      "inactive": "未活跃",
+      "uxReview": "邀请与注册用户体验审查界面",
+      "invitedBy": "邀请者",
+      "inviteHistory": "邀请历史",
+      "auditTrail": "以下邀请历史保留审计记录。",
+      "joinRequest": "加入请求",
+      "latestInviteLink": "最新邀请链接",
+      "messageFromInviter": "邀请者留言",
+      "name": "姓名",
+      "paperclip": "Paperclip",
+      "password": "密码",
+      "permissionError": "权限错误",
+      "role": "角色",
+      "state": "状态",
+      "submitAgentDetails": "提交智慧代理詳情",
+      "submittingRequest": "正在提交請求……"
+    },
+    "actions": {
+      "inactive": "未活跃",
+      "revoke": "撤销"
+    },
+    "descriptions": {
+      "boardApproval": "委员会用户必须審批你的加入請求。",
+      "viewer": "可查看公司工作并跟进。",
+      "admin": "完全公司访问权限,包括成员管理。"
+    },
+    "labelsJsx": {
+      "company": "公司",
+      "invitedBy": "邀请者",
+      "inviteExpires": "邀请过期",
+      "requestedAccess": "請求的访问"
+    },
+    "labelsObj": {
+      "admin": "管理员",
+      "operator": "操作员",
+      "owner": "所有者",
+      "viewer": "查看者"
+    }
+  },
+  "projectDetail": {
+    "text": {
+      "color": "颜色",
+      "icon": "图标",
+      "loadingWorkspaces": "正在加载工作區……",
+      "noIconsMatch": "没有匹配的圖示",
+      "status": "状态",
+      "targetDate": "目标日期"
+    },
+    "labelsJsx": {
+      "changeIconColor": "更改專案圖示和顏色",
+      "dismissMembershipNotice": "忽略项目成员资格通知",
+      "resetToGray": "重置为中性灰"
+    },
+    "labelsObj": {
+      "budget": "预算",
+      "configuration": "配置",
+      "overview": "概览",
+      "pluginOperations": "插件操作",
+      "projects": "项目",
+      "tasks": "任务",
+      "workspaces": "工作区"
+    },
+    "placeholders": {
+      "addDescription": "添加描述……",
+      "searchIcons": "搜索图标……"
+    }
+  },
+  "routineDetail": {
+    "toasts": {
+      "defaultAgentRequired": "需要預設智慧代理",
+      "addTriggerFailed": "添加触发器失败",
+      "deleteTriggerFailed": "删除触发器失败",
+      "rotateWebhookFailed": "轮换 Webhook 密钥失败",
+      "saveFailed": "保存例程失败",
+      "updateFailed": "更新例程失败",
+      "updateTriggerFailed": "更新触发器失败",
+      "routineChanged": "例程已更改",
+      "runFailed": "例程运行失败",
+      "runStarted": "例程运行已启动",
+      "saved": "例程已保存",
+      "triggerAdded": "触发器已添加",
+      "triggerDeleted": "触发器已删除",
+      "triggerSaved": "触发器已保存",
+      "webhookRotated": "Webhook 密钥已轮换",
+      "webhookTriggerCreated": "Webhook 触发器已创建"
+    },
+    "errors": {
+      "clipboardDenied": "剪贴板访问被拒绝。",
+      "createTrigger": "Paperclip 无法创建触发器。",
+      "deleteTrigger": "Paperclip 无法删除触发器。",
+      "rotateWebhook": "Paperclip 无法轮换 Webhook 密钥。",
+      "saveRoutine": "Paperclip 无法保存例程。",
+      "startRun": "Paperclip 无法启动例程运行。",
+      "updateRoutine": "Paperclip 无法更新例程。",
+      "updateTrigger": "Paperclip 无法更新触发器。",
+      "loadRoutine": "无法加载此例程。"
+    },
+    "tabs": {
+      "routines": "例程"
+    },
+    "placeholders": {
+      "title": "例程标题"
+    }
+  },
+  "inviteLanding": {
+    "errors": {
+      "acceptFailed": "接受邀请失败"
+    },
+    "text": {
+      "adapterType": "适配器类型",
+      "agentName": "智慧代理名称",
+      "approvalPage": "审批页面",
+      "bootstrapComplete": "引导完成",
+      "capabilities": "能力",
+      "checkingAccess": "正在检查你的访问……",
+      "claimSecret": "领取密钥",
+      "company": "公司",
+      "email": "邮箱",
+      "invalidToken": "无效的邀請令牌。",
+      "invitedBy": "邀请者",
+      "inviteExpires": "邀请过期",
+      "inviteNotAvailable": "邀請不可用",
+      "loadingInvite": "正在加载邀請……",
+      "messageFromInviter": "邀请者留言",
+      "name": "姓名",
+      "openBoard": "打开董事会",
+      "openingCompany": "正在打开公司……",
+      "password": "密码",
+      "requestedAccess": "請求的访问",
+      "submitAgentDetails": "提交智慧代理詳情",
+      "joinedCompany": "你已加入公司"
+    }
+  },
+  "projectWorkspaceDetail": {
+    "errors": {
+      "controlCommands": "控制工作区命令失败。",
+      "loadWorkspace": "加载工作区失败",
+      "saveWorkspace": "保存工作区失败。",
+      "updateWorkspace": "更新工作区失败。",
+      "invalidJson": "JSON 格式无效。"
+    },
+    "text": {
+      "advancedRuntimeJson": "高级运行时 JSON",
+      "currentState": "当前状态",
+      "noUnsavedChanges": "无未儲存的更改。",
+      "servicesJobs": "服务与任务",
+      "workspaceCommands": "工作区命令",
+      "workspaceFacts": "工作区事实",
+      "notFound": "此项目未找到工作区。"
+    },
+    "labelsJsx": {
+      "cleanupCommand": "清理命令",
+      "defaultRef": "默认引用",
+      "localPath": "本地路径",
+      "project": "项目",
+      "remoteProvider": "远程提供商",
+      "remoteRef": "远程工作区引用",
+      "repo": "仓库",
+      "repoRef": "仓库引用",
+      "repoUrl": "仓库 URL",
+      "setupCommand": "设置命令",
+      "sharedKey": "共享工作区密钥",
+      "sourceType": "来源类型",
+      "updated": "更新时间",
+      "visibility": "可见性",
+      "workspaceCommandsJson": "工作区命令 JSON",
+      "workspaceId": "工作区 ID",
+      "workspaceName": "工作区名称"
+    },
+    "descriptions": {
+      "hosted": "由外部引用跟踪的托管工作區。",
+      "localNonGit": "无 git 语义的本地文件夹。",
+      "localDirect": "Paperclip 可直接使用的本地路径。",
+      "remoteRepo": "具有可选引用和本地检出的仓库 URL。"
+    },
+    "labelsObj": {
+      "advanced": "高级",
+      "configuration": "配置",
+      "default": "默认",
+      "localGit": "本地 git 检出",
+      "localNonGit": "本地非 git 路径",
+      "projects": "项目",
+      "remoteGit": "远程 git 仓库",
+      "remoteManaged": "远程管理工作区",
+      "workspaces": "工作区"
+    },
+    "placeholders": {
+      "workspaceName": "工作区名称"
+    }
   }
 }

@@ -1238,5 +1238,212 @@
       "instanceSettings": "Instance settings",
       "settings": "Settings"
     }
+  },
+  "inviteUxLab": {
+    "text": {
+      "acceptCompanyInvite": "Accept company invite",
+      "action": "Action",
+      "adapterType": "Adapter type",
+      "agentName": "Agent name",
+      "approvalPage": "Approval page",
+      "capabilities": "Capabilities",
+      "chooseRole": "Choose a role",
+      "claimSecret": "Claim secret",
+      "claudeCode": "Claude Code",
+      "codex": "Codex",
+      "created": "Created",
+      "createInvite": "Create invite",
+      "cursor": "Cursor",
+      "email": "Email",
+      "emptyHistory": "Empty history state",
+      "inactive": "Inactive",
+      "uxReview": "Invite and signup UX review surface",
+      "invitedBy": "Invited by",
+      "inviteHistory": "Invite history",
+      "auditTrail": "Invite history below keeps the audit trail.",
+      "joinRequest": "Join request",
+      "latestInviteLink": "Latest invite link",
+      "messageFromInviter": "Message from inviter",
+      "name": "Name",
+      "paperclip": "Paperclip",
+      "password": "Password",
+      "permissionError": "Permission error",
+      "role": "Role",
+      "state": "State",
+      "submitAgentDetails": "Submit agent details",
+      "submittingRequest": "Submitting request..."
+    },
+    "actions": {
+      "inactive": "Inactive",
+      "revoke": "Revoke"
+    },
+    "descriptions": {
+      "boardApproval": "Board User must approve your request to join.",
+      "viewer": "Can view company work and follow along.",
+      "admin": "Full company access, including membership management."
+    },
+    "labelsJsx": {
+      "company": "Company",
+      "invitedBy": "Invited by",
+      "inviteExpires": "Invite expires",
+      "requestedAccess": "Requested access"
+    },
+    "labelsObj": {
+      "admin": "Admin",
+      "operator": "Operator",
+      "owner": "Owner",
+      "viewer": "Viewer"
+    }
+  },
+  "projectDetail": {
+    "text": {
+      "color": "Color",
+      "icon": "Icon",
+      "loadingWorkspaces": "Loading workspaces...",
+      "noIconsMatch": "No icons match",
+      "status": "Status",
+      "targetDate": "Target Date"
+    },
+    "labelsJsx": {
+      "changeIconColor": "Change project icon and color",
+      "dismissMembershipNotice": "Dismiss project membership notice",
+      "resetToGray": "Reset to neutral gray"
+    },
+    "labelsObj": {
+      "budget": "Budget",
+      "configuration": "Configuration",
+      "overview": "Overview",
+      "pluginOperations": "Plugin operations",
+      "projects": "Projects",
+      "tasks": "Tasks",
+      "workspaces": "Workspaces"
+    },
+    "placeholders": {
+      "addDescription": "Add a description...",
+      "searchIcons": "Search icons..."
+    }
+  },
+  "routineDetail": {
+    "toasts": {
+      "defaultAgentRequired": "Default agent required",
+      "addTriggerFailed": "Failed to add trigger",
+      "deleteTriggerFailed": "Failed to delete trigger",
+      "rotateWebhookFailed": "Failed to rotate webhook secret",
+      "saveFailed": "Failed to save routine",
+      "updateFailed": "Failed to update routine",
+      "updateTriggerFailed": "Failed to update trigger",
+      "routineChanged": "Routine changed",
+      "runFailed": "Routine run failed",
+      "runStarted": "Routine run started",
+      "saved": "Routine saved",
+      "triggerAdded": "Trigger added",
+      "triggerDeleted": "Trigger deleted",
+      "triggerSaved": "Trigger saved",
+      "webhookRotated": "Webhook secret rotated",
+      "webhookTriggerCreated": "Webhook trigger created"
+    },
+    "errors": {
+      "clipboardDenied": "Clipboard access was denied.",
+      "createTrigger": "Paperclip could not create the trigger.",
+      "deleteTrigger": "Paperclip could not delete the trigger.",
+      "rotateWebhook": "Paperclip could not rotate the webhook secret.",
+      "saveRoutine": "Paperclip could not save the routine.",
+      "startRun": "Paperclip could not start the routine run.",
+      "updateRoutine": "Paperclip could not update the routine.",
+      "updateTrigger": "Paperclip could not update the trigger.",
+      "loadRoutine": "We couldn't load this routine."
+    },
+    "tabs": {
+      "routines": "Routines"
+    },
+    "placeholders": {
+      "title": "Routine title"
+    }
+  },
+  "inviteLanding": {
+    "errors": {
+      "acceptFailed": "Failed to accept invite"
+    },
+    "text": {
+      "adapterType": "Adapter type",
+      "agentName": "Agent name",
+      "approvalPage": "Approval page",
+      "bootstrapComplete": "Bootstrap complete",
+      "capabilities": "Capabilities",
+      "checkingAccess": "Checking your access...",
+      "claimSecret": "Claim secret",
+      "company": "Company",
+      "email": "Email",
+      "invalidToken": "Invalid invite token.",
+      "invitedBy": "Invited by",
+      "inviteExpires": "Invite expires",
+      "inviteNotAvailable": "Invite not available",
+      "loadingInvite": "Loading invite...",
+      "messageFromInviter": "Message from inviter",
+      "name": "Name",
+      "openBoard": "Open board",
+      "openingCompany": "Opening company...",
+      "password": "Password",
+      "requestedAccess": "Requested access",
+      "submitAgentDetails": "Submit agent details",
+      "joinedCompany": "You joined the company"
+    }
+  },
+  "projectWorkspaceDetail": {
+    "errors": {
+      "controlCommands": "Failed to control workspace commands.",
+      "loadWorkspace": "Failed to load workspace",
+      "saveWorkspace": "Failed to save workspace.",
+      "updateWorkspace": "Failed to update workspace.",
+      "invalidJson": "Invalid JSON."
+    },
+    "text": {
+      "advancedRuntimeJson": "Advanced runtime JSON",
+      "currentState": "Current state",
+      "noUnsavedChanges": "No unsaved changes.",
+      "servicesJobs": "Services and jobs",
+      "workspaceCommands": "Workspace commands",
+      "workspaceFacts": "Workspace facts",
+      "notFound": "Workspace not found for this project."
+    },
+    "labelsJsx": {
+      "cleanupCommand": "Cleanup command",
+      "defaultRef": "Default ref",
+      "localPath": "Local path",
+      "project": "Project",
+      "remoteProvider": "Remote provider",
+      "remoteRef": "Remote workspace ref",
+      "repo": "Repo",
+      "repoRef": "Repo ref",
+      "repoUrl": "Repo URL",
+      "setupCommand": "Setup command",
+      "sharedKey": "Shared workspace key",
+      "sourceType": "Source type",
+      "updated": "Updated",
+      "visibility": "Visibility",
+      "workspaceCommandsJson": "Workspace commands JSON",
+      "workspaceId": "Workspace ID",
+      "workspaceName": "Workspace name"
+    },
+    "descriptions": {
+      "hosted": "A hosted workspace tracked by external reference.",
+      "localNonGit": "A local folder without git semantics.",
+      "localDirect": "A local path Paperclip can use directly.",
+      "remoteRepo": "A repo URL with optional refs and local checkout."
+    },
+    "labelsObj": {
+      "advanced": "Advanced",
+      "configuration": "Configuration",
+      "default": "Default",
+      "localGit": "Local git checkout",
+      "localNonGit": "Local non-git path",
+      "projects": "Projects",
+      "remoteGit": "Remote git repo",
+      "remoteManaged": "Remote-managed workspace",
+      "workspaces": "Workspaces"
+    },
+    "placeholders": {
+      "workspaceName": "Workspace name"
+    }
   }
 }
