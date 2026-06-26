@@ -964,7 +964,7 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {/* Step 1: Name your team (both paths) */}
+              {/* Step 1: Name your company (both paths) */}
               {step === 1 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
@@ -972,9 +972,9 @@ export function OnboardingWizard() {
                       <Building2 className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Name your team</h3>
+                      <h3 className="font-medium">Name your company</h3>
                       <p className="text-xs text-muted-foreground">
-                        What should we call your team?
+                        What should we call your company?
                       </p>
                     </div>
                   </div>
@@ -987,7 +987,7 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Team name
+                      Company name
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -1206,7 +1206,7 @@ export function OnboardingWizard() {
                     className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
                     onClick={() => setStep(1)}
                   >
-                    ← Change team name
+                    ← Change company name
                   </button>
                 </div>
               )}
@@ -1589,7 +1589,7 @@ export function OnboardingWizard() {
                   {/* Review checklist — everything that's now set up */}
                   <div className="space-y-1.5">
                     {[
-                      { label: "Team name", done: Boolean(companyName.trim()) },
+                      { label: "Company name", done: Boolean(companyName.trim()) },
                       { label: "Mission", done: Boolean(companyGoal.trim()) },
                       { label: "Agent created", done: Boolean(createdAgentId) },
                       { label: "Model connected", done: Boolean(createdAgentId) },
