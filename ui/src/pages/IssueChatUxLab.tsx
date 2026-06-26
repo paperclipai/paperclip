@@ -132,6 +132,7 @@ function RotatingReasoningDemo({ intervalMs = 2200 }: { intervalMs?: number }) {
 }
 
 export function IssueChatUxLab() {
+  const { t } = useTranslation();
   const [showComposer, setShowComposer] = useState(true);
 
   return (
@@ -143,7 +144,7 @@ export function IssueChatUxLab() {
               <FlaskConical className="h-3.5 w-3.5" />
               Chat UX Lab
             </div>
-            <h1 className="mt-4 text-3xl font-semibold tracking-tight">Issue chat review surface</h1>
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight">{t("issueChatUxLab.text.reviewSurface")}</h1>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
               This page exercises the real assistant-ui issue chat with fixture-backed messages. Use it to review
               spacing, chronology, running states, tool rendering, activity rows, queueing, and composer behavior
@@ -233,7 +234,7 @@ export function IssueChatUxLab() {
             <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
               <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
                 <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-                <span className="shimmer-text">Working</span>
+                <span className="shimmer-text">{t("issueChatUxLab.text.working")}</span>
               </span>
               <span className="text-xs text-muted-foreground/60">for 12s</span>
             </div>
@@ -358,7 +359,7 @@ export function IssueChatUxLab() {
                 <MessagesSquare className="h-4 w-4 text-cyan-700 dark:text-cyan-300" />
                 Review checklist
               </div>
-              <CardTitle className="text-lg">What to evaluate on this page</CardTitle>
+              <CardTitle className="text-lg">{t("issueChatUxLab.text.whatToEvaluate")}</CardTitle>
               <CardDescription>
                 This route should be the fastest way to inspect the chat system before or after tweaks.
               </CardDescription>

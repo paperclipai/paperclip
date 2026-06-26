@@ -1528,5 +1528,46 @@
       "agentName": "智慧代理名稱",
       "title": "職位(如工程副總裁)"
     }
+  },
+  "orgChart": {
+    "aria": {
+      "fitToScreen": "適應螢幕",
+      "zoomIn": "放大",
+      "zoomOut": "縮小"
+    },
+    "tabs": {
+      "orgChart": "組織架構"
+    }
+  },
+  "issueChatUxLab": {
+    "text": {
+      "reviewSurface": "問題聊天審查界面",
+      "whatToEvaluate": "在此頁面評估什麼",
+      "working": "工作中"
+    }
+  },
+  "userProfile": {
+    "text": {
+      "created": "建立時間",
+      "noActions": "暫無直接的使用者操作記錄。",
+      "noTasks": "暫未觸及任務。",
+      "open": "開啟",
+      "recentActivity": "最近活動",
+      "recentTasks": "最近任務",
+      "spend": "支出",
+      "tokens": "權杖"
+    },
+    "labelsJsx": {
+      "actions": "操作",
+      "allTimeTokens": "總權杖數",
+      "comments": "評論",
+      "completed": "已完成",
+      "openAssigned": "開啟已分配",
+      "touched": "已觸及"
+    },
+    "labelsObj": {
+      "taskLinkedUsage": "任務關聯用量",
+      "users": "使用者"
+    }
   }
 }

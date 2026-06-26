@@ -1528,5 +1528,46 @@
       "agentName": "智能体名称",
       "title": "职位(如工程副总裁)"
     }
+  },
+  "orgChart": {
+    "aria": {
+      "fitToScreen": "适应屏幕",
+      "zoomIn": "放大",
+      "zoomOut": "缩小"
+    },
+    "tabs": {
+      "orgChart": "组织架构"
+    }
+  },
+  "issueChatUxLab": {
+    "text": {
+      "reviewSurface": "问题聊天审查界面",
+      "whatToEvaluate": "在此页面评估什么",
+      "working": "工作中"
+    }
+  },
+  "userProfile": {
+    "text": {
+      "created": "创建时间",
+      "noActions": "暂无直接的用户操作记录。",
+      "noTasks": "暂未触及任务。",
+      "open": "打开",
+      "recentActivity": "最近活动",
+      "recentTasks": "最近任务",
+      "spend": "支出",
+      "tokens": "令牌"
+    },
+    "labelsJsx": {
+      "actions": "操作",
+      "allTimeTokens": "总令牌数",
+      "comments": "评论",
+      "completed": "已完成",
+      "openAssigned": "打开已分配",
+      "touched": "已触及"
+    },
+    "labelsObj": {
+      "taskLinkedUsage": "任务关联用量",
+      "users": "用户"
+    }
   }
 }

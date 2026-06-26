@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { Link, useNavigate } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -171,6 +172,7 @@ const defaultDotColor = "#a3a3a3";
 // ── Main component ──────────────────────────────────────────────────────
 
 export function OrgChart() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -194,7 +196,7 @@ export function OrgChart() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
+    setBreadcrumbs([{ label: t("orgChart.tabs.orgChart") }]);
   }, [setBreadcrumbs]);
 
   // Layout computation
@@ -489,7 +491,7 @@ export function OrgChart() {
               }
             }}
             title="Zoom in"
-            aria-label="Zoom in"
+            aria-label={t("orgChart.aria.zoomIn")}
           >
             <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -505,7 +507,7 @@ export function OrgChart() {
               }
             }}
             title="Zoom out"
-            aria-label="Zoom out"
+            aria-label={t("orgChart.aria.zoomOut")}
           >
             <Minus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -513,7 +515,7 @@ export function OrgChart() {
             className="flex size-9 items-center justify-center rounded border border-border bg-background text-[10px] transition-colors hover:bg-accent sm:size-7"
             onClick={fitToScreen}
             title="Fit to screen"
-            aria-label="Fit chart to screen"
+            aria-label={t("orgChart.aria.fitToScreen")}
           >
             <Maximize2 className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>

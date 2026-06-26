@@ -1528,5 +1528,46 @@
       "agentName": "Agent name",
       "title": "Title (e.g. VP of Engineering)"
     }
+  },
+  "orgChart": {
+    "aria": {
+      "fitToScreen": "Fit chart to screen",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out"
+    },
+    "tabs": {
+      "orgChart": "Org Chart"
+    }
+  },
+  "issueChatUxLab": {
+    "text": {
+      "reviewSurface": "Issue chat review surface",
+      "whatToEvaluate": "What to evaluate on this page",
+      "working": "Working"
+    }
+  },
+  "userProfile": {
+    "text": {
+      "created": "Created",
+      "noActions": "No direct user actions recorded yet.",
+      "noTasks": "No touched tasks yet.",
+      "open": "Open",
+      "recentActivity": "Recent activity",
+      "recentTasks": "Recent tasks",
+      "spend": "Spend",
+      "tokens": "Tokens"
+    },
+    "labelsJsx": {
+      "actions": "Actions",
+      "allTimeTokens": "All-time tokens",
+      "comments": "Comments",
+      "completed": "Completed",
+      "openAssigned": "Open assigned",
+      "touched": "Touched"
+    },
+    "labelsObj": {
+      "taskLinkedUsage": "Task-linked usage",
+      "users": "Users"
+    }
   }
 }
