@@ -1,0 +1,7 @@
+aws_region  = "us-east-1"
+environment = "dev"
+
+# Existing canonical telemetry archive bucket receiving Firehose output.
+canonical_bucket_name   = "paperclip-telemetry-archive-dev"
+canonical_object_prefix = "year="
+
