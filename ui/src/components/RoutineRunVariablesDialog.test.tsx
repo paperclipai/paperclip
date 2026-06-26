@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, ExecutionWorkspace, Project } from "@paperclipai/shared";
+import type { Agent, ExecutionWorkspace, Project, RoutineVariable } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutineRunVariablesDialog } from "./RoutineRunVariablesDialog";
 
@@ -55,6 +55,14 @@ vi.mock("./IssueWorkspaceCard", async () => {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 function createProject(): Project {
   return {
@@ -160,6 +168,59 @@ function createExecutionWorkspace(): ExecutionWorkspace {
     createdAt: new Date("2026-04-02T00:00:00.000Z"),
     updatedAt: new Date("2026-04-02T00:00:00.000Z"),
   };
+}
+
+function createQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+    },
+  });
+}
+
+async function renderRoutineRunDialog(container: HTMLDivElement, props: {
+  variables: RoutineVariable[];
+  onSubmit?: (data: unknown) => void;
+}) {
+  const root = createRoot(container);
+  const queryClient = createQueryClient();
+  const onSubmit = props.onSubmit ?? vi.fn();
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <RoutineRunVariablesDialog
+          open
+          onOpenChange={() => {}}
+          companyId="company-1"
+          projects={[]}
+          agents={[createAgent()]}
+          defaultAssigneeAgentId="agent-1"
+          variables={props.variables}
+          isPending={false}
+          onSubmit={onSubmit}
+        />
+      </QueryClientProvider>,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  return { root, onSubmit };
+}
+
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function findRunButton() {
+  return Array.from(document.querySelectorAll("button"))
+    .find((button) => button.textContent === "Run routine") as HTMLButtonElement | undefined;
 }
 
 describe("RoutineRunVariablesDialog", () => {
@@ -428,6 +489,100 @@ describe("RoutineRunVariablesDialog", () => {
       executionWorkspacePreference: "reuse_existing",
       currentExecutionWorkspace: workspace,
       projectWorkspaceId: workspace.projectWorkspaceId,
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders date inputs for explicit date variables and capital-Date text variables", async () => {
+    const { root } = await renderRoutineRunDialog(container, {
+      variables: [
+        {
+          name: "startDate",
+          label: null,
+          type: "text",
+          defaultValue: "2026-06-26",
+          required: true,
+          options: [],
+        },
+        {
+          name: "releaseOn",
+          label: "Release on",
+          type: "date",
+          defaultValue: "2026-07-01",
+          required: false,
+          options: [],
+        },
+      ],
+    });
+
+    const dateInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="date"]'));
+    expect(dateInputs).toHaveLength(2);
+    expect(dateInputs.map((input) => input.value)).toEqual(["2026-06-26", "2026-07-01"]);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("blocks empty required dates, submits date strings, and omits optional empty dates", async () => {
+    const onSubmit = vi.fn();
+    const { root } = await renderRoutineRunDialog(container, {
+      variables: [
+        {
+          name: "startDate",
+          label: null,
+          type: "text",
+          defaultValue: null,
+          required: true,
+          options: [],
+        },
+        {
+          name: "releaseOn",
+          label: "Release on",
+          type: "date",
+          defaultValue: null,
+          required: true,
+          options: [],
+        },
+        {
+          name: "endDate",
+          label: null,
+          type: "text",
+          defaultValue: null,
+          required: false,
+          options: [],
+        },
+      ],
+      onSubmit,
+    });
+
+    const runButton = findRunButton();
+    expect(runButton?.disabled).toBe(true);
+    expect(document.body.textContent).toContain("Missing: startDate, Release on");
+
+    const dateInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="date"]'));
+    await act(async () => {
+      setInputValue(dateInputs[0]!, "2026-07-04");
+      setInputValue(dateInputs[1]!, "2026-08-01");
+      await Promise.resolve();
+    });
+
+    expect(runButton?.disabled).toBe(false);
+
+    await act(async () => {
+      runButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      variables: {
+        startDate: "2026-07-04",
+        releaseOn: "2026-08-01",
+      },
+      assigneeAgentId: "agent-1",
+      projectId: null,
     });
 
     await act(async () => {

@@ -7,6 +7,7 @@ import {
   type IssueExecutionWorkspaceSettings,
   type Project,
   type RoutineVariable,
+  isRoutineDateVariableName,
 } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -151,6 +152,10 @@ function applyWorkspaceDraft(
 
 function isMissingRequiredValue(value: unknown) {
   return value == null || (typeof value === "string" && value.trim().length === 0);
+}
+
+function shouldUseDateInput(variable: RoutineVariable) {
+  return variable.type === "date" || isRoutineDateVariableName(variable.name);
 }
 
 function supportsRoutineRunWorkspaceSelection(
@@ -497,6 +502,12 @@ export function RoutineRunVariablesDialog({
                     ))}
                   </SelectContent>
                 </Select>
+              ) : shouldUseDateInput(variable) ? (
+                <Input
+                  type="date"
+                  value={values[variable.name] == null ? "" : String(values[variable.name])}
+                  onChange={(event) => setValues((current) => ({ ...current, [variable.name]: event.target.value }))}
+                />
               ) : (
                 <Input
                   type={variable.type === "number" ? "number" : "text"}
