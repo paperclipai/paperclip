@@ -17,6 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
+import { LocaleSwitcher } from "./LocaleSwitcher";
 
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
@@ -214,6 +215,7 @@ export function SidebarAccountMenu({
                 onClick={() => setOpen(false)}
               />
               <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
+              <LocaleSwitcher variant="menu-action" onAfterSelect={() => setOpen(false)} />
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"

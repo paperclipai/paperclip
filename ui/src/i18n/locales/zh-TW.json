@@ -5,5 +5,40 @@
       "description": "從建立公司開始。",
       "newCompany": "新公司"
     }
+  },
+  "bootstrap": {
+    "cliFallback": {
+      "title": "更想在主機上完成設定?",
+      "inviteActive": "引導邀請已生效。請在 Paperclip 啟動日誌中查看首位管理員 URL,或在主機上執行以下命令輪換它:",
+      "command": "在執行 Paperclip 的主機上執行以下命令,產生一次性的首位管理員邀請連結:"
+    },
+    "error": {
+      "claimedTitle": "此實例已被他人認領。",
+      "claimedBody": "重新整理頁面以登入,或請現有管理員在「實例設定 → 存取」中邀請你。",
+      "sessionExpiredTitle": "工作階段已過期,請重新登入後認領此實例。",
+      "networkTitle": "暫時無法連線伺服器,請稍後再試。"
+    },
+    "waiting": {
+      "title": "此 Paperclip 正在等待首位管理員",
+      "body": "此實例以僅邀請模式運作。維運人員需在主機上產生一次性的首位管理員邀請連結。取得連結後,在目前瀏覽器中開啟即可完成設定。",
+      "publicNote": "在公開模式下,基於瀏覽器的認領已被刻意停用,以防網路上的任何人自行提權。"
+    },
+    "success": {
+      "title": "你已是實例管理員",
+      "body": "設定完成。正在前往引導流程,以建立你的第一家公司……",
+      "redirecting": "正在跳轉……",
+      "continue": "前往控制台"
+    },
+    "setup": {
+      "title": "完成此 Paperclip 的設定",
+      "signedOutBody": "尚無管理員認領此實例。登入或建立 Paperclip 帳號,即可在目前瀏覽器中成為首位管理員。",
+      "signIn": "登入 / 建立帳號",
+      "signedInBody": "尚無管理員認領此實例。立即認領,成為首位管理員並開始引導流程。",
+      "claiming": "認領中……",
+      "claim": "認領此實例",
+      "signedInAs": "已登入:{{identity}}",
+      "wrongAccount": "帳號不對?",
+      "switchAccount": "切換帳號"
+    }
   }
 }

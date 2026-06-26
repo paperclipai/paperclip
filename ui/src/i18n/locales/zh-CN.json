@@ -5,5 +5,40 @@
       "description": "通过创建公司开始。",
       "newCompany": "新公司"
     }
+  },
+  "bootstrap": {
+    "cliFallback": {
+      "title": "更想在主机上完成设置?",
+      "inviteActive": "引导邀请已生效。请在 Paperclip 启动日志中查看首位管理员 URL,或在主机上运行以下命令轮换它:",
+      "command": "在运行 Paperclip 的主机上执行以下命令,生成一次性的首位管理员邀请链接:"
+    },
+    "error": {
+      "claimedTitle": "此实例已被他人认领。",
+      "claimedBody": "刷新页面以登录,或请现有管理员在「实例设置 → 访问」中邀请你。",
+      "sessionExpiredTitle": "会话已过期,请重新登录后认领此实例。",
+      "networkTitle": "暂时无法连接服务器,请稍后重试。"
+    },
+    "waiting": {
+      "title": "此 Paperclip 正在等待首位管理员",
+      "body": "此实例以仅邀请模式运行。运维人员需在主机上生成一次性的首位管理员邀请链接。获取链接后,在当前浏览器中打开即可完成设置。",
+      "publicNote": "在公开模式下,基于浏览器的认领已被有意禁用,以防网络上的任何人自行提权。"
+    },
+    "success": {
+      "title": "你已是实例管理员",
+      "body": "设置完成。正在前往引导流程,以创建你的第一家公司……",
+      "redirecting": "正在跳转……",
+      "continue": "前往控制台"
+    },
+    "setup": {
+      "title": "完成此 Paperclip 的设置",
+      "signedOutBody": "尚无管理员认领此实例。登录或创建 Paperclip 账号,即可在当前浏览器中成为首位管理员。",
+      "signIn": "登录 / 创建账号",
+      "signedInBody": "尚无管理员认领此实例。立即认领,成为首位管理员并开始引导流程。",
+      "claiming": "认领中……",
+      "claim": "认领此实例",
+      "signedInAs": "已登录:{{identity}}",
+      "wrongAccount": "账号不对?",
+      "switchAccount": "切换账号"
+    }
   }
 }

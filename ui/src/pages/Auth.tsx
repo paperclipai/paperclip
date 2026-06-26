@@ -7,6 +7,7 @@ import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { Sparkles } from "lucide-react";
 
 type AuthMode = "sign_in" | "sign_up";
@@ -76,7 +77,8 @@ export function AuthPage() {
 
   return (
     <div className="fixed inset-0 flex bg-background">
-      <div className="absolute top-4 right-4 z-10">
+      <div className="absolute top-4 right-4 z-10 flex items-center gap-1">
+        <LocaleSwitcher />
         <ThemeToggle />
       </div>
       {/* Left half — form */}
