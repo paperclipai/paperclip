@@ -1200,5 +1200,43 @@
       "instanceSettings": "Instance settings",
       "settings": "Settings"
     }
+  },
+  "instanceGeneral": {
+    "errors": {
+      "signOut": "Failed to sign out.",
+      "updateSettings": "Failed to update general settings."
+    },
+    "text": {
+      "backupRetention": "Backup retention",
+      "censorUsername": "Censor username in logs",
+      "daily": "Daily",
+      "deploymentAuth": "Deployment and auth",
+      "general": "General",
+      "keyboardShortcuts": "Keyboard shortcuts",
+      "loading": "Loading general settings...",
+      "monthly": "Monthly",
+      "signOut": "Sign out",
+      "weekly": "Weekly"
+    },
+    "labelsJsx": {
+      "authReadiness": "Auth readiness",
+      "bootstrapInvite": "Bootstrap invite",
+      "bootstrapStatus": "Bootstrap status",
+      "toggleKeyboardShortcuts": "Toggle keyboard shortcuts",
+      "toggleUsernameLogCensoring": "Toggle username log censoring"
+    },
+    "descriptions": {
+      "keepVotedLocal": "Keep voted AI outputs local only.",
+      "shareVotedOutputs": "Share voted AI outputs automatically."
+    },
+    "options": {
+      "alwaysAllow": "Always allow",
+      "dontAllow": "Don't allow"
+    },
+    "tabs": {
+      "general": "General",
+      "instanceSettings": "Instance settings",
+      "settings": "Settings"
+    }
   }
 }

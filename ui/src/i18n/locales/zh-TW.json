@@ -1200,5 +1200,43 @@
       "instanceSettings": "實例設定",
       "settings": "設定"
     }
+  },
+  "instanceGeneral": {
+    "errors": {
+      "signOut": "登出失敗。",
+      "updateSettings": "更新一般設定失敗。"
+    },
+    "text": {
+      "backupRetention": "備份保留",
+      "censorUsername": "在日誌中隱去使用者名稱",
+      "daily": "每日",
+      "deploymentAuth": "部署與認證",
+      "general": "一般",
+      "keyboardShortcuts": "鍵盤快速鍵",
+      "loading": "正在載入一般設定……",
+      "monthly": "每月",
+      "signOut": "登出",
+      "weekly": "每週"
+    },
+    "labelsJsx": {
+      "authReadiness": "認證就緒",
+      "bootstrapInvite": "引導邀請",
+      "bootstrapStatus": "引導狀態",
+      "toggleKeyboardShortcuts": "切換鍵盤快速鍵",
+      "toggleUsernameLogCensoring": "切換日誌使用者名稱隱去"
+    },
+    "descriptions": {
+      "keepVotedLocal": "僅在本機保留投票的 AI 輸出。",
+      "shareVotedOutputs": "自動分享投票的 AI 輸出。"
+    },
+    "options": {
+      "alwaysAllow": "始終允許",
+      "dontAllow": "不允許"
+    },
+    "tabs": {
+      "general": "一般",
+      "instanceSettings": "實例設定",
+      "settings": "設定"
+    }
   }
 }

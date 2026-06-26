@@ -1200,5 +1200,43 @@
       "instanceSettings": "实例设置",
       "settings": "设置"
     }
+  },
+  "instanceGeneral": {
+    "errors": {
+      "signOut": "退出失败。",
+      "updateSettings": "更新常规设置失败。"
+    },
+    "text": {
+      "backupRetention": "备份保留",
+      "censorUsername": "在日志中隐去用户名",
+      "daily": "每日",
+      "deploymentAuth": "部署与认证",
+      "general": "常规",
+      "keyboardShortcuts": "键盘快捷键",
+      "loading": "正在加载常规设置……",
+      "monthly": "每月",
+      "signOut": "退出",
+      "weekly": "每周"
+    },
+    "labelsJsx": {
+      "authReadiness": "认证就绪",
+      "bootstrapInvite": "引导邀请",
+      "bootstrapStatus": "引导状态",
+      "toggleKeyboardShortcuts": "切换键盘快捷键",
+      "toggleUsernameLogCensoring": "切换日志用户名隐去"
+    },
+    "descriptions": {
+      "keepVotedLocal": "仅在本地保留投票的 AI 输出。",
+      "shareVotedOutputs": "自动分享投票的 AI 输出。"
+    },
+    "options": {
+      "alwaysAllow": "始终允许",
+      "dontAllow": "不允许"
+    },
+    "tabs": {
+      "general": "常规",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    }
   }
 }
