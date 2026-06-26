@@ -231,12 +231,12 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           // svg present (expanded) it was already 12px but without it (rail) it fell
           // back to 8px — a 4px horizontal jump on collapse (PAP-10676).
           className="h-9 flex-1 justify-start gap-2 px-3 text-left"
-          aria-label={selectedCompany ? `Open ${selectedCompany.name} workspace switcher` : "Open workspace switcher"}
+          aria-label={selectedCompany ? `Open ${selectedCompany.name} company switcher` : "Open company switcher"}
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
             <span className={cn("truncate text-sm font-bold text-foreground", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>
-              {selectedCompany?.name ?? "Select workspace"}
+              {selectedCompany?.name ?? "Select company"}
             </span>
           </span>
           {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}

@@ -156,7 +156,7 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
     expect(trigger).not.toBeNull();
     act(() => {
       trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
@@ -190,7 +190,7 @@ describe("SidebarCompanyMenu", () => {
 
     expect(container.textContent).toContain("Acme Labs");
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
     expect(trigger).not.toBeNull();
 
     act(() => {
@@ -224,7 +224,7 @@ describe("SidebarCompanyMenu", () => {
     });
   });
 
-  it("toggles company order editing without selecting a workspace", async () => {
+  it("toggles company order editing without selecting a company", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -240,7 +240,7 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
     expect(trigger).not.toBeNull();
 
     act(() => {
@@ -280,7 +280,7 @@ describe("SidebarCompanyMenu", () => {
     });
   });
 
-  it("navigates to the selected workspace dashboard from company-prefixed routes", async () => {
+  it("navigates to the selected company dashboard from company-prefixed routes", async () => {
     mockLocation.pathname = "/PAP/issues";
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -297,7 +297,7 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
     expect(trigger).not.toBeNull();
 
     act(() => {
