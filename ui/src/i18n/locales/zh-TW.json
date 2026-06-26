@@ -215,7 +215,8 @@
       "activity": "選擇一家公司以檢視活動。",
       "projects": "選擇一家公司以檢視專案。",
       "routines": "選擇一家公司以檢視排程。",
-      "inbox": "選擇一家公司以檢視收件匣。"
+      "inbox": "選擇一家公司以檢視收件匣。",
+      "costs": "選擇一家公司以檢視成本。"
     },
     "sort": {
       "name": "名稱",
@@ -439,6 +440,21 @@
       "approvalStatus": "審批狀態",
       "category": "類別",
       "search": "搜尋收件匣……"
+    }
+  },
+  "costs": {
+    "labels": {
+      "activeIncidents": "活躍事件",
+      "budget": "預算",
+      "credits": "入帳",
+      "debits": "出帳",
+      "estimated": "預估",
+      "financeEvents": "財務事件",
+      "financeNet": "財務淨額",
+      "inferenceSpend": "推理支出",
+      "pausedAgents": "已暫停智慧代理",
+      "pausedProjects": "已暫停專案",
+      "pendingApprovals": "待審批"
     }
   }
 }

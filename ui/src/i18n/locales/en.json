@@ -189,7 +189,8 @@
       "activity": "Select a company to view activity.",
       "projects": "Select a company to view projects.",
       "routines": "Select a company to view routines.",
-      "inbox": "Select a company to view inbox."
+      "inbox": "Select a company to view inbox.",
+      "costs": "Select a company to view costs."
     },
     "sort": {
       "name": "Name",
@@ -439,6 +440,21 @@
       "approvalStatus": "Approval status",
       "category": "Category",
       "search": "Search inbox…"
+    }
+  },
+  "costs": {
+    "labels": {
+      "activeIncidents": "Active incidents",
+      "budget": "Budget",
+      "credits": "Credits",
+      "debits": "Debits",
+      "estimated": "Estimated",
+      "financeEvents": "Finance events",
+      "financeNet": "Finance net",
+      "inferenceSpend": "Inference spend",
+      "pausedAgents": "Paused agents",
+      "pausedProjects": "Paused projects",
+      "pendingApprovals": "Pending approvals"
     }
   }
 }

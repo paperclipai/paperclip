@@ -215,7 +215,8 @@
       "activity": "选择一家公司以查看活动。",
       "projects": "选择一家公司以查看项目。",
       "routines": "选择一家公司以查看例程。",
-      "inbox": "选择一家公司以查看收件箱。"
+      "inbox": "选择一家公司以查看收件箱。",
+      "costs": "选择一家公司以查看成本。"
     },
     "sort": {
       "name": "名称",
@@ -439,6 +440,21 @@
       "approvalStatus": "审批状态",
       "category": "类别",
       "search": "搜索收件箱……"
+    }
+  },
+  "costs": {
+    "labels": {
+      "activeIncidents": "活跃事件",
+      "budget": "预算",
+      "credits": "入账",
+      "debits": "出账",
+      "estimated": "预估",
+      "financeEvents": "财务事件",
+      "financeNet": "财务净额",
+      "inferenceSpend": "推理支出",
+      "pausedAgents": "已暂停智能体",
+      "pausedProjects": "已暂停项目",
+      "pendingApprovals": "待审批"
     }
   }
 }
