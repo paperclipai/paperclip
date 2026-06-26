@@ -29,6 +29,7 @@ COMPANY_SELECTOR="${COMPANY_SELECTOR:-}"
 
 HERMES_AGENT_NAME="${HERMES_AGENT_NAME:-Hermes Gateway Smoke Agent}"
 HERMES_GATEWAY_API_BASE_URL="${HERMES_GATEWAY_API_BASE_URL:-http://127.0.0.1:${HERMES_GATEWAY_PORT:-8642}}"
+HERMES_GATEWAY_PROBE_URL="${HERMES_GATEWAY_PROBE_URL:-$HERMES_GATEWAY_API_BASE_URL}"
 HERMES_GATEWAY_API_KEY="${HERMES_GATEWAY_API_KEY:-${API_SERVER_KEY:-}}"
 HERMES_GATEWAY_ALLOW_INSECURE_HTTP="${HERMES_GATEWAY_ALLOW_INSECURE_HTTP:-0}"
 HERMES_GATEWAY_SESSION_KEY_STRATEGY="${HERMES_GATEWAY_SESSION_KEY_STRATEGY:-issue}"
@@ -36,6 +37,49 @@ HERMES_GATEWAY_TIMEOUT_SEC="${HERMES_GATEWAY_TIMEOUT_SEC:-180}"
 PAPERCLIP_API_URL_FOR_HERMES="${PAPERCLIP_API_URL_FOR_HERMES:-}"
 GATEWAY_PROBE_TIMEOUT_SEC="${GATEWAY_PROBE_TIMEOUT_SEC:-4}"
 HERMES_JOIN_OUTPUT_FILE="${HERMES_JOIN_OUTPUT_FILE:-}"
+
+print_usage() {
+  cat <<'EOF'
+Hermes gateway join smoke
+
+Creates a Hermes gateway agent from an agent-only Paperclip invite, approves the
+join request, claims the one-time Paperclip API key, and verifies the stored
+adapter config without printing raw secrets.
+
+Required:
+  PAPERCLIP_API_URL=http://127.0.0.1:3100
+  PAPERCLIP_AUTH_HEADER='Bearer <board-token>'     # or PAPERCLIP_COOKIE
+  HERMES_GATEWAY_API_KEY=<API_SERVER_KEY>
+
+Common flags:
+  COMPANY_ID=<uuid> or COMPANY_SELECTOR=<prefix|name|uuid>
+  HERMES_GATEWAY_API_BASE_URL=http://127.0.0.1:8642
+  HERMES_GATEWAY_PROBE_URL=http://127.0.0.1:8642
+  PAPERCLIP_API_URL_FOR_HERMES=http://host.docker.internal:3100
+  HERMES_GATEWAY_ALLOW_INSECURE_HTTP=1             # dev-only non-loopback HTTP
+  HERMES_GATEWAY_SESSION_KEY_STRATEGY=issue|agent|run|none
+  HERMES_JOIN_OUTPUT_FILE=/secure/path/join-output.json
+
+Notes:
+  HERMES_GATEWAY_API_BASE_URL is stored on the Paperclip adapter and must be
+  reachable by the Paperclip server. HERMES_GATEWAY_PROBE_URL is only used by
+  this operator shell to preflight /health, which is useful when Paperclip talks
+  to the gateway over a Docker network name but the operator probes localhost.
+
+  Raw API keys are redacted from logs. HERMES_JOIN_OUTPUT_FILE contains the
+  claimed Paperclip agent API key and is written chmod 600.
+
+See doc/HERMES_GATEWAY_SMOKE.md for Docker Desktop, Linux, same-network,
+LAN/private-network, and reverse-proxy/TLS examples.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    print_usage
+    exit 0
+    ;;
+esac
 
 AUTH_HEADERS=()
 if [[ -n "${PAPERCLIP_AUTH_HEADER:-}" ]]; then
@@ -141,12 +185,31 @@ EOF
 is_remote_plain_http() {
   local url="$1"
   [[ "$url" == http://* ]] || return 1
-  case "$url" in
-    http://localhost|http://localhost/*|http://localhost:*) return 1 ;;
-    http://127.*|http://0.0.0.0|http://0.0.0.0/*|http://0.0.0.0:*) return 1 ;;
-    http://\[::1\]|http://\[::1\]/*|http://\[::1\]:*) return 1 ;;
+  ! is_loopback_http_host "$(url_host "$url")"
+}
+
+url_host() {
+  local url="$1"
+  local rest host_port host
+  rest="${url#http://}"
+  rest="${rest#https://}"
+  if [[ "$rest" == \[*\]* ]]; then
+    host="${rest#\[}"
+    host="${host%%\]*}"
+  else
+    host_port="${rest%%/*}"
+    host="${host_port%%:*}"
+  fi
+  printf "%s" "$host"
+}
+
+is_loopback_http_host() {
+  local host
+  host="$(printf "%s" "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$host" in
+    localhost|0.0.0.0|::1|0:0:0:0:0:0:0:1) return 0 ;;
   esac
-  return 0
+  [[ "$host" =~ ^127\.([0-9]{1,3}\.){2}[0-9]{1,3}$ ]]
 }
 
 strip_trailing_slash() {
@@ -195,14 +258,18 @@ assert_onboarding_contains() {
 
 probe_hermes_gateway() {
   [[ -n "$HERMES_GATEWAY_API_BASE_URL" ]] || fail "HERMES_GATEWAY_API_BASE_URL is required"
+  [[ -n "$HERMES_GATEWAY_PROBE_URL" ]] || fail "HERMES_GATEWAY_PROBE_URL is required"
   [[ -n "$HERMES_GATEWAY_API_KEY" ]] || fail "HERMES_GATEWAY_API_KEY or API_SERVER_KEY is required before any Paperclip state is mutated"
 
   if is_remote_plain_http "$HERMES_GATEWAY_API_BASE_URL" && [[ "$HERMES_GATEWAY_ALLOW_INSECURE_HTTP" != "1" ]]; then
     fail "HERMES_GATEWAY_API_BASE_URL uses non-loopback http. Set HERMES_GATEWAY_ALLOW_INSECURE_HTTP=1 for local-only unsafe HTTP, or use HTTPS."
   fi
 
-  local health_url="${HERMES_GATEWAY_API_BASE_URL%/}/health"
+  local health_url="${HERMES_GATEWAY_PROBE_URL%/}/health"
   log "probing Hermes gateway health at ${health_url} with apiKey sha256=$(hash_prefix "$HERMES_GATEWAY_API_KEY") len=${#HERMES_GATEWAY_API_KEY}"
+  if [[ "$HERMES_GATEWAY_PROBE_URL" != "$HERMES_GATEWAY_API_BASE_URL" ]]; then
+    log "Paperclip will store Hermes gateway URL ${HERMES_GATEWAY_API_BASE_URL}"
+  fi
   local code
   code="$(curl -sS -o /dev/null -w "%{http_code}" --max-time "$GATEWAY_PROBE_TIMEOUT_SEC" -H "Authorization: Bearer ${HERMES_GATEWAY_API_KEY}" "$health_url" || true)"
   if [[ "$code" != "200" ]]; then

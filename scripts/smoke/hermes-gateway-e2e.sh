@@ -36,6 +36,7 @@ HERMES_DOCKER_CONTEXT="${HERMES_DOCKER_CONTEXT:-docker/hermes-gateway-smoke}"
 HERMES_CONTAINER_NAME="${HERMES_CONTAINER_NAME:-paperclip-hermes-gateway-smoke-${RUN_SUFFIX}}"
 HERMES_GATEWAY_PORT="${HERMES_GATEWAY_PORT:-8642}"
 HERMES_GATEWAY_API_BASE_URL="${HERMES_GATEWAY_API_BASE_URL:-http://127.0.0.1:${HERMES_GATEWAY_PORT}}"
+HERMES_GATEWAY_PROBE_URL="${HERMES_GATEWAY_PROBE_URL:-http://127.0.0.1:${HERMES_GATEWAY_PORT}}"
 HERMES_GATEWAY_API_KEY="${HERMES_GATEWAY_API_KEY:-${API_SERVER_KEY:-}}"
 HERMES_GATEWAY_ALLOW_INSECURE_HTTP="${HERMES_GATEWAY_ALLOW_INSECURE_HTTP:-0}"
 HERMES_GATEWAY_SESSION_KEY_STRATEGY="${HERMES_GATEWAY_SESSION_KEY_STRATEGY:-issue}"
@@ -53,6 +54,55 @@ RUN_TIMEOUT_SEC="${RUN_TIMEOUT_SEC:-420}"
 CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-420}"
 GATEWAY_READY_TIMEOUT_SEC="${GATEWAY_READY_TIMEOUT_SEC:-90}"
 STRICT_CASES="${STRICT_CASES:-1}"
+
+print_usage() {
+  cat <<'EOF'
+Hermes gateway Docker E2E smoke
+
+Builds a fresh Hermes gateway container, verifies the gateway API directly,
+joins it to Paperclip as a hermes_gateway agent, wakes that agent on a smoke
+issue, verifies the issue result, captures redacted diagnostics, and cleans up
+Paperclip and Docker state unless HERMES_SMOKE_KEEP=1.
+
+Required:
+  PAPERCLIP_API_URL=http://127.0.0.1:3100
+  PAPERCLIP_AUTH_HEADER='Bearer <board-token>'     # or PAPERCLIP_COOKIE
+
+Common flags:
+  COMPANY_ID=<uuid> or COMPANY_SELECTOR=<prefix|name|uuid>
+  HERMES_VERSION=0.17.0
+  HERMES_IMAGE=paperclip-hermes-gateway-smoke:local
+  HERMES_GATEWAY_PORT=8642
+  HERMES_GATEWAY_API_BASE_URL=http://127.0.0.1:8642
+  HERMES_GATEWAY_PROBE_URL=http://127.0.0.1:8642
+  PAPERCLIP_API_URL_FOR_HERMES=http://host.docker.internal:3100
+  HERMES_GATEWAY_ALLOW_INSECURE_HTTP=1             # dev-only non-loopback HTTP
+  HERMES_SMOKE_NETWORK=<docker-network>
+  HERMES_DOCKER_ADD_HOST=0|1
+  HERMES_SMOKE_KEEP=1                              # keep diagnostics/container
+  HERMES_SMOKE_DIAG_DIR=/tmp/hermes-gateway-diag
+
+Mode notes:
+  HERMES_GATEWAY_API_BASE_URL is the URL stored on the Paperclip adapter and
+  must be reachable by the Paperclip server. HERMES_GATEWAY_PROBE_URL is the URL
+  this operator shell uses for direct gateway checks. They can differ for Docker
+  network and reverse-proxy smoke runs.
+
+  Raw Hermes and Paperclip API keys are redacted from logs and diagnostic files.
+  The generated/claimed key material is kept only in the per-run state directory,
+  which is deleted on success unless HERMES_SMOKE_KEEP=1.
+
+See doc/HERMES_GATEWAY_SMOKE.md for Docker Desktop, Linux, same-network,
+LAN/private-network, and reverse-proxy/TLS examples.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    print_usage
+    exit 0
+    ;;
+esac
 
 AUTH_HEADERS=()
 if [[ -n "${PAPERCLIP_AUTH_HEADER:-}" ]]; then
@@ -118,6 +168,42 @@ redact_text() {
   printf "%s" "$text"
 }
 
+url_host() {
+  local url="$1"
+  local rest host_port host
+  rest="${url#http://}"
+  rest="${rest#https://}"
+  if [[ "$rest" == \[*\]* ]]; then
+    host="${rest#\[}"
+    host="${host%%\]*}"
+  else
+    host_port="${rest%%/*}"
+    host="${host_port%%:*}"
+  fi
+  printf "%s" "$host"
+}
+
+is_loopback_http_host() {
+  local host
+  host="$(printf "%s" "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$host" in
+    localhost|0.0.0.0|::1|0:0:0:0:0:0:0:1) return 0 ;;
+  esac
+  [[ "$host" =~ ^127\.([0-9]{1,3}\.){2}[0-9]{1,3}$ ]]
+}
+
+is_remote_plain_http() {
+  local url="$1"
+  [[ "$url" == http://* ]] || return 1
+  ! is_loopback_http_host "$(url_host "$url")"
+}
+
+assert_gateway_api_base_url_allowed() {
+  if is_remote_plain_http "$HERMES_GATEWAY_API_BASE_URL" && [[ "$HERMES_GATEWAY_ALLOW_INSECURE_HTTP" != "1" ]]; then
+    fail "HERMES_GATEWAY_API_BASE_URL uses non-loopback http. Set HERMES_GATEWAY_ALLOW_INSECURE_HTTP=1 for local-only unsafe HTTP, or use HTTPS."
+  fi
+}
+
 api_request() {
   local method="$1"
   local path="$2"
@@ -160,7 +246,7 @@ gateway_request() {
   local tmp
   tmp="$(mktemp)"
 
-  local url="${HERMES_GATEWAY_API_BASE_URL%/}${path}"
+  local url="${HERMES_GATEWAY_PROBE_URL%/}${path}"
   if [[ -n "$data" ]]; then
     RESPONSE_CODE="$(curl -s -o "$tmp" -w "%{http_code}" -X "$method" -H "Authorization: Bearer ${HERMES_GATEWAY_API_KEY}" -H "Content-Type: application/json" "$url" --data "$data" || true)"
   else
@@ -285,6 +371,7 @@ capture_diagnostics() {
     echo "container=${HERMES_CONTAINER_NAME}"
     echo "image=${HERMES_IMAGE}"
     echo "gateway=${HERMES_GATEWAY_API_BASE_URL}"
+    echo "gatewayProbe=${HERMES_GATEWAY_PROBE_URL}"
     echo "paperclipApiUrl=${PAPERCLIP_API_URL}"
     echo "paperclipApiUrlForHermes=${PAPERCLIP_API_URL_FOR_HERMES}"
     echo "apiServerKeySha256=$(hash_prefix "${HERMES_GATEWAY_API_KEY:-}") len=${#HERMES_GATEWAY_API_KEY}"
@@ -429,14 +516,17 @@ probe_container_to_paperclip() {
 }
 
 probe_gateway_readiness() {
-  log "waiting for Hermes gateway health at ${HERMES_GATEWAY_API_BASE_URL%/}/health"
-  wait_http_ready "${HERMES_GATEWAY_API_BASE_URL%/}/health" "$GATEWAY_READY_TIMEOUT_SEC" || fail "Hermes gateway health did not become ready"
+  log "waiting for Hermes gateway health at ${HERMES_GATEWAY_PROBE_URL%/}/health"
+  if [[ "$HERMES_GATEWAY_PROBE_URL" != "$HERMES_GATEWAY_API_BASE_URL" ]]; then
+    log "Paperclip will store Hermes gateway URL ${HERMES_GATEWAY_API_BASE_URL}"
+  fi
+  wait_http_ready "${HERMES_GATEWAY_PROBE_URL%/}/health" "$GATEWAY_READY_TIMEOUT_SEC" || fail "Hermes gateway health did not become ready"
 
   gateway_request "GET" "/health" "" "${HERMES_SMOKE_DIAG_DIR}/gateway-health.json"
   assert_status "200"
 
   local wrong_code
-  wrong_code="$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer wrong-smoke-key" "${HERMES_GATEWAY_API_BASE_URL%/}/v1/capabilities" || true)"
+  wrong_code="$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer wrong-smoke-key" "${HERMES_GATEWAY_PROBE_URL%/}/v1/capabilities" || true)"
   if [[ "$wrong_code" == "200" ]]; then
     fail "Hermes protected endpoint accepted a wrong API key"
   fi
@@ -494,7 +584,7 @@ assert_direct_gateway_run() {
   local events_file="${HERMES_SMOKE_DIAG_DIR}/direct-run-${DIRECT_RUN_ID}-events.sse"
   curl -sS --max-time 20 -N \
     -H "Authorization: Bearer ${HERMES_GATEWAY_API_KEY}" \
-    "${HERMES_GATEWAY_API_BASE_URL%/}/v1/runs/${DIRECT_RUN_ID}/events" \
+    "${HERMES_GATEWAY_PROBE_URL%/}/v1/runs/${DIRECT_RUN_ID}/events" \
     > "${events_file}.raw" || true
   redact_text "$(cat "${events_file}.raw")" > "$events_file"
   rm -f "${events_file}.raw"
@@ -562,6 +652,7 @@ join_hermes_agent() {
   local join_log="${HERMES_SMOKE_DIAG_DIR}/hermes-gateway-join.log"
   HERMES_AGENT_NAME="$HERMES_AGENT_NAME" \
   HERMES_GATEWAY_API_BASE_URL="$HERMES_GATEWAY_API_BASE_URL" \
+  HERMES_GATEWAY_PROBE_URL="$HERMES_GATEWAY_PROBE_URL" \
   HERMES_GATEWAY_API_KEY="$HERMES_GATEWAY_API_KEY" \
   HERMES_GATEWAY_ALLOW_INSECURE_HTTP="$HERMES_GATEWAY_ALLOW_INSECURE_HTTP" \
   HERMES_GATEWAY_SESSION_KEY_STRATEGY="$HERMES_GATEWAY_SESSION_KEY_STRATEGY" \
@@ -773,6 +864,7 @@ main() {
     HERMES_GATEWAY_API_KEY="$(generate_key)"
   fi
   log "Hermes API key sha256=$(hash_prefix "$HERMES_GATEWAY_API_KEY") len=${#HERMES_GATEWAY_API_KEY}"
+  assert_gateway_api_base_url_allowed
 
   api_request "GET" "/health"
   assert_status "200"
