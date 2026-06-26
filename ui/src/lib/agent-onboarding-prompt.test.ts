@@ -11,12 +11,15 @@ describe("buildAgentOnboardingPrompt", () => {
     expect(prompt).toContain('adapterType: "hermes_gateway"');
     expect(prompt).toContain("API_SERVER_ENABLED=true");
     expect(prompt).toContain("API_SERVER_KEY");
+    expect(prompt).toContain("exact same value as `API_SERVER_KEY`");
+    expect(prompt).toContain("not the Paperclip API key");
     expect(prompt).toContain("hermes gateway run --replace --accept-hooks");
     expect(prompt).toContain("default Hermes API server port is `8642`");
     expect(prompt).toContain("agentDefaultsPayload.apiBaseUrl");
     expect(prompt).toContain("agentDefaultsPayload.paperclipApiUrl");
     expect(prompt).toContain("http://127.0.0.1:8642");
     expect(prompt).toContain("http://127.0.0.1:9119");
+    expect(prompt).toContain("http://127.0.0.1:9119/chat");
     expect(prompt).toContain("Paperclip maps it to `/api`");
     expect(prompt).toContain("`/chat` and the dashboard root are browser UI routes");
     expect(prompt).toContain("`/api/v1/runs`");
@@ -26,5 +29,6 @@ describe("buildAgentOnboardingPrompt", () => {
     expect(prompt).toContain("https://hermes-gateway.example");
     expect(prompt).toContain("`hermes_local` runs Hermes on the Paperclip host");
     expect(prompt).toContain("Hermes-originated Paperclip API calls");
+    expect(prompt).toContain("Do not rotate or invent a Paperclip key manually");
   });
 });

@@ -55,6 +55,7 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain('"adapterType": "hermes_gateway"');
     expect(text).toContain("API_SERVER_ENABLED=true");
     expect(text).toContain("API_SERVER_KEY");
+    expect(text).toContain("Set agentDefaultsPayload.apiKey to the exact same value as API_SERVER_KEY");
     expect(text).toContain("hermes gateway run --replace --accept-hooks");
     expect(text).toContain("Default Hermes API server port: 8642");
     expect(text).toContain("agentDefaultsPayload.apiBaseUrl");
@@ -63,9 +64,11 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain("Hermes-originated Paperclip API usage");
     expect(text).toContain("http://127.0.0.1:8642");
     expect(text).toContain("http://127.0.0.1:9119");
-    expect(text).toContain("maps to /api");
+    expect(text).toContain("http://127.0.0.1:9119/chat");
+    expect(text).toContain("map to /api");
     expect(text).toContain("/chat and the dashboard root are browser UI routes");
     expect(text).toContain("/api/v1/runs");
+    expect(text).toContain("Do not rotate or invent a Paperclip key manually");
     expect(text).toContain("http://192.168.1.25:8642");
     expect(text).toContain("tailnet-name.ts.net:8642");
     expect(text).toContain("http://host.docker.internal:8642");

@@ -189,6 +189,49 @@ describe("execute", () => {
     );
   });
 
+  it("routes the default Hermes dashboard chat URL on port 9119 through the API prefix", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "http://127.0.0.1:9119/api/v1/runs") {
+        return new Response(JSON.stringify({ run_id: "run-hermes-chat", status: "started" }), { status: 200 });
+      }
+      if (url === "http://127.0.0.1:9119/api/v1/runs/run-hermes-chat/events") {
+        return new Response(
+          sseStream(
+            [
+              "event: run.completed",
+              "data: {\"status\":\"completed\",\"output\":\"done\"}",
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:9119/chat",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    });
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(ctx.onMeta).toHaveBeenCalledWith(
+      expect.objectContaining({
+        commandArgs: ["http://127.0.0.1:9119/api/v1/runs"],
+      }),
+    );
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(
+      expect.arrayContaining([
+        "http://127.0.0.1:9119/api/v1/runs",
+        "http://127.0.0.1:9119/api/v1/runs/run-hermes-chat/events",
+      ]),
+    );
+  });
+
   it("redacts echoed auth material from stream logs and summaries", async () => {
     const ctx = makeCtx({
       apiBaseUrl: "http://127.0.0.1:8642",

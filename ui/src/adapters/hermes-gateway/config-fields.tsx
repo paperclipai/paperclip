@@ -13,7 +13,7 @@ const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
 const DEFAULT_SESSION_KEY_STRATEGY = "issue";
-const DEFAULT_TIMEOUT_SEC = 120;
+const DEFAULT_TIMEOUT_SEC = 600;
 const DEFAULT_EVENT_RECONNECT_MS = 2000;
 
 type SecretRef = {
@@ -142,7 +142,7 @@ export function HermesGatewayConfigFields({
     <>
       <Field
         label="API base URL"
-        hint="Hermes API server base URL that Paperclip can reach, such as http://127.0.0.1:8642 or a private HTTPS URL. The default dashboard root http://127.0.0.1:9119 is accepted and maps to /api; /chat is browser UI, not the API base."
+        hint="Hermes API server base URL that Paperclip can reach, such as http://127.0.0.1:8642 or a private HTTPS URL. Default dashboard root/chat URLs such as http://127.0.0.1:9119/chat are accepted and map to /api."
       >
         <DraftInput
           value={apiBaseUrl}
@@ -157,7 +157,7 @@ export function HermesGatewayConfigFields({
         label="API key"
         value={isCreate ? String(readCreateValue(values, "apiKey", "") ?? "") : editApiKeyValue}
         onCommit={(v) => writeValue("apiKey", v || undefined)}
-        placeholder="Hermes API_SERVER_KEY"
+        placeholder="Hermes API_SERVER_KEY, not PAPERCLIP_API_KEY"
         stored={!isCreate && hasStoredApiKey && !editApiKeyValue}
       />
 

@@ -85,6 +85,7 @@ const TERMINAL_STATUSES = new Set([
 const FAILURE_STATUSES = new Set(["failed", "error"]);
 const CANCELLED_STATUSES = new Set(["cancelled", "canceled", "stopped", "interrupted"]);
 const DEFAULT_HERMES_DASHBOARD_PORT = "9119";
+const HERMES_DASHBOARD_API_PATHS = new Set(["", "/", "/chat"]);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -119,8 +120,11 @@ function normalizeBaseUrl(value: string): URL | null {
   try {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    const hasExplicitPath = url.pathname !== "" && url.pathname !== "/";
-    if (!hasExplicitPath && url.port === DEFAULT_HERMES_DASHBOARD_PORT) {
+    const normalizedPath = url.pathname.replace(/\/+$/, "") || "/";
+    if (
+      url.port === DEFAULT_HERMES_DASHBOARD_PORT &&
+      HERMES_DASHBOARD_API_PATHS.has(normalizedPath)
+    ) {
       url.pathname = "/api";
     } else {
       url.pathname = url.pathname.replace(/\/+$/, "");

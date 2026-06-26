@@ -10,14 +10,14 @@ export function getConfigSchema(): AdapterConfigSchema {
         label: "API base URL",
         type: "text",
         required: true,
-        hint: "Hermes API server base URL, such as http://127.0.0.1:8642 or a private HTTPS URL. The default dashboard root http://127.0.0.1:9119 is accepted and maps to /api.",
+        hint: "Hermes API server base URL, such as http://127.0.0.1:8642 or a private HTTPS URL. The default dashboard root or chat URL, such as http://127.0.0.1:9119/chat, is accepted and maps to /api.",
       },
       {
         key: "apiKey",
         label: "API key",
         type: "text",
         required: true,
-        hint: "Hermes API_SERVER_KEY. Stored as a Paperclip secret reference.",
+        hint: "Hermes API_SERVER_KEY, not PAPERCLIP_API_KEY. Stored as a Paperclip secret reference.",
         meta: { secret: true },
       },
       {
