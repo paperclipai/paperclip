@@ -16,7 +16,7 @@ Estimated idle cost is near zero. SQS charges per request and S3 notifications h
 
 ## Apply
 
-Copy `terraform.tfvars.example` to `terraform.tfvars` and set the canonical bucket details:
+Copy `terraform.tfvars.example` to `terraform.tfvars` and set the canonical bucket details. Set `canonical_object_suffix` to the Firehose output data format used by the canonical archive, such as `.gz` or `.parquet`, so metadata or error files under the same prefix are not enqueued.
 
 ```sh
 terraform init

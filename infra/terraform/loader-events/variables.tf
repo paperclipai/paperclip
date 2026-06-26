@@ -32,8 +32,19 @@ variable "canonical_object_prefix" {
   default     = "year="
 }
 
+variable "canonical_object_suffix" {
+  description = "Canonical object key suffix to notify on. Match the Firehose output data format, such as .gz or .parquet."
+  type        = string
+  default     = ".gz"
+
+  validation {
+    condition     = length(var.canonical_object_suffix) > 0
+    error_message = "Canonical object suffix must not be empty."
+  }
+}
+
 variable "raw_queue_visibility_timeout_seconds" {
-  description = "Visibility timeout for raw loader messages. T6 should keep the loader Lambda timeout below this value."
+  description = "Visibility timeout for raw loader messages. The loader Lambda timeout must be below this value to prevent duplicate processing."
   type        = number
   default     = 300
 
@@ -85,4 +96,3 @@ variable "tags" {
     ManagedBy = "terraform"
   }
 }
-

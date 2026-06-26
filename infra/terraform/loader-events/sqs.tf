@@ -4,6 +4,15 @@ resource "aws_sqs_queue" "raw_loader_dlq" {
   sqs_managed_sse_enabled   = true
 }
 
+resource "aws_sqs_queue_redrive_allow_policy" "raw_loader_dlq" {
+  queue_url = aws_sqs_queue.raw_loader_dlq.id
+
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns   = [aws_sqs_queue.raw_loader.arn]
+  })
+}
+
 resource "aws_sqs_queue" "raw_loader" {
   name                       = "${var.name_prefix}-raw-loader-${var.environment}"
   message_retention_seconds  = var.raw_queue_message_retention_seconds
@@ -56,8 +65,8 @@ resource "aws_s3_bucket_notification" "canonical_to_raw_loader" {
     queue_arn     = aws_sqs_queue.raw_loader.arn
     events        = ["s3:ObjectCreated:*"]
     filter_prefix = var.canonical_object_prefix
+    filter_suffix = var.canonical_object_suffix
   }
 
   depends_on = [aws_sqs_queue_policy.raw_loader_from_s3]
 }
-

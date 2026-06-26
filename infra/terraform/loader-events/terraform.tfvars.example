@@ -4,4 +4,4 @@ environment = "dev"
 # Existing canonical telemetry archive bucket receiving Firehose output.
 canonical_bucket_name   = "paperclip-telemetry-archive-dev"
 canonical_object_prefix = "year="
-
+canonical_object_suffix = ".gz"
