@@ -13,6 +13,7 @@ import {
   assertPushCapabilityCheckoutValid,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
+  buildEffectiveRunSessionConfigMetadata,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
@@ -22,6 +23,7 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveNextSessionState,
+  resolveTaskSessionConfigFreshness,
   requiresPushCapabilityPreflight,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
@@ -30,6 +32,7 @@ import {
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForModelChange,
   stripConfiguredModelFromSessionParams,
+  stripPaperclipSessionMetadataFromSessionParams,
   normalizeSessionParams,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -1075,6 +1078,288 @@ describe("shouldResetTaskSessionForModelChange", () => {
   });
 });
 
+type SessionConfigMetadata = Awaited<ReturnType<typeof buildEffectiveRunSessionConfigMetadata>>;
+
+async function buildSessionConfigMetadata(
+  overrides: Partial<Parameters<typeof buildEffectiveRunSessionConfigMetadata>[0]> = {},
+) {
+  return buildEffectiveRunSessionConfigMetadata({
+    adapterType: "codex_local",
+    effectiveAdapterConfig: {
+      command: "codex",
+      model: "gpt-5.4-mini",
+      env: {
+        OPENAI_API_KEY: "resolved-secret-value",
+        PLAIN_FLAG: "plain-value",
+      },
+    },
+    agentRuntimeConfig: {
+      heartbeat: {
+        maxConcurrentRuns: 1,
+      },
+    },
+    modelProfile: null,
+    issueOverrides: null,
+    workspaceConfig: {
+      requestedMode: "agent_default",
+      effectiveMode: "agent_default",
+      projectConfigRevisionAt: "2026-06-01T00:00:00.000Z",
+    },
+    environment: {
+      selectionSource: "default",
+      selectedEnvironmentId: "environment-1",
+      selectedEnvironment: {
+        id: "environment-1",
+        driver: "local",
+        configRevisionAt: "2026-06-01T00:00:00.000Z",
+      },
+    },
+    environmentEnv: {
+      ENVIRONMENT_FLAG: "enabled",
+    },
+    projectEnv: {
+      PROJECT_FLAG: "enabled",
+    },
+    routineEnv: null,
+    secretManifest: [
+      {
+        configPath: "env.OPENAI_API_KEY",
+        envKey: "OPENAI_API_KEY",
+        secretId: "secret-1",
+        bindingId: "binding-1",
+        secretKey: "openai-api-key",
+        version: 7,
+        provider: "local_encrypted",
+        outcome: "success",
+      },
+    ],
+    runtimeSkills: [
+      {
+        key: "paperclip",
+        runtimeName: "paperclip",
+        source: "/tmp/paperclip/runtime-skills/paperclip",
+        versionId: null,
+        currentVersionId: "skill-version-1",
+        sourceStatus: "available",
+        missingDetail: null,
+      },
+    ],
+    agentConfigRevision: {
+      id: "agent-config-revision-1",
+      changedKeys: ["adapterConfig"],
+      configRevisionAt: "2026-06-01T00:00:00.000Z",
+    },
+    ...overrides,
+  });
+}
+
+function sessionParamsWithConfigMetadata(
+  metadata: SessionConfigMetadata,
+  configuredModel = "gpt-5.4-mini",
+) {
+  return {
+    sessionId: "thread-1",
+    __paperclipConfiguredModel: configuredModel,
+    __paperclipConfigFingerprint: metadata.fingerprint,
+    __paperclipConfigFingerprintVersion: metadata.version,
+    __paperclipConfigCategories: metadata.categories,
+    __paperclipConfigCategoryFingerprints: metadata.categoryFingerprints,
+  };
+}
+
+describe("effective run session config freshness", () => {
+  it("resets when effective adapter config changes after model/profile/env resolution", async () => {
+    const base = await buildSessionConfigMetadata();
+    const next = await buildSessionConfigMetadata({
+      effectiveAdapterConfig: {
+        command: "codex",
+        model: "gpt-5.4-mini",
+        approvalPolicy: "never",
+      },
+    });
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(base),
+      configMetadata: next,
+    });
+
+    expect(decision).toMatchObject({
+      reset: true,
+      changedCategories: ["adapterConfig"],
+    });
+    expect(decision.reasons.join("\n")).toContain("adapter config");
+  });
+
+  it("keeps model-only compatibility as an additional reset reason", async () => {
+    const base = await buildSessionConfigMetadata();
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(base, "opencode/mimo-v2-pro-free"),
+      configMetadata: base,
+    });
+
+    expect(decision.reset).toBe(true);
+    expect(decision.reasons).toEqual([
+      'configured model changed from "opencode/mimo-v2-pro-free" to "gpt-5.4-mini"',
+    ]);
+  });
+
+  it("freshens legacy task sessions that lack versioned config metadata", async () => {
+    const metadata = await buildSessionConfigMetadata();
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: {
+        sessionId: "thread-1",
+        __paperclipConfiguredModel: "gpt-5.4-mini",
+      },
+      configMetadata: metadata,
+    });
+
+    expect(decision.reset).toBe(true);
+    expect(decision.changedCategories).toEqual(metadata.categories);
+    expect(decision.reasons).toEqual(["effective run configuration fingerprint metadata is missing"]);
+  });
+
+  it("names safe categories for model profile, issue override, env, secret, and runtime skill drift", async () => {
+    const base = await buildSessionConfigMetadata();
+    const cases: Array<{
+      name: string;
+      category: string;
+      metadata: SessionConfigMetadata;
+    }> = [
+      {
+        name: "model profile",
+        category: "modelProfile",
+        metadata: await buildSessionConfigMetadata({
+          modelProfile: {
+            requested: "cheap",
+            applied: true,
+            configSource: "agent_runtime",
+          },
+        }),
+      },
+      {
+        name: "issue overrides",
+        category: "issueOverrides",
+        metadata: await buildSessionConfigMetadata({
+          issueOverrides: {
+            adapterConfig: {
+              reasoningEffort: "high",
+            },
+          },
+        }),
+      },
+      {
+        name: "project env bindings",
+        category: "envBindings",
+        metadata: await buildSessionConfigMetadata({
+          projectEnv: {
+            PROJECT_FLAG: "enabled",
+            NEW_PROJECT_FLAG: "present",
+          },
+        }),
+      },
+      {
+        name: "secret version",
+        category: "secrets",
+        metadata: await buildSessionConfigMetadata({
+          secretManifest: [
+            {
+              configPath: "env.OPENAI_API_KEY",
+              envKey: "OPENAI_API_KEY",
+              secretId: "secret-1",
+              bindingId: "binding-1",
+              secretKey: "openai-api-key",
+              version: 8,
+              provider: "local_encrypted",
+              outcome: "success",
+            },
+          ],
+        }),
+      },
+      {
+        name: "runtime skills",
+        category: "runtimeSkills",
+        metadata: await buildSessionConfigMetadata({
+          runtimeSkills: [
+            {
+              key: "paperclip",
+              runtimeName: "paperclip",
+              source: "/tmp/paperclip/runtime-skills/paperclip",
+              versionId: null,
+              currentVersionId: "skill-version-2",
+              sourceStatus: "available",
+              missingDetail: null,
+            },
+          ],
+        }),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const decision = resolveTaskSessionConfigFreshness({
+        hasTaskSession: true,
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(base),
+        configMetadata: testCase.metadata,
+      });
+
+      expect(decision.reset, testCase.name).toBe(true);
+      expect(decision.changedCategories, testCase.name).toContain(testCase.category);
+    }
+  });
+
+  it("detects instructions content drift without storing the contents", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-session-fingerprint-"));
+    const instructionsPath = path.join(root, "AGENTS.md");
+    await fs.writeFile(instructionsPath, "Version one instructions.\n", "utf8");
+    const base = await buildSessionConfigMetadata({
+      effectiveAdapterConfig: {
+        command: "codex",
+        model: "gpt-5.4-mini",
+        instructionsFilePath: instructionsPath,
+      },
+    });
+    await fs.writeFile(instructionsPath, "Version two instructions.\n", "utf8");
+    const next = await buildSessionConfigMetadata({
+      effectiveAdapterConfig: {
+        command: "codex",
+        model: "gpt-5.4-mini",
+        instructionsFilePath: instructionsPath,
+      },
+    });
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(base),
+      configMetadata: next,
+    });
+
+    expect(decision.reset).toBe(true);
+    expect(decision.changedCategories).toContain("instructions");
+    expect(next.fingerprints.sessionFingerprint.canonicalJson).not.toContain("Version two instructions");
+  });
+
+  it("does not include raw secret or plain env values in canonical session metadata", async () => {
+    const metadata = await buildSessionConfigMetadata();
+    const canonical = metadata.fingerprints.sessionFingerprint.canonicalJson;
+
+    expect(canonical).toContain("secret-1");
+    expect(canonical).toContain('"version":7');
+    expect(canonical).not.toContain("resolved-secret-value");
+    expect(canonical).not.toContain("plain-value");
+    expect(canonical).not.toContain("enabled");
+    expect(canonical).not.toContain("openai-api-key");
+  });
+});
+
 describe("stripConfiguredModelFromSessionParams", () => {
   it("removes the internal model key from persisted session params", () => {
     expect(
@@ -1105,6 +1390,25 @@ describe("stripConfiguredModelFromSessionParams", () => {
     // Callers that forward params to adapters must normalize {} back to null so
     // the pre-PR null contract is preserved (adapters distinguishing {} from null).
     expect(normalizeSessionParams(stripped)).toBeNull();
+  });
+});
+
+describe("stripPaperclipSessionMetadataFromSessionParams", () => {
+  it("removes all internal Paperclip session metadata before adapter invocation", () => {
+    expect(
+      stripPaperclipSessionMetadataFromSessionParams({
+        sessionId: "thread-1",
+        cwd: "/tmp/project",
+        __paperclipConfiguredModel: "gpt-5.4-mini",
+        __paperclipConfigFingerprint: "v1:sha256:abc",
+        __paperclipConfigFingerprintVersion: 1,
+        __paperclipConfigCategories: ["adapterConfig"],
+        __paperclipConfigCategoryFingerprints: { adapterConfig: "v1:sha256:def" },
+      }),
+    ).toEqual({
+      sessionId: "thread-1",
+      cwd: "/tmp/project",
+    });
   });
 });
 

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -26,6 +26,7 @@ import {
 } from "@paperclipai/shared";
 import {
   agents,
+  agentConfigRevisions,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
@@ -207,6 +208,12 @@ import {
   assertLowTrustWorkspaceIsolation,
 } from "./low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
+import {
+  createEffectiveRunConfigFingerprints,
+  EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
+  type EffectiveRunConfigFingerprints,
+  type EffectiveRunConfigSecretManifestEntry,
+} from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -2454,6 +2461,263 @@ export function shouldDeferFollowupWakeForSameIssue(input: {
 }
 
 const SESSION_CONFIGURED_MODEL_KEY = "__paperclipConfiguredModel";
+const SESSION_CONFIG_FINGERPRINT_KEY = "__paperclipConfigFingerprint";
+const SESSION_CONFIG_FINGERPRINT_VERSION_KEY = "__paperclipConfigFingerprintVersion";
+const SESSION_CONFIG_CATEGORIES_KEY = "__paperclipConfigCategories";
+const SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY = "__paperclipConfigCategoryFingerprints";
+const PAPERCLIP_SESSION_METADATA_KEYS = new Set([
+  SESSION_CONFIGURED_MODEL_KEY,
+  SESSION_CONFIG_FINGERPRINT_KEY,
+  SESSION_CONFIG_FINGERPRINT_VERSION_KEY,
+  SESSION_CONFIG_CATEGORIES_KEY,
+  SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY,
+]);
+const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES = [
+  "adapter",
+  "adapterConfig",
+  "agentRuntimeConfig",
+  "modelProfile",
+  "instructions",
+  "issueOverrides",
+  "workspaceConfig",
+  "environment",
+  "envBindings",
+  "secrets",
+  "runtimeSkills",
+] as const;
+
+type EffectiveRunSessionConfigCategory = (typeof EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES)[number];
+
+type EffectiveRunSessionConfigMetadata = {
+  version: typeof EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION;
+  fingerprint: string;
+  categories: EffectiveRunSessionConfigCategory[];
+  categoryFingerprints: Record<EffectiveRunSessionConfigCategory, string>;
+  fingerprints: EffectiveRunConfigFingerprints;
+};
+
+type TaskSessionConfigFreshnessDecision = {
+  reset: boolean;
+  reasons: string[];
+  changedCategories: EffectiveRunSessionConfigCategory[];
+  storedFingerprint: string | null;
+  nextFingerprint: string | null;
+};
+
+const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORY_LABELS: Record<EffectiveRunSessionConfigCategory, string> = {
+  adapter: "adapter",
+  adapterConfig: "adapter config",
+  agentRuntimeConfig: "agent runtime config",
+  modelProfile: "model profile",
+  instructions: "instructions",
+  issueOverrides: "issue overrides",
+  workspaceConfig: "workspace config",
+  environment: "environment",
+  envBindings: "env bindings",
+  secrets: "secrets",
+  runtimeSkills: "runtime skills",
+};
+
+function parseStoredConfigCategoryFingerprints(value: unknown) {
+  const parsed = parseObject(value);
+  const out: Partial<Record<EffectiveRunSessionConfigCategory, string>> = {};
+  for (const category of EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES) {
+    const fingerprint = readNonEmptyString(parsed[category]);
+    if (fingerprint) out[category] = fingerprint;
+  }
+  return out;
+}
+
+function readConfigCategoriesFromSessionParams(
+  sessionParams: Record<string, unknown> | null | undefined,
+) {
+  const rawCategories = Array.isArray(sessionParams?.[SESSION_CONFIG_CATEGORIES_KEY])
+    ? sessionParams?.[SESSION_CONFIG_CATEGORIES_KEY]
+    : [];
+  return rawCategories.filter(
+    (category): category is EffectiveRunSessionConfigCategory =>
+      typeof category === "string" &&
+      (EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES as readonly string[]).includes(category),
+  );
+}
+
+function readConfigFingerprintFromSessionParams(
+  sessionParams: Record<string, unknown> | null | undefined,
+) {
+  if (!sessionParams) return null;
+  const fingerprint = readNonEmptyString(sessionParams[SESSION_CONFIG_FINGERPRINT_KEY]);
+  const version = asNumber(sessionParams[SESSION_CONFIG_FINGERPRINT_VERSION_KEY], 0);
+  if (!fingerprint || version <= 0) return null;
+  return {
+    fingerprint,
+    version,
+    categories: readConfigCategoriesFromSessionParams(sessionParams),
+    categoryFingerprints: parseStoredConfigCategoryFingerprints(
+      sessionParams[SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY],
+    ),
+  };
+}
+
+function describeEffectiveRunConfigCategories(categories: readonly EffectiveRunSessionConfigCategory[]) {
+  return categories.map((category) => EFFECTIVE_RUN_SESSION_CONFIG_CATEGORY_LABELS[category]).join(", ");
+}
+
+function changedEffectiveRunSessionConfigCategories(input: {
+  previous: Partial<Record<EffectiveRunSessionConfigCategory, string>>;
+  next: Record<EffectiveRunSessionConfigCategory, string>;
+}) {
+  const changed = EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES.filter(
+    (category) => input.previous[category] !== input.next[category],
+  );
+  return changed.length > 0 ? changed : [...EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES];
+}
+
+function sanitizeSecretManifestForConfigFingerprint(
+  manifest: readonly EffectiveRunConfigSecretManifestEntry[],
+) {
+  return manifest.map((entry) => {
+    const record = entry as Record<string, unknown>;
+    return {
+      configPath: readNonEmptyString(record.configPath) ?? "",
+      envKey: readNonEmptyString(record.envKey),
+      secretId: readNonEmptyString(record.secretId) ?? "",
+      bindingId: readNonEmptyString(record.bindingId),
+      version: typeof record.version === "number" && Number.isFinite(record.version)
+        ? record.version
+        : readNonEmptyString(record.version),
+      provider: readNonEmptyString(record.provider),
+      providerVersionRef: readNonEmptyString(record.providerVersionRef),
+      outcome: record.outcome === "success" || record.outcome === "failure" ? record.outcome : null,
+    };
+  });
+}
+
+async function hashFileContentsForConfigFingerprint(filePath: string) {
+  const contents = await fs.readFile(filePath);
+  return `sha256:${createHash("sha256").update(contents).digest("hex")}`;
+}
+
+async function resolveInstructionsConfigFingerprintMetadata(config: Record<string, unknown>) {
+  const instructionsFilePath = readNonEmptyString(config.instructionsFilePath);
+  const instructionsRootPath = readNonEmptyString(config.instructionsRootPath);
+  const instructionsEntryFile = readNonEmptyString(config.instructionsEntryFile);
+  const configuredPath = instructionsFilePath ?? (
+    instructionsRootPath && instructionsEntryFile
+      ? path.resolve(instructionsRootPath, instructionsEntryFile)
+      : null
+  );
+  if (!configuredPath && !instructionsRootPath && !instructionsEntryFile) return null;
+
+  const metadata: Record<string, unknown> = {
+    configured: true,
+    bundleMode: readNonEmptyString(config.instructionsBundleMode),
+    entryFile: instructionsEntryFile,
+    pathKind: configuredPath ? (path.isAbsolute(configuredPath) ? "absolute" : "relative") : null,
+  };
+  if (configuredPath && path.isAbsolute(configuredPath)) {
+    try {
+      metadata.contentHash = await hashFileContentsForConfigFingerprint(configuredPath);
+      metadata.readable = true;
+    } catch {
+      metadata.readable = false;
+    }
+  }
+  return metadata;
+}
+
+function buildSessionConfigCategoryValues(input: {
+  adapterType: string;
+  effectiveAdapterConfig: Record<string, unknown>;
+  agentRuntimeConfig: unknown;
+  modelProfile: unknown;
+  instructions: unknown;
+  issueOverrides: unknown;
+  workspaceConfig: unknown;
+  environment: unknown;
+  environmentEnv: unknown;
+  projectEnv: unknown;
+  routineEnv: unknown;
+  secretManifest: readonly EffectiveRunConfigSecretManifestEntry[];
+  runtimeSkills: unknown;
+  agentConfigRevision: unknown;
+}) {
+  const sanitizedSecretManifest = sanitizeSecretManifestForConfigFingerprint(input.secretManifest);
+  return {
+    adapter: {
+      adapterType: input.adapterType,
+      agentConfigRevision: input.agentConfigRevision,
+    },
+    adapterConfig: input.effectiveAdapterConfig,
+    agentRuntimeConfig: input.agentRuntimeConfig,
+    modelProfile: input.modelProfile,
+    instructions: input.instructions,
+    issueOverrides: input.issueOverrides,
+    workspaceConfig: input.workspaceConfig,
+    environment: input.environment,
+    envBindings: {
+      environment: { env: input.environmentEnv },
+      project: { env: input.projectEnv },
+      routine: { env: input.routineEnv },
+    },
+    secrets: sanitizedSecretManifest,
+    runtimeSkills: input.runtimeSkills,
+  } satisfies Record<EffectiveRunSessionConfigCategory, unknown>;
+}
+
+export async function buildEffectiveRunSessionConfigMetadata(input: {
+  adapterType: string;
+  effectiveAdapterConfig: Record<string, unknown>;
+  agentRuntimeConfig: unknown;
+  modelProfile: unknown;
+  issueOverrides: unknown;
+  workspaceConfig: unknown;
+  environment: unknown;
+  environmentEnv: unknown;
+  projectEnv: unknown;
+  routineEnv: unknown;
+  secretManifest?: readonly EffectiveRunConfigSecretManifestEntry[];
+  runtimeSkills: unknown;
+  agentConfigRevision?: unknown;
+}): Promise<EffectiveRunSessionConfigMetadata> {
+  const secretManifest = input.secretManifest ?? [];
+  const instructions = await resolveInstructionsConfigFingerprintMetadata(input.effectiveAdapterConfig);
+  const categoryValues = buildSessionConfigCategoryValues({
+    adapterType: input.adapterType,
+    effectiveAdapterConfig: input.effectiveAdapterConfig,
+    agentRuntimeConfig: input.agentRuntimeConfig,
+    modelProfile: input.modelProfile,
+    instructions,
+    issueOverrides: input.issueOverrides,
+    workspaceConfig: input.workspaceConfig,
+    environment: input.environment,
+    environmentEnv: input.environmentEnv,
+    projectEnv: input.projectEnv,
+    routineEnv: input.routineEnv,
+    secretManifest,
+    runtimeSkills: input.runtimeSkills,
+    agentConfigRevision: input.agentConfigRevision ?? null,
+  });
+  const fingerprints = createEffectiveRunConfigFingerprints({
+    session: categoryValues,
+    secretManifest,
+  });
+  const categoryFingerprints = Object.fromEntries(
+    EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES.map((category) => [
+      category,
+      createEffectiveRunConfigFingerprints({
+        session: { [category]: categoryValues[category] },
+        secretManifest,
+      }).sessionFingerprint.fingerprint,
+    ]),
+  ) as Record<EffectiveRunSessionConfigCategory, string>;
+  return {
+    version: EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
+    fingerprint: fingerprints.sessionFingerprint.fingerprint,
+    categories: [...EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES],
+    categoryFingerprints,
+    fingerprints,
+  };
+}
 
 function readConfiguredModelFromAdapterConfig(
   adapterConfig: Record<string, unknown> | null | undefined,
@@ -2461,13 +2725,20 @@ function readConfiguredModelFromAdapterConfig(
   return readNonEmptyString(adapterConfig?.model);
 }
 
-function attachConfiguredModelToSessionParams(
+function attachPaperclipSessionMetadataToSessionParams(
   sessionParams: Record<string, unknown> | null | undefined,
   configuredModel: string | null,
+  configMetadata?: EffectiveRunSessionConfigMetadata | null,
 ) {
-  if (!configuredModel) return sessionParams ?? null;
+  if (!configuredModel && !configMetadata) return sessionParams ?? null;
   const next = { ...(sessionParams ?? {}) };
-  next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
+  if (configuredModel) next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
+  if (configMetadata) {
+    next[SESSION_CONFIG_FINGERPRINT_KEY] = configMetadata.fingerprint;
+    next[SESSION_CONFIG_FINGERPRINT_VERSION_KEY] = configMetadata.version;
+    next[SESSION_CONFIG_CATEGORIES_KEY] = configMetadata.categories;
+    next[SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY] = configMetadata.categoryFingerprints;
+  }
   return next;
 }
 
@@ -2494,6 +2765,77 @@ export function stripConfiguredModelFromSessionParams(
   const next = { ...sessionParams };
   delete next[SESSION_CONFIGURED_MODEL_KEY];
   return next;
+}
+
+export function stripPaperclipSessionMetadataFromSessionParams(
+  sessionParams: Record<string, unknown> | null | undefined,
+) {
+  if (!sessionParams) return null;
+  const next = { ...sessionParams };
+  for (const key of PAPERCLIP_SESSION_METADATA_KEYS) {
+    delete next[key];
+  }
+  return next;
+}
+
+export function resolveTaskSessionConfigFreshness(input: {
+  hasTaskSession: boolean;
+  configuredModel: string | null;
+  taskSessionParams: Record<string, unknown> | null | undefined;
+  configMetadata: EffectiveRunSessionConfigMetadata | null;
+  wakeResetReason?: string | null;
+}): TaskSessionConfigFreshnessDecision {
+  if (!input.hasTaskSession) {
+    return {
+      reset: false,
+      reasons: [],
+      changedCategories: [],
+      storedFingerprint: null,
+      nextFingerprint: input.configMetadata?.fingerprint ?? null,
+    };
+  }
+
+  const reasons: string[] = [];
+  const storedConfig = readConfigFingerprintFromSessionParams(input.taskSessionParams);
+  const taskSessionConfiguredModel = readConfiguredModelFromSessionParams(input.taskSessionParams);
+  const modelChangedSinceTaskSession = shouldResetTaskSessionForModelChange({
+    configuredModel: input.configuredModel,
+    taskSessionParams: input.taskSessionParams,
+  });
+  if (modelChangedSinceTaskSession && taskSessionConfiguredModel) {
+    reasons.push(`configured model changed from "${taskSessionConfiguredModel}" to "${input.configuredModel}"`);
+  }
+
+  let changedCategories: EffectiveRunSessionConfigCategory[] = [];
+  if (input.configMetadata) {
+    if (!storedConfig) {
+      changedCategories = [...input.configMetadata.categories];
+      reasons.push("effective run configuration fingerprint metadata is missing");
+    } else if (storedConfig.version !== input.configMetadata.version) {
+      changedCategories = [...input.configMetadata.categories];
+      reasons.push(
+        `effective run configuration fingerprint version changed from ${storedConfig.version} to ${input.configMetadata.version}`,
+      );
+    } else if (storedConfig.fingerprint !== input.configMetadata.fingerprint) {
+      changedCategories = changedEffectiveRunSessionConfigCategories({
+        previous: storedConfig.categoryFingerprints,
+        next: input.configMetadata.categoryFingerprints,
+      });
+      reasons.push(
+        `effective run configuration changed: ${describeEffectiveRunConfigCategories(changedCategories)}`,
+      );
+    }
+  }
+
+  if (input.wakeResetReason) reasons.push(input.wakeResetReason);
+
+  return {
+    reset: reasons.length > 0,
+    reasons,
+    changedCategories,
+    storedFingerprint: storedConfig?.fingerprint ?? null,
+    nextFingerprint: input.configMetadata?.fingerprint ?? null,
+  };
 }
 
 function shouldAutoCheckoutIssueForWake(input: {
@@ -3670,6 +4012,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         originKind: issues.originKind,
         originId: issues.originId,
         originRunId: issues.originRunId,
+        updatedAt: issues.updatedAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
@@ -3733,6 +4076,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .select()
       .from(agentRuntimeState)
       .where(eq(agentRuntimeState.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getLatestAgentConfigRevision(companyId: string, agentId: string) {
+    return db
+      .select({
+        id: agentConfigRevisions.id,
+        changedKeys: agentConfigRevisions.changedKeys,
+        createdAt: agentConfigRevisions.createdAt,
+      })
+      .from(agentConfigRevisions)
+      .where(and(eq(agentConfigRevisions.companyId, companyId), eq(agentConfigRevisions.agentId, agentId)))
+      .orderBy(desc(agentConfigRevisions.createdAt), desc(agentConfigRevisions.id))
+      .limit(1)
       .then((rows) => rows[0] ?? null);
   }
 
@@ -8509,6 +8866,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: projects.id,
             executionWorkspacePolicy: projects.executionWorkspacePolicy,
             env: projects.env,
+            updatedAt: projects.updatedAt,
           })
           .from(projects)
           .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
@@ -8570,27 +8928,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null,
     });
     const config = parseObject(agent.adapterConfig);
-    const configuredModel = readConfiguredModelFromAdapterConfig(config);
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
     const taskSessionDecodedParams = normalizeSessionParams(
       sessionCodec.deserialize(taskSession?.sessionParamsJson ?? null),
     );
-    const modelChangedSinceTaskSession = shouldResetTaskSessionForModelChange({
-      configuredModel,
-      taskSessionParams: taskSessionDecodedParams,
-    });
-    const resetTaskSession = shouldResetTaskSessionForWake(context) || modelChangedSinceTaskSession;
-    const wakeSessionResetReason = describeSessionResetReason(context);
-    const taskSessionConfiguredModel = readConfiguredModelFromSessionParams(taskSessionDecodedParams);
-    const modelSessionResetReason = modelChangedSinceTaskSession && taskSessionConfiguredModel
-      ? `configured model changed from "${taskSessionConfiguredModel}" to "${configuredModel}"`
-      : null;
-    const sessionResetReason = [modelSessionResetReason, wakeSessionResetReason]
-      .filter((value): value is string => Boolean(value))
-      .join("; ") || null;
-    const taskSessionForRun = resetTaskSession ? null : taskSession;
     const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
       agent.adapterType,
       sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
@@ -8600,17 +8943,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(explicitResumeSessionParams) : null) ??
         readNonEmptyString(explicitResumeSessionParams?.sessionId),
     );
-    const previousSessionParams =
-      explicitResumeSessionParams ??
-      (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayId)
-        ? { sessionId: explicitResumeSessionDisplayId }
-        : null) ??
-      normalizeResumeParamsForAdapter(
-        agent.adapterType,
-        stripConfiguredModelFromSessionParams(
-          sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
-        ),
-      );
     const resolvedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
@@ -8817,37 +9149,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       selectedEnvironmentId = kubernetesEnvironment.id;
     }
-    const {
-      selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
-      workspace: resolvedWorkspace,
-    } = await resolveWorkspaceAfterLowTrustPreflight({
-      db,
-      trustPreset,
-      isolatedWorkspacesEnabled,
-      effectiveExecutionWorkspaceMode,
-      issue: issueRef
-        ? {
-            companyId: agent.companyId,
-            id: issueRef.id,
-            projectId: issueRef.projectId,
-          }
-        : null,
-      resolveSelectedEnvironmentDriver: async () => {
-        const preflightEnvironment = await envOrchestrator.resolveEnvironment({
-          companyId: agent.companyId,
-          selectedEnvironmentId,
-          localEnvironmentId: localEnvironment.id,
-        });
-        return preflightEnvironment.driver;
-      },
-      resolveWorkspace: () =>
-        resolveWorkspaceForRun(
-          agent,
-          context,
-          previousSessionParams,
-          { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
-        ),
-    });
     const workspaceManagedConfig = shouldReuseExisting
       ? { ...config }
       : buildExecutionWorkspaceAdapterConfig({
@@ -8958,6 +9259,120 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    const latestAgentConfigRevision = await getLatestAgentConfigRevision(agent.companyId, agent.id);
+    const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata({
+      adapterType: agent.adapterType,
+      effectiveAdapterConfig: runtimeConfig,
+      agentRuntimeConfig: agent.runtimeConfig,
+      modelProfile: modelProfileMetadata,
+      issueOverrides: issueAssigneeOverrides,
+      workspaceConfig: {
+        requestedMode: requestedExecutionWorkspaceMode,
+        effectiveMode: effectiveExecutionWorkspaceMode,
+        issueConfigRevisionAt: issueContext?.updatedAt instanceof Date
+          ? issueContext.updatedAt.toISOString()
+          : issueContext?.updatedAt ?? null,
+        projectConfigRevisionAt: projectContext?.updatedAt instanceof Date
+          ? projectContext.updatedAt.toISOString()
+          : projectContext?.updatedAt ?? null,
+        projectPolicy: projectExecutionWorkspacePolicy,
+        issueSettings: issueExecutionWorkspaceSettings,
+        reusableExecutionWorkspaceConfig,
+        existingExecutionWorkspace: existingExecutionWorkspace
+          ? {
+              id: existingExecutionWorkspace.id,
+              mode: existingExecutionWorkspace.mode,
+              strategyType: existingExecutionWorkspace.strategyType,
+              projectWorkspaceId: existingExecutionWorkspace.projectWorkspaceId,
+              repoUrl: existingExecutionWorkspace.repoUrl,
+              baseRef: existingExecutionWorkspace.baseRef,
+              branchName: existingExecutionWorkspace.branchName,
+              config: existingExecutionWorkspace.config,
+            }
+          : null,
+      },
+      environment: {
+        selectionSource: environmentResolution.source,
+        selectedEnvironmentId,
+        selectedEnvironment: selectedEnvironmentForConfig
+          ? {
+              id: selectedEnvironmentForConfig.id,
+              driver: selectedEnvironmentForConfig.driver,
+              config: selectedEnvironmentForConfig.config,
+              configRevisionAt: selectedEnvironmentForConfig.updatedAt instanceof Date
+                ? selectedEnvironmentForConfig.updatedAt.toISOString()
+                : selectedEnvironmentForConfig.updatedAt ?? null,
+            }
+          : null,
+        executionPolicy,
+      },
+      environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
+      projectEnv: projectContext?.env ?? null,
+      routineEnv: routineEnvContext.env,
+      secretManifest,
+      runtimeSkills: runtimeSkillEntries,
+      agentConfigRevision: latestAgentConfigRevision
+        ? {
+            id: latestAgentConfigRevision.id,
+            changedKeys: latestAgentConfigRevision.changedKeys,
+            configRevisionAt: latestAgentConfigRevision.createdAt.toISOString(),
+          }
+        : null,
+    });
+    const configuredModel = readConfiguredModelFromAdapterConfig(runtimeConfig);
+    const wakeSessionResetReason = describeSessionResetReason(context);
+    const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
+      hasTaskSession: taskSession != null,
+      configuredModel,
+      taskSessionParams: taskSessionDecodedParams,
+      configMetadata: sessionConfigMetadata,
+      wakeResetReason: wakeSessionResetReason,
+    });
+    const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
+    const sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;
+    const taskSessionForRun = resetTaskSession ? null : taskSession;
+    const previousSessionParams =
+      explicitResumeSessionParams ??
+      (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayId)
+        ? { sessionId: explicitResumeSessionDisplayId }
+        : null) ??
+      normalizeResumeParamsForAdapter(
+        agent.adapterType,
+        stripPaperclipSessionMetadataFromSessionParams(
+          sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
+        ),
+      );
+    const {
+      selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
+      workspace: resolvedWorkspace,
+    } = await resolveWorkspaceAfterLowTrustPreflight({
+      db,
+      trustPreset,
+      isolatedWorkspacesEnabled,
+      effectiveExecutionWorkspaceMode,
+      issue: issueRef
+        ? {
+            companyId: agent.companyId,
+            id: issueRef.id,
+            projectId: issueRef.projectId,
+          }
+        : null,
+      resolveSelectedEnvironmentDriver: async () => {
+        const preflightEnvironment = await envOrchestrator.resolveEnvironment({
+          companyId: agent.companyId,
+          selectedEnvironmentId,
+          localEnvironmentId: localEnvironment.id,
+        });
+        return preflightEnvironment.driver;
+      },
+      resolveWorkspace: () =>
+        resolveWorkspaceForRun(
+          agent,
+          context,
+          previousSessionParams,
+          { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
+        ),
+    });
     const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
       config: runtimeConfig,
       trustPreset,
@@ -9334,7 +9749,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let runtimeSessionIdForAdapter =
       readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
     let runtimeSessionParamsForAdapter = normalizeSessionParams(
-      stripConfiguredModelFromSessionParams(runtimeSessionParams),
+      stripPaperclipSessionMetadataFromSessionParams(runtimeSessionParams),
     );
 
     const sessionCompaction = await evaluateSessionCompaction({
@@ -9366,6 +9781,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       sessionParams: runtimeSessionParamsForAdapter,
       sessionDisplayId: previousSessionDisplayId,
       taskKey,
+    };
+    const configFreshnessResultMetadata = {
+      version: sessionConfigMetadata.version,
+      session: {
+        fingerprintVersion: sessionConfigMetadata.version,
+        categories: sessionConfigMetadata.categories,
+        reset: resetTaskSession,
+        resetReasons: sessionConfigFreshness.reasons,
+        changedCategories: sessionConfigFreshness.changedCategories,
+        taskSessionAvailable: taskSession != null,
+        taskSessionReused: taskSessionForRun != null,
+        storedFingerprintPresent: Boolean(sessionConfigFreshness.storedFingerprint),
+        nextFingerprint: sessionConfigFreshness.nextFingerprint,
+      },
     };
 
     let seq = 1;
@@ -9862,6 +10291,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               freshSession: runtimeForAdapter.sessionId == null && runtimeForAdapter.sessionDisplayId == null,
               sessionRotated: sessionCompaction.rotate,
               sessionRotationReason: sessionCompaction.reason,
+              configFreshness: configFreshnessResultMetadata,
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
@@ -9874,7 +10304,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         mergeRunStopMetadataForAgent(agent, outcome, {
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
-              resultJson: adapterResult.resultJson ?? null,
+              resultJson: {
+                ...parseObject(adapterResult.resultJson),
+                configFreshness: configFreshnessResultMetadata,
+              },
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,
             }),
@@ -10056,7 +10489,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               agentId: agent.id,
               adapterType: agent.adapterType,
               taskKey,
-              sessionParamsJson: attachConfiguredModelToSessionParams(nextSessionState.params, configuredModel),
+              sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+                nextSessionState.params,
+                configuredModel,
+                sessionConfigMetadata,
+              ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
@@ -10158,7 +10595,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId: agent.id,
             adapterType: agent.adapterType,
             taskKey,
-            sessionParamsJson: attachConfiguredModelToSessionParams(previousSessionParams, configuredModel),
+            sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+              previousSessionParams,
+              configuredModel,
+              sessionConfigMetadata,
+            ),
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
             lastError: message,
