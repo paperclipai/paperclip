@@ -243,5 +243,49 @@
   "projects": {
     "myProjects": "My Projects",
     "noProjects": "No projects yet."
+  },
+  "onboarding": {
+    "errors": {
+      "launchFailed": "Failed to launch first task",
+      "adapterTestFailed": "Adapter environment test failed",
+      "companyFailed": "Failed to create company",
+      "agentFailed": "Failed to create agent"
+    },
+    "placeholders": {
+      "companyName": "Acme Corp",
+      "mission": "What is your team trying to achieve?",
+      "agentName": "Chief of staff",
+      "searchModels": "Search models..."
+    },
+    "steps": {
+      "teamName": "Team name",
+      "mission": "Mission",
+      "agentCreated": "Agent created",
+      "modelConnected": "Model connected"
+    },
+    "buttons": {
+      "createTeamLead": "Create your team lead",
+      "connectModel": "Connect a model",
+      "review": "Review",
+      "testing": "Testing...",
+      "testNow": "Test now",
+      "creating": "Creating...",
+      "confirmMission": "Confirm mission",
+      "bringingToLife": "Bringing to life...",
+      "giveHeartbeat": "Give it a heartbeat",
+      "launching": "Launching...",
+      "getStarted": "Get started"
+    },
+    "adapter": {
+      "gatewayUrl": "Gateway URL",
+      "webhookUrl": "Webhook URL",
+      "default": "Default",
+      "comingSoon": "Coming soon"
+    },
+    "testResults": {
+      "passed": "Passed",
+      "warnings": "Warnings",
+      "failed": "Failed"
+    }
   }
 }

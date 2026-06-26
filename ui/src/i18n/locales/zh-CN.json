@@ -243,5 +243,49 @@
   "projects": {
     "myProjects": "我的项目",
     "noProjects": "暂无项目。"
+  },
+  "onboarding": {
+    "errors": {
+      "launchFailed": "启动首个任务失败",
+      "adapterTestFailed": "适配器环境测试失败",
+      "companyFailed": "创建公司失败",
+      "agentFailed": "创建智能体失败"
+    },
+    "placeholders": {
+      "companyName": "Acme 公司",
+      "mission": "你的团队想要实现什么目标?",
+      "agentName": "首席助理",
+      "searchModels": "搜索模型……"
+    },
+    "steps": {
+      "teamName": "团队名称",
+      "mission": "使命",
+      "agentCreated": "已创建智能体",
+      "modelConnected": "已连接模型"
+    },
+    "buttons": {
+      "createTeamLead": "创建你的团队负责人",
+      "connectModel": "连接模型",
+      "review": "确认",
+      "testing": "测试中……",
+      "testNow": "立即测试",
+      "creating": "创建中……",
+      "confirmMission": "确认使命",
+      "bringingToLife": "启动中……",
+      "giveHeartbeat": "赋予心跳",
+      "launching": "启动中……",
+      "getStarted": "开始使用"
+    },
+    "adapter": {
+      "gatewayUrl": "网关地址",
+      "webhookUrl": "Webhook 地址",
+      "default": "默认",
+      "comingSoon": "即将推出"
+    },
+    "testResults": {
+      "passed": "通过",
+      "warnings": "有警告",
+      "failed": "失败"
+    }
   }
 }
