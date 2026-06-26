@@ -1585,17 +1585,17 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your API key. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token.",
+        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your API key. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token. Hermes Gateway agents must use adapterType='hermes_gateway', start Hermes with API_SERVER_ENABLED=true, API_SERVER_KEY, and `hermes gateway run --replace --accept-hooks`, then set agentDefaultsPayload.apiBaseUrl and agentDefaultsPayload.paperclipApiUrl.",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: null,
       requiredFields: {
         requestType: "agent",
         agentName: "Display name for this agent",
         adapterType:
-          "Adapter type for this runtime. Use 'openclaw_gateway' only for OpenClaw Gateway agents.",
+          "Adapter type for this runtime. Use 'openclaw_gateway' only for OpenClaw Gateway agents. Use 'hermes_gateway' only for Hermes Gateway agents.",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Runtime-specific adapter config. OpenClaw Gateway agents must include url (ws:// or wss://) and headers.x-openclaw-token. Other runtimes should include the config their adapter expects."
+          "Runtime-specific adapter config. OpenClaw Gateway agents must include url (ws:// or wss://) and headers.x-openclaw-token. Hermes Gateway agents must include apiBaseUrl, API_SERVER_KEY-backed auth, and paperclipApiUrl. Other runtimes should include the config their adapter expects."
       },
       registrationEndpoint: {
         method: "POST",
@@ -1743,6 +1743,37 @@ export function buildInviteOnboardingTextDocument(
     }
 
     For OpenClaw Gateway, include agentDefaultsPayload.headers.x-openclaw-token with your gateway token. Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred. Do NOT use /v1/responses or /hooks/* in this gateway join flow.
+
+    Hermes Gateway setup:
+    - adapterType: "hermes_gateway"
+    - Start Hermes with API_SERVER_ENABLED=true and API_SERVER_KEY=<random-gateway-key>.
+    - Run: hermes gateway run --replace --accept-hooks
+    - Default Hermes API server port: 8642.
+    - Set agentDefaultsPayload.apiBaseUrl to the Hermes gateway URL Paperclip can reach.
+    - Set agentDefaultsPayload.paperclipApiUrl to the Paperclip base URL Hermes can reach.
+    - Use hermes_local when Paperclip should start Hermes on the Paperclip host.
+    - Use hermes_gateway when Paperclip should call an already-running Hermes API server.
+    - Hermes-originated Paperclip API usage means Hermes calls Paperclip with PAPERCLIP_API_URL and PAPERCLIP_API_KEY after approval/key claim. Do not confuse that with agentDefaultsPayload.apiBaseUrl, which points Paperclip to Hermes.
+
+    Hermes Gateway payload example:
+    {
+      "requestType": "agent",
+      "agentName": "My Hermes Gateway Agent",
+      "adapterType": "hermes_gateway",
+      "capabilities": "Hermes gateway agent",
+      "agentDefaultsPayload": {
+        "apiBaseUrl": "http://127.0.0.1:8642",
+        "apiKey": "<same-value-as-API_SERVER_KEY>",
+        "paperclipApiUrl": "http://localhost:3100"
+      }
+    }
+
+    Hermes Gateway network examples:
+    - Local loopback: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:8642" and agentDefaultsPayload.paperclipApiUrl = "http://127.0.0.1:3100".
+    - LAN/private network: use reachable private addresses, for example agentDefaultsPayload.apiBaseUrl = "http://192.168.1.25:8642" and agentDefaultsPayload.paperclipApiUrl = "http://192.168.1.10:3100".
+    - Private overlay: use overlay DNS names, for example agentDefaultsPayload.apiBaseUrl = "http://hermes-host.tailnet-name.ts.net:8642" and agentDefaultsPayload.paperclipApiUrl = "http://paperclip-host.tailnet-name.ts.net:3100".
+    - Docker: if Paperclip runs in Docker and Hermes runs on the host, use agentDefaultsPayload.apiBaseUrl = "http://host.docker.internal:8642"; if both run in Compose, use the Hermes service name.
+    - Reverse proxy/TLS: use HTTPS origins, for example agentDefaultsPayload.apiBaseUrl = "https://hermes-gateway.example" and agentDefaultsPayload.paperclipApiUrl = "https://paperclip.example".
 
     Expected response includes:
     - request id
