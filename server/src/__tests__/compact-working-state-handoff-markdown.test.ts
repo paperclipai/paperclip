@@ -21,6 +21,7 @@ function validHandoffInput(overrides: Record<string, unknown> = {}) {
         {
           path: "server/src/__tests__/compact-working-state-handoff-markdown.test.ts",
           kind: "unit",
+          status: "added",
           verified: false,
           evidence: [],
         },
@@ -47,7 +48,7 @@ function validHandoffInput(overrides: Record<string, unknown> = {}) {
       files: [
         {
           path: "server/src/services/compact-working-state.ts",
-          status: "pending",
+          status: "modified",
           verified: false,
           evidence: [],
         },
@@ -116,5 +117,72 @@ describe("compact working-state handoff markdown", () => {
 
     const packet = parseSingleHandoffPacket(markdown as string);
     expect(packet.packetKind).toBe("compact_working_state");
+  });
+
+  it("[BLIND] rejects packet shapes that violate the compact working-state contract", () => {
+    expect(() => buildCompactWorkingStateHandoffMarkdown(validHandoffInput({
+      observedChanges: {
+        files: [
+          {
+            path: "server/src/services/compact-working-state.ts",
+            status: "pending",
+            verified: false,
+            evidence: [],
+          },
+        ],
+        commits: [],
+      },
+    }))).toThrow(/changes\.files\[0\]\.status/);
+
+    expect(() => buildCompactWorkingStateHandoffMarkdown(validHandoffInput({
+      selfReport: {
+        ...(validHandoffInput().selfReport as Record<string, unknown>),
+        tests: {
+          written: [
+            {
+              path: "server/src/__tests__/compact-working-state-handoff-markdown.test.ts",
+              kind: "unit",
+              verified: false,
+              evidence: [],
+            },
+          ],
+          runs: [],
+        },
+      },
+    }))).toThrow(/tests\.written\[0\]\.status/);
+
+    expect(() => buildCompactWorkingStateHandoffMarkdown(validHandoffInput({
+      selfReport: {
+        ...(validHandoffInput().selfReport as Record<string, unknown>),
+        acceptance: [
+          {
+            id: "AC1",
+            text: "Fresh-session wakes receive a compact working-state handoff.",
+            status: "verified_passed",
+            assertedBy: "agent",
+            verified: false,
+            evidence: [{ kind: "test_command", ref: "paperclip:run:run-machine-id:event:1", verified: true }],
+          },
+        ],
+      },
+    }))).toThrow(/acceptance\[0\]\.verified/);
+
+    expect(() => buildCompactWorkingStateHandoffMarkdown(validHandoffInput({
+      selfReport: {
+        ...(validHandoffInput().selfReport as Record<string, unknown>),
+        tests: {
+          written: [],
+          runs: [
+            {
+              command: "pnpm test",
+              result: "verified_passed",
+              assertedBy: "agent",
+              verified: false,
+              evidence: [{ kind: "test_command", ref: "paperclip:run:run-machine-id:event:1", verified: true }],
+            },
+          ],
+        },
+      },
+    }))).toThrow(/tests\.runs\[0\]\.verified/);
   });
 });

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildCompactWorkingStatePacket, isStaleCompactWorkingStatePacket } from "../services/compact-working-state.js";
+import {
+  buildCompactWorkingStatePacket,
+  isStaleCompactWorkingStatePacket,
+  validateCompactWorkingStatePacket,
+} from "../services/compact-working-state.js";
 
 function validSameRoleCompactPacket(overrides: Record<string, unknown> = {}) {
   return {
@@ -54,6 +58,21 @@ function validBuilderInput(overrides: Record<string, unknown> = {}) {
 }
 
 describe("compact working-state builder provenance", () => {
+  it("[BLIND] validates the shared compact working-state fixture corpus", async () => {
+    const { compactWorkingStateFixtureCorpus } = await import(
+      "../../../../pipeline-v2/compact-working-state.fixtures.mjs"
+    );
+
+    for (const fixture of compactWorkingStateFixtureCorpus) {
+      const packet = fixture.build();
+      if (fixture.valid) {
+        expect(() => validateCompactWorkingStatePacket(packet)).not.toThrow();
+      } else {
+        expect(() => validateCompactWorkingStatePacket(packet)).toThrow();
+      }
+    }
+  });
+
   it("[BLIND] derives same-role from/to from the current agent role, not self-report", () => {
     const packet = buildCompactWorkingStatePacket(validBuilderInput({
       currentAgent: { role: "engineer", name: "pipeline-engineer" },

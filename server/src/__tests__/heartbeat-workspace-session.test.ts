@@ -8,6 +8,7 @@ import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  applyCompactWorkingStateHandoffForFreshSession,
   applyPersistedExecutionWorkspaceConfig,
   assertGitSensitiveAdapterWorkspaceValid,
   assertPushCapabilityCheckoutValid,
@@ -968,6 +969,123 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("applyCompactWorkingStateHandoffForFreshSession", () => {
+  function buildCompactSelfReport() {
+    return {
+      stage: "implementation",
+      status: "in_progress",
+      workingNotes: "Continue from the validated compact working-state emission path.",
+      acceptance: [
+        {
+          id: "AC1",
+          text: "Fresh-session wakes receive a compact working-state handoff.",
+          status: "pending",
+          assertedBy: "agent",
+          verified: false,
+          evidence: [],
+        },
+      ],
+      tests: {
+        written: [
+          {
+            path: "server/src/__tests__/heartbeat-workspace-session.test.ts",
+            kind: "unit",
+            status: "added",
+            verified: false,
+            evidence: [],
+          },
+        ],
+        runs: [],
+      },
+      blocker: null,
+      requiredHandoff: { required: false, to: null, status: "in_progress", reason: null },
+      next: "Continue the heartbeat run in the fresh session.",
+    };
+  }
+
+  function parseCompactPacket(markdown: string) {
+    expect(markdown).toMatch(/^```handoff-v1\n[\s\S]+\n```$/);
+    return JSON.parse(markdown.slice("```handoff-v1\n".length, -"\n```".length)) as Record<string, unknown>;
+  }
+
+  const issueRef = {
+    id: "issue-machine-id",
+    identifier: "PB-81",
+    title: "Emit compact working-state handoff on intentional fresh sessions.",
+  };
+  const run = { id: "run-machine-id", sessionIdBefore: "session-machine-id" };
+  const agent = { role: "engineer", name: "paperclip-engineer" };
+
+  it("sets compact handoff markdown for reset sessions with self-report and persisted session", () => {
+    const context: Record<string, unknown> = {
+      paperclipCompactWorkingStateSelfReport: buildCompactSelfReport(),
+      paperclipCompactWorkingStateStage: "implementation",
+    };
+
+    const markdown = applyCompactWorkingStateHandoffForFreshSession({
+      context,
+      resetTaskSession: true,
+      issueRef,
+      run,
+      agent,
+    });
+
+    expect(markdown).toBe(context.paperclipSessionHandoffMarkdown);
+    const packet = parseCompactPacket(markdown as string);
+    expect(packet.packetKind).toBe("compact_working_state");
+    expect(packet.sourceRunId).toBe("run-machine-id");
+    expect(packet.sourceSessionId).toBe("session-machine-id");
+    expect(packet.from).toBe("engineer");
+    expect(packet.to).toBe("engineer");
+  });
+
+  it("does not set compact handoff markdown without self-report", () => {
+    const context: Record<string, unknown> = {
+      paperclipSessionHandoffMarkdown: "stale",
+    };
+
+    const markdown = applyCompactWorkingStateHandoffForFreshSession({
+      context,
+      resetTaskSession: true,
+      issueRef,
+      run,
+      agent,
+    });
+
+    expect(markdown).toBeNull();
+    expect(context).not.toHaveProperty("paperclipSessionHandoffMarkdown");
+  });
+
+  it("does not set compact handoff markdown without reset or persisted session", () => {
+    const contextWithoutReset: Record<string, unknown> = {
+      paperclipSessionHandoffMarkdown: "stale",
+      paperclipCompactWorkingStateSelfReport: buildCompactSelfReport(),
+    };
+    const contextWithoutSession: Record<string, unknown> = {
+      paperclipSessionHandoffMarkdown: "stale",
+      paperclipCompactWorkingStateSelfReport: buildCompactSelfReport(),
+    };
+
+    expect(applyCompactWorkingStateHandoffForFreshSession({
+      context: contextWithoutReset,
+      resetTaskSession: false,
+      issueRef,
+      run,
+      agent,
+    })).toBeNull();
+    expect(contextWithoutReset).not.toHaveProperty("paperclipSessionHandoffMarkdown");
+
+    expect(applyCompactWorkingStateHandoffForFreshSession({
+      context: contextWithoutSession,
+      resetTaskSession: true,
+      issueRef,
+      run: { id: "run-machine-id", sessionIdBefore: null },
+      agent,
+    })).toBeNull();
+    expect(contextWithoutSession).not.toHaveProperty("paperclipSessionHandoffMarkdown");
   });
 });
 

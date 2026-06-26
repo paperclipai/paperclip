@@ -2426,6 +2426,49 @@ export function shouldResetTaskSessionForWake(
   return false;
 }
 
+export function applyCompactWorkingStateHandoffForFreshSession(input: {
+  context: Record<string, unknown>;
+  resetTaskSession: boolean;
+  issueRef: { id: unknown; identifier: unknown; title: unknown } | null;
+  run: { id: unknown; sessionIdBefore: unknown };
+  agent: { role: unknown; name: unknown };
+}): string | null {
+  const compactWorkingStateSelfReport = readRecord(input.context.paperclipCompactWorkingStateSelfReport);
+  const compactWorkingStateHandoffMarkdown =
+    input.resetTaskSession &&
+    compactWorkingStateSelfReport &&
+    input.issueRef &&
+    readNonEmptyString(input.run.sessionIdBefore)
+      ? buildCompactWorkingStateHandoffMarkdown({
+        issue: {
+          identifier: input.issueRef.identifier,
+          id: input.issueRef.id,
+          objective: input.issueRef.title,
+        },
+        currentRun: { id: input.run.id },
+        persistedSession: { id: input.run.sessionIdBefore },
+        currentAgent: { role: input.agent.role, name: input.agent.name },
+        stage: readNonEmptyString(input.context.paperclipCompactWorkingStateStage) ?? undefined,
+        selfReport: compactWorkingStateSelfReport,
+        observedChanges: readRecord(input.context.paperclipCompactWorkingStateObservedChanges) ?? { files: [], commits: [] },
+        artifacts: Array.isArray(input.context.paperclipCompactWorkingStateArtifacts)
+          ? input.context.paperclipCompactWorkingStateArtifacts
+          : [{ kind: "run_log", ref: `paperclip:run:${input.run.id}:log` }],
+        rawTranscriptRefs: Array.isArray(input.context.paperclipCompactWorkingStateRawTranscriptRefs)
+          ? input.context.paperclipCompactWorkingStateRawTranscriptRefs
+          : [],
+      })
+      : null;
+
+  if (compactWorkingStateHandoffMarkdown) {
+    input.context.paperclipSessionHandoffMarkdown = compactWorkingStateHandoffMarkdown;
+  } else {
+    delete input.context.paperclipSessionHandoffMarkdown;
+  }
+
+  return compactWorkingStateHandoffMarkdown;
+}
+
 function shouldRequireIssueCommentForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -9392,29 +9435,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueId,
       continuationSummaryBody: continuationSummary?.body ?? null,
     });
-    const compactWorkingStateSelfReport = readRecord(context.paperclipCompactWorkingStateSelfReport);
-    const compactWorkingStateHandoffMarkdown =
-      resetTaskSession && compactWorkingStateSelfReport && issueRef && readNonEmptyString(run.sessionIdBefore)
-        ? buildCompactWorkingStateHandoffMarkdown({
-          issue: {
-            identifier: issueRef.identifier,
-            id: issueRef.id,
-            objective: issueRef.title,
-          },
-          currentRun: { id: run.id },
-          persistedSession: { id: run.sessionIdBefore },
-          currentAgent: { role: agent.role, name: agent.name },
-          stage: readNonEmptyString(context.paperclipCompactWorkingStateStage) ?? undefined,
-          selfReport: compactWorkingStateSelfReport,
-          observedChanges: readRecord(context.paperclipCompactWorkingStateObservedChanges) ?? { files: [], commits: [] },
-          artifacts: Array.isArray(context.paperclipCompactWorkingStateArtifacts)
-            ? context.paperclipCompactWorkingStateArtifacts
-            : [{ kind: "run_log", ref: `paperclip:run:${run.id}:log` }],
-          rawTranscriptRefs: Array.isArray(context.paperclipCompactWorkingStateRawTranscriptRefs)
-            ? context.paperclipCompactWorkingStateRawTranscriptRefs
-            : [],
-        })
-        : null;
     if (sessionCompaction.rotate) {
       context.paperclipSessionHandoffMarkdown = sessionCompaction.handoffMarkdown;
       context.paperclipSessionRotationReason = sessionCompaction.reason;
@@ -9428,11 +9448,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       }
     } else {
-      if (compactWorkingStateHandoffMarkdown) {
-        context.paperclipSessionHandoffMarkdown = compactWorkingStateHandoffMarkdown;
-      } else {
-        delete context.paperclipSessionHandoffMarkdown;
-      }
+      applyCompactWorkingStateHandoffForFreshSession({ context, resetTaskSession, issueRef, run, agent });
       delete context.paperclipSessionRotationReason;
       delete context.paperclipPreviousSessionId;
     }
