@@ -11,6 +11,7 @@ import {
 } from "../lib/status-colors";
 import {
   externalObjectCategoryLabel,
+  externalObjectDisplayLabel,
   externalObjectLivenessLabel,
   externalObjectIconForKey,
   externalObjectProviderLabel,
@@ -112,14 +113,15 @@ export function ExternalObjectPill({
   const overlay = externalObjectLivenessOverlay[object.liveness] ?? "";
   const providerLabel = externalObjectProviderLabel(object.providerKey);
   const typeLabel = externalObjectTypeLabel(object.objectType);
-  const displayKey = object.displayKey?.trim() || `${providerLabel} ${typeLabel}`;
+  const displayKey = externalObjectDisplayLabel(object.providerKey, object.objectType, object.displayKey);
   const statusLabel = object.statusLabel ?? externalObjectCategoryLabel(object.statusCategory);
   const tone = externalObjectPillTone(object, statusLabel);
   const valueLabel = externalObjectValueLabel(object, displayKey, statusLabel);
   const statusIconKey = externalObjectStatusIconKey(object, statusLabel);
   const livenessLabel = externalObjectLivenessLabel(object.liveness);
   const ProviderIcon = externalObjectIconForKey(object.iconKey);
-  const ariaLabel = `${providerLabel} ${typeLabel} — ${statusLabel}${
+  const ariaKey = displayKey;
+  const ariaLabel = `${ariaKey} — ${statusLabel}${
     object.liveness === "fresh" || object.liveness === "unknown" ? "" : ` (${livenessLabel})`
   }${object.displayTitle ? `: ${object.displayTitle}` : ""}`;
 

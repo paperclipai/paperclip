@@ -40,6 +40,7 @@ import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
 import type { IssueExternalObjectGroup } from "../hooks/useIssueExternalObjects";
 import {
   externalObjectCategoryLabel,
+  externalObjectDisplayLabel,
   externalObjectIconForKey,
   externalObjectProviderLabel,
   externalObjectToneSeverity,
@@ -214,7 +215,7 @@ function externalObjectRowDisplayKey(group: IssueExternalObjectGroup): string {
     if (pill.objectType === "pull_request") return "Github Pull Request";
     if (pill.objectType === "issue") return "Github Issue";
   }
-  return `${externalObjectProviderLabel(pill.providerKey)} ${externalObjectTypeLabel(pill.objectType)}`;
+  return externalObjectDisplayLabel(pill.providerKey, pill.objectType);
 }
 
 function externalObjectRowLabel(group: IssueExternalObjectGroup): React.ReactNode {

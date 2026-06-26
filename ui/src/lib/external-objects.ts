@@ -178,6 +178,17 @@ export function externalObjectTypeLabel(objectType: string | null | undefined): 
   return OBJECT_TYPE_LABELS[objectType] ?? objectType.replace(/_/g, " ");
 }
 
+export function externalObjectDisplayLabel(
+  providerKey: string | null | undefined,
+  objectType: string | null | undefined,
+  displayKey?: string | null,
+): string {
+  const trimmedDisplayKey = displayKey?.trim();
+  if (trimmedDisplayKey) return trimmedDisplayKey;
+  if (providerKey === "url" && objectType === "link") return "URL";
+  return `${externalObjectProviderLabel(providerKey)} ${externalObjectTypeLabel(objectType)}`;
+}
+
 /**
  * Sort summary items by severity-first ordering: danger → warning → info →
  * success → muted/neutral. Within a tone, items keep their incoming order so
