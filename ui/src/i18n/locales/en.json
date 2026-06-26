@@ -190,7 +190,8 @@
       "projects": "Select a company to view projects.",
       "routines": "Select a company to view routines.",
       "inbox": "Select a company to view inbox.",
-      "costs": "Select a company to view costs."
+      "costs": "Select a company to view costs.",
+      "skills": "Select a company to manage skills."
     },
     "sort": {
       "name": "Name",
@@ -482,6 +483,65 @@
     },
     "labels": {
       "dismissMembershipNotice": "Dismiss agent membership notice"
+    }
+  },
+  "companySkills": {
+    "toasts": {
+      "agentsUpdated": "Agents updated",
+      "importWarnings": "Import warnings",
+      "installWarnings": "Install warnings",
+      "scanComplete": "Project skill scan complete",
+      "scanFailed": "Project skill scan failed",
+      "removeFailed": "Remove failed",
+      "saveFailed": "Save failed",
+      "scanWarnings": "Scan warnings",
+      "conflictsFound": "Skill conflicts found",
+      "creationFailed": "Skill creation failed",
+      "importFailed": "Skill import failed",
+      "skillRemoved": "Skill removed",
+      "skillSaved": "Skill saved",
+      "settingsUpdated": "Skill settings updated",
+      "settingsUpdateFailed": "Skill settings update failed",
+      "skillsImported": "Skills imported",
+      "skillUpdated": "Skill updated",
+      "starFailed": "Star failed",
+      "updateFailed": "Update failed"
+    },
+    "errors": {
+      "create": "Failed to create skill.",
+      "importSource": "Failed to import skill source.",
+      "installCatalog": "Failed to install catalog skill.",
+      "installUpdate": "Failed to install skill update.",
+      "loadFile": "Failed to load file",
+      "remove": "Failed to remove skill.",
+      "saveFile": "Failed to save skill file.",
+      "scanWorkspaces": "Failed to scan project workspaces.",
+      "updateAgents": "Failed to update agent skills.",
+      "updateSettings": "Failed to update skill settings.",
+      "updateStar": "Failed to update star."
+    },
+    "tabs": {
+      "overview": "Overview",
+      "files": "Files",
+      "versions": "Versions",
+      "detail": "Detail",
+      "agents": "Agents",
+      "skills": "Skills",
+      "includesAssets": "Includes assets",
+      "includesScripts": "Includes scripts",
+      "markdownOnly": "Markdown only",
+      "invalid": "Invalid",
+      "unknownFormat": "Unknown format"
+    },
+    "messages": {
+      "catalogNotFound": "Catalog skill not found.",
+      "selectCatalogToInspect": "Select a catalog skill to inspect.",
+      "selectSkillToInspectFiles": "Select a skill to inspect its files.",
+      "skillNotFound": "Skill not found."
+    },
+    "aria": {
+      "paused": "Paused",
+      "pinnedRevision": "Pinned source revision"
     }
   }
 }

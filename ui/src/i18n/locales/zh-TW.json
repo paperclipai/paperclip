@@ -216,7 +216,8 @@
       "projects": "選擇一家公司以檢視專案。",
       "routines": "選擇一家公司以檢視排程。",
       "inbox": "選擇一家公司以檢視收件匣。",
-      "costs": "選擇一家公司以檢視成本。"
+      "costs": "選擇一家公司以檢視成本。",
+      "skills": "選擇一家公司以管理技能。"
     },
     "sort": {
       "name": "名稱",
@@ -482,6 +483,65 @@
     },
     "labels": {
       "dismissMembershipNotice": "忽略智慧代理成員資格通知"
+    }
+  },
+  "companySkills": {
+    "toasts": {
+      "agentsUpdated": "智慧代理已更新",
+      "importWarnings": "匯入警告",
+      "installWarnings": "安裝警告",
+      "scanComplete": "專案技能掃描完成",
+      "scanFailed": "專案技能掃描失敗",
+      "removeFailed": "移除失敗",
+      "saveFailed": "儲存失敗",
+      "scanWarnings": "掃描警告",
+      "conflictsFound": "发现技能衝突",
+      "creationFailed": "技能建立失敗",
+      "importFailed": "技能匯入失敗",
+      "skillRemoved": "技能已移除",
+      "skillSaved": "技能已儲存",
+      "settingsUpdated": "技能設定已更新",
+      "settingsUpdateFailed": "技能設定更新失敗",
+      "skillsImported": "技能已匯入",
+      "skillUpdated": "技能已更新",
+      "starFailed": "星號失敗",
+      "updateFailed": "更新失敗"
+    },
+    "errors": {
+      "create": "建立技能失敗。",
+      "importSource": "匯入技能源码失敗。",
+      "installCatalog": "安裝目錄技能失敗。",
+      "installUpdate": "安裝技能更新失敗。",
+      "loadFile": "加载檔案失敗",
+      "remove": "移除技能失敗。",
+      "saveFile": "儲存技能檔案失敗。",
+      "scanWorkspaces": "掃描專案工作区失敗。",
+      "updateAgents": "更新智慧代理技能失敗。",
+      "updateSettings": "更新技能設定失敗。",
+      "updateStar": "更新星號失敗。"
+    },
+    "tabs": {
+      "overview": "概覽",
+      "files": "檔案",
+      "versions": "版本",
+      "detail": "詳情",
+      "agents": "智慧代理",
+      "skills": "技能",
+      "includesAssets": "包含資源",
+      "includesScripts": "包含指令碼",
+      "markdownOnly": "僅 Markdown",
+      "invalid": "無效",
+      "unknownFormat": "未知格式"
+    },
+    "messages": {
+      "catalogNotFound": "未找到目錄技能。",
+      "selectCatalogToInspect": "選擇一个目錄技能以查看詳情。",
+      "selectSkillToInspectFiles": "選擇一个技能以查看其檔案。",
+      "skillNotFound": "未找到技能。"
+    },
+    "aria": {
+      "paused": "已暫停",
+      "pinnedRevision": "釘選源版本"
     }
   }
 }
