@@ -92,6 +92,7 @@ import {
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import { isMergeRequestConfirmationContent } from "./interaction-guards.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -135,6 +136,68 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+const REQUEST_CONFIRMATION_INTERACTION_KINDS = [
+  "request_confirmation",
+  "request_checkbox_confirmation",
+] as const;
+
+async function expirePendingRequestConfirmationsForIssueStatus(dbOrTx: any, args: {
+  companyId: string;
+  issueId: string;
+  nextStatus: string;
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+}) {
+  if (!["done", "cancelled", "blocked"].includes(args.nextStatus)) return 0;
+
+  const rows = await dbOrTx
+    .select({
+      id: issueThreadInteractions.id,
+      title: issueThreadInteractions.title,
+      summary: issueThreadInteractions.summary,
+      payload: issueThreadInteractions.payload,
+    })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, args.companyId),
+      eq(issueThreadInteractions.issueId, args.issueId),
+      inArray(issueThreadInteractions.kind, [...REQUEST_CONFIRMATION_INTERACTION_KINDS]),
+      eq(issueThreadInteractions.status, "pending"),
+    ));
+
+  const expirableIds = rows
+    .filter((row: { title: string | null; summary: string | null; payload: unknown }) => {
+      if (args.nextStatus === "done" || args.nextStatus === "cancelled") return true;
+      return isMergeRequestConfirmationContent(row);
+    })
+    .map((row: { id: string }) => row.id);
+
+  if (expirableIds.length === 0) return 0;
+
+  const now = new Date();
+  const updated = await dbOrTx
+    .update(issueThreadInteractions)
+    .set({
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "issue_status_changed",
+        issueStatus: args.nextStatus,
+      },
+      resolvedByAgentId: args.actorAgentId ?? null,
+      resolvedByUserId: args.actorUserId ?? null,
+      resolvedAt: now,
+      updatedAt: now,
+    })
+    .where(and(
+      inArray(issueThreadInteractions.id, expirableIds),
+      eq(issueThreadInteractions.status, "pending"),
+    ))
+    .returning({ id: issueThreadInteractions.id });
+
+  return updated.length;
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -5408,6 +5471,15 @@ export function issueService(db: Db) {
             },
             tx,
           );
+        }
+        if (issueData.status && issueData.status !== existing.status) {
+          await expirePendingRequestConfirmationsForIssueStatus(tx, {
+            companyId: existing.companyId,
+            issueId: updated.id,
+            nextStatus: issueData.status,
+            actorAgentId: actorAgentId ?? null,
+            actorUserId: actorUserId ?? null,
+          });
         }
         if (
           issueData.executionWorkspaceSettings !== undefined &&
