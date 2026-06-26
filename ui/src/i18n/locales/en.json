@@ -456,5 +456,32 @@
       "pausedProjects": "Paused projects",
       "pendingApprovals": "Pending approvals"
     }
+  },
+  "agentDetail": {
+    "toasts": {
+      "agentSaved": "Agent saved",
+      "saveFailed": "Save failed"
+    },
+    "errors": {
+      "actionFailed": "Action failed",
+      "loadMoreRunLog": "Failed to load more run log",
+      "loadRunLog": "Failed to load run log",
+      "loadWorkspaceOpLog": "Failed to load workspace operation log",
+      "resumeRun": "Failed to resume run",
+      "retryRun": "Failed to retry run",
+      "updatePermissions": "Failed to update permissions"
+    },
+    "tabs": {
+      "dashboard": "Dashboard",
+      "configuration": "Configuration",
+      "instructions": "Instructions",
+      "budget": "Budget",
+      "runs": "Runs",
+      "skills": "Skills",
+      "installedSkills": "Installed skills"
+    },
+    "labels": {
+      "dismissMembershipNotice": "Dismiss agent membership notice"
+    }
   }
 }

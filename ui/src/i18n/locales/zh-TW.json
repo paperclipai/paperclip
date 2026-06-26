@@ -456,5 +456,32 @@
       "pausedProjects": "已暫停專案",
       "pendingApprovals": "待審批"
     }
+  },
+  "agentDetail": {
+    "toasts": {
+      "agentSaved": "智慧代理已儲存",
+      "saveFailed": "儲存失敗"
+    },
+    "errors": {
+      "actionFailed": "操作失敗",
+      "loadMoreRunLog": "載入更多執行日誌失敗",
+      "loadRunLog": "載入執行日誌失敗",
+      "loadWorkspaceOpLog": "載入工作區操作日誌失敗",
+      "resumeRun": "恢復執行失敗",
+      "retryRun": "重試執行失敗",
+      "updatePermissions": "更新權限失敗"
+    },
+    "tabs": {
+      "dashboard": "儀表板",
+      "configuration": "設定",
+      "instructions": "指令",
+      "budget": "預算",
+      "runs": "執行",
+      "skills": "技能",
+      "installedSkills": "已安裝技能"
+    },
+    "labels": {
+      "dismissMembershipNotice": "忽略智慧代理成員資格通知"
+    }
   }
 }

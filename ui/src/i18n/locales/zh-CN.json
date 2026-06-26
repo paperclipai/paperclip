@@ -456,5 +456,32 @@
       "pausedProjects": "已暂停项目",
       "pendingApprovals": "待审批"
     }
+  },
+  "agentDetail": {
+    "toasts": {
+      "agentSaved": "智能体已保存",
+      "saveFailed": "保存失败"
+    },
+    "errors": {
+      "actionFailed": "操作失败",
+      "loadMoreRunLog": "加载更多运行日志失败",
+      "loadRunLog": "加载运行日志失败",
+      "loadWorkspaceOpLog": "加载工作区操作日志失败",
+      "resumeRun": "恢复运行失败",
+      "retryRun": "重试运行失败",
+      "updatePermissions": "更新权限失败"
+    },
+    "tabs": {
+      "dashboard": "仪表盘",
+      "configuration": "配置",
+      "instructions": "指令",
+      "budget": "预算",
+      "runs": "运行",
+      "skills": "技能",
+      "installedSkills": "已安装技能"
+    },
+    "labels": {
+      "dismissMembershipNotice": "忽略智能体成员资格通知"
+    }
   }
 }
