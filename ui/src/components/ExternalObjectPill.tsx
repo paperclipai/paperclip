@@ -120,7 +120,7 @@ export function ExternalObjectPill({
   const statusIconKey = externalObjectStatusIconKey(object, statusLabel);
   const livenessLabel = externalObjectLivenessLabel(object.liveness);
   const ProviderIcon = externalObjectIconForKey(object.iconKey);
-  const ariaKey = object.providerKey === "url" && object.objectType === "link" ? displayKey : `${providerLabel} ${typeLabel}`;
+  const ariaKey = displayKey;
   const ariaLabel = `${ariaKey} — ${statusLabel}${
     object.liveness === "fresh" || object.liveness === "unknown" ? "" : ` (${livenessLabel})`
   }${object.displayTitle ? `: ${object.displayTitle}` : ""}`;
