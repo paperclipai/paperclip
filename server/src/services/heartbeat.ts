@@ -2918,7 +2918,7 @@ export async function buildPaperclipWakePayload(input: {
     });
   }
 
-  const annotationDeltas = annotationCommentId
+  const annotationDeltas = annotationCommentId && issueId
     ? await input.db
       .select({
         id: documentAnnotationComments.id,
@@ -2942,7 +2942,10 @@ export async function buildPaperclipWakePayload(input: {
       .innerJoin(documentAnnotationThreads, eq(documentAnnotationComments.threadId, documentAnnotationThreads.id))
       .where(and(
         eq(documentAnnotationComments.companyId, input.companyId),
+        eq(documentAnnotationComments.issueId, issueId),
         eq(documentAnnotationComments.id, annotationCommentId),
+        eq(documentAnnotationThreads.companyId, input.companyId),
+        eq(documentAnnotationThreads.issueId, issueId),
       ))
       .then((rows) => rows.map((row) => ({
         id: row.id,
@@ -2978,7 +2981,7 @@ export async function buildPaperclipWakePayload(input: {
       issueId,
       issueWorkMode: issueSummary?.workMode ?? null,
       includeForIssueComment: commentIds.length > 0,
-      includeForAnnotationDelta: annotationDeltas.length > 0 || annotationCommentId !== null,
+      includeForAnnotationDelta: annotationDeltas.length > 0,
       interactionId,
       interactionKind,
       interactionStatus,

@@ -72,7 +72,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     await tempDb?.cleanup();
   });
 
-  async function createIssueWithDocument() {
+  async function createIssueWithDocument(workMode: "planning" | "standard" = "planning") {
     const companyId = randomUUID();
     const issueId = randomUUID();
 
@@ -86,11 +86,11 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      identifier: "PAP-9442",
+      identifier: `PAP-${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       title: "Annotation race",
       description: "Validate annotation revision guards",
       status: "in_progress",
-      workMode: "planning",
+      workMode,
       priority: "high",
     });
 
@@ -480,6 +480,68 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     })).resolves.toBeNull();
   });
 
+  it("includes open plan annotations for standard-mode issue comment wakes", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument("standard");
+    const thread = await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Please incorporate this plan annotation in standard mode.",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+    const [comment] = await db
+      .insert(issueComments)
+      .values({
+        companyId,
+        issueId,
+        authorUserId: "board-user",
+        body: "Please continue with the plan feedback above.",
+      })
+      .returning();
+
+    const payload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        wakeCommentIds: [comment.id],
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(payload?.comments).toMatchObject([
+      expect.objectContaining({
+        id: comment.id,
+        body: "Please continue with the plan feedback above.",
+      }),
+    ]);
+    expect(payload?.planReviewContext).toMatchObject({
+      issueId,
+      totals: {
+        openThreadCount: 1,
+        includedCommentCount: 1,
+      },
+      threads: [
+        expect.objectContaining({
+          id: thread.id,
+          comments: [
+            expect.objectContaining({
+              id: thread.comments[0]!.id,
+              body: "Please incorporate this plan annotation in standard mode.",
+            }),
+          ],
+        }),
+      ],
+    });
+  });
+
   it("includes accepted plan annotations in the structured wake payload", async () => {
     const { companyId, issueId, document } = await createIssueWithDocument();
     const thread = await annotations.createThread(
@@ -562,6 +624,93 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
           comments: [
             expect.objectContaining({
               body: "Please split this plan step before creating child issues.",
+            }),
+          ],
+        }),
+      ],
+    });
+  });
+
+  it("fails closed when an annotation delta comment id points at a different issue", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument("standard");
+    const { issueId: otherIssueId, document: otherDocument } = await createIssueWithDocument("standard");
+    const otherThread = await annotations.createThread(
+      otherIssueId,
+      "plan",
+      {
+        baseRevisionId: otherDocument.latestRevisionId!,
+        baseRevisionNumber: otherDocument.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Different issue annotation comment.",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+
+    const payload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        annotationCommentId: otherThread.comments[0]!.id,
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(payload?.annotationDeltas).toEqual([]);
+    expect(payload?.planReviewContext).toBeNull();
+  });
+
+  it("includes plan review context for same-issue annotation deltas on standard issues", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument("standard");
+    const thread = await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Direct same-issue annotation comment.",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+
+    const payload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        annotationCommentId: thread.comments[0]!.id,
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(payload?.annotationDeltas).toMatchObject([
+      expect.objectContaining({
+        id: thread.comments[0]!.id,
+        issueId,
+        threadId: thread.id,
+        body: "Direct same-issue annotation comment.",
+      }),
+    ]);
+    expect(payload?.planReviewContext).toMatchObject({
+      issueId,
+      totals: {
+        openThreadCount: 1,
+        includedCommentCount: 1,
+      },
+      threads: [
+        expect.objectContaining({
+          id: thread.id,
+          comments: [
+            expect.objectContaining({
+              id: thread.comments[0]!.id,
+              body: "Direct same-issue annotation comment.",
             }),
           ],
         }),
