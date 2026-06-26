@@ -4,6 +4,10 @@ This smoke validates the built-in `hermes_gateway` adapter against a fresh
 Hermes gateway. Keep real Hermes execution manual/local: the CI-safe checks only
 lint shell syntax and focused helper behavior.
 
+For the operator-facing install and invite flow, see
+[HERMES_GATEWAY_ONBOARDING.md](./HERMES_GATEWAY_ONBOARDING.md). This smoke guide
+focuses on verification commands and network modes.
+
 ## CI-safe validation
 
 Run these from the repo root:
