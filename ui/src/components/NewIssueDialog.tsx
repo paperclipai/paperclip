@@ -15,7 +15,6 @@ import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
 import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
-import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
@@ -66,12 +65,12 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
-import { issueStatusText, issueStatusTextClassic, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
-import { useConferenceRoomChatEnabled } from "../hooks/useConferenceRoomChatEnabled";
+import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
+import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -214,12 +213,8 @@ function formatFileSize(file: File) {
   return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// PAP-75 brand hues ship behind the Conference Room Chat flag (PAP-139); OFF
-// keeps master's palette (`issueStatusTextClassic`).
-function buildStatusOptions(
-  conferenceRoomChat: boolean,
-): ReadonlyArray<{ value: string; label: string; color: string; description?: string }> {
-  const palette = conferenceRoomChat ? issueStatusText : issueStatusTextClassic;
+function buildStatusOptions(): ReadonlyArray<{ value: string; label: string; color: string; description?: string }> {
+  const palette = issueStatusText;
   return [
     {
       value: "backlog",
@@ -405,10 +400,8 @@ function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | u
 export function NewIssueDialog() {
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
-  // Conference Room Chat flag (PAP-139): selects work-mode labels + status hues.
-  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
-  const workModeOptions = useMemo(() => workModeMetaList(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
-  const statuses = useMemo(() => buildStatusOptions(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
+  const workModeOptions = useMemo(() => workModeMetaList(), []);
+  const statuses = useMemo(() => buildStatusOptions(), []);
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [title, setTitle] = useState("");
@@ -477,7 +470,11 @@ export function NewIssueDialog() {
     queryFn: () => projectsApi.list(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
-  const { data: reusableExecutionWorkspaces } = useQuery({
+  const {
+    data: reusableExecutionWorkspaces,
+    isLoading: reusableExecutionWorkspacesLoading,
+    isError: reusableExecutionWorkspacesError,
+  } = useQuery({
     queryKey: queryKeys.executionWorkspaces.summaryList(effectiveCompanyId!, {
       projectId,
       projectWorkspaceId: projectWorkspaceId || undefined,
@@ -991,7 +988,7 @@ export function NewIssueDialog() {
       experimentalSettings?.enableIsolatedWorkspaces === true
         ? selectedProject?.executionWorkspacePolicy ?? null
         : null;
-    const selectedReusableExecutionWorkspace = deduplicatedReusableWorkspaces.find(
+    const selectedReusableExecutionWorkspace = selectableReusableWorkspaces.find(
       (workspace) => workspace.id === selectedExecutionWorkspaceId,
     );
     const requestedExecutionWorkspaceMode =
@@ -1035,7 +1032,7 @@ export function NewIssueDialog() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.code === "Period") {
       e.preventDefault();
-      setWorkMode((current) => nextWorkMode(current, conferenceRoomChatEnabled));
+      setWorkMode((current) => nextWorkMode(current));
       return;
     }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -1121,10 +1118,8 @@ export function NewIssueDialog() {
       : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
   const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
-  const deduplicatedReusableWorkspaces = useMemo(() => {
-    return orderReusableExecutionWorkspaces(reusableExecutionWorkspaces ?? []);
-  }, [reusableExecutionWorkspaces]);
-  const selectedReusableExecutionWorkspace = deduplicatedReusableWorkspaces.find(
+  const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
+  const selectedReusableExecutionWorkspace = selectableReusableWorkspaces.find(
     (workspace) => workspace.id === selectedExecutionWorkspaceId,
   );
   const isUsingParentExecutionWorkspace = isSubIssueMode && parentExecutionWorkspaceId
@@ -1243,7 +1238,7 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
-  const currentWorkMode = workModeMetaFor(workMode, conferenceRoomChatEnabled);
+  const currentWorkMode = workModeMetaFor(workMode);
   const CurrentWorkModeIcon = currentWorkMode.icon;
 
   return (
@@ -1778,18 +1773,14 @@ export function NewIssueDialog() {
                 ))}
               </select>
               {executionWorkspaceMode === "reuse_existing" && (
-                <select
-                  className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                <ReusableExecutionWorkspaceSelect
                   value={selectedExecutionWorkspaceId}
-                  onChange={(e) => setSelectedExecutionWorkspaceId(e.target.value)}
-                >
-                  <option value="">Choose an existing workspace</option>
-                  {deduplicatedReusableWorkspaces.map((workspace) => (
-                    <option key={workspace.id} value={workspace.id}>
-                      {workspace.name} · {workspace.status} · {workspace.branchName ?? workspace.cwd ?? workspace.id.slice(0, 8)}
-                    </option>
-                  ))}
-                </select>
+                  workspaces={selectableReusableWorkspaces}
+                  onValueChange={(workspaceId) => setSelectedExecutionWorkspaceId(workspaceId)}
+                  loading={reusableExecutionWorkspacesLoading}
+                  error={reusableExecutionWorkspacesError}
+                  disablePortal
+                />
               )}
               {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
                 <div className="text-[11px] text-muted-foreground">

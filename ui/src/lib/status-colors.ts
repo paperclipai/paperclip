@@ -12,11 +12,9 @@
 // PAP-75 brand mapping ("blue = liveness"): todo → amber (queued), in_progress
 // → blue (live). See `issueStatusColor` below for the canonical chip palette.
 //
-// The brand mapping ships behind the "Conference Room Chat" experimental flag
-// (PAP-136/PAP-139): each record below also has a `*Classic` variant pinning
-// master's hues (todo → blue, in_progress → yellow). Consumers (StatusIcon,
-// StatusBadge, NewIssueDialog) select the palette by flag; delete the Classic
-// variants when the flag graduates or dies.
+// The brand mapping is the default status palette. Chat-specific gating stays
+// isolated to the Conference Room route/nav/API and does not control task
+// status presentation.
 
 /** StatusIcon circle: text + border classes */
 export const issueStatusIcon: Record<string, string> = {
@@ -27,13 +25,6 @@ export const issueStatusIcon: Record<string, string> = {
   done: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
   cancelled: "text-neutral-500 border-neutral-500",
   blocked: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
-};
-
-/** Master hues for StatusIcon (Conference Room Chat flag OFF). */
-export const issueStatusIconClassic: Record<string, string> = {
-  ...issueStatusIcon,
-  todo: "text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400",
-  in_progress: "text-yellow-600 border-yellow-600 dark:text-yellow-400 dark:border-yellow-400",
 };
 
 export const issueStatusIconDefault = "text-muted-foreground border-muted-foreground";
@@ -47,13 +38,6 @@ export const issueStatusText: Record<string, string> = {
   done: "text-green-600 dark:text-green-400",
   cancelled: "text-neutral-500",
   blocked: "text-red-600 dark:text-red-400",
-};
-
-/** Master hues for text-only issue statuses (Conference Room Chat flag OFF). */
-export const issueStatusTextClassic: Record<string, string> = {
-  ...issueStatusText,
-  todo: "text-blue-600 dark:text-blue-400",
-  in_progress: "text-yellow-600 dark:text-yellow-400",
 };
 
 export const issueStatusTextDefault = "text-muted-foreground";
@@ -102,13 +86,6 @@ export const statusBadge: Record<string, string> = {
   blocked: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   done: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   cancelled: "bg-muted text-muted-foreground",
-};
-
-/** Master hues for StatusBadge issue entries (Conference Room Chat flag OFF). */
-export const statusBadgeClassic: Record<string, string> = {
-  ...statusBadge,
-  todo: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
-  in_progress: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
 };
 
 export const statusBadgeDefault = "bg-muted text-muted-foreground";
@@ -188,6 +165,57 @@ export const issueStatusColor: Record<string, BrandChipColor> = {
 };
 
 export const issueStatusColorDefault: BrandChipColor = "gray";
+
+// ---------------------------------------------------------------------------
+// Status → base-hue CSS variable
+//
+// Each status chip / icon sets a local `--sc` to the matching var below, and
+// the `.status-chip` / `.status-fill` helpers (index.css) derive the rendered
+// fill/text/border from it for both light and dark. Agent and task keep
+// independent vars so each can be tuned without touching the other, even where
+// their defaults coincide.
+// ---------------------------------------------------------------------------
+
+/** Agent status → base-hue CSS var. `active` aliases idle (never assigned). */
+export const agentStatusVar: Record<string, string> = {
+  idle: "--status-agent-idle",
+  active: "--status-agent-idle",
+  running: "--status-agent-running",
+  paused: "--status-agent-paused",
+  error: "--status-agent-error",
+};
+export const agentStatusVarDefault = "--status-agent-idle";
+
+/** Task/issue status → base-hue CSS var (drives both the chip and the icon). */
+export const taskStatusVar: Record<string, string> = {
+  backlog: "--status-task-backlog",
+  todo: "--status-task-todo",
+  in_progress: "--status-task-in_progress",
+  in_review: "--status-task-in_review",
+  done: "--status-task-done",
+  blocked: "--status-task-blocked",
+  cancelled: "--status-task-cancelled",
+};
+export const taskStatusVarDefault = "--status-task-backlog";
+
+/**
+ * Task/issue status → AA-tuned ICON-hue CSS var (PAP-238). Drives the standalone
+ * {@link StatusGlyph} colour. Separate from {@link taskStatusVar} (the chip base
+ * hue) because a bare glyph next to text needs a stronger hue to clear WCAG 3:1;
+ * see the `--status-task-icon-*` block in `index.css`. `in_queue` is the blocked
+ * shape recoloured blue, so it maps to its own var.
+ */
+export const taskStatusIconVar: Record<string, string> = {
+  backlog: "--status-task-icon-backlog",
+  todo: "--status-task-icon-todo",
+  in_progress: "--status-task-icon-in_progress",
+  in_review: "--status-task-icon-in_review",
+  done: "--status-task-icon-done",
+  blocked: "--status-task-icon-blocked",
+  cancelled: "--status-task-icon-cancelled",
+  in_queue: "--status-task-icon-in_queue",
+};
+export const taskStatusIconVarDefault = "--status-task-icon-backlog";
 
 // ---------------------------------------------------------------------------
 // Agent status dot — solid background for small indicator dots

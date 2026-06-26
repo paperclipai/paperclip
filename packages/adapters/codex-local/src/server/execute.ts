@@ -464,11 +464,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             installCommand: SANDBOX_INSTALL_COMMAND,
             detectCommand: command,
             onProgress: (line) => onLog("stdout", line),
+            onRuntimeProgress: ctx.onRuntimeProgress,
             assets: [
               {
                 key: "home",
                 localDir: effectiveCodexHome,
                 followSymlinks: true,
+                // Transient Codex home dirs (`tmp/`, `.tmp/`) can hold symlinks
+                // to the host Codex binary (e.g. `tmp/arg0`). With
+                // followSymlinks the archive would inline those binaries,
+                // bloating the sandbox upload. None of this transient state is
+                // needed in the sandbox; auth/config/skills/session live elsewhere.
+                exclude: ["tmp", ".tmp"],
               },
             ],
           });
@@ -869,6 +876,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           timeoutSec,
           graceSec,
           onSpawn: wrappedOnSpawn,
+          onRuntimeProgress: ctx.onRuntimeProgress,
           onLog: async (stream, chunk) => {
             if (stream === "stdout") {
               monitor?.noteStdoutChunk(chunk);

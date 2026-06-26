@@ -3318,6 +3318,48 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders ephemeral active-run status below the working indicator", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            activeRun={{
+              id: "run-1",
+              issueId: "issue-1",
+              status: "running",
+              invocationSource: "comment",
+              triggerDetail: null,
+              startedAt: "2026-04-06T12:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-04-06T12:00:00.000Z",
+              agentId: "agent-1",
+              agentName: "Agent 1",
+              adapterType: "codex_local",
+              currentStatusMessage: "Syncing git worktree to sandbox",
+              currentStatusUpdatedAt: "2026-04-06T12:00:05.000Z",
+            }}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Working...");
+    expect(container.textContent).toContain("Syncing git worktree to sandbox");
+    expect(container.querySelector('[title="Syncing git worktree to sandbox"]')).not.toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("folds chain-of-thought when the same message transitions from running to complete", () => {
     expect(resolveAssistantMessageFoldedState({
       messageId: "message-1",

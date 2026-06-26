@@ -867,6 +867,10 @@ function normalizeLiveRuns(
       lastUsefulActionAt: activeRun.lastUsefulActionAt ? toDate(activeRun.lastUsefulActionAt).toISOString() : null,
       nextAction: activeRun.nextAction,
       outputSilence: activeRun.outputSilence,
+      currentStatusMessage: activeRun.currentStatusMessage ?? null,
+      currentStatusUpdatedAt: activeRun.currentStatusUpdatedAt
+        ? toDate(activeRun.currentStatusUpdatedAt).toISOString()
+        : null,
     });
   }
   return [...deduped.values()].sort((a, b) => toTimestamp(a.createdAt) - toTimestamp(b.createdAt));
@@ -905,6 +909,8 @@ function createLiveRunMessage(args: {
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
       chainOfThoughtSegments: segments,
+      currentStatusMessage: run.currentStatusMessage ?? null,
+      currentStatusUpdatedAt: run.currentStatusUpdatedAt ?? null,
     }),
   };
   return message;
